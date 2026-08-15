@@ -1,0 +1,68 @@
+"""Recipe: a named composition of the other plugins.
+
+A Recipe is how a workload gets a name. It does not contain logic -- it declares
+which plugin fills each slot, and the engine drives the spine. That is the
+mechanism by which "RecastEngine does translation" became "RecastEngine does
+translation, refactoring, GPU porting, and security testing" without the core
+changing shape.
+
+The four shipped recipes and where they came from:
+
+    translate   Fortran -> NumPy/Numba/CUDA, gated on f2py golden
+    refactor    carve a Python control plane into a Fortran monolith,
+                gated on a pinned full-model run
+    port        retarget a kernel to an accelerator, gated on captured dumps
+    audit       cyber gate only: scan -> adjudicate -> Sec-Track
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class Stage:
+    """One slot in a Recipe, bound to a registered plugin by name."""
+
+    kind: str
+    """``frontend`` | ``transform`` | ``oracle`` | ``verifier`` | ``scanner``
+    | ``adjudicator`` | ``executor`` | ``store``."""
+
+    plugin: str
+    config: dict[str, Any] = field(default_factory=dict)
+
+    optional: bool = False
+    """If True, a missing plugin downgrades the run instead of failing it.
+
+    Use for enrichment (extra scanners, extra backends). Never for a gate: an
+    optional Verifier is not a gate, it is a suggestion.
+    """
+
+    gate: bool = False
+    """If True, a failing Verdict stops this Unit from proceeding."""
+
+
+class Recipe(ABC):
+    """A workload definition."""
+
+    name: str
+    summary: str = ""
+
+    @abstractmethod
+    def stages(self, config: dict[str, Any]) -> list[Stage]:
+        """Return the ordered stages for this run.
+
+        May branch on config -- ``port`` picks a JAX or a Numba transform from
+        the requested target -- but must return the same stages for the same
+        config, so a run can be replayed from its Evidence.
+        """
+
+    def validate(self, config: dict[str, Any]) -> list[str]:
+        """Return human-readable problems with this config. Empty means usable.
+
+        Checked before any work starts, so a missing oracle or an unreachable
+        scheduler is reported in a second rather than three hours in.
+        """
+        return []
