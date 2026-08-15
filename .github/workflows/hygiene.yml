@@ -1,0 +1,46 @@
+name: hygiene
+
+# The gate that has to hold before this repository can go public, and every day
+# after. Migrating 10k lines out of two NCAR-bound private repositories is
+# exactly the situation where a site path or an allocation account slips in.
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  site-leakage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: No site-specific paths, accounts, or credentials
+        run: python tools/check_hygiene.py .
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks needs history: a scrubbed HEAD is not enough
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Findings from the engine's own cyber gate route to Sec-Track, never here.
+  # This job only proves the scanners run; it must not print finding detail.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: recast-engine.cdx.json

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+uv.lock
+
+# Engine working state -- never committed
+workspace/
+evidence-local/
+findings-local/
+*.log
+
+# Compiled oracles and native artifacts
+*.so
+*.o
+*.mod
+*.gcda
+*.gcno
+*.gcov
+
+# Anything site-specific belongs in a case repo, not here
+.env
+config.local.*
