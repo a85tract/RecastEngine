@@ -17,8 +17,8 @@ jobs:
   site-leakage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: No site-specific paths, accounts, or credentials
@@ -26,20 +26,29 @@ jobs:
 
   secrets:
     runs-on: ubuntu-latest
+    env:
+      # The action wrapper requires a paid licence for organization accounts.
+      # The scanner itself is MIT, so run the binary directly.
+      GITLEAKS_VERSION: "8.21.2"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # gitleaks needs history: a scrubbed HEAD is not enough
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan full history
+        run: gitleaks detect --redact --no-banner --exit-code 1
 
   # Findings from the engine's own cyber gate route to Sec-Track, never here.
   # This job only proves the scanners run; it must not print finding detail.
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: anchore/sbom-action@v0
         with:
           format: cyclonedx-json

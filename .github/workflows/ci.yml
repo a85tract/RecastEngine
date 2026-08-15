@@ -16,7 +16,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.11
       - run: uv run --extra dev ruff check .
@@ -25,7 +25,7 @@ jobs:
   types:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.11
       - run: uv run --extra dev mypy
@@ -37,7 +37,7 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install ${{ matrix.python }}
       - run: uv run --python ${{ matrix.python }} --extra dev pytest --cov=recast
@@ -47,7 +47,7 @@ jobs:
   bare:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.11
       - run: uv run --no-dev python -c "import recast; print(recast.__version__)"
