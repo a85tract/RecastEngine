@@ -1,87 +1,84 @@
 # RecastEngine
 
-**The modernization engine of [SciRecast](https://github.com/a85tract/SciRecast) — framework and basic functionality, with no domain knowledge in it.**
+**The modernization engine of [SciRecast](https://github.com/a85tract/SciRecast).**
 
-Legacy scientific software gets modernized by LLM agents doing the labor under
-human oversight. RecastEngine is the part that is reusable across every such
-effort: it discovers units of work, analyzes them, transforms them, and — the
-part that matters — refuses to let anything through that has not been checked
-against the original.
+LLM agents do the labor of modernizing legacy scientific software; RecastEngine
+is the part that is reusable across every such effort, and the part that refuses
+to let anything through that has not been checked against the original.
 
-> **Status: pre-alpha.** The plugin contract and the CLI's introspection
-> surface exist. The transforms, oracles, and verifiers land in P2–P4 (see
-> [`docs/roadmap.md`](docs/roadmap.md)).
+> **Status: pre-alpha.** The plugin contract and the CLI's introspection surface
+> exist. Transforms, oracles, and verifiers land in P2–P4 — see
+> [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Four workloads, one spine
 
-RecastEngine is not a translator. Translation is one recipe out of four, and
-they are all the same five steps with different plugins in the slots:
+RecastEngine is not a translator. Translation is one recipe of four, and all
+four are the same five steps with different plugins in the slots:
 
 ```
 discover  ->  analyze  ->  transform  ->  verify  ->  record
   Unit        Facts        Candidate     Verdict    Evidence
 ```
 
-| Recipe | What it does | Oracle | Abstracted from |
-|---|---|---|---|
-| `translate` | Fortran → NumPy / Numba / CUDA, by deterministic rules | compiled f2py truth module | CESM-language-translator |
-| `refactor` | carve a Python control plane into a Fortran monolith, numerics untouched | pinned full-model run | [freeCAM](https://github.com/a85tract/freeCAM) |
-| `port` | retarget a kernel to an accelerator | captured production dumps | CESM-jax-kernels |
-| `audit` | secret scan, SBOM+CVE+VEX, LLM source audit, sanitizer builds | — produces findings | CC-Test (cyber half) |
+| Recipe | What it does | Example product |
+|---|---|---|
+| `translate` | Fortran → NumPy / Numba / CUDA, by deterministic rules | CESM-language-translator |
+| `refactor` | carve a Python control plane into a Fortran monolith, numerics untouched | [freeCAM](https://github.com/a85tract/freeCAM) |
+| `port` | retarget a kernel to an accelerator | CESM-jax-kernels |
+| `audit` | secret scan, SBOM+CVE+VEX, LLM source audit, sanitizer builds | CC-Test (cyber half) |
 
-`recast plan <recipe>` prints the stages and tells you which plugins are missing,
-before anything costs compute.
-
-## The two rules the design enforces in code
-
-**A transform never judges its own output.** `Transform` produces a `Candidate`;
-only a `Verifier` produces a `Verdict`; only a gated `Verdict` yields `Evidence`.
-Confidence is a stated level — `SAMPLED`, `TOLERANCED`, `ULP_BOUNDED`,
-`BIT_EXACT`, `SYMBOLIC` — not a boolean, and a verifier that cannot run its
-comparison returns `FAILED`, never a weaker pass.
-
-**An embargoed finding cannot reach a public store.** The `audit` recipe
-produces unpatched vulnerabilities. `Finding` defaults to `EMBARGOED`, stores
-declare a `max_access` ceiling, and `FindingStore.guard()` raises
-`AccessViolation` on any write above it. This is a code check, not a convention,
-because the failure mode is not recoverable by deleting the log afterwards. See
-[`SECURITY.md`](SECURITY.md).
-
-## Where the pieces live
-
-```
-RecastEngine            this repository — framework, plugin contract, local execution
-  └── recast-cesm       CESM domain plugin, in CESM-modernization-overview
-  └── RecastRuntime     commercial extension: batch schedulers, multi-agent
-                        orchestration, Sec-Track integration, multi-tenant ops
-```
-
-Everything in `src/recast/` is written against the ABCs in
-[`src/recast/plugins/`](src/recast/plugins/). Nothing in the core imports
-Fortran, CESM, JAX, or a scheduler — [`tests/test_contract.py`](tests/test_contract.py)
-asserts that mechanically, so the claim stays true rather than aspirational.
-
-Correctness evidence is emitted in
-[CC-Test](https://github.com/a85tract/CESM-CC-Test)'s `evidence-manifest.v1`
-schema. The engine does not define a competing format; CC-Test owns it and this
-is a producer.
-
-## Install
+## Quick start
 
 ```bash
 uv sync --extra dev
-uv run recast doctor
-uv run recast plan translate --config '{"target": "numba"}'
+uv run recast doctor      # check the installation
+uv run recast recipes     # what workloads exist
+uv run recast plugins     # what is registered
 ```
 
-The core installs with zero dependencies and stays importable without a
-compiler, a GPU, or a model provider. Everything heavier is an extra:
-`verify`, `numba`, `jax`, `agents`.
+`recast plan` dry-runs a recipe and reports what is missing, before anything
+costs compute:
 
-## Contributing
+```console
+$ uv run recast plan translate --config '{"target": "numba"}'
+ 1. [MISS] frontend     fortran
+ 2. [MISS] transform    translate.numba
+ 3. [MISS] verifier     static.rwset             gate
+ 4. [MISS] oracle       f2py-golden
+ 5. [MISS] verifier     differential.bitexact    gate
+ 6. [opt ] verifier     symbolic.notary          optional
+ 7. [ok  ] store        fs-evidence
+```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md).
-Security issues: [`SECURITY.md`](SECURITY.md) — never a public issue.
+Those `MISS` lines are the pre-alpha status, not a configuration error. The core
+installs with zero dependencies and stays importable without a compiler, a GPU,
+or a model provider; everything heavier is an extra (`verify`, `numba`, `jax`,
+`agents`).
+
+To extend it, implement one of the ten interfaces in
+[`src/recast/plugins/`](src/recast/plugins/) and register an entry point —
+see [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md).
+
+## Documentation
+
+| | |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | the spine, the ten interfaces, where the boundaries fall |
+| [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md) | how to extend the engine |
+| [`docs/roadmap.md`](docs/roadmap.md) | phases P0–P6 |
+| [`conformance/`](conformance/) | what a plugin must satisfy |
+
+## Contact
+
+| | |
+|---|---|
+| Bugs, features | issues in this repository |
+| Vulnerabilities | [`SECURITY.md`](SECURITY.md) — private advisory, never a public issue |
+| Collaboration, licensing | **Yueqi Chen**, University of Colorado Boulder — <yueqi.chen@colorado.edu> |
+
+Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md).
+Improving the engine improves it for everyone using it — the plugin contract is
+the same one every extension uses, so a plugin you write is not second-class.
 
 ## License
 
