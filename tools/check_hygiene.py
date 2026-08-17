@@ -21,11 +21,16 @@ import sys
 from pathlib import Path
 
 # (label, pattern, why it must not appear)
+#
+# Patterns that match their own source text carry the escape marker, so this
+# file stays clean when scanned as a copy -- checking out history into a temp
+# directory defeats the SELF check below, and that is exactly when the scan
+# matters most.
 RULES: list[tuple[str, re.Pattern[str], str]] = [
-    ("site-path", re.compile(r"/glade/\S*"), "NCAR filesystem path"),
+    ("site-path", re.compile(r"/glade/\S*"), "NCAR filesystem path"),  # hygiene: allow
     ("allocation", re.compile(r"\bUCUB\d{4}\b"), "NCAR allocation account"),
     ("scheduler-host", re.compile(r"@desched\d"), "Derecho scheduler hostname"),
-    ("home-path", re.compile(r"/glade/u/home/\w+"), "named user home directory"),
+    ("home-path", re.compile(r"/glade/u/home/\w+"), "user home"),  # hygiene: allow
     ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
     ("private-key", re.compile(r"-----BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY"), "private key"),
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"), "Anthropic API key"),
