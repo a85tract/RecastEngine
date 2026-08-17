@@ -10,12 +10,12 @@ about NCAR's machines, it belongs in a plugin repository instead.
 ## Layout
 
 - `src/recast/plugins/` — the extension contract. Ten ABCs. Changing a signature
-  here is a breaking change for every plugin and for RecastRuntime.
+  here is a breaking change for every plugin, in-tree and out.
 - `src/recast/model.py` — the shared vocabulary. Keep it small; a field only one
   workload uses belongs in that plugin's `attrs`/`extra`.
 - `src/recast/recipes/` — workload declarations. Stage lists, no logic.
 - `src/recast/executors/`, `src/recast/store/` — the shipped implementations.
-- `conformance/` — what a plugin (and RecastRuntime) must pass.
+- `conformance/` — what a plugin must pass.
 - `tools/check_hygiene.py` — the site-leakage gate. Runs in CI on every push.
 
 ## Development

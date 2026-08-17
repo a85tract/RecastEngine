@@ -38,8 +38,8 @@ allocation accounts, usernames, or scheduler hostnames anywhere in the tree.
 - **New transform?** Show what lands in `deferred` as well as what translates.
   A transform with an empty deferred list on a hard input is usually hiding
   something rather than handling it.
-- **Changing a `plugins/` signature?** That breaks every plugin and
-  RecastRuntime. Say so in the PR, and expect a major version bump.
+- **Changing a `plugins/` signature?** That breaks every plugin, including
+  ones you cannot see. Say so in the PR, and expect a major version bump.
 - **Adding a dependency to the core?** Almost certainly no — make it an extra.
   The core installs with zero dependencies and CI asserts it stays importable
   that way.

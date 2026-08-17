@@ -3,7 +3,8 @@
 Two ways in, and they are equivalent:
 
 * ``importlib.metadata`` entry points -- how installed packages register.
-  ``recast-cesm`` and RecastRuntime arrive this way, by being pip-installed.
+  ``recast-cesm`` and other out-of-tree plugins arrive this way, by being
+  pip-installed.
 * ``register()`` -- how tests and in-process extensions register.
 
 Discovery is lazy and failure-isolated: a broken third-party plugin makes that

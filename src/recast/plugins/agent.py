@@ -1,8 +1,8 @@
 """AgentProvider: the LLM boundary.
 
-The open-source engine ships a single-agent loop and a provider-agnostic
-interface. Multi-agent orchestration, budget and policy control, retrieval over
-a validated corpus, and batch patch adjudication are RecastRuntime's.
+The engine ships a single-agent loop and a provider-agnostic interface.
+Multi-agent orchestration, budget and policy control, retrieval over a validated
+corpus, and batch patch adjudication are left to plugins.
 
 Every call is recorded. A non-deterministic transform is acceptable only if the
 run that produced it can be reconstructed, so ``AgentCall`` carries the model,

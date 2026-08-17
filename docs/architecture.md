@@ -99,18 +99,17 @@ or netCDF4. `tests/test_contract.py::test_core_imports_no_domain_packages`
 enforces it by walking the package. Domain knowledge lives in `recast-cesm`;
 language knowledge lives in `recast-fortran`.
 
-**Open source vs commercial.** The engine ships enough to translate, port, and
-verify one kernel on one machine: the full frontend/rule/verification stack, the
-NumPy/Numba/JAX/CUDA backends, and the `local` executor. RecastRuntime adds
-scale and operations — batch schedulers, cross-cluster routing, relay/resume of
-multi-day runs, multi-agent orchestration with budget control, Sec-Track
-integration, multi-tenant ops. It plugs in through these same ABCs, so it is an
-extension and not a fork. The `conformance/` suite is what a Runtime must pass.
+**In-tree vs plugin.** The engine ships what one person needs on one machine:
+the full frontend/rule/verification stack, the NumPy/Numba/JAX/CUDA backends,
+and the `local` executor. Scale and operations arrive as plugins — batch
+schedulers, cross-cluster routing, relay/resume of multi-day runs, multi-agent
+orchestration with budget control, restricted finding stores. They register
+through these same ABCs, so they are extensions and not forks, and
+`conformance/` is what they have to pass.
 
-The boundary is drawn so the open-source engine is independently useful, not
-crippled: a researcher can modernize and bit-exactly verify a scheme without any
-commercial component. What is sold is scale, compliance, and continuous
-operation.
+The boundary is drawn so the engine is independently useful, not a demo: a
+researcher can modernize and bit-exactly verify a scheme with nothing but this
+repository.
 
 ## Open questions
 

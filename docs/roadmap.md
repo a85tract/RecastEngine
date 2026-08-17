@@ -9,11 +9,6 @@ Phases, not dates. Each one has a check that says whether it is done.
 | Contributor agreement | DCO (lightweight) vs CLA (allows relicensing later) | open |
 | PyPI name | `recast-engine` reserved? `recast` is taken | open |
 | What never goes public | Sec-Track content, PBS D41 research, `cpg_audit/` entries | open |
-| Runtime licence | proprietary vs BSL-with-conversion | open |
-
-The engine keeps Apache-2.0 either way. That means the licence is not the moat;
-the moat is Sec-Track's corpus, the validated golden sets, and operational
-know-how. Worth being deliberate about rather than defaulting into.
 
 ## P1 — scaffold (this commit)
 
@@ -48,7 +43,7 @@ CESM-Agent-Produced-Scripts, into four buckets:
 | Bucket | Destination | Rough count |
 |---|---|---|
 | reusable, domain-independent | rewritten into engine modules, with tests | 40–60 |
-| HPC execution | interface here, implementation in RecastRuntime | ~170 |
+| HPC execution | interface here, implementation in an executor plugin | ~170 |
 | kernel implementations (`15_kernel_impl/`) | Product Layer repos — they are ports, not tooling | 83 |
 | CESM-specific and one-shot | stay in the archived repository | ~350 |
 
@@ -66,13 +61,14 @@ freeCAM's validation gate runs through `Verifier` rather than its own
 `validate_*` scripts. This phase is the only real proof that the engine is
 domain-independent.
 
-## P5 — RecastRuntime
+## P5 — prove the contract out of tree
 
-Private repository, depends only on the published contract, passes
-`conformance/`. First capabilities: PBS/Slurm executors, relay/resume,
-multi-agent orchestration with budgets, Sec-Track `FindingStore`.
+Build the first extension that lives outside this repository and depends only on
+the published contract: PBS/Slurm executors, relay/resume of multi-day runs, and
+a restricted `FindingStore` for Sec-Track. It passes `conformance/`.
 
-**Done when:** the engine works without it, and it needs no engine patches.
+**Done when:** the engine works without it, and it needed no engine patches. Any
+patch it did need is a hole in the contract, and the hole is the finding.
 
 ## P6 — public
 
