@@ -99,15 +99,24 @@ Nothing that leaves the process may use `subprocess` directly.
 
 This is what keeps the two halves separable. A differential verifier's logic —
 build both sides, feed them the same inputs, diff the results — is identical on
-a laptop and on 512 ranks of Derecho; only where the work lands differs. Inline
-the submission and that verifier grows a queue name, an allocation account, and
-a `/glade` path, which is to say it can no longer be public. The seam is why
-`tools/check_hygiene.py` can be a hard gate on this repository while the real
-scheduler plugins live outside it.
+a laptop and on 512 ranks of a batch system; only where the work lands differs.
+Inline the submission and that verifier grows a queue name, an allocation
+account, and a site path, which is to say it can no longer be public. The seam
+is why `tools/check_hygiene.py` can be a hard gate on this repository while the
+real scheduler plugins live outside it.
 
 Taking it as a parameter rather than pulling it from the registry also puts
 "this plugin executes things" in the signature, and lets a test substitute a
 recording or refusing executor without the plugin's cooperation.
+
+Which executor gets passed is declared by an `executor` stage, first in the
+list — it is not a step the engine walks but the ambient choice everything else
+inherits, so a recipe that materializes an oracle or awards a verdict has to
+name one. It names it *through config*, never literally: `pbs-<site>` is site
+knowledge and the four shipped recipes have to stay publishable. `refactor`
+goes further and rejects the default outright, because its gate is a pinned
+multi-rank run that `local` cannot finish — better a failed `recast plan` in a
+second than a failed build an hour in.
 
 ### A gate stops the Unit; it does not drive a retry
 

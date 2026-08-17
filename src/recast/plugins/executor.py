@@ -1,9 +1,14 @@
 """Executor: where work actually runs.
 
-The engine ships ``local`` and ``subprocess`` -- enough to translate and verify
-a kernel on one machine. Batch schedulers (PBS, Slurm), cross-cluster
-submission, relay/resume of multi-day runs, and queue arbitrage belong in
-executor plugins; they plug in here without the core changing.
+The engine ships ``local`` and nothing else -- enough to translate and verify a
+kernel on one machine. Batch schedulers (PBS, Slurm), cross-cluster submission,
+relay/resume of multi-day runs, and queue arbitrage belong in executor plugins;
+they plug in here without the core changing.
+
+A recipe names its executor through config rather than hardcoding one, because
+the name of a real one (``pbs-<site>``, say) is site knowledge and does not
+belong in this repository. ``Oracle`` and ``Verifier`` receive the resolved
+instance as an argument; see ``recipe.py``.
 """
 
 from __future__ import annotations

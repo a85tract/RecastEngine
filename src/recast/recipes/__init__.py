@@ -29,6 +29,7 @@ class TranslateRecipe(Recipe):
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         target = config.get("target", "numpy")
         return [
+            Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("transform", f"translate.{target}"),
             Stage("verifier", "static.rwset", gate=True),
@@ -62,6 +63,7 @@ class RefactorRecipe(Recipe):
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         return [
+            Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("transform", "refactor.adapters"),
             Stage("transform", "refactor.patches"),
@@ -75,6 +77,12 @@ class RefactorRecipe(Recipe):
         problems = []
         if not config.get("reference_commit"):
             problems.append("refactor requires 'reference_commit': the pinned upstream revision")
+        # The gate is a batch oracle, so the default executor cannot finish this
+        # run. Saying so here costs a second; finding out costs the build.
+        if config.get("executor", "local") == "local":
+            problems.append(
+                "refactor gates on a pinned multi-rank run; set 'executor' to a batch executor"
+            )
         return problems
 
 
@@ -93,6 +101,7 @@ class PortRecipe(Recipe):
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         backend = config.get("backend", "jax")
         return [
+            Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("transform", f"port.{backend}"),
             Stage("oracle", "dump-replay"),

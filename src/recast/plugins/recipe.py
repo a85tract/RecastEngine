@@ -28,9 +28,19 @@ class Stage:
 
     kind: str
     """``frontend`` | ``transform`` | ``oracle`` | ``verifier`` | ``scanner``
-    | ``adjudicator`` | ``executor`` | ``store``."""
+    | ``adjudicator`` | ``executor`` | ``store``.
+
+    Most kinds are steps the engine walks in order. An ``executor`` stage is not
+    a step: it declares the executor the run's Oracles and Verifiers receive as
+    an argument, and so it comes first. A recipe that materializes an oracle or
+    awards a verdict has to declare one.
+    """
 
     plugin: str
+    """Name of a registered plugin. A recipe that has an opinion about *which*
+    one reads it from config rather than hardcoding it -- ``pbs-<site>`` is
+    site knowledge, and the four shipped recipes have to stay publishable."""
+
     config: dict[str, Any] = field(default_factory=dict)
 
     optional: bool = False

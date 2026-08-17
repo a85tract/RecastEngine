@@ -39,6 +39,10 @@ harness lands in P2 alongside the first real plugins.
   `subprocess`, `os.system`, or a scheduler client directly. The suite passes a
   refusing executor and requires the plugin to surface that as `FAILED` rather
   than route around it.
+- **A recipe declares the executor it needs, from config.** Any recipe with an
+  `oracle` or `verifier` stage declares exactly one `executor` stage, first in
+  the list, and takes its name from config — a hardcoded scheduler name is a
+  site leak in a public recipe.
 - **A failed gate does not drive a retry.** No `Verdict` reaches a `Transform`,
   and no stage re-runs because a later one failed. The suite runs a recipe whose
   gate always fails and requires exactly one `Transform.apply` call per Unit.
