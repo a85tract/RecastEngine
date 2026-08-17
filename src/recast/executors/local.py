@@ -1,9 +1,9 @@
 """The local executor. Runs Jobs as subprocesses on this machine.
 
-This is the whole of the open-source execution story, and that is intentional:
-it is enough to translate a kernel, build an f2py oracle, and run a differential
-gate on a laptop or a login node. PBS/Slurm submission, cross-cluster routing,
-and relay/resume of multi-day runs are RecastRuntime's.
+This is the whole of the in-tree execution story, and that is intentional: it is
+enough to translate a kernel, build an f2py oracle, and run a differential gate
+on a laptop or a login node. PBS/Slurm submission, cross-cluster routing, and
+relay/resume of multi-day runs belong in executor plugins.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """Executor: where work actually runs.
 
-The open-source engine ships ``local`` and ``subprocess`` -- enough to
-translate and verify a kernel on one machine. Batch schedulers (PBS, Slurm),
-cross-cluster submission, relay/resume of multi-day runs, and queue arbitrage
-are RecastRuntime's territory; they plug in here without the core changing.
+The engine ships ``local`` and ``subprocess`` -- enough to translate and verify
+a kernel on one machine. Batch schedulers (PBS, Slurm), cross-cluster
+submission, relay/resume of multi-day runs, and queue arbitrage belong in
+executor plugins; they plug in here without the core changing.
 """
 
 from __future__ import annotations

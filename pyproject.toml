@@ -47,7 +47,7 @@ Homepage = "https://github.com/a85tract/RecastEngine"
 Ecosystem = "https://github.com/a85tract/SciRecast"
 
 # --- Plugin registration -----------------------------------------------------
-# Third-party plugins (recast-cesm, RecastRuntime) declare the same groups in
+# Out-of-tree plugins (for example recast-cesm) declare the same groups in
 # their own pyproject. Nothing else is needed to extend the engine.
 
 [project.entry-points."recast.executors"]

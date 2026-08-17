@@ -1,7 +1,7 @@
 # Conformance suite
 
-What a plugin must satisfy to be usable, and what RecastRuntime must pass to be
-an extension rather than a fork.
+What a plugin must satisfy to be usable, and what an out-of-tree extension must
+pass to be an extension rather than a fork.
 
 **Status: specified, not implemented.** The checks below are the contract; the
 harness lands in P2 alongside the first real plugins.
@@ -31,12 +31,12 @@ harness lands in P2 alongside the first real plugins.
 - **Plans are reproducible.** Same config → same stage list, or evidence cannot
   be replayed.
 
-## Running it against RecastRuntime
+## Running it against your plugins
 
 ```bash
-uv run pytest conformance/ --plugin-set runtime
+uv run pytest conformance/ --plugin-set <name>
 ```
 
-A Runtime release is blocked on a green run against the engine minor it targets.
+Release your plugin only on a green run against the engine minor it targets.
 Engine minors do not break a plugin that satisfied the previous minor; that is
-the SemVer promise the whole two-repository split rests on.
+the SemVer promise everything out-of-tree rests on.

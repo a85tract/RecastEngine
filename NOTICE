@@ -5,7 +5,7 @@ This product includes software developed as part of the SciRecast ecosystem,
 an open-source, agentic framework for modernizing legacy scientific software.
 RecastEngine is its Core Layer.
 
-RecastEngine is licensed under the Apache License, Version 2.0. Three notes
+RecastEngine is licensed under the Apache License, Version 2.0. Two notes
 apply, per the ecosystem's governance model:
 
   1. This repository contains framework and basic functionality only. It carries
@@ -16,7 +16,3 @@ apply, per the ecosystem's governance model:
   2. Vulnerabilities discovered by this engine's cyber gate are recorded in
      Sec-Track, whose access is restricted to the PI's group to reduce the risk
      of malicious exploitation. No unpatched finding is published here.
-
-  3. RecastRuntime is a separate, commercially licensed extension. It consumes
-     the plugin interfaces published in this repository and grants no rights
-     over them; those interfaces remain Apache-2.0 for everyone.

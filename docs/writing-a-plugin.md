@@ -1,7 +1,7 @@
 # Writing a plugin
 
-Everything the engine can do arrives this way, including everything RecastRuntime
-adds. There is no privileged path.
+Everything the engine can do arrives this way, in-tree parts included. There is
+no privileged path.
 
 ## 1. Pick a kind
 
@@ -52,7 +52,7 @@ is equivalent.
 ## 4. Prove it
 
 `conformance/` holds the suite every plugin kind must satisfy. Run it before
-publishing; RecastRuntime is gated on it.
+publishing.
 
 ## Naming
 
