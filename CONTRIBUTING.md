@@ -10,7 +10,7 @@ Things that belong elsewhere:
 | You want to | Go to |
 |---|---|
 | Fix a translated CESM kernel | the Product Layer repository that owns it |
-| Add CESM-specific rules or catalogs | `recast-cesm`, in CESM-modernization-overview |
+| Add CESM-specific rules or catalogs | [`recast-cesm`](https://github.com/a85tract/recast-cesm) — the CESM extension |
 | Add a benchmark or validation case | [CC-Test](https://github.com/a85tract/CESM-CC-Test) |
 | Report a vulnerability | [`SECURITY.md`](SECURITY.md) — never a public issue |
 

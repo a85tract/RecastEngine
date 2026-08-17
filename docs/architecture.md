@@ -92,12 +92,99 @@ Registration is `importlib.metadata` entry points, one group per kind
 (`recast.transforms`, `recast.oracles`, …). Discovery is failure-isolated: a
 broken third-party plugin becomes unavailable, it does not break `recast --help`.
 
+## Two placements of the LLM
+
+A `Transform` may be rule-driven or it may consult an LLM, and the engine treats
+these as two placements of the same slot rather than two kinds. The `Transform`
+carries a `deterministic` flag; an agentic Transform sets it `False` and reaches
+the model through the `AgentProvider` boundary, so which model answers is a
+swappable plugin, not a hardcoded dependency.
+
+The two placements answer different questions, and a recipe picks per stage:
+
+| | rule Transform (`deterministic = True`) | agentic Transform (`deterministic = False`) |
+|---|---|---|
+| the LLM is | out of the per-unit path — it improves the rules out of band | in `apply`, translating the units the rules refuse |
+| per-unit output | reproducible bit for bit | varies across runs |
+| pays off when | a construct recurs across a large corpus, so one rule amortizes | units are few or novel and no rule exists yet to amortize |
+
+They compose through `deferred`. A rule Transform handles the bulk and lists what
+it could not do; an agentic Transform consumes that list and attempts it; both
+emit a `Candidate` into the **same** gate, which judges them without knowing
+which produced what.
+
+**The agentic placement makes the wall higher, not lower.** A Transform never
+judges its own output; with an LLM in the loop this is doubly load-bearing,
+because a model that both writes and grades will pass its own hallucination. Two
+disciplines follow, and `conformance/` enforces both:
+
+- **Reproducibility is by provenance, not by digest.** An LLM does not reproduce
+  its bytes even at temperature zero across provider versions. A
+  `deterministic = False` Transform records the model, prompt digest, sampling
+  parameters, and the sites it filled in `Candidate.notes`, so its Evidence
+  replays to a *valid* artifact rather than to the same bytes. The plan stays
+  reproducible — the stage list does not change — only the artifact does.
+- **An agentic Transform is only safe under a hard gate.** It emits plausible
+  output for exactly the cases the rules refuse, and a plausible wrong answer is
+  invisible to every counting metric — only execution against the Oracle catches
+  it. A recipe with a `deterministic = False` Transform must gate on a Verifier
+  that awards `BIT_EXACT` or an explicit tolerance.
+
+The agentic Transform's remit is the novel *local* construct — the language-level
+gap a rule has not yet closed. It does not extend to runtime-mechanism design
+(what `pbuf` means in the target), which cannot be inferred from a local
+translation failure and stays a human `L5`-style decision. That boundary is the
+same one the "Rule packs as data" open question circles below.
+
+## Engine, extension, product
+
+RecastEngine produces nothing on its own, and that is deliberate. A product is
+what comes out when the engine is combined with the knowledge a particular
+effort needs and the source it is modernizing:
+
+```
+  RecastEngine        the spine: model, contract, registry, recipes
++ recast-fortran      language knowledge -- the reference frontend, in-tree
++ recast-cesm         domain knowledge -- CESM rules, catalogs, golden sets
++ a PBS executor      site knowledge -- private, never public
++ refactor + config   which recipe, which reference commit, how many ranks
++ CAM's source        the thing being modernized
+--------------------------------------------------------------------------
+= freeCAM             a product
+```
+
+The last two lines are what make this a production rather than a composition.
+The engine and its extensions are machinery; the legacy source is input;
+freeCAM, PyCAM5, and CESM-jax-kernels are outputs. Point the same machinery at
+different source and it produces a different product — which is the only reason
+the abstraction is worth what it costs.
+
+**Extensions have no visibility requirement.** Entry points do not know whether
+the package declaring them is public. A private `recast-cesm`, a private site
+executor, and a public engine install and compose identically. That is what lets
+an effort keep its filesystem paths, its allocation account, and its embargoed
+findings out of the public engine without giving up any capability.
+
+**In-tree and out-of-tree extensions are both extensions.** The difference is
+where the code ships, not what it is permitted to do:
+
+| Extension | Ships | Why there |
+|---|---|---|
+| `recast-fortran` | in-tree, under `recast.` | the reference frontend; the engine has to be useful with nothing else installed |
+| `recast-cesm` | its own repository | P4's check is that the engine passes with it *uninstalled*, which only means something if it is a separable distribution |
+| site and scale plugins | wherever their owner keeps them | schedulers, cross-cluster routing, restricted finding stores |
+
+`recast-fortran` shipping in-tree is a packaging decision, not permission to
+bypass the contract. It registers through the same entry points as everything
+else, so swapping in a different frontend takes no engine change.
+
 ## Where the boundaries fall
 
 **Domain.** Nothing in `recast.*` imports numpy, sympy, numba, jax, anthropic,
 or netCDF4. `tests/test_contract.py::test_core_imports_no_domain_packages`
-enforces it by walking the package. Domain knowledge lives in `recast-cesm`;
-language knowledge lives in `recast-fortran`.
+enforces it by walking the package. Domain knowledge lives out of tree in
+`recast-cesm`; language knowledge lives in `recast-fortran`, which ships in-tree
+as the reference frontend.
 
 **In-tree vs plugin.** The engine ships what one person needs on one machine:
 the full frontend/rule/verification stack, the NumPy/Numba/JAX/CUDA backends,

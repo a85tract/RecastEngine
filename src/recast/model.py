@@ -141,7 +141,15 @@ class Candidate:
     notes: dict[str, Any] = field(default_factory=dict)
 
     def digest(self) -> str:
-        """Content hash. Identical inputs must yield an identical digest."""
+        """Content hash of this candidate's artifact (files + ordered patches).
+
+        For a ``deterministic`` Transform, identical inputs yield an identical
+        digest, and conformance checks it. A ``deterministic = False`` Transform
+        varies its artifact across runs, so its digest identifies *this*
+        candidate rather than being reproducible from inputs -- its
+        reproducibility lives in the provenance recorded in ``notes`` (see
+        ``plugins/transform.py``).
+        """
         h = hashlib.sha256()
         h.update(self.unit.encode())
         h.update(self.transform.encode())
