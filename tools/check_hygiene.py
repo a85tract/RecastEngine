@@ -29,7 +29,7 @@ from pathlib import Path
 RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("site-path", re.compile(r"/glade/\S*"), "NCAR filesystem path"),  # hygiene: allow
     ("allocation", re.compile(r"\bUCUB\d{4}\b"), "NCAR allocation account"),
-    ("scheduler-host", re.compile(r"@desched\d"), "Derecho scheduler hostname"),
+    ("scheduler-host", re.compile(r"@desched\d"), "site scheduler hostname"),
     ("home-path", re.compile(r"/glade/u/home/\w+"), "user home"),  # hygiene: allow
     ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
     ("private-key", re.compile(r"-----BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY"), "private key"),
