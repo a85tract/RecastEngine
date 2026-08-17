@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.model import Facts, OracleRef, Unit
+from recast.plugins.executor import Executor
 
 
 class Oracle(ABC):
@@ -38,9 +39,21 @@ class Oracle(ABC):
 
     @abstractmethod
     def materialize(
-        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+        self,
+        unit: Unit,
+        facts: Facts,
+        workspace: Path,
+        executor: Executor,
+        config: dict[str, Any],
     ) -> OracleRef:
-        """Build or fetch the reference. May be expensive; will be cached."""
+        """Build or fetch the reference. May be expensive; will be cached.
+
+        Compilation and reference runs go through ``executor`` rather than
+        ``subprocess``. A ``pinned-run`` oracle asks for its 512 ranks by
+        submitting a ``Job``; whether that lands on a laptop, a PBS queue, or
+        another cluster is the operator's choice, and an executor that cannot
+        honour the request refuses instead of quietly shrinking it.
+        """
 
     def release(self, ref: OracleRef) -> None:
         """Optional teardown for oracles holding processes or scratch space."""

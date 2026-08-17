@@ -13,7 +13,7 @@ harness lands in P2 alongside the first real plugins.
 | `Frontend` | `discover` is deterministic and side-effect free; re-running on unchanged source yields identical `Unit` sets; `preprocess` records its flags in `Facts.provenance` |
 | `Transform` | `applicable` never raises; unhandled sites land in `deferred`, not exceptions; a `deterministic` Transform yields an identical `Candidate.digest()` for identical inputs, while a `deterministic = False` one instead records model, prompt digest, and sampling parameters in `Candidate.notes` so its Evidence replays to a valid artifact |
 | `Oracle` | `key` changes when compiler, flags, source, or rank count change; two materializations under one key are behaviourally identical; `release` is idempotent |
-| `Verifier` | a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; `metrics` is populated on both outcomes |
+| `Verifier` | a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; an executor that refuses the requested scale produces `FAILED`, not a retry at a smaller one; `metrics` is populated on both outcomes |
 | `Scanner` | findings default to `EMBARGOED`/`PLAUSIBLE`; a scan of a clean tree yields nothing; a scan of the seeded fixture yields the seeded defect |
 | `Adjudicator` | can return `REFUTED` — the suite feeds it a known false positive and requires it to be killed |
 | `Executor` | refuses resources it cannot honestly satisfy; `wait` is idempotent; `cancel` on an unknown handle is a no-op, not a crash |
@@ -35,6 +35,13 @@ harness lands in P2 alongside the first real plugins.
   separates a correct translation from a plausible-but-wrong one.
 - **Plans are reproducible.** Same config → same stage list, or evidence cannot
   be replayed.
+- **Execution goes through the Executor.** No `Oracle` or `Verifier` may call
+  `subprocess`, `os.system`, or a scheduler client directly. The suite passes a
+  refusing executor and requires the plugin to surface that as `FAILED` rather
+  than route around it.
+- **A failed gate does not drive a retry.** No `Verdict` reaches a `Transform`,
+  and no stage re-runs because a later one failed. The suite runs a recipe whose
+  gate always fails and requires exactly one `Transform.apply` call per Unit.
 
 ## Running it against your plugins
 

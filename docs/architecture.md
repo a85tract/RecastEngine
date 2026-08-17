@@ -92,6 +92,49 @@ Registration is `importlib.metadata` entry points, one group per kind
 (`recast.transforms`, `recast.oracles`, …). Discovery is failure-isolated: a
 broken third-party plugin becomes unavailable, it does not break `recast --help`.
 
+### Execution is passed in, not reached for
+
+`Oracle.materialize` and `Verifier.verify` take an `Executor` as an argument.
+Nothing that leaves the process may use `subprocess` directly.
+
+This is what keeps the two halves separable. A differential verifier's logic —
+build both sides, feed them the same inputs, diff the results — is identical on
+a laptop and on 512 ranks of Derecho; only where the work lands differs. Inline
+the submission and that verifier grows a queue name, an allocation account, and
+a `/glade` path, which is to say it can no longer be public. The seam is why
+`tools/check_hygiene.py` can be a hard gate on this repository while the real
+scheduler plugins live outside it.
+
+Taking it as a parameter rather than pulling it from the registry also puts
+"this plugin executes things" in the signature, and lets a test substitute a
+recording or refusing executor without the plugin's cooperation.
+
+### A gate stops the Unit; it does not drive a retry
+
+`Stage.gate` means the Unit stops. A `Verdict` never flows back into a
+`Transform`, and no stage re-runs because a later one failed.
+
+Retrying would be a no-op where it is safe and unsafe where it would do
+something. A `deterministic` Transform reproduces its bytes, so a second attempt
+yields the same `Candidate.digest()` — nothing to gain. An agentic Transform
+does vary, and that is exactly the case where a loop is dangerous: handing the
+gate's own numbers back to the thing being gated turns the Oracle into a fitness
+function, and "iterate until the diff is zero on these 512 points" is how a
+Candidate gets overfitted to the sample that was supposed to judge it. The wall
+between Transform and Verifier is load-bearing precisely because the Transform
+cannot see through it.
+
+Two further costs, if the temptation ever returns. `refactor` gates on a
+512-rank pinned run, so a loop around that gate is priced in node-hours. And
+`Evidence` records no attempt count, so a bit-exact claim reached on attempt 47
+would be indistinguishable from one reached on attempt 1 — a multiple-comparisons
+problem the manifest has no way to disclose.
+
+Iteration belongs in three places instead, all of them outside the gate:
+`Candidate.deferred` handed from a rule Transform to an agentic one, a
+Transform's own loop against cheap checks before it emits, and improving the
+rules out of band, where one fix amortizes across the corpus.
+
 ## Two placements of the LLM
 
 A `Transform` may be rule-driven or it may consult an LLM, and the engine treats
@@ -200,6 +243,13 @@ repository.
 
 ## Open questions
 
+- **Whether a Scanner takes an Executor too.** `Oracle` and `Verifier` now do;
+  `Scanner.scan` does not, deliberately and for now. A `needs_build` scanner
+  runs sanitizer builds and fuzz harnesses — `audit` declares a `dynamic.asan`
+  stage — so it has the same claim on the seam, and leaving it out is the one
+  place a plugin can still reach for `subprocess` without contradicting the
+  contract. Deferred rather than settled, because the first real scanner should
+  say what it actually needs.
 - **Sampler as an ABC.** Input generation currently lives inside verifiers
   (Hypothesis strategies, dump selection). If dump-driven and property-driven
   sampling need to compose, it becomes an eleventh kind.

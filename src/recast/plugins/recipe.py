@@ -41,7 +41,16 @@ class Stage:
     """
 
     gate: bool = False
-    """If True, a failing Verdict stops this Unit from proceeding."""
+    """If True, a failing Verdict stops this Unit from proceeding.
+
+    Stops it -- there is no retry. A Verdict never flows back into a Transform,
+    and no stage re-runs because a later one failed. For a ``deterministic``
+    Transform a re-run is a no-op by construction; for an agentic one, feeding
+    the gate's own numbers back to the thing being gated turns the Oracle into a
+    fitness function and overfits the Candidate to the cases the gate happens to
+    sample. Iteration belongs in ``Candidate.deferred``, in a later stage, or
+    out of band in the rules -- never in a loop around the gate.
+    """
 
 
 class Recipe(ABC):
