@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.model import Candidate, Confidence, OracleRef, Unit, Verdict
+from recast.plugins.executor import Executor
 
 
 class Verifier(ABC):
@@ -35,6 +36,7 @@ class Verifier(ABC):
         candidate: Candidate,
         oracle: OracleRef,
         workspace: Path,
+        executor: Executor,
         config: dict[str, Any],
     ) -> Verdict:
         """Run the comparison.
@@ -42,6 +44,16 @@ class Verifier(ABC):
         Populate ``Verdict.metrics`` with the numbers, not just the conclusion.
         ``{"max_ulp": 0, "bit_exact": 512, "total_points": 512}`` is reviewable;
         ``{"ok": true}`` is not.
+
+        Builds, model runs, and anything else that leaves this process go
+        through ``executor``. Taking it as an argument rather than reaching for
+        ``subprocess`` is what keeps the comparison logic identical on a laptop
+        and on a batch system, and what lets a test substitute a recording
+        executor without the verifier knowing.
+
+        A refusal from the executor -- it cannot honestly supply the requested
+        scale -- is a ``FAILED`` Verdict, on the same fail-closed rule as a
+        build failure. It is never grounds for retrying at a smaller scale.
         """
 
 
@@ -57,8 +69,18 @@ class StaticVerifier(Verifier):
 
     @abstractmethod
     def check(
-        self, unit: Unit, candidate: Candidate, workspace: Path, config: dict[str, Any]
-    ) -> Verdict: ...
+        self,
+        unit: Unit,
+        candidate: Candidate,
+        workspace: Path,
+        executor: Executor,
+        config: dict[str, Any],
+    ) -> Verdict:
+        """Judge the candidate without an oracle.
+
+        Still takes an executor: a lint or CPG audit shells out even though it
+        has nothing to compare against.
+        """
 
     def verify(
         self,
@@ -66,6 +88,7 @@ class StaticVerifier(Verifier):
         candidate: Candidate,
         oracle: OracleRef,
         workspace: Path,
+        executor: Executor,
         config: dict[str, Any],
     ) -> Verdict:
-        return self.check(unit, candidate, workspace, config)
+        return self.check(unit, candidate, workspace, executor, config)
