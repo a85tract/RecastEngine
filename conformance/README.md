@@ -11,7 +11,7 @@ harness lands in P2 alongside the first real plugins.
 | Kind | Must hold |
 |---|---|
 | `Frontend` | `discover` is deterministic and side-effect free; re-running on unchanged source yields identical `Unit` sets; `preprocess` records its flags in `Facts.provenance` |
-| `Transform` | `applicable` never raises; unhandled sites land in `deferred`, not exceptions; identical inputs yield an identical `Candidate.digest()` |
+| `Transform` | `applicable` never raises; unhandled sites land in `deferred`, not exceptions; a `deterministic` Transform yields an identical `Candidate.digest()` for identical inputs, while a `deterministic = False` one instead records model, prompt digest, and sampling parameters in `Candidate.notes` so its Evidence replays to a valid artifact |
 | `Oracle` | `key` changes when compiler, flags, source, or rank count change; two materializations under one key are behaviourally identical; `release` is idempotent |
 | `Verifier` | a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; `metrics` is populated on both outcomes |
 | `Scanner` | findings default to `EMBARGOED`/`PLAUSIBLE`; a scan of a clean tree yields nothing; a scan of the seeded fixture yields the seeded defect |
@@ -28,6 +28,11 @@ harness lands in P2 alongside the first real plugins.
 - **Every recipe has a gate.** A recipe with no gating stage cannot produce
   trustworthy evidence.
 - **No stage is both `gate` and `optional`.** An optional gate is not a gate.
+- **An agentic Transform needs a hard gate.** A recipe containing a
+  `deterministic = False` Transform must have a gating Verifier that awards
+  `BIT_EXACT` or an explicit tolerance. An LLM-backed Transform emits plausible
+  output for the cases the rules refuse, so only execution against the Oracle
+  separates a correct translation from a plausible-but-wrong one.
 - **Plans are reproducible.** Same config → same stage list, or evidence cannot
   be replayed.
 

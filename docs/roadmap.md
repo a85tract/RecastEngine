@@ -7,7 +7,7 @@ Phases, not dates. Each one has a check that says whether it is done.
 | Decision | Options | Status |
 |---|---|---|
 | Contributor agreement | DCO (lightweight) vs CLA (allows relicensing later) | open |
-| PyPI name | `recast-engine` reserved? `recast` is taken | open |
+| PyPI name | `recast-engine` — `recast` is taken by an unrelated 2021 package | **decided**, not yet uploaded |
 | What never goes public | Sec-Track content, PBS D41 research, `cpg_audit/` entries | open |
 
 ## P1 — scaffold (this commit)
@@ -52,9 +52,14 @@ read-only. Nothing is copied in to make the repository look fuller.
 
 ## P4 — empty out the domain
 
-Build `recast-cesm` in CESM-modernization-overview and move every CESM-specific
-rule, catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto
-the `refactor` and `port` recipes.
+Build `recast-cesm` as its own repository and move every CESM-specific rule,
+catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto the
+`refactor` and `port` recipes.
+
+A separate repository rather than a directory in CESM-modernization-overview,
+because this phase's check is that the engine passes with `recast-cesm`
+*uninstalled* — which is only a real check if it is a separately installable
+distribution.
 
 **Done when:** the engine passes its tests with `recast-cesm` uninstalled, and
 freeCAM's validation gate runs through `Verifier` rather than its own

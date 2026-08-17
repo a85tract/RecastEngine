@@ -10,6 +10,15 @@ of SciRecast's current workloads are Transforms over the same spine:
 
 A Transform must never decide whether its own output is correct. That is the
 Verifier's job, and keeping the two apart is what makes the gate meaningful.
+
+A Transform may be rule-driven (``deterministic = True``) or consult an
+``AgentProvider`` (``deterministic = False``). Both produce only a ``Candidate``,
+never a ``Verdict`` -- an LLM's confidence in its own output is worth nothing at
+the gate. The two are placements of the same slot, and a recipe may run them in
+series: a rule Transform handles the bulk and defers the rest, an agentic
+Transform consumes that ``deferred`` list, and both feed the same blind gate.
+See ``docs/architecture.md`` for why the agentic placement makes the wall
+between Transform and Verifier more load-bearing, not less.
 """
 
 from __future__ import annotations
@@ -34,10 +43,21 @@ class Transform(ABC):
     """
 
     deterministic: bool = True
-    """False if this Transform consults an ``AgentProvider``.
+    """True for a rule-driven Transform; False if ``apply`` consults an
+    ``AgentProvider``.
 
-    Non-deterministic transforms must still be reproducible: record the model,
-    prompt digest, and sampling parameters in ``Candidate.notes``.
+    A ``False`` Transform cannot satisfy ``Candidate.digest()`` equality across
+    runs -- an LLM does not reproduce its bytes, even at temperature zero across
+    provider versions. Its reproducibility contract is therefore by *provenance*,
+    not by digest: it records the model, prompt digest, sampling parameters, and
+    which sites it filled in ``Candidate.notes``, so its Evidence replays to a
+    *valid* artifact rather than to the same bytes. The plan stays reproducible
+    -- the stage list does not change -- only the artifact does.
+
+    An agentic Transform is only safe under a gating Verifier that awards
+    ``BIT_EXACT`` or an explicit tolerance: it emits plausible output for the
+    cases the rules refuse, and only execution against the Oracle catches a
+    plausible wrong answer. ``conformance/`` makes this a rule.
     """
 
     @abstractmethod
