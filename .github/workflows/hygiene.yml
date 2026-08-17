@@ -44,12 +44,29 @@ jobs:
         run: gitleaks detect --redact --no-banner --exit-code 1
 
   # Findings from the engine's own cyber gate route to Sec-Track, never here.
-  # This job only proves the scanners run; it must not print finding detail.
+  # This job only proves the SBOM scanner runs; it must not print finding detail.
   sbom:
     runs-on: ubuntu-latest
+    env:
+      # anchore/sbom-action wraps syft, but it is fetched from GitHub's action
+      # download endpoint, which rate-limits (429/503) and fails the gate on
+      # GitHub's infrastructure rather than on anything in this repository. syft
+      # is Apache-2.0, so run the binary directly -- the same move already made
+      # for gitleaks above.
+      SYFT_VERSION: "1.51.0"
     steps:
       - uses: actions/checkout@v5
-      - uses: anchore/sbom-action@v0
+      - name: Install syft
+        run: |
+          curl -sSfL \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin syft
+          syft version
+      - name: Generate CycloneDX SBOM
+        run: |
+          syft scan dir:. -o cyclonedx-json=recast-engine.cdx.json
+          python3 -c "import json; d=json.load(open('recast-engine.cdx.json')); print(len(d.get('components', [])), 'components')"
+      - uses: actions/upload-artifact@v4
         with:
-          format: cyclonedx-json
-          artifact-name: recast-engine.cdx.json
+          name: recast-engine.cdx.json
+          path: recast-engine.cdx.json
