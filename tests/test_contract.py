@@ -84,6 +84,41 @@ def test_no_stage_is_both_gate_and_optional() -> None:
             assert not (stage.gate and stage.optional), f"{name}: {stage.plugin}"
 
 
+def test_recipe_declares_an_executor_when_it_needs_one() -> None:
+    """Oracles and Verifiers are handed an executor, so the recipe must name one.
+
+    ``audit`` is exempt: it has neither, and a Scanner does not take an executor
+    yet -- see the open question in ``docs/architecture.md``.
+    """
+    config = {"reference_commit": "x", "dumps": ["x"], "executor": "batch-stub"}
+    for name, cls in BUILTIN.items():
+        stages = cls().stages(config)
+        kinds = {s.kind for s in stages}
+        if not kinds & {"oracle", "verifier"}:
+            continue
+        executors = [s for s in stages if s.kind == "executor"]
+        assert len(executors) == 1, f"recipe {name!r} declares {len(executors)} executors"
+        # Ambient, not a step: it has to be resolved before anything runs.
+        assert stages[0].kind == "executor", f"recipe {name!r} does not declare it first"
+
+
+def test_recipe_executor_is_not_hardcoded() -> None:
+    """A site's executor name must never be baked into a shipped recipe."""
+    config = {"reference_commit": "x", "dumps": ["x"], "executor": "pbs-site"}
+    for name, cls in BUILTIN.items():
+        for stage in cls().stages(config):
+            if stage.kind == "executor":
+                assert stage.plugin == "pbs-site", f"recipe {name!r} ignores configured executor"
+
+
+def test_refactor_rejects_the_default_executor() -> None:
+    """Its gate is a batch oracle; ``local`` cannot finish the run at all."""
+    refactor = BUILTIN["refactor"]()
+    problems = refactor.validate({"reference_commit": "x"})
+    assert any("batch executor" in p for p in problems)
+    assert refactor.validate({"reference_commit": "x", "executor": "pbs-stub"}) == []
+
+
 def test_recipe_stage_kinds_are_known() -> None:
     for name, cls in BUILTIN.items():
         for stage in cls().stages({"reference_commit": "x", "dumps": ["x"]}):
