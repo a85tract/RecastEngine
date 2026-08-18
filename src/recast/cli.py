@@ -92,6 +92,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     config = {}
     if args.config:
         path = Path(args.config)
+        if not path.is_file():
+            raise RecastError(
+                f"config file {path} does not exist"
+                + ("" if path.is_absolute() else f" (relative to {Path.cwd()})")
+            )
         if path.suffix == ".toml":
             import tomllib
 
@@ -101,7 +106,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.unit:
         config["units"] = list(args.unit)
 
-    run = run_recipe(cls(), Path(args.root), config)
+    root = Path(args.root)
+    if not root.is_dir():
+        raise RecastError(
+            f"source tree {root} does not exist"
+            + ("" if root.is_absolute() else f" (relative to {Path.cwd()})")
+        )
+    run = run_recipe(cls(), root, config)
     for unit_run in run.units:
         print(f"{unit_run.unit.uid}")
         for outcome in unit_run.outcomes:
