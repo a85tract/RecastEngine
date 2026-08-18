@@ -114,12 +114,19 @@ emitter is not involved.
    against the pipeline over the six schemes with full operator tables and
    the twenty-one batch-swept modules: 276 subprograms, 2,793 blocks, 18,520
    emitted lines, byte-identical with refusal prose normalized and refusal
-   placement compared strictly. `tools/emit_diff.py` keeps that check
-   standing, the emission analog of `golden_diff.py`; it discovers the swept
-   modules from the translator's `extracted_auto/` at run time, so a new
-   sweep widens the check by itself. Still to move: module-level rendering
-   -- the header, the type factories, module state -- and the `main()`
-   driver, which becomes `Transform.apply`.
+   placement compared strictly. Module-level rendering is done:
+   `recast.transform.numpy.modules`, everything in a generated file that is
+   not inside a `def` -- derived-type factories, module state with its
+   save-initializers, the embedded signature table, and the runtime pasted
+   in whole so the file stands alone. The module *body* is held
+   byte-identical to a patch-free run of the pipeline's `main()`; the header
+   is deliberately the engine's own, because the runtime here is real, typed,
+   tested code rather than the pipeline's string constant, and its emitted
+   text follows the code. `tools/emit_diff.py` keeps all of it standing, the
+   emission analog of `golden_diff.py`; it discovers the swept modules from
+   the translator's `extracted_auto/` at run time, so a new sweep widens the
+   check by itself. All that remains of the split is wiring: the CLI
+   plumbing of `main()` becomes `Transform.apply` on the plugin contract.
 
 ## Where this repository disagrees with the pipeline: it does not
 

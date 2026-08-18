@@ -21,6 +21,15 @@ blocks must defer, with the same spans and line counts); refusal *prose* is
 normalized away, because the two sides word their reasons differently and a
 reason string is a diagnostic, not a number.
 
+Above the subprograms, the whole module body -- type factories, module state
+initialization, every subprogram in order -- and the embedded signature
+table are compared against a real run of the pipeline's ``main()`` (as a
+subprocess, patch-free, over the same live-extracted analysis), along with
+the final block report at header-relative line numbers. The *headers* are
+not compared: the engine's runtime is real, typed, tested code and its
+emitted text deliberately differs from the pipeline's string constant --
+see ``recast.transform.numpy.modules`` for that decision.
+
 The corpus is the six schemes with full operator tables plus every module the
 translator's batch sweep produced, discovered from ``extracted_auto/`` at run
 time so a new sweep widens this check without anyone editing it. One skip: a
@@ -40,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -51,6 +61,7 @@ from recast.fortran import constants as fconstants
 from recast.fortran import interface as finterface
 from recast.fortran._parse import f03, parse, walk
 from recast.transform.numpy.expressions import Remote
+from recast.transform.numpy.modules import Modules
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.profiles import PROFILES
@@ -158,6 +169,70 @@ def companion_tables(
     return fixed, records, remotes, globals_
 
 
+def pipeline_module(
+    root: Path,
+    scratch: Path,
+    name: str,
+    source: Path,
+    interface: dict[str, Any],
+    literal_map: dict[str, Any],
+    use_p: str | None,
+    ext_p: str | None,
+    fixed: list[dict[str, Any]],
+) -> tuple[str, str, int, list[dict[str, Any]]]:
+    """Run the pipeline's main() patch-free; -> (body, sigs line, header
+    height, final report). The body is everything after the _SIGNATURES
+    paragraph; the height re-bases py_lines so the two headers can differ."""
+    (scratch / f"{name}_interface.json").write_text(json.dumps(interface))
+    (scratch / f"{name}_literal_map.json").write_text(json.dumps(literal_map))
+    out = scratch / f"{name}_numpy.py"
+    report = scratch / f"{name}_report.json"
+    command = [
+        sys.executable,
+        str(root / "pipeline" / "translate.py"),
+        str(source),
+        "--interface",
+        str(scratch / f"{name}_interface.json"),
+        "--literal-map",
+        str(scratch / f"{name}_literal_map.json"),
+        "-o",
+        str(out),
+        "--report",
+        str(report),
+        "--profile",
+        "ifx",
+    ]
+    if use_p:
+        command += ["--use-params", str(root / use_p)]
+    if ext_p:
+        command += ["--externals", str(root / ext_p)]
+    if fixed:
+        config = scratch / f"{name}_companions.json"
+        config.write_text(json.dumps(fixed))
+        command += ["--companions", str(config)]
+    finished = subprocess.run(  # noqa: S603 -- our own interpreter, our own script
+        command, cwd=scratch, capture_output=True, text=True, check=False
+    )
+    if finished.returncode != 0:
+        raise RuntimeError(f"pipeline main() failed: {finished.stderr.strip()[-500:]}")
+    text = out.read_text()
+    sig_start = text.index("_SIGNATURES = ")
+    sig_end = text.index("\n", sig_start)
+    body = text[sig_end + 2 :]
+    height = text[: sig_end + 2].count("\n")
+    return body, text[sig_start:sig_end], height, json.loads(report.read_text())
+
+
+def rebased(report: list[dict[str, Any]], height: int) -> list[dict[str, Any]]:
+    """Report entries with reasons dropped and py_lines made header-relative."""
+    normal = []
+    for entry in report:
+        kept = {k: v for k, v in entry.items() if k != "reason"}
+        kept["py_lines"] = [n - height for n in entry["py_lines"]]
+        normal.append(kept)
+    return normal
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
@@ -182,7 +257,7 @@ def main() -> int:
 
     scratch = ns.scratch or Path(tempfile.mkdtemp(prefix="emit_diff_"))
     scratch.mkdir(parents=True, exist_ok=True)
-    kinds = ["subprograms", "lines", "blocks", "deferred", "different"]
+    kinds = ["subprograms", "lines", "blocks", "deferred", "modules", "different"]
     totals = dict.fromkeys([*kinds, "skipped", "error"], 0)
 
     modules = list(MODULES)
@@ -304,6 +379,54 @@ def main() -> int:
                     print(f"  pipeline only |{a}")
                 for b in got[len(want) :]:
                     print(f"  engine only   |{b}")
+        if not duplicated:
+            renderer = Modules(
+                subprograms=assembler,
+                companion_imports=tuple(f"import {c['module_py']} as {c['alias']}" for c in fixed),
+            )
+            try:
+                want_body, want_sigs, want_height, want_report = pipeline_module(
+                    root,
+                    scratch,
+                    name,
+                    source,
+                    interface,
+                    constants["literal_map"],
+                    use_p,
+                    ext_p,
+                    fixed,
+                )
+                got_text, got_report = renderer.render(source)
+                compile(got_text, f"{name}_numpy.py", "exec")
+                got_body = "\n".join(renderer.body(nodes)[0])
+                got_sigs = f"_SIGNATURES = {renderer._signatures()!r}"
+                got_height = renderer.header().count("\n")
+            except Exception as error:
+                print(f"MODULE ERROR {name}: {type(error).__name__}: {error}")
+                counts["error"] += 1
+            else:
+                same_body = [normalized(l_) for l_ in want_body.splitlines()] == [
+                    normalized(l_) for l_ in got_body.splitlines()
+                ]
+                same_report = rebased(want_report, want_height) == rebased(got_report, got_height)
+                if same_body and want_sigs == got_sigs and same_report:
+                    counts["modules"] += 1
+                else:
+                    counts["different"] += 1
+                    print(
+                        f"MODULE DIFFERENT {name}"
+                        + ("" if same_body else " (body)")
+                        + ("" if want_sigs == got_sigs else " (signatures)")
+                        + ("" if same_report else " (report)")
+                    )
+                    if ns.verbose and not same_body:
+                        for a, b in zip(
+                            want_body.splitlines(), got_body.splitlines(), strict=False
+                        ):
+                            if normalized(a) != normalized(b):
+                                print(f"  pipeline |{a}")
+                                print(f"  engine   |{b}")
+                                break
         print(f"{name:<10} " + "  ".join(f"{k}={v}" for k, v in counts.items() if v))
         for key, value in counts.items():
             totals[key] += value
