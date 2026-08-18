@@ -26,7 +26,7 @@ from fparser.two import Fortran2003 as f03  # noqa: N813
 from fparser.two.parser import ParserFactory
 from fparser.two.utils import walk
 
-__all__ = ["STD", "digest", "f03", "parse", "walk"]
+__all__ = ["STD", "digest", "f03", "parse", "parser", "walk"]
 
 STD = "f2008"
 """Fortran standard the parser is built for. Recorded in ``Facts.provenance``."""
@@ -40,6 +40,21 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def parser(std: str = STD) -> Any:
+    """The parser for a standard, created once.
+
+    Creating one has a side effect beyond returning it: fparser sets up the
+    match patterns its ``Fortran2003`` classes need, so constructing a node
+    from source text fails until this has run at least once. Anything building
+    nodes directly -- a rule under test, a fixture -- has to call it, which is
+    why it is not hidden inside ``parse``.
+    """
+    existing = _parsers.get(std)
+    if existing is None:
+        existing = _parsers[std] = ParserFactory().create(std=std)
+    return existing
+
+
 def parse(path: Path, *, std: str = STD) -> Any:
     """Parse a Fortran source file into an fparser2 AST.
 
@@ -50,8 +65,5 @@ def parse(path: Path, *, std: str = STD) -> Any:
     key = (digest(path), std)
     tree = _trees.get(key)
     if tree is None:
-        parser = _parsers.get(std)
-        if parser is None:
-            parser = _parsers[std] = ParserFactory().create(std=std)
-        tree = _trees[key] = parser(FortranFileReader(str(path)))
+        tree = _trees[key] = parser(std)(FortranFileReader(str(path)))
     return tree
