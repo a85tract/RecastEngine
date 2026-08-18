@@ -355,10 +355,16 @@ class Expressions:
             return f"{pysafe(name)}({', '.join(arguments)})"
 
         remote = self.remotes.get(name)
-        target = f"{remote.alias}.{remote.name}" if remote else pysafe(name)
         record = self.semantics.procedures.get(name)
         if record is None and remote is None:
-            return None
+            if name not in self.semantics.companion_generics:
+                return None
+            # A generic reached through a sibling translated module: the
+            # overload is picked here, from the companion's specifics.
+            name = self.semantics.dispatch(name, items)
+            remote = self.remotes[name]
+            record = self.semantics.procedures.get(name)
+        target = f"{remote.alias}.{remote.name}" if remote else pysafe(name)
         if record is not None and self._broadcasts(record, items):
             # An ELEMENTAL procedure called with an array actual has to be
             # mapped over it; its body was written at scalar rank.

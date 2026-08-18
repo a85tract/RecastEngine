@@ -98,8 +98,20 @@ emitter is not involved.
    No subscript in the corpus takes a refusing path, so the refusals have
    tests and nothing else.
 
-5. **The emitters**, which is most of the remaining volume and the part that
-   should move last, because by then it has somewhere to call into.
+5. **The emitters**, moving last because by then they have somewhere to call
+   into. Expression emission is done: `recast.transform.numpy.expressions`,
+   the layer where the four earlier slices meet, checked byte-identical
+   against the pipeline over the translated corpus. Statement emission is
+   done: `recast.transform.numpy.statements`, the floor above it --
+   assignment's copy-into-storage semantics, WHERE masks, do bounds shifting
+   by the sign of the step, the two goto shapes that structure cleanly, and
+   the call statement's intent rewriting. Checked statement by statement over
+   the six schemes with full operator tables: 998 top-level statements,
+   4,606 emitted lines, byte-identical, with five refusals mutual.
+   `tools/emit_diff.py` keeps that check standing, the emission analog of
+   `golden_diff.py`. Still to move: subprogram assembly -- signature,
+   prologue, module rendering -- and the `main()` driver, which becomes
+   `Transform.apply`.
 
 ## Where this repository disagrees with the pipeline: it does not
 
@@ -131,6 +143,14 @@ a translation to check the tidier answer against -- either the module was never
 translated, or the block went to the agent queue and was written by hand. They
 stay as they are, and the tests say so rather than pretending the behaviour is
 intended.
+
+The statement slice adds a fourth kind of finding: an intended refusal that
+never fires. The pipeline means to refuse a `case` value range, but its check
+looks at the selector's children, which hold a range *list* rather than a bare
+range -- so `case (1:2)` slips through and its endpoints emit as equality
+tests, right for that range by luck and wrong for any wider one. Reproduced,
+because no translated module contains a case range for the tidier answer to be
+checked against, and pinned by a test that says the behaviour is inherited.
 
 The duplications the split removes are a different matter, because collapsing
 two copies of one rule onto the copy that is already tested changes nothing:
