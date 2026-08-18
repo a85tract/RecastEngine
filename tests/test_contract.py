@@ -70,6 +70,9 @@ def test_core_imports_no_domain_packages() -> None:
         # mpmath are its instrument, imported lazily behind the [verify]
         # extra so a bare install still registers the plugin.
         "recast.verify.notary": {"sympy", "mpmath"},
+        # The differential gate generates and compares NumPy arrays -- that
+        # is the comparison, not a convenience. Lazy, same rule as above.
+        "recast.verify.bitexact": {"numpy"},
     }
     root = Path(recast.__file__).parent
     offenders = []
