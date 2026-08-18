@@ -84,7 +84,19 @@ emitter is not involved.
    `dim_lb` and `dim_expr` look like siblings of these and stayed behind: their
    answer is Python text, so they belong to whoever has a target language.
 
-4. **Index and slice rewriting into rules.**
+4. **Index and slice rewriting into rules.** Done: `recast.transform.rules`.
+   Less of it moved than the line count suggested. `dataref_expr`, `_bound_py`
+   and most of the sequence-association code build Python text and stayed with
+   the emitter; what came across is the part that decides -- which positions
+   are indices, ranges or gathers, what each shifts by, whether a literal may
+   be folded, and where a construct has no mechanical rewrite at all.
+
+   Rules produce plans that refer to source nodes without rendering them, so a
+   second zero-based backend renders once rather than re-deriving. Checked
+   against the original over 3,883 subscripts in five CAM modules: identical
+   shape and identical acceptance on every one, and 39 literal folds agreeing.
+   No subscript in the corpus takes a refusing path, so the refusals have
+   tests and nothing else.
 
 5. **The emitters**, which is most of the remaining volume and the part that
    should move last, because by then it has somewhere to call into.
