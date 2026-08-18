@@ -28,7 +28,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.11
-      - run: uv run --extra dev mypy
+      # The optional backends are installed here on purpose: type-checking
+      # recast.transform.numpy without NumPy present checks less, not more.
+      - run: uv run --extra dev --extra fortran --extra translate mypy
 
   test:
     runs-on: ubuntu-latest
