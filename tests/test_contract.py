@@ -56,7 +56,15 @@ def test_core_imports_no_domain_packages() -> None:
     # ``recast.fortran`` is the in-tree reference Frontend, so it is the one
     # place a source-language parser belongs. Exempting it by name is the point:
     # the day fparser appears anywhere else, this test says so.
-    exempt = {"recast.fortran": {"fparser"}}
+    exempt = {
+        "recast.fortran": {"fparser"},
+        # The reference translation backend. These are not incidental to it:
+        # NumPy is the target language's library and the code it emits imports
+        # it, and mpmath is how a constant-argument intrinsic is folded at the
+        # precision gfortran folds it at. Both belong to the emitted artifact,
+        # not to the engine.
+        "recast.transform.numpy": {"numpy", "mpmath"},
+    }
     root = Path(recast.__file__).parent
     offenders = []
     for mod in pkgutil.walk_packages([str(root)], prefix="recast."):
