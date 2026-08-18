@@ -28,6 +28,7 @@ dependencies = []
 
 [project.optional-dependencies]
 fortran = ["fparser>=0.2"]
+translate = ["numpy>=1.26"]
 verify = ["numpy>=1.26", "sympy>=1.12", "mpmath>=1.3"]
 numba = ["numba>=0.59"]
 jax = ["jax>=0.4.30"]
@@ -38,7 +39,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
-all = ["recast-engine[fortran,verify,numba,jax,agents]"]
+all = ["recast-engine[fortran,translate,verify,numba,jax,agents]"]
 
 [project.scripts]
 recast = "recast.cli:main"
@@ -110,4 +111,11 @@ warn_unreachable = true
 # (Unit, Facts) is where the types have to hold.
 [[tool.mypy.overrides]]
 module = ["fparser.*"]
+ignore_missing_imports = true
+
+# Optional accelerators the emitted runtime reaches for only if they are there:
+# mpmath for a higher-precision fold, scipy for erf/erfc. Both fall back to a
+# pure-Python path, so neither is a dependency of anything.
+[[tool.mypy.overrides]]
+module = ["mpmath.*", "scipy.*"]
 ignore_missing_imports = true

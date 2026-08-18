@@ -43,7 +43,7 @@ jobs:
       # The fortran extra is installed here on purpose: the reference frontend
       # is the one plugin that ships in-tree, so its tests must actually run
       # rather than skip for want of fparser.
-      - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran pytest --cov=recast
+      - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran --extra translate pytest --cov=recast
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.
