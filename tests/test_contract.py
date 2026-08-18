@@ -7,6 +7,8 @@ depend on any domain, and that an embargoed finding cannot reach a public store.
 from __future__ import annotations
 
 import pkgutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,39 @@ def test_core_imports_no_domain_packages() -> None:
             if top in forbidden and top not in allowed:
                 offenders.append(f"{mod.name}: {stripped}")
     assert not offenders, "core must not import domain packages:\n" + "\n".join(offenders)
+
+
+def test_every_entry_point_registers_on_a_bare_install() -> None:
+    """CI's bare job, run locally: with fparser, numpy and mpmath blocked,
+    every entry-point factory must still import and construct. The missing
+    extras surface on first use, named, with the install line -- never at
+    registration, where they would break ``recast doctor`` for everyone."""
+    code = """
+import sys
+
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in ("fparser", "numpy", "mpmath", "sympy"):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return None
+
+sys.meta_path.insert(0, Block())
+for cached in list(sys.modules):
+    if cached.split(".")[0] in ("fparser", "numpy", "mpmath", "sympy"):
+        del sys.modules[cached]
+
+from importlib.metadata import entry_points
+for group in ("recast.frontends", "recast.transforms", "recast.verifiers",
+              "recast.executors", "recast.stores", "recast.recipes"):
+    for ep in entry_points(group=group):
+        ep.load()
+print("ok")
+"""
+    finished = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert finished.returncode == 0, finished.stderr
+    assert finished.stdout.strip() == "ok"
 
 
 def test_every_builtin_recipe_declares_a_gate() -> None:

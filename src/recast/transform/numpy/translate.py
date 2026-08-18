@@ -23,24 +23,48 @@ one integrity rule enforced here is that the source on disk must still be
 the source the Facts describe -- Facts carry the digest of what was
 analyzed, and translating a file that changed since analysis would produce a
 Candidate whose provenance quietly lies.
+
+Like the frontend, this module imports none of its heavy dependencies at
+import time. fparser2 and NumPy arrive with the ``fortran`` and ``translate``
+extras; registering the plugin must not require them, so a bare install
+still gets a working ``recast doctor``, and the missing extras surface on
+the first ``apply``, named, with the install line.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from recast.errors import ConfigError
 from recast.model import Candidate, Facts, Unit
 from recast.plugins.transform import Transform
-from recast.transform.numpy.constants import constants_module, use_constants_module
-from recast.transform.numpy.expressions import Remote
-from recast.transform.numpy.modules import Modules
-from recast.transform.numpy.subprograms import Subprograms
-from recast.transform.numpy.vocabulary import pysafe
-from recast.transform.profiles import DEFAULT, PROFILES
+
+if TYPE_CHECKING:
+    from recast.transform.numpy.expressions import Remote
 
 __all__ = ["NumpyTranslation", "companion_tables", "factory"]
+
+BACKEND_PACKAGES = ("fparser", "numpy", "mpmath")
+"""What the emitter stack needs installed before it can be imported."""
+
+
+def _require_backend() -> None:
+    """Import the emitter stack's dependencies, or name the missing extras.
+
+    Any other ``ImportError`` is a real bug and is re-raised untouched --
+    being helpful about the optional dependencies must not swallow a typo in
+    this package's own imports.
+    """
+    try:
+        import recast.transform.numpy.modules  # noqa: F401
+    except ImportError as exc:
+        if (exc.name or "").split(".")[0] not in BACKEND_PACKAGES:
+            raise
+        raise ConfigError(
+            "the numpy translation backend needs fparser2 and numpy, which are "
+            "not installed. Install them with: pip install 'recast-engine[fortran,translate]'"
+        ) from exc
 
 
 def companion_tables(
@@ -55,6 +79,9 @@ def companion_tables(
     and the globals, the module renderer wants the import lines -- and
     deriving all four here keeps them from drifting apart.
     """
+    from recast.transform.numpy.expressions import Remote
+    from recast.transform.numpy.vocabulary import pysafe
+
     records: list[dict[str, Any]] = []
     remotes: dict[str, Remote] = {}
     globals_: dict[str, str] = {}
@@ -93,6 +120,12 @@ class NumpyTranslation(Transform):
         )
 
     def apply(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> Candidate:
+        _require_backend()
+        from recast.transform.numpy.constants import constants_module, use_constants_module
+        from recast.transform.numpy.modules import Modules
+        from recast.transform.numpy.subprograms import Subprograms
+        from recast.transform.profiles import DEFAULT, PROFILES
+
         source = self._verified_source(unit, facts, config)
         records, remotes, companion_globals, companion_imports = companion_tables(
             config.get("companions", [])
