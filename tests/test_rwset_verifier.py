@@ -235,13 +235,30 @@ def test_a_component_name_is_not_a_read(verify) -> None:
     assert writes == {"b"} and reads == {"n"}
 
 
-def test_a_keyword_renamed_variable_maps_back(verify) -> None:
-    """A Fortran variable called ``lambda`` is emitted as ``lambda_``."""
+def test_a_keyword_renamed_variable_maps_back_without_being_told(verify) -> None:
+    """``lambda`` is a Python keyword, so ``lambda_`` reads back as ``lambda``
+    whatever the backend is. No declaration needed for a fact about the
+    language itself."""
     import ast as pyast
 
-    code = "def f():\n    x = lambda_ + np_\n"
-    reads, _ = span_rwset(pyast.parse(code), 2, 2, Protocol())
-    assert reads == {"lambda", "np"}
+    reads, _ = span_rwset(pyast.parse("def f():\n    x = lambda_\n"), 2, 2, Protocol())
+    assert reads == {"lambda"}
+
+
+def test_a_module_alias_collision_has_to_be_declared(verify) -> None:
+    """``np`` is only reserved because *this* backend imports NumPy under that
+    name. A verifier that assumed it would misread a Fortran variable called
+    ``np_`` under any backend that does not."""
+    import ast as pyast
+
+    from recast.transform.numpy.vocabulary import RESERVED
+
+    code = "def f():\n    x = np_\n"
+    undeclared, _ = span_rwset(pyast.parse(code), 2, 2, Protocol())
+    assert undeclared == {"np_"}, "not renamed by anything this verifier knows"
+
+    declared, _ = span_rwset(pyast.parse(code), 2, 2, Protocol(reserved=RESERVED))
+    assert declared == {"np"}
 
 
 def test_the_verifier_reports_against_the_candidate_it_judged(verify) -> None:

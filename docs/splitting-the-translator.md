@@ -65,7 +65,14 @@ emitter is not involved.
    A wrong one corrupts every number that flows through it and no structural
    check notices. Cleanest cut in the file and the highest value per line.
 
-2. **Name tables and compiler profiles.** Data, no coupling.
+2. **Name tables and compiler profiles.** Data, no coupling -- but not all of
+   it belongs here. Of the 210 lines, 131 are stubs for CAM's `cam_history`,
+   MCT, ESMF, PIO and GPTL: which framework calls carry no physics and can
+   become `pass`. That is CESM knowledge, not knowledge of NumPy, and it goes
+   to `recast-cesm` rather than into the engine. The compiler profiles are
+   neither frontend nor backend -- they describe the *source* compiler whose
+   output the translation has to match -- so they sit on the
+   target-independent side where a second backend can read them.
 
 3. **Fortran semantics into the frontend.** Removes the duplication that
    already exists: `translate.py` and `rwset.py` each carry a generic-dispatch
@@ -79,6 +86,27 @@ emitter is not involved.
 
 5. **The emitters**, which is most of the remaining volume and the part that
    should move last, because by then it has somewhere to call into.
+
+## What the split keeps finding
+
+Each slice so far has surfaced the same shape of problem: one fact written
+down in more than one place, agreeing by coincidence.
+
+* The literal whitelist -- three integers and three reals exempt from hoisting
+  -- existed in the frontend and again at the top of the emitter.
+* The renaming rule for a Fortran symbol that collides in Python existed three
+  times: `pysafe` in the emitter, an inverse in `rwset`, and a third copy in
+  the verifier this repository wrote from it.
+* Generic-interface dispatch exists twice and the two disagree, one refusing
+  on ambiguity and one picking the best score.
+* Which names are intrinsics existed as four sets in the emitter, of which the
+  read/write analysis consulted three. The fourth was the array transforms, so
+  `transpose`, `minloc` and `cshift` were reported as variable reads at seven
+  sites in CAM -- each one a block that would have failed the cross-check
+  against a translation that correctly emits a call.
+
+None of these were found by reading. All four came from putting the two copies
+side by side and running them over the same input.
 
 ## The gate this runs against
 

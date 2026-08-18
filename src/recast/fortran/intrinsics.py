@@ -105,6 +105,7 @@ ELEMENTAL = frozenset(
 
 TRANSFORMATIONAL = frozenset(
     {
+        # Collapse an array to a scalar or a lower rank.
         "all",
         "any",
         "count",
@@ -116,11 +117,28 @@ TRANSFORMATIONAL = frozenset(
         "size",
         "sum",
         "ubound",
+        # Reshape or reorder one. Separated in the pipeline this came from,
+        # into a set the read/write analysis never consulted -- so `transpose`,
+        # `minloc` and `cshift` were reported as variable reads. Seven sites in
+        # the thirty translated CAM modules, each of which would have failed
+        # the cross-check against a translation that correctly emits a call.
+        "cshift",
+        "eoshift",
+        "maxloc",
+        "minloc",
+        "pack",
+        "reshape",
+        "spread",
+        "transpose",
+        "unpack",
     }
 )
-"""Collapse or reshape an array. Kept apart from ``ELEMENTAL`` because a
-Transform has to decide their result rank, and a read/write analysis has to
-know that their argument is read whole rather than at one index."""
+"""Operate on an array as a whole rather than per element.
+
+Kept apart from ``ELEMENTAL`` because a Transform has to work out their result
+rank, and a read/write analysis has to know their argument is read entire
+rather than at one index.
+"""
 
 STATE_QUERY = frozenset({"allocated", "associated", "present", "merge"})
 """Answer about a variable's status rather than its value.
