@@ -154,7 +154,8 @@ def test_side_channels_are_reported(fe, tree) -> None:
     effects = fe.analyze(unit, tree).effects
     tend = effects["fortran:micro_mg2_0/micro_mg_tend"]
     assert tend["io"] == ["write"] and tend["halts"] and tend["mpi"] == ["mpi_barrier"]
-    assert effects["fortran:micro_mg2_0/mg_init"] == {
+    init = effects["fortran:micro_mg2_0/mg_init"]
+    assert {k: v for k, v in init.items() if k != "blocks"} == {
         "reads": [],
         "writes": ["cached_dt", "ncall"],
         "optional_args": [],
@@ -163,6 +164,17 @@ def test_side_channels_are_reported(fe, tree) -> None:
         "mpi": [],
         "allocates": False,
     }
+
+
+def test_read_write_sets_are_reported_per_block(fe, tree) -> None:
+    """A Verifier comparing a translation against the source has to be able to
+    say *which* block disagrees. Block ids come from the same chunking every
+    other stage uses, so the answer lines up with theirs."""
+    unit = next(u for u in fe.discover(tree) if u.kind == "module")
+    blocks = fe.analyze(unit, tree).effects["fortran:micro_mg2_0/mg_init"]["blocks"]
+    assert [b["id"] for b in blocks] == ["B001", "B002"]
+    assert blocks[0] == {"id": "B001", "reads": ["dt"], "writes": ["cached_dt"]}
+    assert blocks[1] == {"id": "B002", "reads": [], "writes": ["ncall"]}
 
 
 def test_undeclared_intent_is_not_guessed(fe, tree) -> None:

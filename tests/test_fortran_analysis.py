@@ -15,6 +15,7 @@ corpus.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -398,3 +399,276 @@ def test_a_file_of_bare_subprograms_borrows_the_file_stem(tmp_path: Path) -> Non
     record = interface.extract(_write(tmp_path, "helpers.f90", src))
     assert record["module"] == "helpers"
     assert [s["name"] for s in record["subprograms"]] == ["loose"]
+
+
+# --- per-block read and write sets -------------------------------------------
+
+RW = """\
+module rw_mod
+  implicit none
+  real, allocatable :: pool(:)
+contains
+  subroutine fill(out, n, flag)
+    real, intent(out) :: out(:)
+    integer, intent(in) :: n
+    logical, intent(in) :: flag
+    integer :: i
+    real :: acc
+    acc = 0.0
+    do i = 1, n
+      acc = acc + real(pool(i), kind(acc))
+      if (flag) out(i) = acc
+    end do
+    do while (acc > 1.0)
+      acc = acc * 0.5
+    end do
+    allocate(pool(n))
+    deallocate(pool)
+    call sink(acc, out)
+  end subroutine fill
+
+  subroutine sink(x, y)
+    real, intent(in) :: x
+    real, intent(out) :: y(:)
+    y = x
+  end subroutine sink
+end module rw_mod
+"""
+
+
+def _blocks(tmp_path: Path, sub_name: str = "fill") -> dict[str, dict[str, Any]]:
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "rw.f90", RW)
+    record = interface.extract(src)
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == sub_name
+    )
+    scope = rwset.scope_for(record, sub_name)
+    return {b["id"]: b for b in rwset.block_rwsets(node, scope)}
+
+
+def test_a_counted_loop_writes_its_counter_and_reads_its_bounds(tmp_path: Path) -> None:
+    loop = _blocks(tmp_path)["B002"]
+    assert "i" in loop["writes"]
+    assert "n" in loop["reads"]
+
+
+def test_a_do_while_reads_its_condition_and_writes_no_counter(tmp_path: Path) -> None:
+    """The pipeline this was migrated from assumed every DO was counted and
+    raised a TypeError on the other two forms -- which crashed the read/write
+    analysis outright on four of CAM's thirty translated modules."""
+    loop = _blocks(tmp_path)["B003"]
+    assert "acc" in loop["reads"]
+    assert loop["writes"] == ["acc"], "the body's assignment, not a loop counter"
+
+
+def test_a_kind_argument_is_not_a_read(tmp_path: Path) -> None:
+    """``real(x, kind(acc))`` reads ``x``. Counting the kind would fire on
+    nearly every line of CESM physics."""
+    loop = _blocks(tmp_path)["B002"]
+    assert "pool" in loop["reads"]
+    assert "kind" not in loop["reads"]
+
+
+def test_allocate_and_deallocate_are_writes(tmp_path: Path) -> None:
+    blocks = _blocks(tmp_path)
+    assert blocks["B004"]["writes"] == ["pool"] and "n" in blocks["B004"]["reads"]
+    assert blocks["B005"] == {"id": "B005", "reads": [], "writes": ["pool"]}
+
+
+def test_a_call_splits_its_arguments_by_declared_intent(tmp_path: Path) -> None:
+    call = _blocks(tmp_path)["B006"]
+    assert call["reads"] == ["acc"], "intent(in)"
+    assert call["writes"] == ["out"], "intent(out)"
+
+
+DERIVED = """\
+module derived_mod
+  implicit none
+  type bundle_t
+    real, allocatable :: q(:)
+  end type bundle_t
+contains
+  subroutine drive(b, n)
+    type(bundle_t), intent(inout) :: b
+    integer, intent(in) :: n
+    call refill(b % q, n)
+    b % q(n) = 0.0
+  end subroutine drive
+
+  subroutine refill(slot, n)
+    real, intent(out) :: slot(:)
+    integer, intent(in) :: n
+    slot = real(n)
+  end subroutine refill
+end module derived_mod
+"""
+
+
+def test_a_component_name_is_not_a_read_on_either_path(tmp_path: Path) -> None:
+    """``b % q`` writes ``b``; ``q`` is an attribute of it, not a symbol, and
+    the target side spells it the same way and does not report it either.
+
+    The pipeline this came from agreed on the assignment path and disagreed on
+    the out-argument path, which made every derived-type output argument look
+    like a mismatch the moment it was cross-checked.
+    """
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "derived.f90", DERIVED)
+    record = interface.extract(src)
+    node = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
+    assert blocks["B001"] == {"id": "B001", "reads": ["n"], "writes": ["b"]}, "out-argument"
+    assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
+
+
+def test_a_local_shadows_an_intrinsic_of_the_same_name(tmp_path: Path) -> None:
+    """Fortran lets a variable be called ``sum``. Treating it as the intrinsic
+    loses a real dataflow edge."""
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "shadow.f90",
+        "module s_mod\ncontains\n"
+        "  subroutine go(out)\n"
+        "    real, intent(out) :: out\n"
+        "    real :: sum\n"
+        "    sum = 1.0\n"
+        "    out = sum\n"
+        "  end subroutine go\n"
+        "end module s_mod\n",
+    )
+    record = interface.extract(src)
+    node = walk(parse(src), f03.Subroutine_Subprogram)[0]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
+    assert blocks[1] == {"id": "B002", "reads": ["sum"], "writes": ["out"]}
+
+
+def test_the_intrinsic_table_carries_names_not_translations(tmp_path: Path) -> None:
+    """The read/write analysis asked "is this an intrinsic" and never once what
+    it maps to, so only the names are a Fortran fact. Keeping the mapping out
+    is what lets this run without the 2,883-line emitter."""
+    from recast.fortran import intrinsics
+
+    assert {"sqrt", "sum", "present"} <= intrinsics.ALL
+    assert all(isinstance(n, str) and n.islower() for n in intrinsics.ALL)
+
+
+CONSTRUCTS = """\
+module cons_mod
+  implicit none
+  real, pointer :: hook(:) => null()
+  interface scale_it
+    module procedure scale_scalar, scale_vector
+  end interface scale_it
+contains
+  subroutine drive(v, m, mode, label, target_arr)
+    real, intent(inout) :: v(:)
+    logical, intent(in) :: m(:)
+    integer, intent(in) :: mode
+    character(len=32), intent(out) :: label
+    real, intent(in), target :: target_arr(:)
+    real :: s
+    s = 1.0
+    where (m)
+      v = v * 2.0
+    elsewhere
+      v = 0.0
+    end where
+    select case (mode)
+    case (1)
+      s = 2.0
+    case default
+      s = 3.0
+    end select
+    call scale_it(v, s)
+    call scale_it(s, s)
+    hook => target_arr
+    nullify(hook)
+    write(label, *) s
+    call endrun(label)
+  end subroutine drive
+
+  subroutine scale_scalar(x, f)
+    real, intent(inout) :: x
+    real, intent(in) :: f
+    x = x * f
+  end subroutine scale_scalar
+
+  subroutine scale_vector(x, f)
+    real, intent(inout) :: x(:)
+    real, intent(in) :: f
+    x = x * f
+  end subroutine scale_vector
+end module cons_mod
+"""
+
+
+def _construct_blocks(tmp_path: Path, **kw: Any) -> dict[str, dict[str, Any]]:
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "cons.f90", CONSTRUCTS)
+    record = interface.extract(src)
+    node = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
+    )
+    scope = rwset.scope_for(record, "drive", **kw)
+    return {b["id"]: b for b in rwset.block_rwsets(node, scope)}
+
+
+def test_a_where_construct_reads_its_mask(tmp_path: Path) -> None:
+    block = _construct_blocks(tmp_path)["B002"]
+    assert "m" in block["reads"] and block["writes"] == ["v"]
+
+
+def test_a_select_case_reads_the_selector_and_the_case_values(tmp_path: Path) -> None:
+    block = _construct_blocks(tmp_path)["B003"]
+    assert "mode" in block["reads"] and block["writes"] == ["s"]
+
+
+def test_a_generic_call_dispatches_on_argument_rank(tmp_path: Path) -> None:
+    """Scalar and vector overloads share their arities, so rank is the only
+    discriminator -- and picking the wrong one swaps which argument is written.
+    Here both overloads write their first argument, so the check is that
+    dispatch resolved at all rather than falling through to the unknown-callee
+    path, which would have read both arguments and written neither."""
+    blocks = _construct_blocks(tmp_path)
+    assert blocks["B004"] == {"id": "B004", "reads": ["s", "v"], "writes": ["v"]}
+    assert blocks["B005"] == {"id": "B005", "reads": ["s"], "writes": ["s"]}
+
+
+def test_pointer_association_and_nullify_are_writes(tmp_path: Path) -> None:
+    blocks = _construct_blocks(tmp_path)
+    assert blocks["B006"] == {"id": "B006", "reads": ["target_arr"], "writes": ["hook"]}
+    assert blocks["B007"] == {"id": "B007", "reads": [], "writes": ["hook"]}
+
+
+def test_an_internal_write_writes_its_unit(tmp_path: Path) -> None:
+    """``write(label, *) s`` fills a character variable; ``write(6, *) s`` goes
+    to a log and carries no dataflow at all."""
+    block = _construct_blocks(tmp_path)["B008"]
+    assert block == {"id": "B008", "reads": ["s"], "writes": ["label"]}
+
+
+def test_an_unknown_callee_reads_its_arguments_and_writes_none(tmp_path: Path) -> None:
+    """The safe default. Over-reporting a read costs a block a review."""
+    block = _construct_blocks(tmp_path)["B009"]
+    assert block == {"id": "B009", "reads": ["label"], "writes": []}
+
+
+def test_an_externals_entry_says_which_arguments_a_procedure_writes(tmp_path: Path) -> None:
+    """Without it the analysis has to assume a procedure it cannot see writes
+    nothing, which is wrong in whichever direction it actually behaves."""
+    blocks = _construct_blocks(tmp_path, externals={"endrun": {"out_positions": [0]}})
+    assert blocks["B009"] == {"id": "B009", "reads": [], "writes": ["label"]}
