@@ -39,6 +39,19 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
 reproduces the existing bit-exact result for one scheme, with 408 files' worth
 of `/glade` paths gone (`tools/check_hygiene.py` is the check).
 
+Two checks, because "no site paths" and "same answers" are different claims.
+`tools/golden_diff.py` runs a migrated stage over the sources the original
+pipeline ran over and diffs it against the JSON that pipeline left behind,
+sorting differences into additive (a key the old output did not have, which
+nothing reading it can notice) and behaviour changes (which have to be
+defended one at a time, in its `ACCEPTED` table, with a reason).
+
+This one does not retire when P2 does. The translator keeps being developed,
+so migrating from it is a standing job rather than a finished one, and the
+check has to be re-runnable against whatever the sources look like next.
+Accepted divergences pin the exact values they excuse, so a change upstream
+brings them back for re-confirmation instead of staying quietly excused.
+
 ## P3 — triage the 664 agent scripts
 
 CESM-Agent-Produced-Scripts, into four buckets:
