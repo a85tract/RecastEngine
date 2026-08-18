@@ -27,7 +27,10 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
   currently parser, rule library, and emitter at once, which is why nothing else
   can reuse any part of it.
 - `extract_interface` / `extract_constants` / `chunk` / `resolve_use` become
-  `recast-fortran`'s `Frontend`.
+  `recast-fortran`'s `Frontend`. **Landed** as `recast.fortran`, behind the
+  `fortran` extra: the analysis is unchanged, but the rendering it used to do
+  went with the Transform that has a target language, and the kind table it
+  reached into as a module global is now an argument.
 - `notary` / `highprec_verify` / `rwset` become `Verifier`s with honest
   `provides` levels.
 - `gen_wrapper` + the f2py build become the `f2py-golden` `Oracle`.

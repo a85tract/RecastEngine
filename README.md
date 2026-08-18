@@ -41,19 +41,20 @@ costs compute:
 
 ```console
 $ uv run recast plan translate --config '{"target": "numba"}'
- 1. [MISS] frontend     fortran
- 2. [MISS] transform    translate.numba
- 3. [MISS] verifier     static.rwset             gate
- 4. [MISS] oracle       f2py-golden
- 5. [MISS] verifier     differential.bitexact    gate
- 6. [opt ] verifier     symbolic.notary          optional
- 7. [ok  ] store        fs-evidence
+ 1. [ok ] executor     local
+ 2. [ok ] frontend     fortran
+ 3. [MISS] transform    translate.numba
+ 4. [MISS] verifier     static.rwset                 gate
+ 5. [MISS] oracle       f2py-golden
+ 6. [MISS] verifier     differential.bitexact        gate
+ 7. [opt] verifier     symbolic.notary              optional
+ 8. [ok ] store        fs-evidence
 ```
 
 Those `MISS` lines are the pre-alpha status, not a configuration error. The core
 installs with zero dependencies and stays importable without a compiler, a GPU,
-or a model provider; everything heavier is an extra (`verify`, `numba`, `jax`,
-`agents`).
+or a model provider; everything heavier is an extra (`fortran`, `verify`,
+`numba`, `jax`, `agents`).
 
 To extend it, implement one of the ten interfaces in
 [`src/recast/plugins/`](src/recast/plugins/) and register an entry point —

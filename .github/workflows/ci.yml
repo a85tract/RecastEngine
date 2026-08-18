@@ -40,7 +40,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v3
       - run: uv python install ${{ matrix.python }}
-      - run: uv run --python ${{ matrix.python }} --extra dev pytest --cov=recast
+      # The fortran extra is installed here on purpose: the reference frontend
+      # is the one plugin that ships in-tree, so its tests must actually run
+      # rather than skip for want of fparser.
+      - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran pytest --cov=recast
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.
@@ -53,3 +56,6 @@ jobs:
       - run: uv run --no-dev python -c "import recast; print(recast.__version__)"
       - run: uv run --no-dev recast doctor
       - run: uv run --no-dev recast recipes
+      # The fortran frontend must still *register* without fparser installed;
+      # the missing extra is reported when it is asked to parse, not before.
+      - run: uv run --no-dev recast plugins | grep -qx "  fortran"
