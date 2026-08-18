@@ -273,3 +273,63 @@ def test_the_verifier_registers_under_its_recipe_name() -> None:
     from recast.registry import REGISTRY
 
     assert isinstance(REGISTRY.get("verifier", "static.rwset")(), ReadWriteSetVerifier)
+
+
+# --- the result-variable convention and the alias rule -----------------------
+
+
+def test_a_load_of_the_blocks_own_name_is_its_result_variable() -> None:
+    """Inside ``no_limiter``, the name ``no_limiter`` is the result variable
+    -- ``no_limiter = transfer(limiter_off, no_limiter)`` reads real data. A
+    load of any *other* procedure name stays a call."""
+    import ast as pyast
+
+    code = "def no_limiter():\n    no_limiter = transfer(limiter_off, no_limiter)\n"
+    protocol = Protocol(procedures=frozenset({"no_limiter", "transfer"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol, own="no_limiter")
+    assert "no_limiter" in reads and "no_limiter" in writes
+    assert "transfer" not in reads
+
+
+def test_recursion_is_a_call_not_a_read_of_the_result() -> None:
+    import ast as pyast
+
+    code = "def fact(n):\n    fact = n * fact(n - 1)\n"
+    protocol = Protocol(procedures=frozenset({"fact"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol, own="fact")
+    assert "fact" not in reads  # callee position: control flow
+    assert "fact" in writes  # the result assignment
+
+
+def test_a_procedure_passed_as_an_argument_stays_skipped() -> None:
+    """``_f_ecall(e_scale, a, s)`` passes the procedure itself; only the
+    block's own name is ever data."""
+    import ast as pyast
+
+    code = "def caller(a, s):\n    a = _f_ecall(e_scale, a, s)\n"
+    protocol = Protocol(procedures=frozenset({"e_scale"}), scaffolding=frozenset({"_f_ecall"}))
+    reads, _ = span_rwset(pyast.parse(code), 2, 2, protocol, own="caller")
+    assert "e_scale" not in reads
+
+
+def test_alias_attributes_are_the_siblings_globals() -> None:
+    """``_wv.omeps = 1.0 - _wv.epsilo`` is a write of ``omeps`` and a read of
+    ``epsilo`` -- the source spells both as bare use-imported names, and an
+    alias treated as scaffolding would blind the gate to cross-module state."""
+    import ast as pyast
+
+    code = "def init():\n    _wv.omeps = 1.0 - _wv.epsilo\n"
+    protocol = Protocol(aliases=frozenset({"_wv"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol)
+    assert reads == {"epsilo"}
+    assert writes == {"omeps"}
+
+
+def test_an_alias_attribute_naming_a_procedure_is_a_call() -> None:
+    import ast as pyast
+
+    code = "def use_it(t, es):\n    es = _wv.wv_sat_svp_water(t)\n"
+    protocol = Protocol(aliases=frozenset({"_wv"}), procedures=frozenset({"wv_sat_svp_water"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol)
+    assert reads == {"t"}
+    assert writes == {"es"}

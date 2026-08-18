@@ -132,7 +132,11 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
         if name in scope.ranks:
             return {name}
         if name not in STATE_QUERY and name not in TRANSFORMATIONAL:
-            if name not in scope.subprograms and name not in scope.generics:
+            if (
+                name not in scope.subprograms
+                and name not in scope.generics
+                and name not in scope.externals
+            ):
                 reads.add(name)  # an arg-less function reference parses as a bare Name
         return reads
 
@@ -147,7 +151,18 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
                 items = items[:1]
             for item in items:
                 reads |= expr_reads(item, scope)
-        known = fname in scope.subprograms or fname in scope.generics or fname in INTRINSICS
+        if scope.ranks.get(fname, 0) > 0:
+            # A declared array shadows an intrinsic name -- the same rule the
+            # bare-Name branch applies. zm_conv declares `gamma(pcols,pver)`,
+            # and reading `gamma(i,k)` is dataflow, not a call to GAMMA.
+            reads.add(fname)
+            return reads
+        known = (
+            fname in scope.subprograms
+            or fname in scope.generics
+            or fname in scope.externals
+            or fname in INTRINSICS
+        )
         if not known:
             reads.add(fname)  # not a call: an array element read
         return reads
