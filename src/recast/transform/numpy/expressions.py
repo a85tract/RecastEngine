@@ -121,6 +121,12 @@ class Expressions:
     and the domain package that knows CAM ships the table. Without one the
     call is refused and becomes a deferred site, which is the honest outcome:
     the engine genuinely does not know what ``hist_fld_active`` returns.
+
+    Consulted only for references fparser read as structure constructors,
+    which is where the pipeline consults its copy. A plainly-parsed reference
+    to a stubbed name refuses even when the table has an answer -- the wider
+    placement this module briefly had turned a refusal the pipeline hands to
+    a human into a fabricated constant.
     """
 
     statement_functions: frozenset[str] = frozenset()
@@ -393,8 +399,12 @@ class Expressions:
         external = self.externals.get(name)
         if external is not None and external.get("kind") == "function":
             return f"_ext.{name}({', '.join(arguments)})"
-        if name in self.stubs:
-            return self.stubs[name]
+        # ``stubs`` is deliberately NOT consulted here. The pipeline answers
+        # from that table only for references parsed as structure
+        # constructors; a plainly-parsed ``hist_fld_active(name_out)`` is
+        # refused and deferred to a human. Stubbing it here instead once
+        # turned that whole IF construct into ``if False:`` -- emitted, dead,
+        # and wrong in a way nothing downstream would notice.
         if name in ARRAY_TRANSFORM:
             return self._array_transform(name, items)
         if name in REDUCTIONS:

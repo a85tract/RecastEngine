@@ -106,10 +106,12 @@ emitter is not involved.
    assignment's copy-into-storage semantics, WHERE masks, do bounds shifting
    by the sign of the step, the two goto shapes that structure cleanly, and
    the call statement's intent rewriting. Checked statement by statement over
-   the six schemes with full operator tables: 998 top-level statements,
-   4,606 emitted lines, byte-identical, with five refusals mutual.
-   `tools/emit_diff.py` keeps that check standing, the emission analog of
-   `golden_diff.py`. Still to move: subprogram assembly -- signature,
+   the six schemes with full operator tables and the twenty-one batch-swept
+   modules: 2,626 top-level statements, 10,111 emitted lines, byte-identical,
+   every refusal mutual. `tools/emit_diff.py` keeps that check standing, the
+   emission analog of `golden_diff.py`; it discovers the swept modules from
+   the translator's `extracted_auto/` at run time, so a new sweep widens the
+   check by itself. Still to move: subprogram assembly -- signature,
    prologue, module rendering -- and the `main()` driver, which becomes
    `Transform.apply`.
 
@@ -127,6 +129,13 @@ what the migration was being compared against was a golden `interface.json`
 older than the pipeline that produced it. Comparing against stored output
 rather than against the code is how that happens, and the differential tools
 run against the code now.
+
+Widening `emit_diff` to the swept modules caught a second, in the expression
+layer: it consulted the function-stub table for every unknown reference,
+where the pipeline answers from that table only for references parsed as
+structure constructors. So a `hist_fld_active(name_out)` the pipeline defers
+to a human came out as `if False:` -- emitted, dead, and silent about it.
+Narrowed to the pipeline's placement, and pinned by a test.
 
 Three real inconsistencies survive, reproduced deliberately, each one a place
 where the pipeline disagrees with itself:

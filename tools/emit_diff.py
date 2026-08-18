@@ -21,6 +21,14 @@ the line count is the honest number. A refusal only counts as agreement when
 *both* sides refuse: one-sided refusals are the migration losing (or quietly
 inventing) a rule.
 
+The corpus is the six schemes with full operator tables plus every module the
+translator's batch sweep produced, discovered from ``extracted_auto/`` at run
+time so a new sweep widens this check without anyone editing it. One skip: a
+subprogram whose name appears twice in one file -- unpreprocessed ``#if``
+variants -- is left out, because pairing records with definitions is ambiguous
+there on both sides and a mismatched pairing measures the harness, not the
+emitters.
+
 Usage:
     uv run --extra fortran tools/emit_diff.py --translator ../CESM-language-translator
 
@@ -53,7 +61,9 @@ ENGINE_REFUSED = (NoRule, Unanalyzable)
 
 MODULES: list[tuple[str, str | None, str | None, str | None, str | None, str | None]] = [
     # name, source override, use_params, externals, companions, intent overrides
-    # -- all paths relative to the translator checkout.
+    # -- all paths relative to the translator checkout. These are the six
+    # schemes with hand-maintained operator tables; the batch-swept modules
+    # are discovered from extracted_auto/ at run time.
     ("mg_utils", None, None, "reports/mg/externals_utils.json", None, None),
     (
         "mg2",
@@ -168,12 +178,34 @@ def main() -> int:
     scratch = ns.scratch or Path(tempfile.mkdtemp(prefix="emit_diff_"))
     scratch.mkdir(parents=True, exist_ok=True)
     kinds = ["lines", "identical", "different", "both refused", "pipeline only", "engine only"]
-    totals = dict.fromkeys([*kinds, "error"], 0)
+    totals = dict.fromkeys([*kinds, "skipped", "error"], 0)
 
-    for name, override, use_p, ext_p, comp_p, intents_p in MODULES:
+    modules = list(MODULES)
+    sweep = root / "extracted_auto"
+    if sweep.is_dir():
+        for swept in sorted(sweep.iterdir()):
+            if not (swept / "interface.json").is_file():
+                continue
+            companions = swept / "companions.json"
+            modules.append(
+                (
+                    swept.name,
+                    None,
+                    None,
+                    None,
+                    str(companions.relative_to(root)) if companions.is_file() else None,
+                    None,
+                )
+            )
+
+    for name, override, use_p, ext_p, comp_p, intents_p in modules:
         if ns.only and name != ns.only:
             continue
-        gold = json.loads((root / "extracted" / name / "interface.json").read_text())
+        gold = next(
+            json.loads((root / area / name / "interface.json").read_text())
+            for area in ("extracted", "extracted_auto")
+            if (root / area / name / "interface.json").is_file()
+        )
         source = root / (override or gold["source_file"])
         intents = json.loads((root / intents_p).read_text()) if intents_p else None
 
@@ -201,10 +233,18 @@ def main() -> int:
             heading = walk(subprogram, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
             nodes[str(heading.children[1]).lower()] = subprogram
 
+        declared = [s["name"] for s in interface["subprograms"]]
+        duplicated = {n for n in declared if declared.count(n) > 1}
+        if duplicated:
+            print(f"{name}: skipping {sorted(duplicated)} (unpreprocessed #if variants)")
+
         counts = dict.fromkeys(totals, 0)
         for record in interface["subprograms"]:
             node = nodes.get(record["name"])
             if node is None:
+                continue
+            if record["name"] in duplicated:
+                counts["skipped"] += 1
                 continue
             elemental = any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or []))
 

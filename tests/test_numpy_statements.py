@@ -170,6 +170,13 @@ contains
     end select
   end subroutine switch
 
+  subroutine framework(s, name_out)
+    real(r8), intent(inout) :: s
+    character(len=8), intent(in) :: name_out
+    if (hist_fld_active(name_out)) s = 0.0_r8
+    if (hist_fld_active('X')) s = 0.0_r8
+  end subroutine framework
+
   subroutine stfunc(s, t)
     real(r8), intent(inout) :: s
     real(r8), intent(in) :: t
@@ -283,6 +290,7 @@ def build(
     remotes: dict[str, Remote] | None = None,
     externals: dict[str, dict[str, Any]] | None = None,
     stubs: dict[str, str] | None = None,
+    function_stubs: dict[str, str] | None = None,
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
     record = interface.extract(src)
@@ -294,6 +302,7 @@ def build(
         PROFILES["ifx"],
         externals=externals or {},
         remotes=remotes or {},
+        stubs=function_stubs or {},
     )
     statements = Statements(
         semantics, names, expressions, externals=externals or {}, stubs=stubs or {}
@@ -583,6 +592,21 @@ def test_a_case_value_range_slips_past_the_refusal(sources: dict[str, Path]) -> 
     statements, nodes = build(sources["emit_mod"], "switch")
     lines = statements.render(pick(nodes, f03.Case_Construct, 1), 1)
     assert lines[0] == "    if (n == 1) or (n == 2):"
+
+
+def test_a_stub_answers_only_where_the_pipeline_answers(sources: dict[str, Path]) -> None:
+    """``hist_fld_active(name_out)`` parses as a plain reference, and refuses
+    even though the stub table has an answer -- the pipeline hands that shape
+    to a human, and a fabricated ``False`` here once turned the surrounding
+    construct into ``if False:``, emitted, dead, and silent about it. The
+    same call over a character literal parses as a structure constructor,
+    which is the one place the pipeline consults its table, so it stubs."""
+    statements, nodes = build(
+        sources["emit_mod"], "framework", function_stubs={"hist_fld_active": "False"}
+    )
+    with pytest.raises(REFUSED):
+        statements.render(nodes[0], 1)
+    assert statements.render(nodes[1], 1) == ["    if False:", "        s = 0.0"]
 
 
 # --- statement functions -----------------------------------------------------
