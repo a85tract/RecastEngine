@@ -30,6 +30,7 @@ from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.intrinsics import ALL as INTRINSICS
 from recast.fortran.intrinsics import STATE_QUERY, TRANSFORMATIONAL
+from recast.fortran.semantics import Semantics, Unanalyzable, for_subprogram
 
 KIND_ARG_FNS = frozenset({"real", "dble", "int", "nint", "aint", "anint", "floor", "ceiling"})
 """Conversions whose optional second argument is a kind name, not a value.
@@ -59,6 +60,14 @@ class Scope:
 
     chars: frozenset[str] = frozenset()
     """Character-typed symbols. ``write(buf, ...)`` to one of these is a write."""
+
+    semantics: Semantics | None = None
+    """Type and shape answers, for the questions dispatch needs.
+
+    Optional so a caller can still build a ``Scope`` by hand; without it a
+    generic call is treated as an unresolved external, which is the
+    conservative reading rather than a guess.
+    """
 
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Procedures with no source here, and which arguments they write.
@@ -102,6 +111,7 @@ def scope_for(
         generics=dict(record["generics"]),
         ranks=ranks,
         chars=frozenset(chars),
+        semantics=for_subprogram(record, sub_name),
         externals=dict(externals or {}),
     )
 
@@ -159,57 +169,27 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
     return reads
 
 
-def _actual_rank(actual: Any, scope: Scope) -> int | None:
-    """Syntactic rank of an actual argument; ``None`` when it cannot be told."""
-    if isinstance(actual, f03.Name):
-        return scope.ranks.get(str(actual).lower())
-    if isinstance(actual, f03.Part_Ref):
-        subscripts = actual.children[1]
-        items = subscripts.children if subscripts is not None else []
-        triplets = sum(1 for i in items if isinstance(i, f03.Subscript_Triplet))
-        if triplets:
-            return triplets
-        base = scope.ranks.get(str(actual.children[0]).lower())
-        if base is not None and base > len(items):
-            return None  # partial indexing, or a function reference
-        return 0
-    if isinstance(actual, (f03.Int_Literal_Constant, f03.Real_Literal_Constant)):
-        return 0
-    return None
+def _resolve_generic(name: str, actuals: list[Any], scope: Scope) -> str | None:
+    """The specific procedure a generic call dispatches to, or ``None``.
 
+    Delegates to ``semantics.dispatch``, which refuses when the call matches
+    none of the specifics or more than one. This module used to score the
+    candidates and take the best instead -- a second implementation of one
+    language question, disagreeing with the emitter's in exactly the cases
+    that matter. Picking an overload wrongly changes which arguments are
+    written, and this is the analysis a gate compares those writes against, so
+    a wrong pick would be checked against itself.
 
-def _resolve_generic(name: str, actuals: list[Any], scope: Scope) -> str:
-    """Pick the specific procedure a generic call dispatches to.
-
-    Scored on positional rank mismatches first, then optional-argument slack,
-    then formal count. Scalar and vector overloads of the same routine share
-    their arities, so argument rank is the only reliable discriminator, and
-    picking the wrong overload silently swaps which arguments are written.
+    ``None`` means the call is read as an unresolved external: its arguments
+    are read, none is written. Conservative, and visible as a mismatch rather
+    than as a silently different answer.
     """
-    positional = [
-        a for a in actuals if not isinstance(a, (f03.Actual_Arg_Spec, f03.Component_Spec))
-    ]
-    best: tuple[tuple[int, int, int], str] | None = None
-    for specific in scope.generics.get(name, []):
-        record = scope.subprograms.get(specific)
-        if record is None:
-            continue
-        required = sum(1 for a in record["args"] if not a["optional"])
-        if not required <= len(actuals) <= len(record["args"]):
-            continue
-        mismatches = 0
-        for j, actual in enumerate(positional):
-            if j >= len(record["args"]):
-                break
-            rank = _actual_rank(actual, scope)
-            if rank is None:
-                continue
-            if len(record["args"][j].get("dims") or []) != rank:
-                mismatches += 1
-        key = (mismatches, len(actuals) - required, len(record["args"]))
-        if best is None or key < best[0]:
-            best = (key, specific)
-    return best[1] if best else name
+    if scope.semantics is None:
+        return None
+    try:
+        return scope.semantics.dispatch(name, actuals)
+    except Unanalyzable:
+        return None
 
 
 def _bind_actuals(callee: dict[str, Any], items: list[Any]) -> list[Any]:
@@ -251,7 +231,7 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         name = str(stmt.children[0]).lower()
         items = list(stmt.children[1].children) if stmt.children[1] is not None else []
         if name in scope.generics:
-            name = _resolve_generic(name, items, scope)
+            name = _resolve_generic(name, items, scope) or name
 
         callee = scope.subprograms.get(name)
         actuals = _bind_actuals(callee, items) if callee is not None else items
