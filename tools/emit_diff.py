@@ -13,13 +13,13 @@ Live against the pipeline's code, not against its stored output: comparing
 against a golden file older than the code that wrote it is how this
 repository once reported fixing a bug the pipeline did not have.
 
-Statements are compared at the top level of each subprogram's execution part,
-in order -- order matters, because a statement function defined mid-body
-changes how every later reference to its name renders. A construct compares
-as its whole rendered body, so the statement count understates the coverage;
-the line count is the honest number. A refusal only counts as agreement when
-*both* sides refuse: one-sided refusals are the migration losing (or quietly
-inventing) a rule.
+Whole subprograms are compared: signature, docstring, determinizing
+prologue, block markers, the body, and the trailing return -- plus the block
+report both emitters produce, which says which blocks are mechanical and
+which are deferred. Refusal *placement* is compared strictly (the same
+blocks must defer, with the same spans and line counts); refusal *prose* is
+normalized away, because the two sides word their reasons differently and a
+reason string is a diagnostic, not a number.
 
 The corpus is the six schemes with full operator tables plus every module the
 translator's batch sweep produced, discovered from ``extracted_auto/`` at run
@@ -32,13 +32,14 @@ emitters.
 Usage:
     uv run --extra fortran tools/emit_diff.py --translator ../CESM-language-translator
 
-Exit status is 1 on any difference, one-sided refusal, or error, 0 otherwise.
+Exit status is 1 on any difference or error, 0 otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -49,15 +50,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from recast.fortran import constants as fconstants
 from recast.fortran import interface as finterface
 from recast.fortran._parse import f03, parse, walk
-from recast.fortran.semantics import Unanalyzable, for_subprogram
-from recast.transform.numpy.expressions import Expressions, Remote
-from recast.transform.numpy.names import for_subprogram as names_for
-from recast.transform.numpy.statements import Statements
+from recast.transform.numpy.expressions import Remote
+from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.profiles import PROFILES
-from recast.transform.rules import NoRule
 
-ENGINE_REFUSED = (NoRule, Unanalyzable)
+REASON_IN_MARKER = re.compile(r"(# B\d{3} <- L\d+-L\d+ AGENT_QUEUE: ).*")
+REASON_IN_RAISE = re.compile(r"(raise NotImplementedError\().*(\)  # B\d{3})")
+
+
+def normalized(line: str) -> str:
+    """One emitted line with any refusal prose replaced by a placeholder."""
+    return REASON_IN_RAISE.sub(r"\1<reason>\2", REASON_IN_MARKER.sub(r"\1<reason>", line))
+
 
 MODULES: list[tuple[str, str | None, str | None, str | None, str | None, str | None]] = [
     # name, source override, use_params, externals, companions, intent overrides
@@ -177,7 +182,7 @@ def main() -> int:
 
     scratch = ns.scratch or Path(tempfile.mkdtemp(prefix="emit_diff_"))
     scratch.mkdir(parents=True, exist_ok=True)
-    kinds = ["lines", "identical", "different", "both refused", "pipeline only", "engine only"]
+    kinds = ["subprograms", "lines", "blocks", "deferred", "different"]
     totals = dict.fromkeys([*kinds, "skipped", "error"], 0)
 
     modules = list(MODULES)
@@ -226,8 +231,8 @@ def main() -> int:
         )
 
         tree = parse(source)
-        modules = walk(tree, f03.Module)
-        scope = modules[0] if modules else tree
+        parsed = walk(tree, f03.Module)
+        scope = parsed[0] if parsed else tree
         nodes = {}
         for subprogram in walk(scope, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
             heading = walk(subprogram, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
@@ -238,6 +243,19 @@ def main() -> int:
         if duplicated:
             print(f"{name}: skipping {sorted(duplicated)} (unpreprocessed #if variants)")
 
+        assembler = Subprograms(
+            record=interface,
+            constants=constants,
+            profile=PROFILES["ifx"],
+            companions=tuple(records),
+            use_parameters=use_params,
+            companion_globals=companion_globals,
+            externals=externals,
+            remotes=remotes,
+            function_stubs=dict(pipeline.INFRA_FN_STUBS),
+            statement_stubs=dict(pipeline.INFRA_STUBS),
+        )
+
         counts = dict.fromkeys(totals, 0)
         for record in interface["subprograms"]:
             node = nodes.get(record["name"])
@@ -246,85 +264,53 @@ def main() -> int:
             if record["name"] in duplicated:
                 counts["skipped"] += 1
                 continue
-            elemental = any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or []))
+            where = f"{name}/{record['name']}"
+            try:
+                want, want_report = translator.translate_subprogram(node, record)
+            except Exception as error:  # a crash is a finding, not a refusal
+                print(f"PIPELINE ERROR {where}: {type(error).__name__}: {error}")
+                counts["error"] += 1
+                continue
+            try:
+                got, got_report = assembler.render(node, record["name"])
+            except Exception as error:
+                print(f"ENGINE ERROR {where}: {type(error).__name__}: {error}")
+                counts["error"] += 1
+                continue
 
-            translator.cur = record
-            translator.alloc_lb = {}
-            translator.stmt_funcs = set()
-            translator.cur_elemental = elemental
-            translator.scan_break_labels(node)
-
-            semantics = for_subprogram(interface, record["name"], companions=tuple(records))
-            names = names_for(
-                semantics,
-                constants,
-                use_parameters=use_params,
-                companion_globals=companion_globals,
+            counts["blocks"] += len(want_report)
+            counts["deferred"] += sum(1 for e in want_report if e["status"] == "agent_queue")
+            placements = [
+                [{k: v for k, v in entry.items() if k != "reason"} for entry in report]
+                for report in (want_report, got_report)
+            ]
+            same_lines = list(map(normalized, want)) == list(map(normalized, got))
+            if same_lines and placements[0] == placements[1]:
+                counts["subprograms"] += 1
+                counts["lines"] += len(want)
+                continue
+            counts["different"] += 1
+            print(
+                f"DIFFERENT {where}"
+                + ("" if same_lines else " (lines)")
+                + ("" if placements[0] == placements[1] else " (report)")
             )
-            expressions = Expressions(
-                semantics,
-                names,
-                PROFILES["ifx"],
-                externals=externals,
-                remotes=remotes,
-                stubs=dict(pipeline.INFRA_FN_STUBS),
-                elemental=elemental,
-            )
-            statements = Statements(
-                semantics,
-                names,
-                expressions,
-                externals=externals,
-                stubs=dict(pipeline.INFRA_STUBS),
-            )
-            statements.scan(node)
-
-            execution = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
-            for statement in execution.children if execution is not None else []:
-                where = f"{name}/{record['name']} [{type(statement).__name__}]"
-                want = got = None
-                try:
-                    want = translator.stmt(statement, 1)
-                except pipeline.AgentQueue:
-                    pass
-                except Exception as error:  # a crash is a finding, not a refusal
-                    print(f"PIPELINE ERROR {where}: {type(error).__name__}: {error}")
-                    counts["error"] += 1
-                    continue
-                try:
-                    got = statements.render(statement, 1)
-                except ENGINE_REFUSED:
-                    pass
-                except Exception as error:
-                    print(f"ENGINE ERROR {where}: {type(error).__name__}: {error}")
-                    counts["error"] += 1
-                    continue
-                if want is None and got is None:
-                    counts["both refused"] += 1
-                elif want is None:
-                    counts["pipeline only"] += 1
-                    print(f"PIPELINE-ONLY REFUSAL {where}")
-                elif got is None:
-                    counts["engine only"] += 1
-                    print(f"ENGINE-ONLY REFUSAL {where}")
-                elif want == got:
-                    counts["identical"] += 1
-                    counts["lines"] += len(want)
-                else:
-                    counts["different"] += 1
-                    print(f"DIFFERENT {where}")
-                    if ns.verbose:
-                        for line in want:
-                            print(f"  pipeline |{line}")
-                        for line in got:
-                            print(f"  engine   |{line}")
+            if ns.verbose:
+                for a, b in zip(want, got, strict=False):
+                    if normalized(a) != normalized(b):
+                        print(f"  pipeline |{a}")
+                        print(f"  engine   |{b}")
+                for a in want[len(got) :]:
+                    print(f"  pipeline only |{a}")
+                for b in got[len(want) :]:
+                    print(f"  engine only   |{b}")
         print(f"{name:<10} " + "  ".join(f"{k}={v}" for k, v in counts.items() if v))
         for key, value in counts.items():
             totals[key] += value
 
     print()
     print("  ".join(f"{k}={v}" for k, v in totals.items()))
-    failed = totals["different"] + totals["pipeline only"] + totals["engine only"] + totals["error"]
+    failed = totals["different"] + totals["error"]
     return 1 if failed else 0
 
 

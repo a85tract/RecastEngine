@@ -105,15 +105,21 @@ emitter is not involved.
    done: `recast.transform.numpy.statements`, the floor above it --
    assignment's copy-into-storage semantics, WHERE masks, do bounds shifting
    by the sign of the step, the two goto shapes that structure cleanly, and
-   the call statement's intent rewriting. Checked statement by statement over
-   the six schemes with full operator tables and the twenty-one batch-swept
-   modules: 2,626 top-level statements, 10,111 emitted lines, byte-identical,
-   every refusal mutual. `tools/emit_diff.py` keeps that check standing, the
-   emission analog of `golden_diff.py`; it discovers the swept modules from
-   the translator's `extracted_auto/` at run time, so a new sweep widens the
-   check by itself. Still to move: subprogram assembly -- signature,
-   prologue, module rendering -- and the `main()` driver, which becomes
-   `Transform.apply`.
+   the call statement's intent rewriting. Subprogram assembly is done:
+   `recast.transform.numpy.subprograms`, the function around the statements
+   -- the signature that turns `intent(out)` arguments into return values,
+   the determinizing prologue for everything Fortran leaves undefined, the
+   block markers everything downstream keys on, patches, deferral, and the
+   block report that travels with the Candidate. Checked whole-subprogram
+   against the pipeline over the six schemes with full operator tables and
+   the twenty-one batch-swept modules: 276 subprograms, 2,793 blocks, 18,520
+   emitted lines, byte-identical with refusal prose normalized and refusal
+   placement compared strictly. `tools/emit_diff.py` keeps that check
+   standing, the emission analog of `golden_diff.py`; it discovers the swept
+   modules from the translator's `extracted_auto/` at run time, so a new
+   sweep widens the check by itself. Still to move: module-level rendering
+   -- the header, the type factories, module state -- and the `main()`
+   driver, which becomes `Transform.apply`.
 
 ## Where this repository disagrees with the pipeline: it does not
 
