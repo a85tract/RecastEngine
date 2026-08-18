@@ -790,7 +790,7 @@ class Statements:
                 # Fortran sequence association: a lower-rank actual fills the
                 # dummy in column-major order.
                 shape = ", ".join(
-                    substitutions.get(d["ub"], "") or self._bound(d["ub"]) for d in formal_dims
+                    substitutions.get(d["ub"], "") or self.bound(d["ub"]) for d in formal_dims
                 )
                 rendered = f"np.reshape({rendered}, ({shape},), order='F')"
             elif (
@@ -933,7 +933,7 @@ class Statements:
             return f"{self.names.symbol(name)}[{', '.join(parts)}]"
 
         shape = ", ".join(
-            substitutions.get(d["ub"], "") or self._bound(d["ub"]) for d in formal_dims
+            substitutions.get(d["ub"], "") or self.bound(d["ub"]) for d in formal_dims
         )
         flat = f"{self.names.symbol(name)}.ravel(order='F')"
         shifts = []
@@ -944,7 +944,7 @@ class Statements:
         stride = "1"
         for at in range(1, len(shifts)):
             high = actual_dims[at - 1].get("ub", "1")
-            high_py = self._bound(high) if not high.isdigit() else high
+            high_py = self.bound(high) if not high.isdigit() else high
             stride = f"{stride} * {high_py}"
             offset = f"{offset} + {shifts[at]} * {stride}"
         return f"np.reshape({flat}[{offset}:], ({shape},), order='F')"
@@ -960,7 +960,7 @@ class Statements:
             return f"{self.names.literal(node)} - 1"
         return f"{self.expressions.render(node)} - 1"
 
-    def _bound(self, text: str) -> str:
+    def bound(self, text: str) -> str:
         """Declared bound text -> Python. Bound texts are simple -- names,
         integers, ``+ - * /``, parentheses, ``size(a, n)`` -- by construction;
         anything else refuses the statement that needed the bound."""
