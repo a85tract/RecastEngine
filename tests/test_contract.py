@@ -66,6 +66,10 @@ def test_core_imports_no_domain_packages() -> None:
         # precision gfortran folds it at. Both belong to the emitted artifact,
         # not to the engine.
         "recast.transform.numpy": {"numpy", "mpmath"},
+        # The notary's whole job is exact-arithmetic comparison; sympy and
+        # mpmath are its instrument, imported lazily behind the [verify]
+        # extra so a bare install still registers the plugin.
+        "recast.verify.notary": {"sympy", "mpmath"},
     }
     root = Path(recast.__file__).parent
     offenders = []
