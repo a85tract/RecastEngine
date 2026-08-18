@@ -21,18 +21,27 @@ from recast.transform.numpy import runtime, vocabulary
 
 def test_every_name_this_backend_spells_is_one_the_frontend_knows() -> None:
     """The two halves of the same fact. That ``sqrt`` is an intrinsic lives in
-    the frontend; that it becomes ``math.sqrt`` lives here. An entry here with
-    no counterpart there is a name the read/write analysis would report as a
-    variable read -- which is exactly how ``transpose``, ``minloc`` and
-    ``cshift`` came to be counted as variables at seven sites in CAM.
-    """
+    the frontend; that it becomes ``math.sqrt`` lives here."""
     spelled = (
         set(vocabulary.ELEMENTAL_SCALAR)
         | set(vocabulary.ELEMENTAL_ARRAY)
         | set(vocabulary.REDUCTIONS)
-        | vocabulary.ARRAY_TRANSFORM
     )
     assert spelled <= intrinsics.ALL, sorted(spelled - intrinsics.ALL)
+
+
+def test_the_array_transforms_are_deliberately_not_in_that_set() -> None:
+    """The pipeline this came from kept them in a fourth table that its
+    read/write analysis never consulted, so ``transpose``, ``minloc`` and
+    ``cshift`` are reported as variable reads -- seven sites across the thirty
+    CAM modules, none of them in a module that was ever translated.
+
+    That is a divergence between the analysis and the emitter, and this
+    repository keeps it. The pipeline's answers are the ones a bit-exact gate
+    has been run against; the tidier answer has not, and none of the seven
+    sites has a translation to check it against.
+    """
+    assert not (vocabulary.ARRAY_TRANSFORM & intrinsics.ALL)
 
 
 def test_every_array_variant_has_a_scalar_one() -> None:

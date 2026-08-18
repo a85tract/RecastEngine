@@ -110,13 +110,19 @@ def test_a_local_shadows_module_state(sem) -> None:
     assert sem.declaration("nothing_here") is None
 
 
-def test_a_local_parameter_array_is_an_array(sem) -> None:
-    """The pipeline this came from looked for local parameters in one method
-    and not in the other, so a 16-element lookup table answered "array" to
-    ``is_array_var`` and "scalar" to ``expr_rank``. Latent in CAM only because
-    every use of that table happens to be subscripted."""
+def test_a_local_parameter_array_answers_array_to_one_question_and_scalar_to_the_other(
+    sem,
+) -> None:
+    """The pipeline this came from looked for local parameters in its type and
+    array queries and not in its shape query, so a 16-element lookup table is
+    an array to ``is_array`` and a scalar to ``rank``.
+
+    Reproduced rather than resolved. These are the answers a bit-exact gate has
+    been run against, and nothing in CAM distinguishes them -- every use of
+    such a table there is subscripted, which goes through ``is_array``.
+    """
     assert sem.is_array("table")
-    assert sem.rank(_name("table")) == 1
+    assert sem.rank(_name("table")) == 0
 
 
 # --- rank --------------------------------------------------------------------
@@ -163,17 +169,25 @@ def test_an_elemental_function_broadcasts_its_actuals(tmp_path: Path) -> None:
     assert sem.rank(Part_Ref("twice(pi)")) == 0
 
 
-def test_a_call_to_the_modules_own_generic_interface_is_answered(tmp_path: Path) -> None:
-    """The pipeline this came from resolved a *companion* module's generic
-    interfaces and refused on its own -- an asymmetry with no reason behind it,
-    and 29 sites in five CAM modules where it refused an answer it already
-    knew how to give."""
+def test_a_call_to_the_modules_own_generic_interface_refuses_a_rank(tmp_path: Path) -> None:
+    """A *companion* module's generic interfaces get an answer and the
+    module's own do not -- an asymmetry the pipeline this came from has, and
+    29 sites in five CAM modules where it declines an answer it knows.
+
+    Kept. Those sites went to the agent queue and were written by hand, so
+    answering here would translate mechanically what the gated artifact has
+    written another way.
+    """
     src = tmp_path / "shapes.f90"
     src.write_text(SOURCE)
     sem = semantics.for_subprogram(interface.extract(src), "drive")
     from fparser.two.Fortran2003 import Part_Ref
 
-    assert sem.rank(Part_Ref("scale_it(v, pi)")) == 0
+    with pytest.raises(semantics.Unanalyzable):
+        sem.rank(Part_Ref("scale_it(v, pi)"))
+    assert sem.dispatch("scale_it", list(f03.Actual_Arg_Spec_List("v, pi").children)) == (
+        "scale_vector"
+    ), "dispatch is a separate question and still has an answer"
 
 
 # --- type --------------------------------------------------------------------

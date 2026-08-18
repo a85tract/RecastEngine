@@ -508,13 +508,15 @@ end module derived_mod
 """
 
 
-def test_a_component_name_is_not_a_read_on_either_path(tmp_path: Path) -> None:
-    """``b % q`` writes ``b``; ``q`` is an attribute of it, not a symbol, and
-    the target side spells it the same way and does not report it either.
+def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) -> None:
+    """``b % q`` writes ``b``. On an assignment, ``q`` is an attribute and not
+    a symbol; passed to an intent(out) dummy, the pipeline this came from
+    counts it as a read as well.
 
-    The pipeline this came from agreed on the assignment path and disagreed on
-    the out-argument path, which made every derived-type output argument look
-    like a mismatch the moment it was cross-checked.
+    The two disagree, and the disagreement is preserved. Resolving it would be
+    a change to answers a bit-exact gate has been run against, and the two
+    sites in CAM where it shows are both in modules with no translation to
+    check the tidier answer against.
     """
     from recast.fortran import rwset
 
@@ -526,7 +528,7 @@ def test_a_component_name_is_not_a_read_on_either_path(tmp_path: Path) -> None:
         if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
     )
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
-    assert blocks["B001"] == {"id": "B001", "reads": ["n"], "writes": ["b"]}, "out-argument"
+    assert blocks["B001"] == {"id": "B001", "reads": ["n", "q"], "writes": ["b"]}, "out-argument"
     assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
 
 

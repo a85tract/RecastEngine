@@ -93,6 +93,15 @@ class Semantics:
     """
 
     generics: dict[str, list[str]] = field(default_factory=dict)
+    """Generic interfaces declared in this module."""
+
+    companion_generics: dict[str, list[str]] = field(default_factory=dict)
+    """Generic interfaces reached through a sibling translated module.
+
+    Kept apart from the module's own only because ``rank`` treats them
+    differently, and it treats them differently because the pipeline this came
+    from did. See ``_reference_rank``.
+    """
     types: dict[str, dict[str, Any]] = field(default_factory=dict)
     parameters: frozenset[str] = frozenset()
     """Names that are compile-time constants, including companions'."""
@@ -114,6 +123,22 @@ class Semantics:
             *self.module["module_parameters"],
         ):
             self._declared.setdefault(entry["name"], entry)
+        # `rank` looks in a narrower table than everything else, and only
+        # because the pipeline this came from did: its shape query skipped
+        # local parameters where its type and array queries did not. A
+        # 16-element lookup table therefore answers "array" to `is_array` and
+        # "scalar" to `rank`. Reproduced rather than resolved -- the
+        # pipeline's answers are the ones a bit-exact gate has been run
+        # against, and every use of such a table in CAM is subscripted, so
+        # nothing in the corpus distinguishes the two.
+        local_parameters = {p["name"] for p in self.subprogram["local_parameters"]}
+        self._declared_for_rank = {
+            name: entry
+            for name, entry in self._declared.items()
+            if name not in local_parameters
+            or any(a["name"] == name for a in self.subprogram["args"])
+            or any(loc["name"] == name for loc in self.subprogram["locals"])
+        }
 
     # -- declarations ---------------------------------------------------------
 
@@ -178,7 +203,7 @@ class Semantics:
         ):
             return 0
         if isinstance(node, f03.Name):
-            declared = self.declaration(str(node))
+            declared = self._declared_for_rank.get(str(node).lower())
             return len(declared["dims"]) if declared and declared.get("dims") else 0
         if isinstance(node, f03.Parenthesis):
             return self.rank(node.children[1])
@@ -219,7 +244,7 @@ class Semantics:
             return 0
         if name in self.procedures:
             return self._call_rank(self.procedures[name], items)
-        if name in self.generics:
+        if name in self.companion_generics:
             return 0  # the overload decides, and dispatch is a separate question
         if name in TRANSFORMATIONAL or name in STATE_QUERY - {"merge"}:
             return 0
@@ -349,7 +374,7 @@ class Semantics:
         half of that disagreement to keep: an overload picked wrongly changes
         which arguments are written, and nothing downstream re-checks it.
         """
-        candidates = self.generics.get(name)
+        candidates = self.generics.get(name) or self.companion_generics.get(name)
         if not candidates:
             raise AmbiguousDispatch(f"{name!r} is not a generic interface here")
 
@@ -432,11 +457,12 @@ def for_subprogram(
     """
     procedures = {s["name"]: s for s in record["subprograms"]}
     generics = dict(record["generics"])
+    companion_generics: dict[str, list[str]] = {}
     types = dict(record["types"])
     parameters = {p["name"] for p in record["module_parameters"]}
     for other in companions:
         procedures.update({s["name"]: s for s in other["subprograms"]})
-        generics.update(other["generics"])
+        companion_generics.update(other["generics"])
         types.update(other["types"])
         parameters |= {p["name"] for p in other["module_parameters"]}
 
@@ -452,6 +478,7 @@ def for_subprogram(
         subprogram=subprogram,
         procedures=procedures,
         generics=generics,
+        companion_generics=companion_generics,
         types=types,
         parameters=frozenset(parameters),
         statement_functions=statement_functions,
