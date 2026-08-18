@@ -58,6 +58,7 @@ fortran = "recast.fortran.frontend:factory"
 [project.entry-points."recast.verifiers"]
 # Quoted: an unquoted dotted key would be read as a nested table.
 "static.rwset" = "recast.verify.rwset:factory"
+"symbolic.notary" = "recast.verify.notary:factory"
 
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"
@@ -120,5 +121,5 @@ ignore_missing_imports = true
 # mpmath for a higher-precision fold, scipy for erf/erfc. Both fall back to a
 # pure-Python path, so neither is a dependency of anything.
 [[tool.mypy.overrides]]
-module = ["mpmath.*", "scipy.*"]
+module = ["mpmath.*", "scipy.*", "sympy.*"]
 ignore_missing_imports = true
