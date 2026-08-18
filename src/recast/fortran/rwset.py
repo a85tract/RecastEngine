@@ -213,6 +213,22 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
     reads: set[str] = set()
     writes: set[str] = set()
 
+    def _write_actual(actual: Any) -> None:
+        """Record an out-argument, the way the pipeline this came from did.
+
+        Differs from ``write_target`` on a derived-type actual: this counts the
+        *component* name as a read as well, where the assignment path does not.
+        The two disagree, and this repository keeps the disagreement rather
+        than resolving it, because the pipeline's answers are the ones a
+        bit-exact gate has been run against and this one has not.
+        """
+        if isinstance(actual, f03.Name):
+            writes.add(str(actual).lower())
+        elif isinstance(actual, (f03.Part_Ref, f03.Data_Ref)):
+            writes.add(str(actual.children[0]).lower())
+            for child in actual.children[1:]:
+                reads.update(expr_reads(child, scope))
+
     def write_target(target: Any) -> None:
         """Record an assignment target: the root is written, subscripts are read."""
         if isinstance(target, f03.Name):
@@ -254,7 +270,7 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             if formal["intent"] in ("IN", "INOUT", "UNKNOWN"):
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
-                write_target(actual)
+                _write_actual(actual)
 
     def visit(stmt: Any) -> None:
         if isinstance(stmt, f03.Assignment_Stmt):

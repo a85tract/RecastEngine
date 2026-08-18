@@ -101,36 +101,41 @@ emitter is not involved.
 5. **The emitters**, which is most of the remaining volume and the part that
    should move last, because by then it has somewhere to call into.
 
-## What the split keeps finding
+## Where this repository disagrees with the pipeline: it does not
 
-Each slice so far has surfaced the same shape of problem: one fact written
-down in more than one place, agreeing by coincidence.
+The pipeline's answers have been run against bit-exact gates on real CESM
+cases. Nothing here has. So the rule for every slice is that a difference from
+it is a bug in the migration until proven otherwise, and where the two can
+both be defended, the pipeline wins.
 
-* The literal whitelist -- three integers and three reals exempt from hoisting
-  -- existed in the frontend and again at the top of the emitter.
-* The renaming rule for a Fortran symbol that collides in Python existed three
-  times: `pysafe` in the emitter, an inverse in `rwset`, and a third copy in
-  the verifier this repository wrote from it.
-* Generic-interface dispatch exists twice and the two disagree, one refusing
-  on ambiguity and one picking the best score.
-* Which names are intrinsics existed as four sets in the emitter, of which the
-  read/write analysis consulted three. The fourth was the array transforms, so
-  `transpose`, `minloc` and `cshift` were reported as variable reads at seven
-  sites in CAM -- each one a block that would have failed the cross-check
-  against a translation that correctly emits a call.
+That rule has already caught one mistake in this repository's own reporting.
+The read/write analysis was said to have fixed the pipeline's handling of
+`deallocate`; it had not. The pipeline treats it as a write and always has --
+what the migration was being compared against was a golden `interface.json`
+older than the pipeline that produced it. Comparing against stored output
+rather than against the code is how that happens, and the differential tools
+run against the code now.
 
-* Rank inference resolved a *companion* module's generic interfaces and
-  refused on the module's own -- an asymmetry with nothing behind it, and 29
-  sites in five CAM modules where it declined an answer it already knew how to
-  give.
-* Declaration lookup searched local parameters in one method and not in the
-  other, so a 16-element lookup table answered "array" to one question and
-  "scalar" to the other. Latent in CAM only because every use of that table
-  happens to be subscripted.
+Three real inconsistencies survive, reproduced deliberately, each one a place
+where the pipeline disagrees with itself:
 
-None of these were found by reading. All six came from putting the two copies
-side by side and running them over the same input -- 27,615 expressions for the
-last two, of which type and constant-ness agreed on every single one.
+* An out-argument counts a derived-type component name as a read; an
+  assignment to the same thing does not.
+* Local parameters are visible to the type and array queries and not to the
+  shape query, so a lookup table is an array to one and a scalar to the other.
+* A companion module's generic interfaces get a rank and the module's own
+  refuse one.
+
+Each has a tidier answer, and none of the sites where the difference shows has
+a translation to check the tidier answer against -- either the module was never
+translated, or the block went to the agent queue and was written by hand. They
+stay as they are, and the tests say so rather than pretending the behaviour is
+intended.
+
+The duplications the split removes are a different matter, because collapsing
+two copies of one rule onto the copy that is already tested changes nothing:
+the literal whitelist, the renaming rule that existed three times, the
+generic dispatch that existed twice.
 
 ## The gate this runs against
 

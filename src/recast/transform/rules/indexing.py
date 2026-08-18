@@ -145,20 +145,30 @@ def _is_negative(step: Any) -> bool:
     return text.startswith("-")
 
 
-def fold(position: Position, whitelist: frozenset[str]) -> int | None:
-    """The zero-based value of a literal subscript, when writing it is allowed.
+def fold_index(node: Any, origin: str, whitelist: frozenset[str]) -> int | None:
+    """The zero-based value of a literal index, when writing it is allowed.
 
     ``None`` means the backend has to emit the shift rather than its result:
-    either the subscript is not a literal, or folding it would put a number in
-    the output that the zero-literal rule had just taken out. ``a(3)`` folds to
-    ``2``; ``a(17)`` does not fold, because 16 is not a constant anyone named.
+    either the index is not a literal, or the dimension is not based at one, or
+    folding would put a number in the output that the zero-literal rule had just
+    taken out. ``a(3)`` folds to ``2``; ``a(17)`` does not, because 16 is not a
+    constant anyone named.
+
+    Takes a node rather than a ``Position`` because the rule applies wherever an
+    index appears, and a range's lower bound is one -- ``a(1:n)`` starts at zero,
+    not at ``1 - 1``.
     """
-    if position.kind is not Kind.INDEX or not position.shifts_by_one:
+    if origin != UNIT_ORIGIN or not isinstance(node, f03.Int_Literal_Constant):
         return None
-    if not isinstance(position.index, f03.Int_Literal_Constant):
-        return None
-    folded = int(str(position.index).split("_")[0]) - 1
+    folded = int(str(node).split("_")[0]) - 1
     return folded if str(folded) in whitelist else None
+
+
+def fold(position: Position, whitelist: frozenset[str]) -> int | None:
+    """``fold_index`` for a scalar subscript position."""
+    if position.kind is not Kind.INDEX:
+        return None
+    return fold_index(position.index, position.origin, whitelist)
 
 
 @dataclass(frozen=True)

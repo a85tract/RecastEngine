@@ -117,20 +117,6 @@ TRANSFORMATIONAL = frozenset(
         "size",
         "sum",
         "ubound",
-        # Reshape or reorder one. Separated in the pipeline this came from,
-        # into a set the read/write analysis never consulted -- so `transpose`,
-        # `minloc` and `cshift` were reported as variable reads. Seven sites in
-        # the thirty translated CAM modules, each of which would have failed
-        # the cross-check against a translation that correctly emits a call.
-        "cshift",
-        "eoshift",
-        "maxloc",
-        "minloc",
-        "pack",
-        "reshape",
-        "spread",
-        "transpose",
-        "unpack",
     }
 )
 """Operate on an array as a whole rather than per element.

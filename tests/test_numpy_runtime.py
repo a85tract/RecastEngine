@@ -125,11 +125,12 @@ def test_dot_product_accumulates_in_order() -> None:
     assert runtime._f_vdot(a, b) == 0.0
 
 
-def test_dot_product_refuses_mismatched_lengths() -> None:
-    """Invalid Fortran either way; silently truncating it produces a number
-    that looks like an answer."""
-    with pytest.raises(ValueError):
-        runtime._f_vdot(np.ones(3), np.ones(4))
+def test_dot_product_stops_at_the_shorter_operand() -> None:
+    """Not a property worth having, and kept anyway: this is the emitted
+    runtime, and it went through bit-exact gates in this form. A length
+    mismatch is invalid Fortran that never reaches here, so tightening it
+    would change gated code to guard against something that cannot happen."""
+    assert runtime._f_vdot(np.ones(3), np.ones(4)) == 3.0
 
 
 def test_huge_and_tiny_follow_the_argument_type() -> None:

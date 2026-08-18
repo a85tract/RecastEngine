@@ -126,7 +126,10 @@ def _f_vdot(a: Any, b: Any) -> Any:
     rounds differently."""
     if _LIBM_STRICT:
         s = 0.0
-        for x, y in zip(np.ravel(a), np.ravel(b), strict=True):
+        # Unchecked on purpose: this is the emitted runtime, and it has
+        # been through bit-exact gates in this form. A length mismatch is
+        # invalid Fortran that never reaches here.
+        for x, y in zip(np.ravel(a), np.ravel(b)):  # noqa: B905
             s += x * y
         return s
     return np.dot(a, b)
