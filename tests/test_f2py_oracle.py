@@ -247,3 +247,27 @@ def test_the_translate_spine_ends_bit_exact(tmp_path: Path) -> None:
         unit, broken, ref, broken_workspace, executor, {**config, "rtol": 1e-3}
     )
     assert excused.confidence is Confidence.TOLERANCED
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
+    """The roadmap's P2 claim, literally: `recast run translate examples/...`
+    walks every stage and leaves evidence manifests behind."""
+    import json
+    import shutil as _shutil
+
+    from recast.cli import main
+
+    example = Path(__file__).resolve().parent.parent / "examples" / "toy_physics"
+    staged = tmp_path / "toy_physics"
+    _shutil.copytree(example, staged, ignore=_shutil.ignore_patterns(".recast"))
+
+    code = main(["run", "translate", str(staged), "--config", str(staged / "recast.json")])
+    assert code == 0
+    manifests = list((staged / ".recast" / "evidence").rglob("*.json"))
+    assert len(manifests) == 3  # rwset, bitexact, notary
+    results = {json.loads(m.read_text())["result"]["verdict"] for m in manifests}
+    assert results == {"sampled", "bit_exact", "symbolic"}

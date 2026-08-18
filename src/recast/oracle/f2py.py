@@ -180,7 +180,7 @@ class F2pyGoldenOracle(Oracle):
         build = workspace / f"oracle-{key.rsplit(':', 1)[-1]}"
         build.mkdir(parents=True, exist_ok=True)
 
-        source = Path(config.get("root", ".")) / facts.provenance["source"]
+        source = (Path(config.get("root", ".")) / facts.provenance["source"]).resolve()
         subprograms = self._subprograms(facts, config)
         wrapper_text, wrapper_names = wrappers_for(facts.interface, subprograms)
         (build / "wrappers.f90").write_text(wrapper_text)
@@ -188,7 +188,7 @@ class F2pyGoldenOracle(Oracle):
         compiler = config.get("fc", "gfortran")
         module_name = f"ref_{facts.interface['module']}"
         sources = [
-            *[str(Path(s)) for s in config.get("extra_sources", [])],
+            *[str(Path(s).resolve()) for s in config.get("extra_sources", [])],
             str(source),
             "wrappers.f90",
         ]

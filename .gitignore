@@ -30,3 +30,4 @@ findings-local/
 # Anything site-specific belongs in a case repo, not here
 .env
 config.local.*
+examples/**/.recast/

@@ -1,9 +1,9 @@
 """The ``recast`` command line.
 
-P1 ships the introspection surface only -- enough to see what is registered and
-what a recipe would do, before any of it can actually run. ``recast doctor`` and
-``recast plan`` are how you check that a plugin set is wired correctly without
-burning HPC allocation to find out.
+Introspection first -- ``recast doctor`` and ``recast plan`` check that a
+plugin set is wired correctly without burning HPC allocation to find out --
+and then ``recast run``, which walks a recipe's stages over a source tree
+and leaves Evidence behind.
 """
 
 from __future__ import annotations
@@ -81,6 +81,44 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from recast.run import run_recipe
+
+    cls = BUILTIN.get(args.recipe)
+    if cls is None:
+        raise RecastError(f"unknown recipe {args.recipe!r}; try `recast recipes`")
+    config = {}
+    if args.config:
+        path = Path(args.config)
+        if path.suffix == ".toml":
+            import tomllib
+
+            config = tomllib.loads(path.read_text())
+        else:
+            config = json.loads(path.read_text())
+    if args.unit:
+        config["units"] = list(args.unit)
+
+    run = run_recipe(cls(), Path(args.root), config)
+    for unit_run in run.units:
+        print(f"{unit_run.unit.uid}")
+        for outcome in unit_run.outcomes:
+            mark = {"ok": "ok ", "failed": "FAIL", "skipped": "skip"}[outcome.status]
+            detail = f"  {outcome.detail}" if outcome.detail else ""
+            print(f"  [{mark}] {outcome.kind:10s} {outcome.plugin:26s}{detail}")
+        for uri in unit_run.evidence:
+            print(f"  evidence: {uri}")
+    verdicts = [v for u in run.units for v in u.verdicts]
+    print()
+    print(
+        f"{len(run.units)} unit(s), {len(verdicts)} verdict(s), "
+        f"{'all passed' if run.passed else 'FAILED'}"
+    )
+    return 0 if run.passed else 1
+
+
 def _cmd_doctor(_args: argparse.Namespace) -> int:
     print(f"recast {__version__}  python {sys.version.split()[0]}")
     total = sum(len(REGISTRY.names(k)) for k in KINDS)
@@ -107,6 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("recipe")
     plan.add_argument("--config", help="JSON object of recipe config")
     plan.set_defaults(func=_cmd_plan)
+
+    run = sub.add_parser("run", help="walk a recipe's stages over a source tree")
+    run.add_argument("recipe")
+    run.add_argument("root", help="source tree to run over")
+    run.add_argument("--config", help="operator config, .json or .toml")
+    run.add_argument(
+        "--unit", action="append", help="unit uid to run (repeatable; default: top-level units)"
+    )
+    run.set_defaults(func=_cmd_run)
 
     sub.add_parser("doctor", help="check the installation").set_defaults(func=_cmd_doctor)
     return parser
