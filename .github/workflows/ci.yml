@@ -59,6 +59,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y gfortran
       - run: uv python install 3.11
       - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest tests/test_f2py_oracle.py tests/test_notary_verifier.py -v
+      # The public form of the same claim: one command, eight stages, evidence
+      # on disk. What the roadmap's P2 "Done when" literally names.
+      - run: uv run --extra fortran --extra translate --extra verify recast run translate examples/toy_physics --config examples/toy_physics/recast.json
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.

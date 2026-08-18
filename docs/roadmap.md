@@ -53,10 +53,17 @@ blocks) → `static.rwset` (50 blocks match) → `f2py-golden` (gfortran 16, the
 reference's own flags) → `differential.bitexact`: 400/400 points bit-exact
 across the seven public API functions, under the golden set's init constants.
 `tests/test_f2py_oracle.py` keeps a compiler-gated copy of that spine, and
-breaks the candidate on purpose to prove the gate can fail. What remains of
-the phase is orchestration -- a runner that walks a recipe's stages so the
-same chain is one command -- and the standing migration duty the two
-differential tools carry.
+breaks the candidate on purpose to prove the gate can fail.
+
+And the chain is one command: `recast.run` walks a recipe's stages -- order,
+fail-fast gates, the oracle cache, optional-stage downgrades -- and writes
+one CC-Test evidence manifest per Verdict through the store, because a
+Candidate without Evidence is a draft regardless of how good it looks.
+`recast run translate examples/toy_physics --config .../recast.json` is the
+public form, runs in CI's spine job, and ends with three manifests on disk:
+sampled, bit_exact, symbolic. P2's remaining obligation is the standing one
+the two differential tools carry: the translator keeps being developed, and
+`golden_diff` and `emit_diff` re-run against whatever it looks like next.
 
 Two checks, because "no site paths" and "same answers" are different claims.
 `tools/golden_diff.py` runs a migrated stage over the sources the original
