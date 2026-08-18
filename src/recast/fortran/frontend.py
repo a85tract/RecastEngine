@@ -114,6 +114,7 @@ class FortranFrontend(Frontend):
         kind_assumptions: dict[str, str] | None = None,
         extern_constants: Iterable[str] = (),
         intent_overrides: dict[str, Any] | None = None,
+        externals: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """
         ``kind_assumptions`` maps kind parameters this tree use-imports from
@@ -121,9 +122,11 @@ class FortranFrontend(Frontend):
         names constants a sibling translation already defines, so that an
         expression over them classifies as resolvable rather than as a refusal.
         ``intent_overrides`` is ``{subprogram: {arg: "IN"|"OUT"|"INOUT"}}`` for
-        dummy arguments the source declares no intent for.
+        dummy arguments the source declares no intent for. ``externals`` is
+        ``{procedure: {"out_positions": [...]}}`` for procedures called from
+        this tree whose source is not in it.
 
-        All three are configuration rather than module state on purpose: the
+        All four are configuration rather than module state on purpose: the
         command-line ancestor of this frontend kept them in globals and in
         files it went looking for, which made the answer depend on what had run
         before and on what happened to be on disk beside the source.
@@ -135,6 +138,7 @@ class FortranFrontend(Frontend):
         self.kind_assumptions = dict(kind_assumptions or {})
         self.extern_constants = frozenset(extern_constants)
         self.intent_overrides = dict(intent_overrides or {})
+        self.externals = dict(externals or {})
 
     # --- discovery -----------------------------------------------------------
 
@@ -197,6 +201,7 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
         from recast.fortran.interface import _scope_of
+        from recast.fortran.rwset import block_rwsets, scope_for
 
         path = self._source_of(unit, Path(root))
         if "parse_error" in unit.attrs:
@@ -227,11 +232,15 @@ class FortranFrontend(Frontend):
             callgraph[sub_uid] = [f"{module_uid}/{c}" for c in sub["calls"]] + _external_calls(
                 nodes[sub_name], defined
             )
+            scope = scope_for(record, sub_name, externals=self.externals)
             effects[sub_uid] = {
                 "reads": sub["module_state_read"],
                 "writes": sub["module_state_written"],
                 "optional_args": sub["present_calls"],
                 **side_channels(nodes[sub_name]),
+                # Per block, so a Verifier comparing against a translation can
+                # name the piece of code that disagrees rather than the routine.
+                "blocks": block_rwsets(nodes[sub_name], scope),
             }
 
         return Facts(
@@ -249,6 +258,7 @@ class FortranFrontend(Frontend):
                 "kind_assumptions": dict(self.kind_assumptions),
                 "extern_constants": sorted(self.extern_constants),
                 "intent_overrides": dict(self.intent_overrides),
+                "externals": dict(self.externals),
             },
         )
 
@@ -310,4 +320,5 @@ def factory(**config: Any) -> FortranFrontend:
         kind_assumptions=config.get("kind_assumptions"),
         extern_constants=config.get("extern_constants", ()),
         intent_overrides=config.get("intent_overrides"),
+        externals=config.get("externals"),
     )
