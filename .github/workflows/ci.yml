@@ -47,6 +47,19 @@ jobs:
       # rather than skip for want of fparser.
       - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran --extra translate pytest --cov=recast
 
+  # The whole translate spine against a real compiler: frontend, transform,
+  # rwset gate, f2py-golden oracle, differential.bitexact -- ending bit-exact,
+  # and failing when the candidate is corrupted on purpose. This is the only
+  # job that compiles Fortran, so it alone installs gfortran.
+  spine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v3
+      - run: sudo apt-get update && sudo apt-get install -y gfortran
+      - run: uv python install 3.11
+      - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest tests/test_f2py_oracle.py tests/test_notary_verifier.py -v
+
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.
   bare:
