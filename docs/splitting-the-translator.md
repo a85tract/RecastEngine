@@ -74,13 +74,15 @@ emitter is not involved.
    output the translation has to match -- so they sit on the
    target-independent side where a second backend can read them.
 
-3. **Fortran semantics into the frontend.** Removes the duplication that
-   already exists: `translate.py` and `rwset.py` each carry a generic-dispatch
-   implementation, and they disagree -- one refuses on ambiguity, the other
-   scores the candidates and picks the best. Across the thirty translated CAM
-   modules there are only three generic call sites and all three match cleanly,
-   so the disagreement is latent rather than active. It is a trap, not a fire,
-   and it gets closed here rather than after it costs someone a day.
+3. **Fortran semantics into the frontend.** Done: `recast.fortran.semantics`.
+   The duplicated generic dispatch is closed on the strict implementation --
+   the one that refuses when a call matches none of its specifics or more than
+   one -- and `rwset` reads a refusal as an unresolved external rather than
+   scoring the candidates itself. All three generic call sites in the thirty
+   translated CAM modules still resolve, and the read/write sets are unchanged.
+
+   `dim_lb` and `dim_expr` look like siblings of these and stayed behind: their
+   answer is Python text, so they belong to whoever has a target language.
 
 4. **Index and slice rewriting into rules.**
 
@@ -105,8 +107,18 @@ down in more than one place, agreeing by coincidence.
   sites in CAM -- each one a block that would have failed the cross-check
   against a translation that correctly emits a call.
 
-None of these were found by reading. All four came from putting the two copies
-side by side and running them over the same input.
+* Rank inference resolved a *companion* module's generic interfaces and
+  refused on the module's own -- an asymmetry with nothing behind it, and 29
+  sites in five CAM modules where it declined an answer it already knew how to
+  give.
+* Declaration lookup searched local parameters in one method and not in the
+  other, so a 16-element lookup table answered "array" to one question and
+  "scalar" to the other. Latent in CAM only because every use of that table
+  happens to be subscripted.
+
+None of these were found by reading. All six came from putting the two copies
+side by side and running them over the same input -- 27,615 expressions for the
+last two, of which type and constant-ness agreed on every single one.
 
 ## The gate this runs against
 
