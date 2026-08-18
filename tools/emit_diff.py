@@ -60,10 +60,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from recast.fortran import constants as fconstants
 from recast.fortran import interface as finterface
 from recast.fortran._parse import f03, parse, walk
+from recast.transform.numpy.constants import constants_module
 from recast.transform.numpy.expressions import Remote
 from recast.transform.numpy.modules import Modules
 from recast.transform.numpy.subprograms import Subprograms
-from recast.transform.numpy.vocabulary import pysafe
+from recast.transform.numpy.translate import companion_tables as companion_views
 from recast.transform.profiles import PROFILES
 
 REASON_IN_MARKER = re.compile(r"(# B\d{3} <- L\d+-L\d+ AGENT_QUEUE: ).*")
@@ -144,29 +145,16 @@ def companion_tables(
     if config_path is None:
         return [], [], {}, {}
     configured = json.loads((root / config_path).read_text())
-    fixed, records = [], []
-    remotes: dict[str, Remote] = {}
-    globals_: dict[str, str] = {}
+    fixed, entries = [], []
     for companion in configured:
         stale = json.loads((root / companion["interface"]).read_text())
         record = finterface.extract(root / stale["source_file"])
         live = scratch / f"companion_{record['module']}.json"
         live.write_text(json.dumps(record))
         fixed.append({**companion, "interface": str(live)})
-        records.append(record)
-        alias = companion["alias"]
-        subprograms = {s["name"]: s for s in record["subprograms"]}
-        renames = {k.lower(): v.lower() for k, v in (companion.get("renames") or {}).items()}
-        for local, remote in renames.items():
-            if remote in subprograms:
-                remotes[local] = Remote(alias, remote)
-        for subprogram in record["subprograms"]:
-            remotes.setdefault(subprogram["name"], Remote(alias, subprogram["name"]))
-        for parameter in record["module_parameters"]:
-            globals_.setdefault(parameter["name"], f"{alias}.{pysafe(parameter['name'].upper())}")
-        for state in record["module_state"]:
-            globals_.setdefault(state["name"], f"{alias}.{pysafe(state['name'])}")
-    return fixed, records, remotes, globals_
+        entries.append({**companion, "record": record})
+    records, remotes, globals_, _imports = companion_views(entries)
+    return fixed, list(records), remotes, globals_
 
 
 def pipeline_module(
@@ -223,6 +211,26 @@ def pipeline_module(
     return body, text[sig_start:sig_end], height, json.loads(report.read_text())
 
 
+def pipeline_constants(root: Path, scratch: Path, name: str, source: Path) -> str:
+    """Run the pipeline's extract_constants.py; -> the generated constants.py."""
+    out = scratch / f"{name}_constants.py"
+    command = [
+        sys.executable,
+        str(root / "pipeline" / "extract_constants.py"),
+        str(source),
+        "-o",
+        str(out),
+        "--map",
+        str(scratch / f"{name}_constants_map.json"),
+    ]
+    finished = subprocess.run(  # noqa: S603 -- our own interpreter, our own script
+        command, cwd=scratch, capture_output=True, text=True, check=False
+    )
+    if finished.returncode != 0:
+        raise RuntimeError(f"extract_constants failed: {finished.stderr.strip()[-500:]}")
+    return out.read_text()
+
+
 def rebased(report: list[dict[str, Any]], height: int) -> list[dict[str, Any]]:
     """Report entries with reasons dropped and py_lines made header-relative."""
     normal = []
@@ -257,7 +265,7 @@ def main() -> int:
 
     scratch = ns.scratch or Path(tempfile.mkdtemp(prefix="emit_diff_"))
     scratch.mkdir(parents=True, exist_ok=True)
-    kinds = ["subprograms", "lines", "blocks", "deferred", "modules", "different"]
+    kinds = ["subprograms", "lines", "blocks", "deferred", "modules", "constants", "different"]
     totals = dict.fromkeys([*kinds, "skipped", "error"], 0)
 
     modules = list(MODULES)
@@ -379,6 +387,24 @@ def main() -> int:
                     print(f"  pipeline only |{a}")
                 for b in got[len(want) :]:
                     print(f"  engine only   |{b}")
+        want_consts = pipeline_constants(root, scratch, name, source)
+        got_consts = constants_module(fconstants.extract(source))
+        marker = "# ----- module-level parameters"
+        if want_consts[want_consts.index(marker) :] == got_consts[got_consts.index(marker) :]:
+            counts["constants"] += 1
+        else:
+            counts["different"] += 1
+            print(f"CONSTANTS DIFFERENT {name}")
+            if ns.verbose:
+                for a, b in zip(
+                    want_consts[want_consts.index(marker) :].splitlines(),
+                    got_consts[got_consts.index(marker) :].splitlines(),
+                    strict=False,
+                ):
+                    if a != b:
+                        print(f"  pipeline |{a}")
+                        print(f"  engine   |{b}")
+
         if not duplicated:
             renderer = Modules(
                 subprograms=assembler,

@@ -59,6 +59,9 @@ fortran = "recast.fortran.frontend:factory"
 # Quoted: an unquoted dotted key would be read as a nested table.
 "static.rwset" = "recast.verify.rwset:factory"
 
+[project.entry-points."recast.transforms"]
+"translate.numpy" = "recast.transform.numpy.translate:factory"
+
 [project.entry-points."recast.executors"]
 local = "recast.executors.local:factory"
 

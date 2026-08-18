@@ -23,9 +23,12 @@ optional dependencies installed, and `test_contract.py` passes.
 Move CESM-language-translator's `pipeline/` (22 modules, ~10k lines) in with
 history via `git filter-repo` path rewrite, refactoring as it lands:
 
-- `translate.py` (2,883 lines) splits into `rules/` + `backend/numpy`. It is
-  currently parser, rule library, and emitter at once, which is why nothing else
-  can reuse any part of it.
+- `translate.py` (2,883 lines) splits into `rules/` + `backend/numpy`. It was
+  parser, rule library, and emitter at once, which is why nothing else could
+  reuse any part of it. **Landed**: the split is complete
+  (`docs/splitting-the-translator.md`), ending in `translate.numpy` -- the
+  Transform the `translate` recipe names -- with `tools/emit_diff.py` holding
+  every emitted byte to the pipeline across 27 modules.
 - `extract_interface` / `extract_constants` / `chunk` / `resolve_use` become
   `recast-fortran`'s `Frontend`. **Landed** as `recast.fortran`, behind the
   `fortran` extra: the analysis is unchanged, but the rendering it used to do

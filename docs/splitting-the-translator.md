@@ -125,8 +125,24 @@ emitter is not involved.
    text follows the code. `tools/emit_diff.py` keeps all of it standing, the
    emission analog of `golden_diff.py`; it discovers the swept modules from
    the translator's `extracted_auto/` at run time, so a new sweep widens the
-   check by itself. All that remains of the split is wiring: the CLI
-   plumbing of `main()` becomes `Transform.apply` on the plugin contract.
+   check by itself.
+
+   And the wiring is done. `recast.transform.numpy.constants` renders the
+   generated constants module (byte-identical to `extract_constants.py`'s
+   over the corpus, held by the same tool) and the use-constants module,
+   from the same `Expr` trees the oracle's Fortran stand-in will render --
+   agreement by construction. `recast.transform.numpy.translate` is
+   `main()` reduced to what it always was underneath: a `Transform.apply`
+   that takes a Unit and its Facts, consults the operator's tables, and
+   returns a Candidate carrying the whole product -- module, constants,
+   use-constants, the block report, the deferred list that is the agent
+   queue, and the name-protocol table. It registers as `translate.numpy`,
+   which is the name the `translate` recipe's transform stage asks for.
+
+   The split is complete. Every line of `translate.py`,
+   `extract_constants.py`'s emission half, and `resolve_use.py`'s Python
+   half now has a home in the engine, and the differential says the homes
+   emit what the originals emitted.
 
 ## Where this repository disagrees with the pipeline: it does not
 
