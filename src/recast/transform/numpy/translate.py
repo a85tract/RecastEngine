@@ -105,11 +105,42 @@ def companion_tables(
     return tuple(records), remotes, globals_, tuple(imports)
 
 
+def _scaffolding_names() -> set[str]:
+    """Every emitted name that is machinery rather than data.
+
+    The runtime's definitions are read out of the runtime module itself
+    rather than kept as a list, so a shim added there is scaffolding here
+    without anyone remembering to say so twice.
+    """
+    import ast
+
+    from recast.transform.numpy import runtime
+    from recast.transform.numpy.vocabulary import (
+        ELEMENTAL_ARRAY,
+        ELEMENTAL_SCALAR,
+        REDUCTIONS,
+    )
+
+    names = {"np", "math", "os", "_ext", "_RUNTIME", "_SIGNATURES", "range", "SystemExit"}
+    # The backend spells some intrinsics as bare Python builtins -- abs, int,
+    # max, len. They are its vocabulary, so it declares them; a verifier that
+    # skipped builtin-looking names on its own would drop real dataflow on a
+    # Fortran variable that happens to be called `sum`.
+    for table in (ELEMENTAL_SCALAR, ELEMENTAL_ARRAY, REDUCTIONS):
+        names |= {spelling for spelling in table.values() if "." not in spelling}
+    for node in ast.parse(runtime.emit()).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    return names
+
+
 class NumpyTranslation(Transform):
     """Rule-driven Fortran to NumPy, refusing what it cannot prove out."""
 
     name = "recast.translate.fortran-to-numpy"
-    requires = ("interface", "constants")
+    requires = ("interface", "constants", "effects")
     deterministic = True
 
     def applicable(self, unit: Unit, facts: Facts) -> bool:
@@ -175,6 +206,14 @@ class NumpyTranslation(Transform):
                 use["resolved"], use["module_name"]
             ).encode()
 
+        # Emitted name -> source name, per subprogram: the record the
+        # read/write cross-check needs to undo the constant renames.
+        # Producing it is part of this Transform's obligation, not an
+        # internal detail (see ``names.as_protocol_table``).
+        renames = {
+            record["name"]: assembler.floors(record["name"]).names.as_protocol_table()
+            for record in facts.interface["subprograms"]
+        }
         return Candidate(
             unit=unit.uid,
             transform=self.name,
@@ -189,16 +228,79 @@ class NumpyTranslation(Transform):
                 "profile": assembler.profile.name,
                 "source_digest": facts.provenance.get("digest"),
                 "companions": [c["alias"] for c in config.get("companions", [])],
-                # Emitted name -> source name, per subprogram: the record the
-                # read/write cross-check needs to undo the constant renames.
-                # Producing it is part of this Transform's obligation, not an
-                # internal detail (see ``names.as_protocol_table``).
-                "renames": {
-                    record["name"]: assembler.floors(record["name"]).names.as_protocol_table()
-                    for record in facts.interface["subprograms"]
-                },
+                "renames": renames,
+                "rwset": self._rwset_protocol(
+                    unit, facts, report, renames, f"{module}_numpy.py", assembler
+                ),
             },
         )
+
+    def _rwset_protocol(
+        self,
+        unit: Unit,
+        facts: Facts,
+        report: list[dict[str, Any]],
+        renames: dict[str, dict[str, str]],
+        emitted_file: str,
+        assembler: Any,
+    ) -> dict[str, Any]:
+        """What ``static.rwset`` needs to cross-check this candidate.
+
+        Blocks pair the source's read/write sets (from ``Facts.effects``,
+        which the frontend computed per block) with the emitted line spans
+        this Transform produced for them. Deferred blocks are left out: a
+        ``raise NotImplementedError`` is not a translation, and the gate's
+        job is to judge translations.
+        """
+        from recast.transform.numpy.vocabulary import RESERVED, pysafe
+
+        blocks = []
+        for entry in report:
+            if entry["status"] == "agent_queue":
+                continue
+            effects = facts.effects.get(f"{unit.uid}/{entry['subprogram']}", {})
+            sets = next((b for b in effects.get("blocks", []) if b["id"] == entry["block"]), None)
+            if sets is None:
+                raise ConfigError(
+                    f"Facts.effects carries no read/write sets for "
+                    f"{entry['subprogram']}/{entry['block']}; the frontend and this "
+                    "transform chunked the source differently, which the gate "
+                    "cannot paper over"
+                )
+            blocks.append(
+                {
+                    "subprogram": entry["subprogram"],
+                    "block": entry["block"],
+                    "reads": sets["reads"],
+                    "writes": sets["writes"],
+                    "lines": entry["py_lines"],
+                }
+            )
+        names: dict[str, str] = {}
+        for table in renames.values():
+            names.update(table)
+        return {
+            "file": emitted_file,
+            "blocks": blocks,
+            "names": names,
+            "procedures": sorted(
+                {pysafe(record["name"]) for record in facts.interface["subprograms"]}
+                # The siblings' procedures too: `_wv.wv_sat_svp_water(t)` is a
+                # call, and without these the alias rule would read it as data.
+                | {remote.name for remote in assembler.remotes.values()}
+            ),
+            "aliases": sorted({remote.alias for remote in assembler.remotes.values()}),
+            "reserved": sorted(RESERVED),
+            "scaffolding": sorted(
+                _scaffolding_names()
+                | {f"_make_{t}" for t in assembler.record.get("types", {})}
+                | {
+                    f"_make_{t}"
+                    for companion in assembler.companions
+                    for t in companion.get("types", {})
+                }
+            ),
+        }
 
     @staticmethod
     def _verified_source(unit: Unit, facts: Facts, config: dict[str, Any]) -> Path:

@@ -642,3 +642,26 @@ def extract(
             for s in subs
         ],
     }
+
+
+def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Externals-table entries for every procedure of a sibling module's record.
+
+    A module that calls into an already-translated sibling resolves those
+    calls outside its own file, and the read/write analysis needs the same
+    fact the pipeline's ``--companions`` flag carried: which names are
+    procedures, and which argument positions they write. Deriving the table
+    from the sibling's own interface record keeps the intents from being
+    transcribed by hand, which is how they would drift.
+    """
+    table: dict[str, dict[str, Any]] = {}
+    for sub in record["subprograms"]:
+        table[sub["name"]] = {
+            "kind": sub["kind"],
+            "out_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument["intent"] in ("OUT", "INOUT")
+            ],
+        }
+    return table

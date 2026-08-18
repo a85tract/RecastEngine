@@ -87,9 +87,15 @@ class Protocol:
     procedures: frozenset[str] = frozenset()
     """Emitted names that stand for a source procedure.
 
-    Skipped as reads. A *store* to one is not skipped: assigning to a
-    function's own name is how Fortran returns a result, and dropping it would
-    lose the write the whole routine exists to make.
+    Skipped as reads -- a call is control flow, not dataflow -- with two
+    refinements the Fortran result convention forces. A *store* to one is not
+    skipped: assigning to a function's own name is how Fortran returns a
+    result, and dropping it would lose the write the whole routine exists to
+    make. And a *load* of the block's own subprogram name is not skipped
+    either, because inside ``f`` the name ``f`` is the result variable --
+    ``no_limiter = transfer(limiter_off, no_limiter)`` reads real data. A
+    load at callee position stays skipped even then, so recursion does not
+    count as a read.
     """
 
     reserved: frozenset[str] = frozenset()
@@ -103,6 +109,16 @@ class Protocol:
     Python keywords need no declaration: ``lambda_`` reads back as ``lambda``
     because ``lambda`` is a keyword, which is a fact about the language rather
     than about any backend.
+    """
+
+    aliases: frozenset[str] = frozenset()
+    """Module aliases whose attributes are a sibling translation's globals.
+
+    ``_wv.omeps`` is a write of the sibling's ``omeps``, not machinery: the
+    source spells the same thing as a bare use-imported name, and dropping it
+    would blind the gate to every cross-module state access. An attribute
+    that names a procedure stays skipped -- ``_wv.wv_sat_svp_water(t)`` is a
+    call -- which is why ``procedures`` carries the siblings' names too.
     """
 
     scaffolding: frozenset[str] = frozenset()
@@ -123,6 +139,7 @@ class Protocol:
             file=str(record.get("file", "")),
             names={str(k): str(v) for k, v in (record.get("names") or {}).items()},
             procedures=frozenset(record.get("procedures") or ()),
+            aliases=frozenset(record.get("aliases") or ()),
             reserved=frozenset(record.get("reserved") or ()),
             scaffolding=frozenset(record.get("scaffolding") or ()),
         )
@@ -131,10 +148,13 @@ class Protocol:
 class _Visitor(ast.NodeVisitor):
     """Read and write sets of emitted Python, in source-side vocabulary."""
 
-    def __init__(self, protocol: Protocol) -> None:
+    def __init__(self, protocol: Protocol, own: str = "") -> None:
         self.reads: set[str] = set()
         self.writes: set[str] = set()
         self.protocol = protocol
+        self.own = own
+        """The subprogram this block belongs to: a load of this name is its
+        result variable, not a call."""
 
     # -- name mapping ---------------------------------------------------------
 
@@ -153,8 +173,9 @@ class _Visitor(ast.NodeVisitor):
         if name in LITERALS or name in self.protocol.scaffolding:
             return None
         # A *store* to a procedure name is the Fortran result-variable
-        # convention (`function f(...)` assigning to `f`), not a call.
-        if name in self.protocol.procedures and not store:
+        # convention (`function f(...)` assigning to `f`), not a call; so is
+        # a *load* of the block's own name.
+        if name in self.protocol.procedures and not store and name != self.own:
             return None
         if HOISTED_LITERAL.fullmatch(name):
             return None
@@ -171,6 +192,17 @@ class _Visitor(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         self.record(node.id, store=isinstance(node.ctx, ast.Store))
 
+    def visit_Call(self, node: ast.Call) -> None:
+        """A procedure name at callee position is a call even when it is the
+        block's own name -- recursion is not a read of the result variable."""
+        callee = node.func
+        if not (isinstance(callee, ast.Name) and callee.id in self.protocol.procedures):
+            self.visit(callee)
+        for argument in node.args:
+            self.visit(argument)
+        for keyword_argument in node.keywords:
+            self.visit(keyword_argument.value)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """``a.b`` is a read or write of ``a``; ``b`` is a component of it.
 
@@ -181,7 +213,18 @@ class _Visitor(ast.NodeVisitor):
         root: ast.expr = node
         while isinstance(root, (ast.Attribute, ast.Subscript)):
             root = root.value
-        if isinstance(root, ast.Name):
+        if isinstance(root, ast.Name) and root.id in self.protocol.aliases:
+            attribute: ast.expr = node
+            while isinstance(attribute, (ast.Attribute, ast.Subscript)) and isinstance(
+                attribute.value, (ast.Attribute, ast.Subscript)
+            ):
+                attribute = attribute.value  # the innermost alias.X attribute
+            if isinstance(attribute, ast.Attribute):
+                name = attribute.attr
+                if name not in self.protocol.procedures:
+                    mapped = self.protocol.names.get(name, name.lower())
+                    (self.writes if isinstance(node.ctx, ast.Store) else self.reads).add(mapped)
+        elif isinstance(root, ast.Name):
             self.record(root.id, store=isinstance(node.ctx, ast.Store))
         else:
             self.generic_visit(node)
@@ -215,7 +258,9 @@ class _Visitor(ast.NodeVisitor):
         pass
 
 
-def span_rwset(tree: ast.Module, lo: int, hi: int, protocol: Protocol) -> tuple[set[str], set[str]]:
+def span_rwset(
+    tree: ast.Module, lo: int, hi: int, protocol: Protocol, own: str = ""
+) -> tuple[set[str], set[str]]:
     """Read and write sets of the statements between lines ``lo`` and ``hi``.
 
     Walks the whole file's tree rather than re-parsing the slice, because a
@@ -231,7 +276,7 @@ def span_rwset(tree: ast.Module, lo: int, hi: int, protocol: Protocol) -> tuple[
     saying so. Names that are scaffolding are neutralised where names are
     resolved; statements are never skipped for containing one.
     """
-    visitor = _Visitor(protocol)
+    visitor = _Visitor(protocol, own)
 
     def within(node: ast.AST) -> bool:
         line = getattr(node, "lineno", None)
@@ -342,7 +387,9 @@ class ReadWriteSetVerifier(StaticVerifier):
                 waived.append(f"{key}: {waivers[key]}")
                 continue
             lo, hi = block["lines"]
-            reads, writes = span_rwset(tree, int(lo), int(hi), protocol)
+            reads, writes = span_rwset(
+                tree, int(lo), int(hi), protocol, own=str(block["subprogram"])
+            )
             checked += 1
             want_reads, want_writes = set(block["reads"]), set(block["writes"])
             if reads != want_reads or writes != want_writes:

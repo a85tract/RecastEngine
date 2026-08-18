@@ -674,3 +674,95 @@ def test_an_externals_entry_says_which_arguments_a_procedure_writes(tmp_path: Pa
     nothing, which is wrong in whichever direction it actually behaves."""
     blocks = _construct_blocks(tmp_path, externals={"endrun": {"out_positions": [0]}})
     assert blocks["B009"] == {"id": "B009", "reads": [], "writes": ["label"]}
+
+
+# --- source-side rwset: shadowing and companion knowledge --------------------
+
+SHADOWED = """\
+module shadow_mod
+  use shr_kind_mod, only: r8 => shr_kind_r8
+  implicit none
+contains
+  subroutine interpolate(gamhat, n)
+    real(r8), intent(out) :: gamhat(n)
+    integer, intent(in) :: n
+    real(r8) :: gamma(4)
+    integer :: i
+    do i = 1, n
+      gamhat(i) = gamma(i)
+    end do
+    call qsat_water(gamhat(1), gamhat(2), gamma(1), gamma(2))
+    gamhat(1) = wv_sat_svp_water(gamma(1))
+  end subroutine interpolate
+end module shadow_mod
+"""
+
+
+def test_a_declared_array_shadows_an_intrinsic_name(tmp_path: Path) -> None:
+    """zm_conv declares ``gamma(pcols,pver)``; reading ``gamma(i,k)`` is
+    dataflow, not a call to GAMMA. The pipeline's source half skipped it as
+    an intrinsic while its target half counted it -- one of the places the
+    pipeline disagreed with itself, and here a corpus block showed the
+    difference, so the tidier answer wins on both halves."""
+    from recast.fortran import rwset
+
+    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED))
+    scope = rwset.scope_for(record, "interpolate")
+    blocks = {b["id"]: b for b in rwset.block_rwsets(_sub_node(tmp_path, "interpolate"), scope)}
+    assert "gamma" in blocks["B001"]["reads"]
+
+
+def test_companion_externals_carry_the_siblings_intents(tmp_path: Path) -> None:
+    """A call into an already-translated sibling resolves outside this file.
+    Without its intents, every actual is conservatively a read; with them,
+    the out positions are writes and a function reference is a call rather
+    than a read -- the fact the pipeline's --companions flag carried."""
+    from recast.fortran import rwset
+
+    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED))
+    node = _sub_node(tmp_path, "interpolate")
+
+    blind = rwset.scope_for(record, "interpolate")
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, blind)}
+    assert "gamhat" in blocks["B002"]["reads"]  # unknown callee: reads only
+    assert "wv_sat_svp_water" in blocks["B003"]["reads"]
+
+    informed = rwset.scope_for(
+        record,
+        "interpolate",
+        externals={
+            "qsat_water": {"kind": "subroutine", "out_positions": [2, 3]},
+            "wv_sat_svp_water": {"kind": "function", "out_positions": []},
+        },
+    )
+    informed_blocks = {b["id"]: b for b in rwset.block_rwsets(node, informed)}
+    assert "gamma" in informed_blocks["B002"]["writes"]
+    assert "wv_sat_svp_water" not in informed_blocks["B003"]["reads"]
+
+
+def test_companion_externals_derive_from_the_siblings_record(tmp_path: Path) -> None:
+    sibling = """\
+module sib_mod
+  use shr_kind_mod, only: r8 => shr_kind_r8
+  implicit none
+contains
+  subroutine qsat_water(t, p, es, qs)
+    real(r8), intent(in) :: t, p
+    real(r8), intent(out) :: es, qs
+    es = t
+    qs = p
+  end subroutine qsat_water
+end module sib_mod
+"""
+    record = interface.extract(_write(tmp_path, "sib.f90", sibling))
+    table = interface.companion_externals(record)
+    assert table["qsat_water"] == {"kind": "subroutine", "out_positions": [2, 3]}
+
+
+def _sub_node(tmp_path: Path, name: str):
+    tree = parse(tmp_path / "shadow.f90")
+    return next(
+        sub
+        for sub in walk(tree, (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == name
+    )
