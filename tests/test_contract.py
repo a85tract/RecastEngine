@@ -52,19 +52,24 @@ def test_core_imports_no_domain_packages() -> None:
     This is the mechanical form of the claim in the README. If it fails, some
     CESM/Fortran/JAX specific code has leaked out of a plugin and into the core.
     """
-    forbidden = {"numpy", "sympy", "mpmath", "numba", "jax", "anthropic", "netCDF4"}
+    forbidden = {"numpy", "sympy", "mpmath", "numba", "jax", "anthropic", "netCDF4", "fparser"}
+    # ``recast.fortran`` is the in-tree reference Frontend, so it is the one
+    # place a source-language parser belongs. Exempting it by name is the point:
+    # the day fparser appears anywhere else, this test says so.
+    exempt = {"recast.fortran": {"fparser"}}
     root = Path(recast.__file__).parent
     offenders = []
     for mod in pkgutil.walk_packages([str(root)], prefix="recast."):
         source = Path(mod.module_finder.path, mod.name.rsplit(".", 1)[-1] + ".py")  # type: ignore[attr-defined]
         if not source.exists():
             continue
+        allowed = {p for pkg, pkgs in exempt.items() if mod.name.startswith(pkg) for p in pkgs}
         for line in source.read_text().splitlines():
             stripped = line.strip()
             if not stripped.startswith(("import ", "from ")):
                 continue
             top = stripped.split()[1].split(".")[0]
-            if top in forbidden:
+            if top in forbidden and top not in allowed:
                 offenders.append(f"{mod.name}: {stripped}")
     assert not offenders, "core must not import domain packages:\n" + "\n".join(offenders)
 
