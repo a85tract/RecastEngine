@@ -35,12 +35,28 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
   went with the Transform that has a target language, and the kind table it
   reached into as a module global is now an argument.
 - `notary` / `highprec_verify` / `rwset` become `Verifier`s with honest
-  `provides` levels.
+  `provides` levels. **Landed**: `static.rwset` (SAMPLED, the first gate),
+  `symbolic.notary` (SYMBOLIC, over recorded rewrites), and
+  `differential.bitexact` (BIT_EXACT, with `TOLERANCED` only when the
+  operator asks), reporting in the ULP vocabulary of `recast.verify.ulp`.
 - `gen_wrapper` + the f2py build become the `f2py-golden` `Oracle`.
+  **Landed**: flat wrappers over the public API, the compile through the
+  executor, the cache key folding source digest, compiler version and flags.
 
 **Done when:** the `translate` recipe runs end to end on `examples/` and
 reproduces the existing bit-exact result for one scheme, with 408 files' worth
 of `/glade` paths gone (`tools/check_hygiene.py` is the check).
+
+**Met** for the stage chain on 2026-08-18: `wv_sat_methods` -- the scheme the
+pipeline bootstrapped on -- runs frontend → `translate.numpy` (zero deferred
+blocks) → `static.rwset` (50 blocks match) → `f2py-golden` (gfortran 16, the
+reference's own flags) → `differential.bitexact`: 400/400 points bit-exact
+across the seven public API functions, under the golden set's init constants.
+`tests/test_f2py_oracle.py` keeps a compiler-gated copy of that spine, and
+breaks the candidate on purpose to prove the gate can fail. What remains of
+the phase is orchestration -- a runner that walks a recipe's stages so the
+same chain is one command -- and the standing migration duty the two
+differential tools carry.
 
 Two checks, because "no site paths" and "same answers" are different claims.
 `tools/golden_diff.py` runs a migrated stage over the sources the original
