@@ -10,6 +10,7 @@ proves nothing by passing.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,10 @@ from recast.verify.bitexact import BitexactVerifier
 from recast.verify.rwset import ReadWriteSetVerifier
 
 GFORTRAN = shutil.which("gfortran")
+MESON = importlib.util.find_spec("mesonbuild") is not None
+"""f2py's build backend, carried by the verify extra. CI's test matrix has a
+compiler (the runner image ships one) but not the backend, and the spine job
+has both -- so the guard must check both, or the matrix runs half a build."""
 
 RECORD = {
     "module": "demo_mod",
@@ -181,7 +186,10 @@ end module toy_physics
 """
 
 
-@pytest.mark.skipif(GFORTRAN is None, reason="needs a Fortran compiler on PATH")
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
 def test_the_translate_spine_ends_bit_exact(tmp_path: Path) -> None:
     (tmp_path / "toy_physics.f90").write_text(SOURCE)
     workspace = tmp_path / "work"
