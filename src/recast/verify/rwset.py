@@ -59,11 +59,6 @@ it corresponds to ``present(x)`` on the source side, which counts as a read of
 ``x``. A gate that saw one and not the other would fail every optional
 argument."""
 
-PYSAFE_SUFFIXED = frozenset({"np", "math", "os", "copy", "mp"})
-"""Names a translation renames with a trailing underscore to avoid colliding
-with a Python keyword or an imported module. ``lambda_`` is the Fortran
-variable ``lambda``, not scaffolding."""
-
 
 @dataclass
 class Protocol:
@@ -97,6 +92,19 @@ class Protocol:
     lose the write the whole routine exists to make.
     """
 
+    reserved: frozenset[str] = frozenset()
+    """Names the target file uses itself, which the Transform renamed around.
+
+    A Fortran variable called ``np`` collides with the emitted module alias, so
+    it is emitted as ``np_`` and has to be read back as ``np``. Which names
+    those are is the backend's choice -- a backend importing different modules
+    reserves different names -- so it says, rather than this verifier assuming.
+
+    Python keywords need no declaration: ``lambda_`` reads back as ``lambda``
+    because ``lambda`` is a keyword, which is a fact about the language rather
+    than about any backend.
+    """
+
     scaffolding: frozenset[str] = frozenset()
     """Emitted names that are never data -- runtime shims, module aliases, the
     machinery a backend needs to spell a construct Python does not have.
@@ -115,6 +123,7 @@ class Protocol:
             file=str(record.get("file", "")),
             names={str(k): str(v) for k, v in (record.get("names") or {}).items()},
             procedures=frozenset(record.get("procedures") or ()),
+            reserved=frozenset(record.get("reserved") or ()),
             scaffolding=frozenset(record.get("scaffolding") or ()),
         )
 
@@ -133,7 +142,9 @@ class _Visitor(ast.NodeVisitor):
         """The source symbol an emitted name stands for, or ``None`` for none."""
         if DISCARD.fullmatch(name):
             return None
-        if name.endswith("_") and (keyword.iskeyword(name[:-1]) or name[:-1] in PYSAFE_SUFFIXED):
+        if name.endswith("_") and (
+            keyword.iskeyword(name[:-1]) or name[:-1] in self.protocol.reserved
+        ):
             stripped = name[:-1]
             return self.protocol.names.get(stripped, stripped.lower())
         sentinel = PRESENT_SENTINEL.fullmatch(name)
