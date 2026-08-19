@@ -98,7 +98,7 @@ Build `recast-cesm` as its own repository and move every CESM-specific rule,
 catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto the
 `refactor` and `port` recipes.
 
-A separate repository rather than a directory in CESM-modernization-overview,
+A separate repository rather than a directory under SciRecast's `cesm/`,
 because this phase's check is that the engine passes with `recast-cesm`
 *uninstalled* — which is only a real check if it is a separately installable
 distribution.
