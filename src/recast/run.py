@@ -104,10 +104,12 @@ class RecipeRun:
         a confidence that dropped, an oracle that moved, a unit that stopped
         being covered.
 
-        Deliberately excludes wall-clock time and paths. Two runs over the same
-        revisions produce the same summary, so committing it does not manufacture
-        a change on every invocation; when a number does change, the change is
-        the finding.
+        Deliberately excludes wall-clock time, paths, and the oracle's cache
+        key -- the key folds in the compiler's identity and flags, so two
+        machines that verified the same claim would disagree about it. Two runs
+        over the same revisions produce the same summary on any machine, which
+        is what lets CI regenerate it and fail on a diff; when a number does
+        change, the change is the finding rather than the weather.
         """
         return {
             "schema": 1,
@@ -118,11 +120,13 @@ class RecipeRun:
                     "candidate": unit_run.candidate.digest() if unit_run.candidate else None,
                     "transform": unit_run.candidate.transform if unit_run.candidate else None,
                     "deferred": len(unit_run.candidate.deferred) if unit_run.candidate else None,
-                    "oracle": (
-                        {"name": unit_run.oracle.oracle, "key": unit_run.oracle.key}
-                        if unit_run.oracle.key
-                        else None
-                    ),
+                    # The oracle's *name*, not its cache key. The key folds in
+                    # the compiler's version and flags, so it legitimately
+                    # differs between two machines that both verified the same
+                    # claim -- which would make this file unstable and its
+                    # diffs meaningless. Build-specific provenance belongs to
+                    # the run's Evidence manifest, which records all of it.
+                    "oracle": unit_run.oracle.oracle if unit_run.oracle.key else None,
                     "stopped_by": unit_run.stopped_by,
                     "verdicts": [
                         {

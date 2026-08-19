@@ -3,12 +3,9 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "6812bc0fc4f562f5e15aa0f94f1f0cac2d780e96f63d16f1bd6f8fbb9171e04e",
+      "candidate": "c0f4c4a98e7a064c1ab31b943f3b5c50e93fcd4cab51b0e12b118ebf1194c155",
       "deferred": 0,
-      "oracle": {
-        "key": "f2py:toy_physics:8f20d40458ae1cbe",
-        "name": "f2py-golden"
-      },
+      "oracle": "f2py-golden",
       "stopped_by": null,
       "transform": "recast.translate.fortran-to-numpy",
       "unit": "fortran:toy_physics",
