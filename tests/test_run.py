@@ -274,3 +274,24 @@ def test_evidence_carries_the_recipe_the_digest_and_the_reference(tmp_path: Path
     assert evidence.reference == {"oracle": "fake-oracle", "key": "shared-key"}
     assert evidence.environment["engine"].startswith("recast ")
     assert evidence.meta["timestamp"]
+
+
+def test_the_cli_resolves_plugin_recipes_from_the_registry() -> None:
+    """A domain package's recipe attaches through the same entry-point group
+    as everything else; a CLI that only knew the builtins would make that
+    attachment decorative."""
+    from recast.cli import _recipe
+    from recast.errors import RecastError
+    from recast.registry import REGISTRY
+
+    class PluginRecipe(FakeRecipe):
+        name = "plugin-made"
+        summary = "from a domain package"
+
+        def __init__(self) -> None:
+            super().__init__([])
+
+    REGISTRY.register("recipe", "plugin-made", PluginRecipe, replace=True)
+    assert _recipe("plugin-made").summary == "from a domain package"
+    with pytest.raises(RecastError, match="plugin-made"):
+        _recipe("no-such-recipe")  # the error names what IS known
