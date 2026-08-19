@@ -61,7 +61,11 @@ jobs:
       - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest tests/test_f2py_oracle.py tests/test_notary_verifier.py -v
       # The public form of the same claim: one command, eight stages, evidence
       # on disk. What the roadmap's P2 "Done when" literally names.
-      - run: uv run --extra fortran --extra translate --extra verify recast run translate examples/toy_physics --config examples/toy_physics/recast.json
+      - run: uv run --extra fortran --extra translate --extra verify recast run translate examples/toy_physics --config examples/toy_physics/recast.json --summary examples/toy_physics/verification.json
+      # The committed summary is a claim about what the gate concludes. If a
+      # run on a clean machine concludes something else, the claim is stale --
+      # which is exactly the failure the file exists to make visible.
+      - run: git diff --exit-code examples/toy_physics/verification.json
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.
