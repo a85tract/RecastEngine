@@ -295,3 +295,60 @@ def test_the_cli_resolves_plugin_recipes_from_the_registry() -> None:
     assert _recipe("plugin-made").summary == "from a domain package"
     with pytest.raises(RecastError, match="plugin-made"):
         _recipe("no-such-recipe")  # the error names what IS known
+
+
+# --- the verification summary ------------------------------------------------
+
+
+def test_the_summary_is_stable_across_runs(tmp_path: Path) -> None:
+    """A repository commits this like a lockfile, so two runs over the same
+    revisions must produce the same bytes -- otherwise every invocation
+    manufactures a diff and the diffs stop meaning anything."""
+    stages = _stages(
+        Stage("oracle", "fake-oracle"),
+        Stage("verifier", "fake.pass", gate=True),
+    )
+    first = run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary()
+    second = run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary()
+    assert first == second
+
+
+def test_the_summary_records_confidence_oracle_and_digest(tmp_path: Path) -> None:
+    stages = _stages(
+        Stage("oracle", "fake-oracle"),
+        Stage("verifier", "fake.pass", gate=True),
+    )
+    summary = run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary()
+    assert summary["schema"] == 1
+    assert summary["recipe"] == "fake"
+    unit = next(u for u in summary["units"] if u["unit"] == "fake:alpha")
+    assert unit["oracle"] == {"name": "fake-oracle", "key": "shared-key"}
+    assert unit["deferred"] == 0
+    assert len(unit["candidate"]) == 64  # the artifact digest, not a path
+    verdict = unit["verdicts"][0]
+    assert (verdict["verifier"], verdict["confidence"], verdict["passed"]) == (
+        "fake.pass",
+        "sampled",
+        True,
+    )
+
+
+def test_the_summary_carries_a_failed_gate_rather_than_hiding_it(tmp_path: Path) -> None:
+    stages = _stages(Stage("verifier", "fake.fail", gate=True))
+    summary = run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary()
+    unit = summary["units"][0]
+    assert unit["stopped_by"] == "fake.fail"
+    assert unit["verdicts"][0]["confidence"] == "failed"
+    assert unit["verdicts"][0]["passed"] is False
+
+
+def test_the_summary_excludes_wall_clock_and_paths(tmp_path: Path) -> None:
+    """Timestamps and absolute paths would change every run and on every
+    machine; a committed record of them is noise, and the manifests in the
+    evidence store are where the per-run provenance lives."""
+    import json
+
+    stages = _stages(Stage("verifier", "fake.pass", gate=True))
+    blob = json.dumps(run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary())
+    assert str(tmp_path) not in blob
+    assert "timestamp" not in blob

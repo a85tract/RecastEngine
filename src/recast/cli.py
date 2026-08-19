@@ -126,6 +126,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
             + ("" if root.is_absolute() else f" (relative to {Path.cwd()})")
         )
     run = run_recipe(recipe, root, config)
+    if args.summary:
+        import json as _json
+
+        summary = Path(args.summary)
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text(_json.dumps(run.summary(), indent=2, sort_keys=True) + "\n")
+    if args.summary:
+        print(f"summary: {args.summary}")
     for unit_run in run.units:
         print(f"{unit_run.unit.uid}")
         for outcome in unit_run.outcomes:
@@ -176,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", help="operator config, .json or .toml")
     run.add_argument(
         "--unit", action="append", help="unit uid to run (repeatable; default: top-level units)"
+    )
+    run.add_argument(
+        "--summary",
+        help="write the run's verification status here -- one entry per unit and verifier, "
+        "stable across runs over the same revisions, meant to be committed",
     )
     run.set_defaults(func=_cmd_run)
 
