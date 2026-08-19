@@ -26,8 +26,8 @@ discover  ->  analyze  ->  transform  ->  verify  ->  record
 |---|---|---|
 | `translate` | Fortran → NumPy / Numba / CUDA | [PyCAM5](https://github.com/a85tract/PyCAM5) |
 | `refactor` | carve a Python control plane into a Fortran monolith, numerics untouched | [freeCAM](https://github.com/a85tract/freeCAM) |
-| `port` | retarget a kernel to an accelerator | CESM-jax-kernels |
-| `audit` | secret scan, SBOM+CVE+VEX, LLM source audit, sanitizer builds | CC-Test (cyber half) |
+| `port` | retarget a kernel to an accelerator | [JaxCAM6](https://github.com/a85tract/CESM-jax-kernels) |
+| `audit` | secret scan, SBOM+CVE+VEX, LLM source audit, sanitizer builds | CC-Test (cyber half, restricted access) |
 
 ## Quick start
 
