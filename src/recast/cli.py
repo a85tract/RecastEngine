@@ -19,6 +19,22 @@ from recast.recipes import BUILTIN
 from recast.registry import KINDS, REGISTRY
 
 
+def _recipe(name: str):
+    """A recipe by name: the four builtins, then anything a plugin registered.
+
+    A domain package's recipe attaches through the same entry-point group as
+    everything else, and a CLI that only knew the builtins would make that
+    attachment decorative.
+    """
+    cls = BUILTIN.get(name)
+    if cls is None and name in REGISTRY.names("recipe"):
+        cls = REGISTRY.get("recipe", name)
+    if cls is None:
+        known = sorted(set(BUILTIN) | set(REGISTRY.names("recipe")))
+        raise RecastError(f"unknown recipe {name!r}; known: {', '.join(known)}")
+    return cls()
+
+
 def _cmd_version(_args: argparse.Namespace) -> int:
     print(f"recast {__version__}")
     return 0
@@ -46,7 +62,8 @@ def _cmd_recipes(_args: argparse.Namespace) -> int:
         print(f"{name:10s} {cls.summary}")
     for name in REGISTRY.names("recipe"):
         if name not in BUILTIN:
-            print(f"{name:10s} (plugin)")
+            summary = getattr(REGISTRY.get("recipe", name), "summary", "")
+            print(f"{name:10s} {summary} (plugin)")
     return 0
 
 
@@ -57,10 +74,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     oracle costs hours.
     """
     config = json.loads(args.config) if args.config else {}
-    cls = BUILTIN.get(args.recipe)
-    if cls is None:
-        raise RecastError(f"unknown recipe {args.recipe!r}; try `recast recipes`")
-    recipe = cls()
+    recipe = _recipe(args.recipe)
 
     problems = recipe.validate(config)
     for problem in problems:
@@ -86,9 +100,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     from recast.run import run_recipe
 
-    cls = BUILTIN.get(args.recipe)
-    if cls is None:
-        raise RecastError(f"unknown recipe {args.recipe!r}; try `recast recipes`")
+    recipe = _recipe(args.recipe)
     config = {}
     if args.config:
         path = Path(args.config)
@@ -112,7 +124,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             f"source tree {root} does not exist"
             + ("" if root.is_absolute() else f" (relative to {Path.cwd()})")
         )
-    run = run_recipe(cls(), root, config)
+    run = run_recipe(recipe, root, config)
     for unit_run in run.units:
         print(f"{unit_run.unit.uid}")
         for outcome in unit_run.outcomes:
