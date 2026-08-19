@@ -322,7 +322,10 @@ def test_the_summary_records_confidence_oracle_and_digest(tmp_path: Path) -> Non
     assert summary["schema"] == 1
     assert summary["recipe"] == "fake"
     unit = next(u for u in summary["units"] if u["unit"] == "fake:alpha")
-    assert unit["oracle"] == {"name": "fake-oracle", "key": "shared-key"}
+    # The oracle's name, not its cache key: the key folds in the compiler's
+    # version and flags, so two machines that verified the same claim would
+    # disagree about it and every CI run would report a diff.
+    assert unit["oracle"] == "fake-oracle"
     assert unit["deferred"] == 0
     assert len(unit["candidate"]) == 64  # the artifact digest, not a path
     verdict = unit["verdicts"][0]
@@ -342,13 +345,18 @@ def test_the_summary_carries_a_failed_gate_rather_than_hiding_it(tmp_path: Path)
     assert unit["verdicts"][0]["passed"] is False
 
 
-def test_the_summary_excludes_wall_clock_and_paths(tmp_path: Path) -> None:
-    """Timestamps and absolute paths would change every run and on every
-    machine; a committed record of them is noise, and the manifests in the
-    evidence store are where the per-run provenance lives."""
+def test_the_summary_excludes_what_differs_between_machines(tmp_path: Path) -> None:
+    """Timestamps, paths, and the oracle's build-specific cache key all vary
+    by machine or by run. A committed record of them manufactures a diff on
+    every invocation, and the manifests in the evidence store are where the
+    per-run provenance belongs."""
     import json
 
-    stages = _stages(Stage("verifier", "fake.pass", gate=True))
+    stages = _stages(
+        Stage("oracle", "fake-oracle"),
+        Stage("verifier", "fake.pass", gate=True),
+    )
     blob = json.dumps(run_recipe(FakeRecipe(stages), tmp_path, registry=_registry()).summary())
     assert str(tmp_path) not in blob
     assert "timestamp" not in blob
+    assert "shared-key" not in blob  # the oracle's key is provenance, not a claim

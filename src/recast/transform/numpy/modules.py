@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from recast.fortran._parse import f03, parse, walk
@@ -97,8 +97,14 @@ class Modules:
     def header(self) -> str:
         record = self.subprograms.record
         init = record["subprograms"][0]["name"] if record["subprograms"] else "<none>"
+        # The file's name, never the path it happened to be found at. An
+        # absolute path in the emitted text makes the artifact -- and so
+        # ``Candidate.digest()`` -- differ between two machines translating the
+        # same source, which breaks exactly the reproducibility a
+        # ``deterministic`` Transform promises and conformance checks.
+        source_name = PurePosixPath(str(record["source_file"])).name
         pieces = [
-            f'"""Machine-translated from {record["source_file"]} by recast.\n\n'
+            f'"""Machine-translated from {source_name} by recast.\n\n'
             f"NumPy/scalar direct translation. Module state mirrors the Fortran\n"
             f"module exactly; call {init} before use.\n"
             f'DO NOT hand-edit mechanical blocks -- fix the engine instead.\n"""',
