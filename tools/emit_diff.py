@@ -69,10 +69,22 @@ from recast.transform.profiles import PROFILES
 
 REASON_IN_MARKER = re.compile(r"(# B\d{3} <- L\d+-L\d+ AGENT_QUEUE: ).*")
 REASON_IN_RAISE = re.compile(r"(raise NotImplementedError\().*(\)  # B\d{3})")
+SOURCE_PATH = re.compile(r"#\s+\S*/(\S+\.F90)(:\d+)", re.IGNORECASE)
 
 
 def normalized(line: str) -> str:
-    """One emitted line with any refusal prose replaced by a placeholder."""
+    """One emitted line, with the two things that are not claims removed.
+
+    Refusal prose, because the two sides word their reasons differently and a
+    reason is a diagnostic. And the directory part of a source path: the
+    pipeline stamped each hoisted constant with whatever path its command line
+    was given, while the engine emits the file's name, because an absolute path
+    in a generated file makes the artifact -- and the Candidate digest that
+    identifies it -- differ between two machines that translated the same
+    source. That is a reproducibility defect the engine deliberately declines
+    to reproduce; the file name, the line, and the value still have to match.
+    """
+    line = SOURCE_PATH.sub(r"# \1\2", line)
     return REASON_IN_RAISE.sub(r"\1<reason>\2", REASON_IN_MARKER.sub(r"\1<reason>", line))
 
 
@@ -390,17 +402,15 @@ def main() -> int:
         want_consts = pipeline_constants(root, scratch, name, source)
         got_consts = constants_module(fconstants.extract(source))
         marker = "# ----- module-level parameters"
-        if want_consts[want_consts.index(marker) :] == got_consts[got_consts.index(marker) :]:
+        want_tail = [normalized(x) for x in want_consts[want_consts.index(marker) :].splitlines()]
+        got_tail = [normalized(x) for x in got_consts[got_consts.index(marker) :].splitlines()]
+        if want_tail == got_tail:
             counts["constants"] += 1
         else:
             counts["different"] += 1
             print(f"CONSTANTS DIFFERENT {name}")
             if ns.verbose:
-                for a, b in zip(
-                    want_consts[want_consts.index(marker) :].splitlines(),
-                    got_consts[got_consts.index(marker) :].splitlines(),
-                    strict=False,
-                ):
+                for a, b in zip(want_tail, got_tail, strict=False):
                     if a != b:
                         print(f"  pipeline |{a}")
                         print(f"  engine   |{b}")

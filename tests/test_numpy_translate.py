@@ -161,3 +161,32 @@ def test_subprogram_units_are_not_applicable(root: Path, analyzed: tuple[Unit, F
     frontend = FortranFrontend()
     sub_unit = next(u for u in frontend.discover(root) if u.kind == "subprogram")
     assert not NumpyTranslation().applicable(sub_unit, facts)
+
+
+def test_the_digest_does_not_depend_on_where_the_source_lives(
+    root: Path, analyzed: tuple[Unit, Facts], tmp_path: Path
+) -> None:
+    """``deterministic = True`` has to mean across machines, not just across
+    runs in one directory. The generated files once carried the absolute path
+    they were translated from -- in the module docstring and beside every
+    hoisted constant -- so two people translating the same source got two
+    digests, and CI regenerating a committed summary reported a change that
+    was only a change of address."""
+    import shutil
+
+    unit, facts = analyzed
+    here = NumpyTranslation().apply(unit, facts, config_for(root))
+
+    elsewhere_root = tmp_path / "somewhere" / "deeper"
+    elsewhere_root.mkdir(parents=True)
+    for name in ("wave_mod.f90", "physconst.f90"):
+        shutil.copy(root / name, elsewhere_root / name)
+    moved_unit = next(
+        u for u in FortranFrontend().discover(elsewhere_root) if u.uid == "fortran:wave_mod"
+    )
+    moved_facts = FortranFrontend().analyze(moved_unit, elsewhere_root)
+    there = NumpyTranslation().apply(moved_unit, moved_facts, config_for(elsewhere_root))
+
+    assert here.digest() == there.digest()
+    for path, content in here.files.items():
+        assert str(root) not in content.decode(), f"{path} carries the source's directory"
