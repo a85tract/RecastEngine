@@ -4,11 +4,10 @@ name: hygiene
 # after. Migrating 10k lines out of two NCAR-bound private repositories is
 # exactly the situation where a site path or an allocation account slips in.
 
+# Automatic runs are off while the Actions allowance is exhausted. Restore the
+# push, pull_request, and the Monday 06:00 UTC schedule when the quota resets.
 on:
-  push:
-  pull_request:
-  schedule:
-    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
