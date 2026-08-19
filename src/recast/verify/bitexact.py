@@ -117,8 +117,24 @@ class BitexactVerifier(Verifier):
             )
 
         deferred_subprograms = {entry.split("/", 1)[0] for entry in candidate.deferred}
+
+        def generable(name: str) -> bool:
+            """Whether this harness can produce every required input.
+
+            Character arguments have no sampling story yet; a default that
+            tried would fail the whole gate on an init routine's errstring.
+            Explicit config still wins -- and then fails loudly.
+            """
+            return not any(
+                a["dtype"] == "str" and not a.get("optional")
+                for a in table[name]["args"]
+                if a["intent"] != "OUT"
+            )
+
         wanted = config.get("subprograms") or [
-            name for name in wrappers if name in table and name not in deferred_subprograms
+            name
+            for name in wrappers
+            if name in table and name not in deferred_subprograms and generable(name)
         ]
         skipped = sorted(set(wrappers) - set(wanted))
 

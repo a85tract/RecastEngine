@@ -15,11 +15,12 @@ from collections.abc import Sequence
 
 from recast import __version__
 from recast.errors import RecastError
+from recast.plugins.recipe import Recipe
 from recast.recipes import BUILTIN
 from recast.registry import KINDS, REGISTRY
 
 
-def _recipe(name: str):
+def _recipe(name: str) -> Recipe:
     """A recipe by name: the four builtins, then anything a plugin registered.
 
     A domain package's recipe attaches through the same entry-point group as

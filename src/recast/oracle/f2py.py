@@ -252,7 +252,9 @@ class F2pyGoldenOracle(Oracle):
         named = config.get("subprograms")
         if named:
             return list(named)
-        return [s["name"] for s in facts.interface["subprograms"]]
+        # Public only, because the wrappers `use` the module: a private
+        # symbol is not importable and the build fails on the whole file.
+        return [s["name"] for s in facts.interface["subprograms"] if s.get("public", True)]
 
 
 def factory(**_config: Any) -> F2pyGoldenOracle:

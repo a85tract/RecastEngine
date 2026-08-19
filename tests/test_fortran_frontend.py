@@ -13,6 +13,7 @@ from __future__ import annotations
 import builtins
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -372,3 +373,50 @@ def test_overrides_are_case_insensitive(tree) -> None:
     fe = factory(intent_overrides={"LEGACY_TEND": {"X": "in"}})
     unit = next(u for u in fe.discover(tree) if u.kind == "module")
     assert _args(fe.analyze(unit, tree))["x"]["intent"] == "IN"
+
+
+# --- accessibility -----------------------------------------------------------
+
+
+def test_visibility_follows_the_default_and_the_explicit_lists(tmp_path: Path) -> None:
+    """CAM's convention is a bare `private` with an explicit public list, and
+    a wrapper that `use`s a private symbol does not compile -- so who is
+    public is a fact consumers genuinely need recorded."""
+    from recast.fortran import interface
+
+    source = tmp_path / "vis.f90"
+    source.write_text(
+        """\
+module vis_mod
+  implicit none
+  private
+  public seen
+contains
+  subroutine seen()
+  end subroutine seen
+  subroutine hidden()
+  end subroutine hidden
+end module vis_mod
+"""
+    )
+    record = interface.extract(source)
+    visibility = {s["name"]: s["public"] for s in record["subprograms"]}
+    assert visibility == {"seen": True, "hidden": False}
+
+    open_source = tmp_path / "open.f90"
+    open_source.write_text(
+        """\
+module open_mod
+  implicit none
+  private shy
+contains
+  subroutine bold()
+  end subroutine bold
+  subroutine shy()
+  end subroutine shy
+end module open_mod
+"""
+    )
+    record = interface.extract(open_source)
+    visibility = {s["name"]: s["public"] for s in record["subprograms"]}
+    assert visibility == {"bold": True, "shy": False}
