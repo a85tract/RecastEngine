@@ -92,6 +92,57 @@ class RecipeRun:
     def passed(self) -> bool:
         return bool(self.units) and all(u.passed for u in self.units)
 
+    def summary(self) -> dict[str, Any]:
+        """The run's verification status, as a record worth committing.
+
+        Distinct from the Evidence manifests, and the distinction matters. A
+        manifest is one immutable record of one run, content-addressed and
+        append-only -- an audit trail, which accumulates a file per attempt
+        including the attempts that failed. This is the *current state*: one
+        entry per unit and verifier, regenerated rather than appended, so a
+        repository can commit it like a lockfile and a diff means something --
+        a confidence that dropped, an oracle that moved, a unit that stopped
+        being covered.
+
+        Deliberately excludes wall-clock time and paths. Two runs over the same
+        revisions produce the same summary, so committing it does not manufacture
+        a change on every invocation; when a number does change, the change is
+        the finding.
+        """
+        return {
+            "schema": 1,
+            "recipe": self.recipe,
+            "units": [
+                {
+                    "unit": unit_run.unit.uid,
+                    "candidate": unit_run.candidate.digest() if unit_run.candidate else None,
+                    "transform": unit_run.candidate.transform if unit_run.candidate else None,
+                    "deferred": len(unit_run.candidate.deferred) if unit_run.candidate else None,
+                    "oracle": (
+                        {"name": unit_run.oracle.oracle, "key": unit_run.oracle.key}
+                        if unit_run.oracle.key
+                        else None
+                    ),
+                    "stopped_by": unit_run.stopped_by,
+                    "verdicts": [
+                        {
+                            "verifier": verdict.verifier,
+                            "confidence": verdict.confidence.value,
+                            "passed": verdict.passed,
+                            "metrics": {
+                                key: value
+                                for key, value in sorted(verdict.metrics.items())
+                                if isinstance(value, (int, float, str, bool))
+                            },
+                            "detail": verdict.detail,
+                        }
+                        for verdict in unit_run.verdicts
+                    ],
+                }
+                for unit_run in sorted(self.units, key=lambda u: u.unit.uid)
+            ],
+        }
+
 
 def run_recipe(
     recipe: Recipe,

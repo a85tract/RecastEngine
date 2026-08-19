@@ -1,0 +1,54 @@
+{
+  "recipe": "translate",
+  "schema": 1,
+  "units": [
+    {
+      "candidate": "6812bc0fc4f562f5e15aa0f94f1f0cac2d780e96f63d16f1bd6f8fbb9171e04e",
+      "deferred": 0,
+      "oracle": {
+        "key": "f2py:toy_physics:8f20d40458ae1cbe",
+        "name": "f2py-golden"
+      },
+      "stopped_by": null,
+      "transform": "recast.translate.fortran-to-numpy",
+      "unit": "fortran:toy_physics",
+      "verdicts": [
+        {
+          "confidence": "sampled",
+          "detail": "4 blocks match",
+          "metrics": {
+            "blocks_checked": 4,
+            "blocks_deferred": 0,
+            "blocks_matched": 4,
+            "blocks_waived": 0
+          },
+          "passed": true,
+          "verifier": "static.rwset"
+        },
+        {
+          "confidence": "bit_exact",
+          "detail": "85 points across 2 subprogram(s), all bit-exact",
+          "metrics": {
+            "bit_exact": 85,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "points": 85,
+            "trials": 5
+          },
+          "passed": true,
+          "verifier": "differential.bitexact"
+        },
+        {
+          "confidence": "symbolic",
+          "detail": "no rewrites to notarize; the translation is print-order faithful",
+          "metrics": {
+            "rewrites": 0
+          },
+          "passed": true,
+          "verifier": "symbolic.notary"
+        }
+      ]
+    }
+  ]
+}
