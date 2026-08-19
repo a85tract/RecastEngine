@@ -271,3 +271,23 @@ def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
     assert len(manifests) == 3  # rwset, bitexact, notary
     results = {json.loads(m.read_text())["result"]["verdict"] for m in manifests}
     assert results == {"sampled", "bit_exact", "symbolic"}
+
+
+def test_the_oracle_defaults_to_public_subprograms() -> None:
+    """The wrappers `use` the module, and a private symbol is not importable
+    -- one private specific in the list fails the whole build."""
+    from recast.model import Facts
+
+    facts = Facts(
+        unit="fortran:m",
+        interface={
+            "module": "m",
+            "subprograms": [
+                {"name": "api", "public": True},
+                {"name": "detail", "public": False},
+            ],
+        },
+    )
+    assert F2pyGoldenOracle._subprograms(facts, {}) == ["api"]
+    # Explicit config still wins, and then fails loudly if it names a private.
+    assert F2pyGoldenOracle._subprograms(facts, {"subprograms": ["detail"]}) == ["detail"]

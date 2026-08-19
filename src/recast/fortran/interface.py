@@ -616,16 +616,38 @@ def extract(
 
     state_names = {s["name"] for s in module_state}
 
+    # Accessibility. CAM's convention is a bare `private` up top and an
+    # explicit public list -- and a wrapper that `use`s a private symbol does
+    # not compile, so who is public is a fact consumers genuinely need.
     public_names: list[str] = []
+    private_names: list[str] = []
+    default_private = False
     if mod_spec is not None:
         for acc in walk(mod_spec, f03.Access_Stmt):
-            if str(acc.children[0]).upper() == "PUBLIC":
-                public_names.extend(str(n).lower() for n in walk(acc, f03.Name))
+            spec = str(acc.children[0]).upper()
+            names = [str(n).lower() for n in walk(acc, f03.Name)]
+            if spec == "PUBLIC":
+                public_names.extend(names)
+            elif names:
+                private_names.extend(names)
+            else:
+                default_private = True
+
+    def is_public(name: str) -> bool:
+        if default_private:
+            return name in public_names
+        return name not in private_names
 
     subs = walk(sub_scope, (f03.Subroutine_Subprogram, f03.Function_Subprogram))
     sub_names = {
         str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() for s in subs
     }
+    subprograms = [
+        extract_subprogram(s, kind_map, state_names, sub_names, overrides.get(sub_name_of(s)))
+        for s in subs
+    ]
+    for record in subprograms:
+        record["public"] = is_public(record["name"])
 
     return {
         "source_file": str(path),
@@ -637,10 +659,7 @@ def extract(
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map),
         "generics": _generics(mod_spec),
-        "subprograms": [
-            extract_subprogram(s, kind_map, state_names, sub_names, overrides.get(sub_name_of(s)))
-            for s in subs
-        ],
+        "subprograms": subprograms,
     }
 
 
