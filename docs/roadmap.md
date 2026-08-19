@@ -103,6 +103,22 @@ because this phase's check is that the engine passes with `recast-cesm`
 *uninstalled* — which is only a real check if it is a separately installable
 distribution.
 
+**The translate side (PyCAM5 track) landed 2026-08-18.** `recast-cesm` ships
+the framework stub tables, CAM's kind and constant conventions, and the
+physical sampling ranges, delivered by three entry-point plugins: the `cesm`
+frontend, the `translate.cam` transform, and the `translate-cam` recipe. A
+real CAM module now runs `recast run translate-cam` to a bit-exact verdict
+from a config that names the unit, the gate's subprograms and the scheme's
+init call — kinds, stubs, and Kelvin never appear in it. The engine took no
+CESM branch; the one engine change the attachment surfaced was contract
+completion (the CLI resolving plugin recipes, and the frontend recording
+Fortran accessibility so the oracle wraps only public symbols — a fact any
+domain needs).
+
+**The refactor and port sides (freeCAM, JaxCAM6) are deliberately deferred**
+until their student tooling is ready; their entry-point slots are sketched in
+`recast-cesm`'s pyproject and nothing is declared before it exists.
+
 **Done when:** the engine passes its tests with `recast-cesm` uninstalled, and
 freeCAM's validation gate runs through `Verifier` rather than its own
 `validate_*` scripts. This phase is the only real proof that the engine is
