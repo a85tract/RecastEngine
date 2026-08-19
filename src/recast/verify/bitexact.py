@@ -165,7 +165,15 @@ class BitexactVerifier(Verifier):
                 failures.append(f"{name}: missing on the {side} side")
                 continue
             outcome = self._compare_subprogram(
-                np, name, sub, translated_fn, truth_fn, trials, dims, ranges
+                np,
+                name,
+                sub,
+                translated_fn,
+                truth_fn,
+                trials,
+                dims,
+                ranges,
+                prepare=getattr(translated, "_PREPARE_INPUTS", None),
             )
             per_subprogram[name] = outcome
             if "error" in outcome:
@@ -251,6 +259,7 @@ class BitexactVerifier(Verifier):
         trials: int,
         dims: dict[str, int],
         ranges: dict[str, tuple[float, float]],
+        prepare: Any = None,
     ) -> dict[str, Any]:
         from recast.transform.numpy.vocabulary import pysafe
 
@@ -283,6 +292,17 @@ class BitexactVerifier(Verifier):
                     inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
                 else:
                     inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
+
+            if prepare is not None:
+                # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
+                # rng)`` hook, the way it carries ``_SIGNATURES``: per-name
+                # ranges cannot express structure -- a pressure column must
+                # be monotone, an interface field must bracket its levels --
+                # and unphysical inputs drive both sides into error paths
+                # the production model aborts out of. The hook shapes inputs
+                # into the defined domain; it cannot bias the verdict,
+                # because both sides receive the same shaped inputs.
+                prepare(name, inputs, rng)
 
             # Keyword calls on both sides: f2py reorders inferred-dimension
             # scalars into trailing keywords, so positional order is not a

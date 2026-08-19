@@ -652,6 +652,9 @@ def extract(
     return {
         "source_file": str(path),
         "module": mod_name,
+        # A file of bare subprograms borrows its stem for a name; consumers
+        # that emit `use <module>` need to know the name is borrowed.
+        "is_module": bool(walk(ast, f03.Module)),
         "kind_map": kind_map,
         "use_statements": [str(u) for u in walk(sub_scope, f03.Use_Stmt)],
         "module_parameters": module_parameters,

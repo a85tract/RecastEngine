@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -291,3 +292,111 @@ def test_the_oracle_defaults_to_public_subprograms() -> None:
     assert F2pyGoldenOracle._subprograms(facts, {}) == ["api"]
     # Explicit config still wins, and then fails loudly if it names a private.
     assert F2pyGoldenOracle._subprograms(facts, {"subprograms": ["detail"]}) == ["detail"]
+
+
+def test_wrappers_serve_a_file_of_bare_subprograms() -> None:
+    """A file with no module borrows its stem for a name, so a `use` line
+    would not compile -- the callee is an external. Dimension names the file
+    use-imports arrive as local PARAMETERs, which is what lets f2py fold the
+    declared shapes."""
+    record = {
+        "module": "dadadj",
+        "is_module": False,
+        "generics": {},
+        "subprograms": [
+            {
+                "name": "dadadj_native",
+                "kind": "subroutine",
+                "args": [
+                    {
+                        "name": "t",
+                        "dtype": "float64",
+                        "intent": "INOUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": "pcols"}, {"lb": "1", "ub": "pver"}],
+                    }
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["dadadj_native"], parameters={"pcols": 8, "pver": 30})
+    assert "use dadadj" not in text
+    assert "external dadadj_native" in text
+    assert "integer, parameter :: pcols = 8" in text
+    assert "real(8), intent(inout) :: t(pcols, pver)" in text
+
+
+def test_the_gate_lets_a_candidate_shape_its_own_inputs(tmp_path: Path) -> None:
+    """Per-name ranges cannot express structure -- a monotone pressure
+    column, a consistent thickness field. A candidate may carry
+    ``_PREPARE_INPUTS`` the way it carries ``_SIGNATURES``; both sides then
+    receive the same shaped arrays, so it chooses the sampled region without
+    touching the verdict."""
+    import numpy as np
+
+    module = tmp_path / "candidate"
+    module.mkdir()
+    (module / "shaped_numpy.py").write_text(
+        """
+import numpy as np
+
+_SIGNATURES = {
+    "step": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "x", "dtype": "float64", "intent": "IN", "optional": False,
+             "dims": [{"lb": "1", "ub": "n"}]},
+            {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False,
+             "dims": [{"lb": "1", "ub": "n"}]},
+        ],
+        "result": None, "result_dtype": None,
+    }
+}
+SEEN = []
+
+
+def _PREPARE_INPUTS(name, inputs, rng):
+    inputs["x"][:] = 2.0        # every trial sees the same shaped input
+
+
+def step(x):
+    SEEN.append(float(x[0]))
+    return np.asarray(x) * 3.0
+"""
+    )
+
+    class Truth:
+        @staticmethod
+        def w_step(x):
+            return np.asarray(x) * 3.0
+
+    candidate = Candidate(
+        unit="fortran:shaped",
+        transform="t",
+        files={Path("shaped_numpy.py"): (module / "shaped_numpy.py").read_bytes()},
+    )
+    ref = OracleRef(
+        unit="fortran:shaped",
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"step": "w_step"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid="fortran:shaped", kind="module"),
+        candidate,
+        ref,
+        tmp_path / "ws",
+        LocalExecutor(),
+        {"trials": 3, "dims": {"n": 4}, "ranges": {"x": (100.0, 200.0)}},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT
+    staged = tmp_path / "ws" / "candidate"
+    sys.path.insert(0, str(staged))
+    try:
+        import shaped_numpy
+
+        # The hook ran: every trial saw 2.0, not a value from the range.
+        assert shaped_numpy.SEEN and all(v == 2.0 for v in shaped_numpy.SEEN)
+    finally:
+        sys.path.remove(str(staged))
+        sys.modules.pop("shaped_numpy", None)
