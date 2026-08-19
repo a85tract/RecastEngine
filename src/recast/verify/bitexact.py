@@ -310,12 +310,18 @@ class BitexactVerifier(Verifier):
             translated_kwargs = {
                 pysafe(a["name"]): inputs[a["name"]] for a in required if a["intent"] != "OUT"
             }
+            # f2py lowercases every dummy name, because Fortran is
+            # case-insensitive and the source's spelling is not a fact about
+            # the interface. A candidate that reports `sl_prePBL` still
+            # reaches the same oracle argument.
             truth_kwargs = {
-                a["name"]: (np.copy(v) if isinstance(v := inputs[a["name"]], np.ndarray) else v)
+                a["name"].lower(): (
+                    np.copy(v) if isinstance(v := inputs[a["name"]], np.ndarray) else v
+                )
                 for a in required
                 if a["intent"] != "OUT"
             }
-            truth_args = [truth_kwargs[a["name"]] for a in required if a["intent"] != "OUT"]
+            truth_args = [truth_kwargs[a["name"].lower()] for a in required if a["intent"] != "OUT"]
             try:
                 translated_out = translated_fn(**translated_kwargs)
             except Exception as error:

@@ -400,3 +400,58 @@ def step(x):
     finally:
         sys.path.remove(str(staged))
         sys.modules.pop("shaped_numpy", None)
+
+
+def test_the_oracle_side_is_called_with_lowercased_names(tmp_path: Path) -> None:
+    """Fortran is case-insensitive and f2py lowercases every dummy name, so
+    a candidate reporting `sl_prePBL` must still reach the same oracle
+    argument. The source's spelling is not a fact about the interface."""
+    staged = tmp_path / "cand"
+    staged.mkdir()
+    (staged / "mixed_numpy.py").write_text(
+        """
+import numpy as np
+
+_SIGNATURES = {
+    "step": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "inVal", "dtype": "float64", "intent": "IN", "optional": False},
+            {"name": "outVal", "dtype": "float64", "intent": "OUT", "optional": False},
+        ],
+        "result": None, "result_dtype": None,
+    }
+}
+
+
+def step(inVal):
+    return inVal * 2.0
+"""
+    )
+
+    class Truth:
+        @staticmethod
+        def w_step(**kwargs):
+            # f2py's own convention: lowercase only.
+            return kwargs["inval"] * 2.0
+
+    candidate = Candidate(
+        unit="fortran:mixed",
+        transform="t",
+        files={Path("mixed_numpy.py"): (staged / "mixed_numpy.py").read_bytes()},
+    )
+    ref = OracleRef(
+        unit="fortran:mixed",
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"step": "w_step"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid="fortran:mixed", kind="module"),
+        candidate,
+        ref,
+        tmp_path / "ws",
+        LocalExecutor(),
+        {"trials": 2, "ranges": {"inval": (1.0, 2.0)}},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
