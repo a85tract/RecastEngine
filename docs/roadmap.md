@@ -57,6 +57,14 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
   **Landed**: flat wrappers over the public API, the compile through the
   executor, the cache key folding source digest, compiler version and flags.
 
+P3 found five more that are the pipeline's but postdate the translator's last
+commit — `extract_build_flags`, `intel_math`, `jaxize`, `jax_shim`,
+`coverage_sweep`. Their own usage strings say `pipeline/`, and they exist only in
+CESM-Agent-Produced-Scripts, so for those five the collection is the source and
+P2 has to take them from there before it is archived. Ten more share a filename
+with something already in `pipeline/` or `tests/` but differ in content; the
+triage flags each and decides none.
+
 **Done when:** the `translate` recipe runs end to end on `examples/` and
 reproduces the existing bit-exact result for one scheme, with 408 files' worth
 of `/glade` paths gone (`tools/check_hygiene.py` is the check).
@@ -92,22 +100,80 @@ check has to be re-runnable against whatever the sources look like next.
 Accepted divergences pin the exact values they excuse, so a change upstream
 brings them back for re-confirmation instead of staying quietly excused.
 
-## P3 — triage the 664 agent scripts
+## P3 — triage the 662 agent scripts (done, bar the archiving)
 
-CESM-Agent-Produced-Scripts, into four buckets:
+CESM-Agent-Produced-Scripts, every file given a destination. The plan said four
+buckets; executing it needed eight, and the extra four are the findings.
 
-| Bucket | Destination | Rough count |
+| Disposition | Count | Where it goes |
 |---|---|---|
-| reusable, domain-independent | rewritten into engine modules, with tests | 40–60 |
-| HPC execution | interface here, implementation in an executor plugin | ~170 |
-| kernel implementations (`15_kernel_impl/`) | Product Layer repos — they are ports, not tooling | 83 |
-| CESM-specific and one-shot | stay in the archived repository | ~350 |
+| `PRODUCT` | 177 | port outputs and their unit tests → Product Layer repos |
+| `HPC-EXEC` | 170 | interface here, implementation in an executor plugin |
+| `ARCHIVE` | 141 | one-shot: bound to a run, a bug, or a date that will not recur |
+| `P2` | 69 | already in CESM-language-translator — P2 migrates it, with history |
+| `EXCLUDE` | 50 | stays behind: disclosure-ledger rows 6 and 7 |
+| `PROMOTED` | 28 | landed in the domain extension, de-site-ified, tested |
+| `POOL` | 22 | re-runnable tooling with no current need; promoted when one names it |
+| `META` | 5 | tooling about the agent transcripts themselves |
+
+The table is generated from rules rather than hand-written, and lives with its
+reasoning in the domain extension's `migration/` directory. Four things the plan
+did not anticipate:
+
+**69 of the "reusable" files are already in the translator.** P2 migrates those
+with history; copying them in P3 would land them twice and throw away exactly
+the provenance the `git filter-repo` pass exists to keep. Whole planned areas —
+golden-set generation, reference builds — belong to P2 on this finding alone.
+
+**"Reusable, domain-independent" was two claims, and most survivors were
+neither.** What remained after the overlap was mostly unit tests for ported
+kernels, which belong with the ports by the same argument that sends
+`15_kernel_impl/` to the Product Layer, and one-shot forensics. Of the rest,
+seven files were promoted into the domain extension and then moved back out for
+not encoding anything about CESM, and six more were nearly sent *here* on the
+strength of not being about CESM — which is only half a reason. They parse
+Claude Code transcripts and PBS accounting CSV: formats, and not this engine's
+subject either. That is what `META` is for, and the finding is that the
+engine/domain/product/executor split has no place for tooling about the agentic
+process itself, in a project whose engine is an agentic one.
+
+**Content identity is proof; a shared filename is not.** Overlap with the
+translator was detected two ways, and only one of them is evidence. Ten files
+share a filename with something in `pipeline/` or `tests/` while differing in
+content, and treating that as proof marked `08_cpg_tools/gen_stubs.py` — which
+generates Fortran stubs so a static-analysis IR will build, and shares nothing
+with `pipeline/gen_stubs.py` but its name — as P2's to migrate *here*. That is
+precisely the hole the disclosure ledger warns about: a directory kept out of
+the migration is not protected by a regex that was never written for it. The
+two `EXCLUDE` buckets are sealed now — nothing leaves them by inference, only by
+a decision written into the ledger — and a shared filename annotates a row
+instead of deciding it.
+
+**So the reusable bucket is 28, not 40–60, and it is not "engine modules".** The
+gap is the overlap plus those audits, not a shortfall. Nothing was copied in to
+close it.
 
 **Done when:** every promoted script has a test and a home; the rest is tagged
 read-only. Nothing is copied in to make the repository look fuller. And every
 `EXCLUDE` decision has a row in `docs/disclosure-ledger.md` — the bucket that
 stays behind is the one nobody reviews again, so the reason it stays behind is
 written down while it is still fresh, not reconstructed at P6.
+
+Homes and tests: **done.** 28 promoted files, each carrying a header naming the
+collection file it came from, covered by a suite that runs by discovery so the
+next one is covered the moment it lands. It proves the properties that survive a
+migration — no site strings, parses, resolves its site through the shared helper
+— rather than the science, which needs a run directory, a GPU, or a compiled
+oracle.
+
+Ledger rows: **done**, and they reconcile. Rows 6 and 7 account for all 50
+`EXCLUDE` files, 42 and 8, which is the check that caught the `gen_stubs.py`
+escape above — the triage said 49 and the ledger said 50.
+
+Tagging the collection read-only: **deferred to P6**, with the rest of the
+archiving. Safe to defer because the filtering happened file by file at
+migration time rather than as a cleanup pass at the end, and cheaper because P2
+still has files to take out of the collection.
 
 ## P4 — empty out the domain
 

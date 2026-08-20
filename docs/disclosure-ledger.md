@@ -49,6 +49,21 @@ Rows 6 and 7 are P3's 50-file `EXCLUDE` bucket in full, as that phase's triage
 table records it. They stay in the archived private repository, which is the
 whole reason that repository is archived read-only rather than deleted.
 
+That the counts have to *reconcile* — 42 and 8 against the triage's own total —
+is not bookkeeping. P3's triage briefly said 49, because it inferred that
+`08_cpg_tools/gen_stubs.py` was already in the translator's `pipeline/` and
+therefore P2's to migrate here. The two files share a filename and nothing else:
+one generates Fortran stubs so a static-analysis IR will build, the other
+generates Python signatures from an interface dump. A name-match had quietly
+moved a static-analysis tool out of a bucket this ledger says stays behind.
+
+So the mechanism in row 6 and row 7 is stronger than "these files are not
+migrated": **the two buckets are sealed.** Nothing leaves them by inference —
+not by filename, not by content hash, not by a rule that looked right for
+another bucket. Only by a decision written here first. The triage enforces it,
+and the count reconciling against this file is what catches it if the triage
+stops.
+
 ## Open
 
 | # | What | Noticed | Still undecided |
