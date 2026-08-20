@@ -10,12 +10,9 @@ Things that belong elsewhere:
 | You want to | Go to |
 |---|---|
 | Fix a translated CESM kernel | the Product Layer repository that owns it |
-| Add CESM-specific rules or catalogs | [`recast-cesm`](https://github.com/a85tract/recast-cesm) — the CESM extension |
+| Add a new extension | its own repository — [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md) |
 | Add a benchmark or validation case | [CC-Test](https://github.com/a85tract/CESM-CC-Test) |
 | Report a vulnerability | [`SECURITY.md`](SECURITY.md) — never a public issue |
-
-Human developers do not directly modify the Product Layer. When end users open
-issues there, the engine generates, tests, and merges the fix.
 
 ## Before you open a PR
 
@@ -25,10 +22,13 @@ uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 python tools/check_hygiene.py .
+python tools/check_signoff.py origin/main..HEAD
 ```
 
-All five run in CI. The last one is the one people forget: no `/glade` paths,
-allocation accounts, usernames, or scheduler hostnames anywhere in the tree.
+All six run in CI. The last two are the ones people forget. `check_hygiene`:
+no `/glade` paths, allocation accounts, usernames, or scheduler hostnames
+anywhere in the tree. `check_signoff`: every commit carries its DCO trailer,
+which is cheap to add as you go and a rebase to add afterwards.
 
 ## What a good PR looks like
 
@@ -44,10 +44,35 @@ allocation accounts, usernames, or scheduler hostnames anywhere in the tree.
   The core installs with zero dependencies and CI asserts it stays importable
   that way.
 
-## Contributor agreement
+## Contributor agreement — DCO
 
-Undecided (DCO vs CLA) — see [`docs/roadmap.md`](docs/roadmap.md) P0. Until it is
-settled, contributions are accepted under Apache-2.0 as stated in `LICENSE`.
+This project uses the [Developer Certificate of Origin](DCO), not a CLA. You
+keep the copyright in what you write; you certify that you had the right to
+send it. Sign each commit:
+
+```bash
+git commit -s
+```
+
+which appends `Signed-off-by: Your Name <your@email>` using your `git config`
+identity. The e-mail has to be the one you author with — a sign-off in someone
+else's name certifies nothing. Forgot it? `git rebase --signoff origin/main`
+and force-push.
+
+**Why DCO and not a CLA.** A CLA buys the right to relicense later, and its
+price is that every contributor signs a legal document before their first patch
+— which is the wrong toll to charge the graduate students and domain scientists
+this engine is built for. Apache-2.0 already grants what the project needs to
+ship, including the patent grant, so a CLA would be collecting a right we have
+no plan to use. If relicensing ever becomes necessary it will be by asking
+contributors, which is the honest way to ask.
+
+Contributions are accepted under Apache-2.0, as stated in `LICENSE`.
+
+Sign-off is required from its adoption forward. The commits before it are not
+rewritten: back-dating a certification nobody was asked for would be a worse
+record than none, and `tools/check_signoff.py` therefore checks the range a
+pull request adds rather than the whole history.
 
 ## Contact
 

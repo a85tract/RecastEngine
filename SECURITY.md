@@ -28,6 +28,15 @@ If you are extending the engine with a new `Scanner`, treat those defaults as
 load-bearing. The failure mode — a 0-day landing in a public log — is not
 recoverable by editing it out afterwards.
 
+## What never goes public from *this* repository
+
+The section above governs findings the engine produces at runtime. Material that
+already exists in the two private source repositories — site paths, accounts,
+prior vulnerability research — is a separate problem with separate mechanisms,
+and its running record is [`docs/disclosure-ledger.md`](docs/disclosure-ledger.md).
+Cases are ruled on as P3 and P6 turn them up; the repository does not go public
+while one is open.
+
 ## Scope
 
 Report against this repository only. Findings in a modernized product belong to

@@ -51,8 +51,9 @@ Homepage = "https://github.com/a85tract/RecastEngine"
 Ecosystem = "https://github.com/a85tract/SciRecast"
 
 # --- Plugin registration -----------------------------------------------------
-# Out-of-tree plugins (for example recast-cesm) declare the same groups in
-# their own pyproject. Nothing else is needed to extend the engine.
+# Out-of-tree plugins -- a domain extension, a site executor -- declare the
+# same groups in their own pyproject. Nothing else is needed to extend the
+# engine.
 
 [project.entry-points."recast.frontends"]
 fortran = "recast.fortran.frontend:factory"

@@ -3,8 +3,8 @@
 Everything in RecastEngine's core is written against these ABCs. Nothing in the
 core imports a concrete Fortran, CESM, JAX, or scheduler implementation.
 
-That constraint is the whole point: it is what lets ``recast-cesm`` supply the
-domain knowledge, and what lets an extension add capability at runtime instead
+That constraint is the whole point: it is what lets a domain extension supply
+the domain knowledge, and what lets an extension add capability at runtime instead
 of forking the engine.
 
 Stability: these signatures follow SemVer from 1.0. A minor release must not

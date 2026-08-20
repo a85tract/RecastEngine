@@ -35,6 +35,10 @@ RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("private-key", re.compile(r"-----BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY"), "private key"),
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"), "Anthropic API key"),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "GitHub token"),
+    # A private repository's name is not a secret in the credential sense, but
+    # naming it here publishes that it exists, and every mention is a link that
+    # 404s for the reader. The domain extension is referred to by what it is.
+    ("private-repo", re.compile(r"recast[-_]cesm", re.I), "private repo name"),  # hygiene: allow
 ]
 
 SKIP_DIRS = {
