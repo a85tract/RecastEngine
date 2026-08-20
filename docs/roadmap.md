@@ -2,13 +2,27 @@
 
 Phases, not dates. Each one has a check that says whether it is done.
 
-## P0 — decisions (open)
+## P0 — decisions (settled)
 
 | Decision | Options | Status |
 |---|---|---|
-| Contributor agreement | DCO (lightweight) vs CLA (allows relicensing later) | open |
+| Contributor agreement | DCO (lightweight) vs CLA (allows relicensing later) | **decided**: DCO, and enforced |
 | PyPI name | `recast-engine` — `recast` is taken by an unrelated 2021 package | **decided**, not yet uploaded |
-| What never goes public | Sec-Track content, PBS D41 research, `cpg_audit/` entries | open |
+| What never goes public | one upfront list vs case by case | **decided**: case by case, into `docs/disclosure-ledger.md` |
+
+The DCO is at `DCO`, the terms are in `CONTRIBUTING.md`, and the check is
+`tools/check_signoff.py` — because an agreement nothing verifies is not an
+agreement. It reads a range rather than the whole history: sign-off is required
+from adoption forward, and the commits made before it are left as they are.
+
+The third one resolves into a process rather than a list, because a list of what
+must never go public, written before the material is in front of you, is a
+guess. The cases arrive with the work — P3 moves 662 scripts out of a private
+collection, P6 flips two private repositories — and each is ruled on as it turns
+up. What that costs is a real record: `docs/disclosure-ledger.md` carries the
+case, the reason, and *which* mechanism holds it, and P6 does not flip while a
+case in it is still open. Eight cases are already settled there, five of them
+enforced by `tools/check_hygiene.py`.
 
 ## P1 — scaffold (this commit)
 
@@ -90,20 +104,23 @@ CESM-Agent-Produced-Scripts, into four buckets:
 | CESM-specific and one-shot | stay in the archived repository | ~350 |
 
 **Done when:** every promoted script has a test and a home; the rest is tagged
-read-only. Nothing is copied in to make the repository look fuller.
+read-only. Nothing is copied in to make the repository look fuller. And every
+`EXCLUDE` decision has a row in `docs/disclosure-ledger.md` — the bucket that
+stays behind is the one nobody reviews again, so the reason it stays behind is
+written down while it is still fresh, not reconstructed at P6.
 
 ## P4 — empty out the domain
 
-Build `recast-cesm` as its own repository and move every CESM-specific rule,
-catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto the
+Build the CESM extension as its own repository and move every CESM-specific
+rule, catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto the
 `refactor` and `port` recipes.
 
 A separate repository rather than a directory under SciRecast's `cesm/`,
-because this phase's check is that the engine passes with `recast-cesm`
+because this phase's check is that the engine passes with that extension
 *uninstalled* — which is only a real check if it is a separately installable
 distribution.
 
-**The translate side (PyCAM5 track) landed 2026-08-18.** `recast-cesm` ships
+**The translate side (PyCAM5 track) landed 2026-08-18.** The extension ships
 the framework stub tables, CAM's kind and constant conventions, and the
 physical sampling ranges, delivered by three entry-point plugins: the `cesm`
 frontend, the `translate.cam` transform, and the `translate-cam` recipe. A
@@ -117,10 +134,10 @@ domain needs).
 
 **The refactor and port sides (freeCAM, JaxCAM6) are deliberately deferred**
 until their student tooling is ready; their entry-point slots are sketched in
-`recast-cesm`'s pyproject and nothing is declared before it exists.
+the extension's pyproject and nothing is declared before it exists.
 
-**Done when:** the engine passes its tests with `recast-cesm` uninstalled, and
-freeCAM's validation gate runs through `Verifier` rather than its own
+**Done when:** the engine passes its tests with the CESM extension
+uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own
 `validate_*` scripts. This phase is the only real proof that the engine is
 domain-independent.
 
@@ -135,11 +152,27 @@ patch it did need is a hole in the contract, and the hole is the finding.
 
 ## P6 — public
 
-Scrub → security review → archive the two source repositories read-only →
-repoint SciRecast's `.gitmodules` (`RecastEngine` currently resolves to
-CESM-language-translator) → flip visibility.
+Scrub → security review → archive the two source repositories read-only → flip
+visibility → check that the SciRecast site's links resolve.
+
+There is no pointer to repoint. SciRecast is a Jekyll site rather than a
+submodule umbrella, and its `index.md`, `engine.md` and `contribute.md` already
+link `a85tract/RecastEngine` by URL — links that 404 for everyone outside the
+org until the flip and start working the moment it happens. So the last step is
+a verification, not an edit, and it has to include the deep ones:
+`contribute.md` points into `src/recast/plugins/`, `docs/writing-a-plugin.md`
+and `conformance/`. A deep link is how a rename gets discovered, by someone
+else, after the repository is already public.
+
+**Done when:** `docs/disclosure-ledger.md` has no open case, and every settled
+one names a mechanism that is actually in place — the pattern in
+`check_hygiene.py`, the path off the migration manifest, the record class
+guarded. A ledger row whose mechanism is still prose does not count.
 
 **Irreversible.** Both source repositories are private and carry NCAR paths, a
 username, an allocation account, PBS vulnerability research, and CPG audit
 entries. Filtering at migration time (P2/P3) rather than before the flip is what
-makes this safe, because git history keeps whatever was ever committed.
+makes this safe, because git history keeps whatever was ever committed — which
+is also why the ledger is written as the cases turn up rather than assembled
+here. By the time this phase runs, the material that would populate it has
+already been moved or left behind, and the decisions are months old.

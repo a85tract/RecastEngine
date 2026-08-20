@@ -10,8 +10,7 @@ apply, per the ecosystem's governance model:
 
   1. This repository contains framework and basic functionality only. It carries
      no domain knowledge about any particular scientific model. Domain plugins
-     (for example recast-cesm) live in their own repositories under their own
-     notices.
+     live in their own repositories under their own notices.
 
   2. Vulnerabilities discovered by this engine's cyber gate are recorded in
      Sec-Track, whose access is restricted to the PI's group to reduce the risk

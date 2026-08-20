@@ -56,7 +56,7 @@ SHR_KIND_DTYPES: dict[str, str] = {
 }
 """CESM's shared kind module, the one cross-domain fact this frontend carries.
 
-It is here rather than in ``recast-cesm`` because ``shr_kind_mod`` is how
+It is here rather than in the domain extension because ``shr_kind_mod`` is how
 essentially every Fortran climate code spells its precision, and a frontend
 that cannot resolve ``r8`` is not useful on any of them. Anything narrower than
 that belongs in the domain extension.

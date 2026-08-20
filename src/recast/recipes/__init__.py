@@ -2,7 +2,7 @@
 
 Each one names the real project it was abstracted from. They are stage
 declarations only -- the plugins they name arrive from ``recast-fortran``
-(in-tree, P2) or ``recast-cesm`` (the CESM case, P4).
+(in-tree, P2) or a domain extension (the CESM case, P4).
 
 Read these four side by side and the claim that the engine is domain-independent
 becomes checkable: they differ only in which plugin fills each slot.

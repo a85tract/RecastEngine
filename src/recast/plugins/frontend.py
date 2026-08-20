@@ -13,8 +13,8 @@ class Frontend(ABC):
     """Reads source. Never writes it.
 
     One Frontend per source language or per source model. ``recast-fortran``
-    ships in-tree as the reference implementation; ``recast-cesm`` layers CESM
-    conventions (CCPP metadata, CIME cases) on top of it.
+    ships in-tree as the reference implementation; a CESM extension layers
+    CESM conventions (CCPP metadata, CIME cases) on top of it.
     """
 
     name: str

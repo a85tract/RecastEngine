@@ -69,7 +69,7 @@ emitter is not involved.
    it belongs here. Of the 210 lines, 131 are stubs for CAM's `cam_history`,
    MCT, ESMF, PIO and GPTL: which framework calls carry no physics and can
    become `pass`. That is CESM knowledge, not knowledge of NumPy, and it goes
-   to `recast-cesm` rather than into the engine. The compiler profiles are
+   to the domain extension rather than into the engine. The compiler profiles are
    neither frontend nor backend -- they describe the *source* compiler whose
    output the translation has to match -- so they sit on the
    target-independent side where a second backend can read them.

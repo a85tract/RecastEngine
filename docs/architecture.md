@@ -197,7 +197,7 @@ effort needs and the source it is modernizing:
 ```
   RecastEngine        the spine: model, contract, registry, recipes
 + recast-fortran      language knowledge -- the reference frontend, in-tree
-+ recast-cesm         domain knowledge -- CESM rules, catalogs, golden sets
++ a CESM extension    domain knowledge -- CESM rules, catalogs, golden sets
 + a PBS executor      site knowledge -- private, never public
 + refactor + config   which recipe, which reference commit, how many ranks
 + CAM's source        the thing being modernized
@@ -212,8 +212,8 @@ different source and it produces a different product — which is the only reaso
 the abstraction is worth what it costs.
 
 **Extensions have no visibility requirement.** Entry points do not know whether
-the package declaring them is public. A private `recast-cesm`, a private site
-executor, and a public engine install and compose identically. That is what lets
+the package declaring them is public. A private domain extension, a private
+site executor, and a public engine install and compose identically. That is what lets
 an effort keep its filesystem paths, its allocation account, and its embargoed
 findings out of the public engine without giving up any capability.
 
@@ -223,7 +223,7 @@ where the code ships, not what it is permitted to do:
 | Extension | Ships | Why there |
 |---|---|---|
 | `recast-fortran` | in-tree, under `recast.` | the reference frontend; the engine has to be useful with nothing else installed |
-| `recast-cesm` | its own repository | P4's check is that the engine passes with it *uninstalled*, which only means something if it is a separable distribution |
+| the CESM extension | its own repository | P4's check is that the engine passes with it *uninstalled*, which only means something if it is a separable distribution |
 | site and scale plugins | wherever their owner keeps them | schedulers, cross-cluster routing, restricted finding stores |
 
 `recast-fortran` shipping in-tree is a packaging decision, not permission to
@@ -234,9 +234,9 @@ else, so swapping in a different frontend takes no engine change.
 
 **Domain.** Nothing in `recast.*` imports numpy, sympy, numba, jax, anthropic,
 or netCDF4. `tests/test_contract.py::test_core_imports_no_domain_packages`
-enforces it by walking the package. Domain knowledge lives out of tree in
-`recast-cesm`; language knowledge lives in `recast-fortran`, which ships in-tree
-as the reference frontend.
+enforces it by walking the package. Domain knowledge lives out of tree in a
+domain extension; language knowledge lives in `recast-fortran`, which ships
+in-tree as the reference frontend.
 
 **In-tree vs plugin.** The engine ships what one person needs on one machine:
 the full frontend/rule/verification stack, the NumPy/Numba/JAX/CUDA backends,

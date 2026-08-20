@@ -42,7 +42,7 @@ Two rules that are easy to get wrong:
 
 ```toml
 [project.entry-points."recast.transforms"]
-"port.jax" = "recast_cesm.transforms:KernelToJax"
+"port.jax" = "yourpkg.transforms:KernelToJax"
 ```
 
 Group name is `recast.<kind>s`. Install the package and `recast plugins` shows
