@@ -58,12 +58,27 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
   executor, the cache key folding source digest, compiler version and flags.
 
 P3 found five more that are the pipeline's but postdate the translator's last
-commit — `extract_build_flags`, `intel_math`, `jaxize`, `jax_shim`,
-`coverage_sweep`. Their own usage strings say `pipeline/`, and they exist only in
-CESM-Agent-Produced-Scripts, so for those five the collection is the source and
-P2 has to take them from there before it is archived. Ten more share a filename
-with something already in `pipeline/` or `tests/` but differ in content; the
-triage flags each and decides none.
+commit — `jaxize`, `jax_shim`, `coverage_sweep`, `intel_math`,
+`extract_build_flags`. Their own usage strings say `pipeline/`, and they exist
+only in CESM-Agent-Produced-Scripts, so for those five the collection is the
+source and P2 has to take them from there before it is archived.
+
+Four have a slot waiting here already. `PortRecipe` declares a `jax` backend and
+`plugins/transform.py` names `recast.port.kernel-to-jax`, neither implemented;
+the first three files are that implementation, and `jax_shim` in particular is
+the JAX counterpart of the `_f_*` anchors `transform/numpy/runtime.py` already
+ships. `intel_math` is a third libm beside the glibc-versus-SIMD difference the
+same runtime already models, which puts it next to `transform/profiles.py`.
+
+The fifth splits, and the seam is worth landing on rather than across.
+`extract_build_flags` knows which flags can change numerics — compiler knowledge,
+belonging beside `profiles.py` — and where the compile line hides in a CESM build
+log, which is the domain extension's. `oracle/f2py.py` takes `fflags` from config
+with a default today; lifting them verbatim out of the production build log,
+never hand-copied, is the capability still missing.
+
+Ten more share a filename with something already in `pipeline/` or `tests/` but
+differ in content; the triage flags each and decides none.
 
 **Done when:** the `translate` recipe runs end to end on `examples/` and
 reproduces the existing bit-exact result for one scheme, with 408 files' worth
