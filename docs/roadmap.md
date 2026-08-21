@@ -32,7 +32,7 @@ four recipes as declarations, CLI introspection, CI, hygiene gate, licence.
 **Done when:** `recast doctor`, `recast recipes`, and `recast plan` run with zero
 optional dependencies installed, and `test_contract.py` passes.
 
-## P2 — migrate the translator
+## P2 — migrate the translator (done)
 
 Move CESM-language-translator's `pipeline/` (22 modules, ~10k lines) in with
 history via `git filter-repo` path rewrite, refactoring as it lands:
@@ -57,32 +57,35 @@ history via `git filter-repo` path rewrite, refactoring as it lands:
   **Landed**: flat wrappers over the public API, the compile through the
   executor, the cache key folding source digest, compiler version and flags.
 
-P3 found five more that are the pipeline's but postdate the translator's last
-commit — `jaxize`, `jax_shim`, `coverage_sweep`, `intel_math`,
-`extract_build_flags`. Their own usage strings say `pipeline/`, and they exist
-only in CESM-Agent-Produced-Scripts, so for those five the collection is the
-source and P2 has to take them from there before it is archived.
-
-Four have a slot waiting here already. `PortRecipe` declares a `jax` backend and
-`plugins/transform.py` names `recast.port.kernel-to-jax`, neither implemented;
-the first three files are that implementation, and `jax_shim` in particular is
-the JAX counterpart of the `_f_*` anchors `transform/numpy/runtime.py` already
-ships. `intel_math` is a third libm beside the glibc-versus-SIMD difference the
-same runtime already models, which puts it next to `transform/profiles.py`.
-
-The fifth splits, and the seam is worth landing on rather than across.
-`extract_build_flags` knows which flags can change numerics — compiler knowledge,
-belonging beside `profiles.py` — and where the compile line hides in a CESM build
-log, which is the domain extension's. `oracle/f2py.py` takes `fflags` from config
-with a default today; lifting them verbatim out of the production build log,
-never hand-copied, is the capability still missing.
-
-Ten more share a filename with something already in `pipeline/` or `tests/` but
-differ in content; the triage flags each and decides none.
-
 **Done when:** the `translate` recipe runs end to end on `examples/` and
 reproduces the existing bit-exact result for one scheme, with 408 files' worth
 of `/glade` paths gone (`tools/check_hygiene.py` is the check).
+
+Met. All four bullets landed, and `recast run translate examples/toy_physics`
+walks frontend → transform → `static.rwset` → `f2py-golden` →
+`differential.bitexact` → store, failing closed on a machine with no Fortran
+compiler rather than passing anything it could not check.
+
+P3 turned up five files in CESM-Agent-Produced-Scripts whose usage strings say
+`pipeline/` but which postdate the translator's last commit, so no path rewrite
+reaches them. Two of them would extend what P2 landed rather than complete it,
+and are recorded here so they are not lost — not as work this phase is waiting
+on:
+
+- `intel_math` is a third libm beside the glibc-versus-SIMD difference
+  `transform/numpy/runtime.py` already models in its `_f_*` anchors, which puts
+  it beside `transform/profiles.py`.
+- `extract_build_flags` splits. Which flags can change numerics — the ifort/ifx
+  two-token table, the drop list — is compiler knowledge and belongs beside
+  `profiles.py`; finding the compile line inside a CESM build log is the domain
+  extension's. `oracle/f2py.py` takes `fflags` from config with a default today,
+  and lifting them verbatim out of the production build log, never hand-copied,
+  is the capability neither half supplies yet.
+
+The other three are P4's, below. Ten more files share a filename with something
+in `pipeline/` or `tests/` while differing in content; P3's triage flags each
+and decides none.
+
 
 **Met** for the stage chain on 2026-08-18: `wv_sat_methods` -- the scheme the
 pipeline bootstrapped on -- runs frontend → `translate.numpy` (zero deferred
@@ -216,6 +219,14 @@ domain needs).
 **The refactor and port sides (freeCAM, JaxCAM6) are deliberately deferred**
 until their student tooling is ready; their entry-point slots are sketched in
 the extension's pyproject and nothing is declared before it exists.
+
+P3 located the port side's tooling. `jaxize`, `jax_shim` and `coverage_sweep`
+sit in CESM-Agent-Produced-Scripts and nowhere else, and they are what fills the
+slot this engine has already declared and not implemented — `PortRecipe`'s `jax`
+backend and the `recast.port.kernel-to-jax` named in `plugins/transform.py`.
+`jax_shim` is specifically the JAX counterpart of the `_f_*` anchors
+`transform/numpy/runtime.py` ships, so the two backends can be held to the same
+anchors rather than drifting into separate notions of correct.
 
 **Done when:** the engine passes its tests with the CESM extension
 uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own
