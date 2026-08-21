@@ -259,7 +259,26 @@ directories already on disk, discovered rather than listed.
 The order follows from that: the migration diff comes first. If the migrated
 backend emits the same bytes, the scientific comparison is preserved for free,
 because it is the same code computing the same numbers — and 630 lines of
-migrated AST surgery is not reviewable any other way. That last one is a
+migrated AST surgery is not reviewable any other way.
+
+**`tools/jax_diff.py` is that harness, and its baseline is measured.** Over the
+109 suite directories, the collection's backend builds all 109 without raising,
+emitting 203 JAX kernels and host-delegating 607 subprograms — and the reasons
+divide into three families that a reviewer has to keep apart:
+
+| | | |
+|---|---|---|
+| `[elig]` | 468 (77%) | not eligible: derived types, module-state writes, string arguments. By design — kernel eligibility mirrors the Numba backend's, and none of it is a limit of the JAX emitter |
+| `[emit]` | 93 (15%) | the emitter's own subset: `while`, `Raise`, `Try`, a return inside a loop. This is the number that should fall as the backend grows |
+| `[anchor]` | 46 (8%) | the NumPy module it was handed still carries `AGENT_QUEUE` placeholders. The anchor is incomplete, so there is nothing to port |
+
+Only the middle row is the JAX backend's to improve, which is worth knowing
+before anyone reads "607 delegated" as a coverage problem. The harness compares
+emitted pieces byte for byte, kernel sets and delegation placement exactly, and
+delegation *reasons* only as far as their category, because the tag is a
+decision and the tail is a diagnostic. It needs no JAX — verified, the survey
+runs with JAX not installed — and its own tests plant one difference at a time,
+including one that must not be reported. That last one is a
 decision, not a port: the tooling anchors on the validated `*_numpy.py`
 module, while `PortRecipe` declares `dump-replay`. The NumPy module is itself
 bit-exact against the f2py oracle, so anchoring on it is a chain of trust
