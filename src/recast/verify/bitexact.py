@@ -158,7 +158,13 @@ class BitexactVerifier(Verifier):
         # the same constants, or the two sides are computing under different
         # physics and every mismatch is noise.
         try:
-            self._run_setup(config.get("setup") or [], translated, truth, wrappers)
+            self._run_setup(
+                config.get("setup") or [],
+                translated,
+                truth,
+                wrappers,
+                str(handle.get("arg_naming", "lower")),
+            )
         except Exception as error:  # fail closed
             return self._verdict(candidate, Confidence.FAILED, {}, f"setup call failed: {error}")
 
@@ -185,6 +191,8 @@ class BitexactVerifier(Verifier):
                 ranges,
                 prepare=getattr(translated, "_PREPARE_INPUTS", None),
                 dominant_at=config.get("dominant_at", self.dominant_at),
+                arg_naming=str(handle.get("arg_naming", "lower")),
+                convention=str(handle.get("return_convention", "f2py")),
             )
             per_subprogram[name] = outcome
             if "error" in outcome:
@@ -276,15 +284,22 @@ class BitexactVerifier(Verifier):
 
     @staticmethod
     def _run_setup(
-        setup: list[dict[str, Any]], translated: Any, truth: Any, wrappers: dict[str, str]
+        setup: list[dict[str, Any]],
+        translated: Any,
+        truth: Any,
+        wrappers: dict[str, str],
+        arg_naming: str = "lower",
     ) -> None:
         from recast.transform.numpy.vocabulary import pysafe
 
+        spell = pysafe if arg_naming == "pysafe" else str.lower
         for call in setup:
             name = call["subprogram"]
             inputs = call.get("inputs", {})
             getattr(translated, pysafe(name))(**{pysafe(k): v for k, v in inputs.items()})
-            getattr(truth, wrappers.get(name, f"w_{name}"))(**inputs)
+            getattr(truth, wrappers.get(name, f"w_{name}"))(
+                **{spell(k): v for k, v in inputs.items()}
+            )
 
     # -- one subprogram -------------------------------------------------------
 
@@ -300,6 +315,8 @@ class BitexactVerifier(Verifier):
         ranges: dict[str, tuple[float, float]],
         prepare: Any = None,
         dominant_at: float | None = None,
+        arg_naming: str = "lower",
+        convention: str = "f2py",
     ) -> dict[str, Any]:
         from recast.transform.numpy.vocabulary import pysafe
 
@@ -352,18 +369,23 @@ class BitexactVerifier(Verifier):
             translated_kwargs = {
                 pysafe(a["name"]): inputs[a["name"]] for a in required if a["intent"] != "OUT"
             }
-            # f2py lowercases every dummy name, because Fortran is
-            # case-insensitive and the source's spelling is not a fact about
-            # the interface. A candidate that reports `sl_prePBL` still
-            # reaches the same oracle argument.
+            # How the reference spells an argument is the reference's business,
+            # and it declares which on its handle. f2py lowercases every dummy
+            # name, because Fortran is case-insensitive and the source's
+            # spelling is not a fact about the interface -- a candidate that
+            # reports `sl_prePBL` still reaches the same oracle argument. An
+            # anchor emitted by this engine's own backend spells names the
+            # emitted way instead, because both sides of that comparison came
+            # out of the same emitter.
+            spell = pysafe if arg_naming == "pysafe" else str.lower
             truth_kwargs = {
-                a["name"].lower(): (
+                spell(a["name"]): (
                     np.copy(v) if isinstance(v := inputs[a["name"]], np.ndarray) else v
                 )
                 for a in required
                 if a["intent"] != "OUT"
             }
-            truth_args = [truth_kwargs[a["name"].lower()] for a in required if a["intent"] != "OUT"]
+            truth_args = [truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"]
             try:
                 translated_out = translated_fn(**translated_kwargs)
             except Exception as error:
@@ -374,7 +396,14 @@ class BitexactVerifier(Verifier):
                 return {"error": f"oracle raised: {type(error).__name__}: {error}"}
 
             pairs = self._paired_outputs(
-                sub, outs_all, outs_required, required, translated_out, truth_out, truth_args
+                sub,
+                outs_all,
+                outs_required,
+                required,
+                translated_out,
+                truth_out,
+                truth_args,
+                convention,
             )
             if isinstance(pairs, str):
                 return {"error": pairs}
@@ -462,17 +491,40 @@ class BitexactVerifier(Verifier):
         translated_out: Any,
         truth_out: Any,
         truth_args: list[Any],
+        convention: str = "f2py",
     ) -> list[tuple[str, Any, Any]] | str:
         """Match the two sides' outputs by argument.
 
         The translation returns every OUT/INOUT argument, optional ones
-        included, in declaration order (a function returns its result). f2py
-        returns the wrapper's ``intent(out)`` arguments and mutates the
-        ``inout`` ones in place, so INOUT values are read back from the
-        arrays that were passed.
+        included, in declaration order (a function returns its result). What
+        the *reference* returns depends on what kind of reference it is, and it
+        says which on its handle rather than being guessed at here.
+
+        ``f2py`` returns the wrapper's ``intent(out)`` arguments and mutates
+        the ``inout`` ones in place, so INOUT values are read back from the
+        arrays that were passed. ``emitted`` is a reference this engine's own
+        backend produced -- a NumPy anchor for a port -- and returns exactly
+        what the candidate does, because the same emitter wrote both.
         """
         if sub["kind"] == "function":
+            # Both sides return the result, whatever kind of reference this is.
             return [(sub.get("result") or "result", translated_out, truth_out)]
+
+        if convention == "emitted":
+            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+            yours = list(truth_out) if isinstance(truth_out, tuple) else [truth_out]
+            names = [a["name"] for a in outs_all]
+            if len(mine) != len(names) or len(yours) != len(names):
+                return (
+                    f"candidate returned {len(mine)} and reference {len(yours)} value(s) "
+                    f"for {len(names)} out-intent argument(s)"
+                )
+            ours_by_name = dict(zip(names, mine, strict=True))
+            theirs_by_name = dict(zip(names, yours, strict=True))
+            return [
+                (a["name"], ours_by_name[a["name"]], theirs_by_name[a["name"]])
+                for a in outs_required
+            ]
 
         ours = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
         if len(ours) != len(outs_all):

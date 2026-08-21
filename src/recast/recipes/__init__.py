@@ -93,10 +93,16 @@ class RefactorRecipe(Recipe):
 class PortRecipe(Recipe):
     """CPU to accelerator porting, gated on captured dumps.
 
-    Abstracted from CESM-jax-kernels: rewrite a physics kernel for JAX or Numba,
-    validated against inputs and outputs captured from a real Fortran run rather
-    than against synthetic samples, because the regimes that break a port are the
-    ones the model actually visits.
+    Abstracted from CESM-jax-kernels: rewrite a physics kernel for JAX or
+    Numba, and gate it where bit-exactness is not available -- XLA's
+    transcendentals are not libm's, so the honest ceiling is a ULP bound.
+
+    The reference is the validated NumPy translation of the same unit by
+    default, which makes the port's claim a chain: NumPy bit-exact against the
+    Fortran, JAX ULP-bounded against the NumPy. ``config["oracle"]`` selects
+    ``dump-replay`` instead for a unit with no such translation to anchor on --
+    validated against inputs and outputs captured from a real Fortran run,
+    because the regimes that break a port are the ones the model visits.
     """
 
     name = "port"
@@ -108,7 +114,13 @@ class PortRecipe(Recipe):
             Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("transform", f"port.{backend}"),
-            Stage("oracle", "dump-replay"),
+            # Two references are possible and they answer different questions.
+            # ``numpy-anchor`` is the validated NumPy translation of the same
+            # unit, which the translate recipe has already held bit-exact
+            # against the Fortran -- so a port gated on it inherits a chain
+            # rather than a looser claim. ``dump-replay`` is for a unit that
+            # has no such translation to anchor on.
+            Stage("oracle", config.get("oracle", "numpy-anchor")),
             # The Candidate carries the ported module *and* the anchor it
             # host-delegates to, so the gate has to be told which one is under
             # judgement. Without this it would import the anchor and compare it
@@ -128,8 +140,11 @@ class PortRecipe(Recipe):
         backend = config.get("backend", "jax")
         if backend not in {"jax", "numba", "cuda"}:
             problems.append(f"unknown backend {backend!r}")
-        if not config.get("dumps"):
-            problems.append("port requires 'dumps': captured reference inputs/outputs")
+        # Only the replay oracle needs captured dumps. The NumPy anchor derives
+        # its reference from the same source the port was made from, so
+        # demanding dumps for it would be asking for a file nothing reads.
+        if config.get("oracle", "numpy-anchor") == "dump-replay" and not config.get("dumps"):
+            problems.append("the dump-replay oracle requires 'dumps': captured inputs/outputs")
         return problems
 
 

@@ -322,6 +322,13 @@ def _toy_physics_facts() -> Facts:
     return facts
 
 
+def _decline(site: Any) -> None:
+    """A behaviour hook that fills nothing. Declared for the key check, which
+    asks whether the *presence* of one moves the reference -- it does, and its
+    address must not, or the cache would miss on every run."""
+    return None
+
+
 def _different_source(facts: Facts) -> Facts:
     """The same build of a different file. The key folds the source's content
     digest, so moving it must move the key -- otherwise a rebuilt reference is
@@ -415,6 +422,27 @@ PLUGIN_SET = PluginSet(
         ),
     ),
     oracles=(
+        OracleCase(
+            # The one oracle here that needs no toolchain: it derives its
+            # reference by running the engine's own transform, so the Oracle
+            # rules are exercised on every machine rather than only where a
+            # Fortran compiler happens to be.
+            name="numpy-anchor",
+            unit=Unit(uid=F2PY_UNIT, kind="module"),
+            facts=_toy_physics_facts,
+            config={"root": str(TOY_PHYSICS)},
+            moves_the_key={
+                "compiler profile": {"profile": "ifx"},
+                "framework stub tables": {"function_stubs": {"outfld": "pass"}},
+                "an agentic hook, by its presence": {"deferred_handler": _decline},
+            },
+            move_the_source=_different_source,
+            materializes=True,
+            # It derives the reference in this process: no compile, nothing
+            # handed to the executor, so nothing for a refusal to stop.
+            submits_jobs=False,
+            requires=("numpy", "fparser"),
+        ),
         OracleCase(
             name="f2py-golden",
             unit=Unit(uid=F2PY_UNIT, kind="module"),

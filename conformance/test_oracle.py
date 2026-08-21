@@ -101,6 +101,11 @@ def test_a_refusing_executor_is_a_recast_error(
     so one refused build costs every other unit its verdict too."""
     if not oracle_case.materializes:
         pytest.skip(f"{oracle_case.name!r} does not materialize where the suite runs")
+    if not oracle_case.submits_jobs:
+        pytest.skip(
+            f"{oracle_case.name!r} declares that it submits no jobs, so there is "
+            "no executor for it to route around"
+        )
 
     with pytest.raises(RecastError):
         oracle.materialize(

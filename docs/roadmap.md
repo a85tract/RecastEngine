@@ -240,10 +240,49 @@ dominant element, and `max_rel` is `1.0e-13` in *both* -- so a plain relative
 gate at 1e-12, which is what a single-tier version of this would have been,
 passes the defect. What the ULP tier buys is exactly that case.
 
-Three pieces remain: `port.jax` itself (`jaxize` and `jax_shim` from the
-collection, which transform the emitted NumPy module's AST rather than
-re-parsing Fortran, so the composition happens inside one Transform), a diff
-harness, and the oracle.
+**The port side runs end to end as of 2026-08-20.** `recast run port` walks
+frontend → `port.jax` → `numpy-anchor` → `differential.tolerance` → store and
+reaches a verdict; on a kernel with no transcendentals that verdict is
+`ULP_BOUNDED` at 1 ULP over 85 points, 76 of them bit-exact.
+
+The oracle decision went to `numpy-anchor`: the reference is the validated
+NumPy translation of the same unit, re-derived from the same Facts rather than
+read off the Candidate, because an Oracle that saw the artifact would stop
+being independent of it. That makes the port's claim a chain — NumPy bit-exact
+against the Fortran, JAX ULP-bounded against the NumPy — and the honest part is
+that this oracle cannot check the first link. It records what it derived and
+carries `config["anchor_evidence"]` into the Verdict when an operator has the
+translate evidence to point at; absent is a legitimate answer and an
+informative one. `dump-replay` stays selectable for a unit with no translation
+to anchor on, and only that oracle now demands `dumps`.
+
+**One link of the chain is missing and is deferred on purpose.** The ULP gate
+measures how far two implementations land apart in float64; it cannot say
+whether the lowering changed the mathematics. That is `symbolic.notary`'s
+question, answered at fifty significant digits where float64's own 1e-16 noise
+cannot reach, with `1e-45` as the bar for "the same function" — a different
+coordinate system from ULP entirely, not a stricter setting of the same dial.
+And `jaxize` rewrites: a `for` loop becomes `lax.fori_loop`, an `if` becomes
+`lax.cond`, `and` becomes `jnp.logical_and`. Whether those preserve the
+expression is exactly what the notary exists to decide, and nothing currently
+asks it, because `port.jax` records no `Candidate.notes["rewrites"]` for it to
+read. The translate recipe carries the notary as an optional stage; the port
+recipe should, once the Transform records its rewrites. Deferred, not
+forgotten.
+
+Running it for real found what reading could not: the differential harness had
+**three f2py conventions baked in** while claiming to be oracle-agnostic. How a
+reference spells an argument (lowercased, or the emitted spelling), what it
+returns for out-intent arguments (f2py's split between returned `intent(out)`
+and mutated `inout`, or every out argument in declaration order), and whether
+it needs `w_` wrappers at all. Each is now something the reference declares on
+its handle, defaulting to what f2py does so nothing existing changed — the
+translate spine is byte-identical and `verification.json` did not move. A
+fourth thing was missing rather than assumed: the emitted JAX module carried no
+`_SIGNATURES` table, because the script it came from was driven by hand-written
+tests that already knew the interface, and the engine's gate generates its
+inputs from the table. The Transform lifts it from the anchor, which keeps
+`tools/jax_diff.py` green because the backend's own emission is unchanged.
 
 **Two comparisons, and they must not be confused, because their standards are
 opposite.** One is scientific: the Fortran's numbers against the JAX port's,

@@ -675,6 +675,11 @@ from {runtime} import *  # noqa: F401,F403  (enables x64, _f_* jnp shims)
 from {constants} import *  # noqa: F401,F403
 import {module}_numpy as _host
 
+# Which device this module will run on. A ULP bound between a GPU and a CPU is
+# a different claim from one between two CPUs, and the gate records what the
+# module says rather than importing an accelerator to find out.
+_DEVICE = str(jax.devices()[0])
+
 '''
 
 

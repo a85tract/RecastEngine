@@ -26,6 +26,7 @@ import ast
 from pathlib import Path
 from typing import Any
 
+from recast.errors import ConfigError
 from recast.model import Candidate, Facts, Unit
 from recast.plugins.transform import Transform
 
@@ -61,10 +62,13 @@ class KernelToJax(Transform):
         runtime_stem = config.get("jax_runtime_stem", f"{module}_jax_runtime")
 
         source = anchor.files[Path(f"{module}_numpy.py")].decode()
-        pieces, jitted, delegated = build_module(facts.interface, ast.parse(source))
-        emitted = HEADER.format(
-            module=module, constants=constants_stem, runtime=runtime_stem
-        ) + "\n\n\n".join(pieces)
+        tree = ast.parse(source)
+        pieces, jitted, delegated = build_module(facts.interface, tree)
+        emitted = (
+            HEADER.format(module=module, constants=constants_stem, runtime=runtime_stem)
+            + _signatures_of(tree)
+            + "\n\n\n".join(pieces)
+        )
 
         return Candidate(
             unit=unit.uid,
@@ -88,6 +92,32 @@ class KernelToJax(Transform):
                 },
             },
         )
+
+
+def _signatures_of(anchor: ast.Module) -> str:
+    """Carry the anchor's ``_SIGNATURES`` table into the ported module.
+
+    Added by this Transform rather than by the backend, which is why
+    ``tools/jax_diff.py`` stays green: what it holds to the byte is what
+    ``build_module`` emits, and this is not that. The script the backend came
+    from had no need for the table because its comparisons were hand-written
+    tests that already knew the signatures. The engine's differential gate
+    generates its inputs from the table instead, so a module without one
+    cannot be judged -- and a ported artifact that cannot describe its own
+    interface is worse than inconvenient, it is unverifiable.
+
+    Lifted from the anchor rather than re-rendered, so the two modules cannot
+    drift into disagreeing about the interface they share.
+    """
+    for node in anchor.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_SIGNATURES" for target in node.targets
+        ):
+            return ast.unparse(node) + "\n\n\n"
+    raise ConfigError(
+        "the NumPy anchor carries no _SIGNATURES table, so the ported module "
+        "would have nothing for a differential gate to generate inputs from"
+    )
 
 
 def factory(**_config: Any) -> KernelToJax:
