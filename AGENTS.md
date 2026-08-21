@@ -15,7 +15,7 @@ about NCAR's machines, it belongs in a plugin repository instead.
   workload uses belongs in that plugin's `attrs`/`extra`.
 - `src/recast/recipes/` — workload declarations. Stage lists, no logic.
 - `src/recast/executors/`, `src/recast/store/` — the shipped implementations.
-- `conformance/` — what a plugin must pass.
+- `conformance/` — what a plugin must pass, and the suite that checks it.
 - `tools/check_hygiene.py` — the site-leakage gate. Runs in CI on every push.
 
 ## Development

@@ -245,6 +245,34 @@ Build the first extension that lives outside this repository and depends only on
 the published contract: PBS/Slurm executors, relay/resume of multi-day runs, and
 a restricted `FindingStore` for Sec-Track. It passes `conformance/`.
 
+That last sentence needed a `conformance/` that runs, and until now there was
+none: the directory held a specification whose own status line said the harness
+would land in P2, and P2 closed without it. It runs now, over the two kinds P5's
+extension is made of -- `Executor` and `FindingStore` -- plus `EvidenceStore`,
+`Oracle`, `Verifier`, the recipe-level rules, and the runner's no-retry
+guarantee. An extension names its plugins to the suite by declaring a
+`PluginSet`, so a check that needs a candidate or an oracle can be handed one;
+`recast/conformance/builtin.py` is the set the engine holds itself to, and CI
+runs it. Five kinds are still specification -- `Frontend` and `Transform` next,
+because they have an in-tree implementation to hold, and `Scanner`,
+`Adjudicator` and `AgentProvider` after the first implementation of each exists
+to hold. Each row of the suite's tables says which it is.
+
+It has already earned its place. The rule that an executor's refusal must reach
+the runner as a `RecastError` turned out not to hold for `f2py-golden`: it let a
+bare `RuntimeError` out, which `run.py` does not catch, so one build that could
+not be scheduled ended the whole run and cost every other unit its verdict.
+`OracleUnavailable` had been declared since P1 and raised nowhere. That is the
+shape of finding this phase is for, arriving one phase early because the checks
+were written before their subjects were examined.
+
+One rule stays deliberately unexercised: no Verifier in this repository submits
+a job, so nothing here can route around a refusing executor. `f2py-golden` is
+the plugin that compiles through one, which is where that rule is checked today,
+and P5's batch-backed Verifier is what will meet the other half. The check skips
+by name rather than passing, which is the arrangement that makes it useful on
+the day something does execute.
+
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 

@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from recast.errors import ConfigError
+from recast.errors import ConfigError, OracleUnavailable, RecastError
 from recast.model import Facts, OracleRef, Unit
 from recast.plugins.executor import Executor, Job
 from recast.plugins.oracle import Oracle
@@ -247,7 +247,21 @@ class F2pyGoldenOracle(Oracle):
             timeout_s=float(config.get("build_timeout", 600)),
             label=f"f2py {module_name}",
         )
-        result = executor.run(job)
+        try:
+            result = executor.run(job)
+        except RecastError:
+            raise
+        except Exception as error:
+            # An executor that refuses -- it cannot honestly supply what the job
+            # asked for -- is the case ``OracleUnavailable`` exists for, and it
+            # has to arrive as one. The runner catches ``RecastError`` and marks
+            # this unit's oracle stage failed; anything else escapes it and takes
+            # the whole run down, so a refusal nobody wrapped costs the other
+            # units their verdicts as well as this one.
+            raise OracleUnavailable(
+                f"executor {getattr(executor, 'name', type(executor).__name__)!r} did not "
+                f"run the f2py build for {unit.uid}: {type(error).__name__}: {error}"
+            ) from error
         if not result.ok:
             log = build / "f2py.log"
             log.write_text(result.stdout + "\n" + result.stderr)

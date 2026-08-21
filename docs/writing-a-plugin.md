@@ -54,6 +54,36 @@ is equivalent.
 `conformance/` holds the suite every plugin kind must satisfy. Run it before
 publishing.
 
+It cannot find your plugins by itself, and for most kinds it could not check
+them if it did: asking whether a Verifier fails closed means handing it a
+candidate, an oracle and a workspace, and only you know what a valid one looks
+like. So you declare a `PluginSet` -- one case per plugin, carrying the least
+material its checks need -- and name it:
+
+```python
+# yourpkg/conformance.py
+from recast.conformance import ExecutorCase, PluginSet
+
+PLUGIN_SET = PluginSet(
+    name="your-extension",
+    executors=(ExecutorCase(name="pbs", unsatisfiable={"nodes": 4096}),),
+)
+```
+
+```toml
+[project.entry-points."recast.conformance"]
+your-extension = "yourpkg.conformance:PLUGIN_SET"
+```
+
+```bash
+uv run pytest conformance/ --plugin-set your-extension
+```
+
+A kind you do not declare is reported as unexercised rather than passing, which
+is the answer you want: it says the suite was given nothing to check, instead of
+leaving you to believe it found nothing wrong. `recast/conformance/builtin.py`
+is the set the engine holds itself to, and the example worth copying.
+
 ## Naming
 
 Dotted and namespaced: `translate.numpy`, `port.jax`, `differential.bitexact`,

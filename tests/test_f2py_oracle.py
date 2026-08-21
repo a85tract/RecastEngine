@@ -455,3 +455,29 @@ def step(inVal):
         {"trials": 2, "ranges": {"inval": (1.0, 2.0)}},
     )
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+
+
+@pytest.mark.skipif(GFORTRAN is None, reason="the cache key asks the compiler its version")
+def test_a_refused_build_fails_this_stage_and_not_the_run(tmp_path: Path) -> None:
+    """An executor that will not run the build is an unavailable oracle.
+
+    ``run_recipe`` catches ``RecastError`` and marks the unit's oracle stage
+    failed; anything else escapes it. A refusal that arrives as a bare
+    ``RuntimeError`` therefore costs every *other* unit its verdict too, which
+    is a much larger blast radius than the one build that could not run.
+    """
+    from recast.conformance.doubles import RefusingExecutor
+    from recast.errors import OracleUnavailable
+
+    (tmp_path / "toy_physics.f90").write_text(SOURCE)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:toy_physics")
+    facts = frontend.analyze(unit, tmp_path)
+    with pytest.raises(OracleUnavailable, match="did not run the f2py build"):
+        F2pyGoldenOracle().materialize(
+            unit,
+            facts,
+            tmp_path / "work",
+            RefusingExecutor(),
+            {"root": str(tmp_path)},
+        )
