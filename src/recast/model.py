@@ -23,7 +23,16 @@ from typing import Any
 
 
 class Confidence(StrEnum):
-    """How strong a Verdict is. Ordered weakest to strongest."""
+    """How strong a Verdict is. Ordered weakest to strongest.
+
+    Every rung above ``FAILED`` is a claim *relative to an environment*, not a
+    property of the translation. Bit-exactness in particular is the compiler,
+    its flags, the libm behind it, and the device, as much as it is the code:
+    the same candidate and the same oracle can agree to the bit on one machine
+    and differ on the next, which is why ``Oracle.key`` folds the compiler's
+    identity in and why ``Evidence.environment`` exists. Read a rung as "this
+    strong, against this oracle, under the environment the Evidence records".
+    """
 
     FAILED = "failed"
     """The candidate is wrong, or the comparison could not be run."""
@@ -35,10 +44,16 @@ class Confidence(StrEnum):
     """Agreed within a stated rtol/atol on the project's real inputs."""
 
     ULP_BOUNDED = "ulp_bounded"
-    """Agreed with a proven bound on IEEE-754 ULP distance."""
+    """Agreed with a proven bound on IEEE-754 ULP distance.
+
+    The honest ceiling for a target that cannot be bit-exact by construction --
+    a backend whose transcendentals are not libm's, or that fuses multiply-add.
+    See ``recast.verify.tolerance``."""
 
     BIT_EXACT = "bit_exact"
-    """Bit-for-bit identical to the oracle. The strongest empirical gate."""
+    """Bit-for-bit identical to the oracle. The strongest empirical gate, and
+    the one most easily lost by moving: a different compiler, libm, or device
+    can cost it without anything about the candidate changing."""
 
     SYMBOLIC = "symbolic"
     """Proven equivalent in exact arithmetic (SymPy/mpmath/e-graph)."""

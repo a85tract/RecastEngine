@@ -207,6 +207,7 @@ class BitexactVerifier(Verifier):
             "skipped": skipped,
             "max_rel": worst_rel,
             **totals,
+            **self._devices(translated, handle),
         }
         if failures:
             return self._verdict(
@@ -410,6 +411,28 @@ class BitexactVerifier(Verifier):
             outcome["max_ulp_dominant"] = max_ulp_dominant
             outcome["dominant_points"] = dominant_points
         return outcome
+
+    @staticmethod
+    def _devices(translated: Any, handle: dict[str, Any]) -> dict[str, str]:
+        """Which device each side ran on, when either side says.
+
+        Every rung of the ladder is a claim about an environment rather than
+        about the code -- the same candidate and the same oracle can agree to
+        the bit on one machine and differ on the next -- and for an accelerator
+        backend the device is the half of that environment most likely to move.
+        A verdict that does not record it cannot be re-argued later.
+
+        Asked for rather than detected, and by the same convention as
+        ``_SIGNATURES`` and ``_PREPARE_INPUTS``: the emitted module declares
+        ``_DEVICE`` if it knows, and an Oracle puts one on its handle. Reaching
+        for ``jax.devices()`` here instead would put an accelerator import in
+        the core, which is the one thing the core does not do.
+        """
+        found = {
+            "candidate_device": getattr(translated, "_DEVICE", None),
+            "reference_device": handle.get("device"),
+        }
+        return {name: str(value) for name, value in found.items() if value}
 
     @staticmethod
     def _dominance(np: Any, reference: Any, dominant_at: float | None) -> list[bool] | None:

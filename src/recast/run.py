@@ -110,6 +110,14 @@ class RecipeRun:
         over the same revisions produce the same summary on any machine, which
         is what lets CI regenerate it and fail on a diff; when a number does
         change, the change is the finding rather than the weather.
+
+        The cost of that stability is worth naming. Every confidence in here is
+        a claim *relative to an environment* -- a different compiler, libm or
+        device can cost a bit-exact verdict without anything about the candidate
+        changing -- and this file is the one place that deliberately leaves the
+        environment out. So read it as an index of what was claimed, not as the
+        claim in full: the conditions are in the Evidence manifest, which
+        records them per run and is not diffed against anything.
         """
         return {
             "schema": 1,
