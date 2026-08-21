@@ -375,11 +375,16 @@ divide into three families that a reviewer has to keep apart:
 | | | |
 |---|---|---|
 | `[elig]` | 468 (77%) | not eligible: derived types, module-state writes, string arguments. By design — kernel eligibility mirrors the Numba backend's, and none of it is a limit of the JAX emitter |
-| `[emit]` | 93 (15%) | the emitter's own subset: `while`, `Raise`, `Try`, a return inside a loop. This is the number that should fall as the backend grows |
+| `[emit]` | 93 (15%) | the emitter's own subset: `while`, `Raise`, `Try`, a return inside a loop. This is the number that should fall as the backend grows — **upstream**, in the author's own repository, reaching here as a relay like the backend itself did. Not work this repository picks up |
 | `[anchor]` | 46 (8%) | the NumPy module it was handed still carries `AGENT_QUEUE` placeholders. The anchor is incomplete, so there is nothing to port |
 
 Only the middle row is the JAX backend's to improve, which is worth knowing
-before anyone reads "607 delegated" as a coverage problem. The harness compares
+before anyone reads "607 delegated" as a coverage problem. Whose improvement it
+is, is worth knowing too: the backend is developed in its author's repository
+and relayed here, so that number falls when a widened `jaxize.py` is merged
+across, not when someone edits `recast/transform/jax/` directly. Which is what
+keeps `tools/jax_diff.py` useful rather than what retires it — see the note on
+the mypy override in `pyproject.toml`. The harness compares
 emitted pieces byte for byte, kernel sets and delegation placement exactly, and
 delegation *reasons* only as far as their category, because the tag is a
 decision and the tail is a diagnostic. It needs no JAX — verified, the survey

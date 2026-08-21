@@ -149,12 +149,21 @@ ignore_missing_imports = true
 # and are the last place a type would have helped.
 #
 # The reason to revisit is not tidiness, it is the day the diff stops
-# protecting. 93 subprograms in that corpus are host-delegated because the
-# emitter's subset does not reach them, and widening that subset means this
-# code stops matching the script by design. Annotate it *before* that work,
-# while the diff is still green to catch the annotation pass itself: AST
-# surgery fails by emitting subtly wrong code rather than by crashing, and
-# after the diff retires nothing else is watching.
+# protecting -- and the condition here was originally written for a way of
+# working that is not the one in use. It said: widening the emitter's subset
+# makes this code stop matching the script, so annotate before starting that
+# work. But the backend is developed in its author's repository and reaches
+# this one as a relay. A widened jaxize.py is merged across, both sides move
+# together, and the diff stays green. It does not retire on that day; it is
+# what checks that day's merge landed faithfully.
+#
+# So the real condition is divergence, whoever causes it: the first change to
+# recast/transform/jax/ that is not a faithful re-port of the script. That is
+# when the diff goes red for a reason other than a defect, when it has to be
+# retired rather than fixed, and when nothing is watching this code any more.
+# Annotate before merging *that* change, while the diff is still green enough
+# to catch the annotation pass itself -- AST surgery fails by emitting subtly
+# wrong code rather than by crashing.
 #
 # Only the annotation rules are off, and only here. Every other kind of type
 # error in these modules still fails the build.
