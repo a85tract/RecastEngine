@@ -146,7 +146,8 @@ here. "Migrated with history" was written into this document and into
 
 It did not, in any useful sense. CESM-language-translator is **one commit** —
 `4743491`, "Initial commit: Deterministic Fortran-to-Python translation
-pipeline", 2026-07-06, by second5t. A path rewrite would have carried that
+pipeline", 2026-07-06, by Qinrun Dai (as second5t). A path rewrite would
+have carried that
 single commit and nothing else. And the material was decomposed into the plugin
 contract as it landed — one `main()` became a Frontend, a Transform and three
 Verifiers — so no module crossed intact for a commit to be about.
