@@ -109,7 +109,9 @@ class BitexactVerifier(Verifier):
             )
 
         try:
-            translated = self._load_candidate(candidate, workspace)
+            translated = self._load_candidate(
+                candidate, workspace, config.get("module_suffix", "_numpy.py")
+            )
         except Exception as error:  # fail closed, whatever broke
             return self._verdict(
                 candidate, Confidence.FAILED, {}, f"candidate does not import: {error}"
@@ -537,13 +539,20 @@ class BitexactVerifier(Verifier):
     # -- loading --------------------------------------------------------------
 
     @staticmethod
-    def _load_candidate(candidate: Candidate, workspace: Path) -> Any:
+    def _load_candidate(candidate: Candidate, workspace: Path, suffix: str = "_numpy.py") -> Any:
         """Write the candidate's files and import its generated module.
 
         The candidate is self-contained by design -- module, constants,
         use-constants -- so importing it needs nothing but its own files on
         the path. Companion modules, when a scheme has them, must already be
         importable; supplying them is the run's business, not this gate's.
+
+        ``suffix`` picks which of those files is the one under judgement. A
+        port carries more than one: the JAX module, and the NumPy module it
+        host-delegates to and imports. Both are staged, only one is imported
+        as the candidate, and the recipe says which by setting
+        ``config["module_suffix"]``. Defaulting to the NumPy module keeps
+        every existing config meaning what it did.
         """
         staged = workspace / "candidate"
         staged.mkdir(parents=True, exist_ok=True)
@@ -552,10 +561,10 @@ class BitexactVerifier(Verifier):
             target = staged / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-            if str(path).endswith("_numpy.py"):
+            if str(path).endswith(suffix):
                 module_path = target
         if module_path is None:
-            raise FileNotFoundError("candidate carries no *_numpy.py module")
+            raise FileNotFoundError(f"candidate carries no *{suffix} module")
 
         sys.path.insert(0, str(staged))
         try:

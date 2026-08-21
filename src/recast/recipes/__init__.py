@@ -109,7 +109,16 @@ class PortRecipe(Recipe):
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("transform", f"port.{backend}"),
             Stage("oracle", "dump-replay"),
-            Stage("verifier", "differential.tolerance", gate=True),
+            # The Candidate carries the ported module *and* the anchor it
+            # host-delegates to, so the gate has to be told which one is under
+            # judgement. Without this it would import the anchor and compare it
+            # against itself.
+            Stage(
+                "verifier",
+                "differential.tolerance",
+                gate=True,
+                config={"module_suffix": f"_{backend}.py"},
+            ),
             Stage("verifier", "performance.benchmark", optional=True),
             Stage("store", "fs-evidence"),
         ]

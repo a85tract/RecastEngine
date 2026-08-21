@@ -18,8 +18,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 _spec = importlib.util.spec_from_file_location(
     "jax_diff", Path(__file__).resolve().parent.parent / "tools" / "jax_diff.py"
 )
@@ -100,9 +98,10 @@ def test_the_category_is_the_part_before_the_colon() -> None:
     assert jax_diff.category("[elig] derived type") == "[elig] derived type"
 
 
-def test_the_migrated_backend_is_named_before_it_exists() -> None:
-    """The harness expects ``recast.transform.jax.backend.build_module``. That
-    expectation is the migration's specification, so it fails loudly and says
-    what is missing rather than skipping."""
-    with pytest.raises(SystemExit, match="not written yet"):
-        jax_diff.load_migrated()
+def test_the_migrated_backend_is_the_shape_the_harness_named() -> None:
+    """This check was written before the backend was, and asserted that
+    ``load_migrated`` failed loudly. The expectation was the migration's
+    specification; the migration has since met it, so the assertion turns over
+    rather than being deleted -- the shape is still the thing being held."""
+    backend = jax_diff.load_migrated()
+    assert callable(backend.build_module)
