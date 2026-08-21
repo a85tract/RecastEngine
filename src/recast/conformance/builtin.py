@@ -189,6 +189,99 @@ def _bitexact_break(candidate: Candidate) -> Candidate:
     return replace(candidate, files={Path("blend_numpy.py"): emitted.encode()})
 
 
+# --- differential.tolerance --------------------------------------------------
+
+_DECAY = (
+    1.0,
+    0.1353352832366127,
+    0.01831563888873418,
+    0.0024787521766663585,
+    0.00033546262790251185,
+    4.5399929762484854e-05,
+    6.14421235332821e-06,
+    8.315287191035679e-07,
+)
+"""Eight points spanning six decades, as literals rather than as a computation.
+
+Both sides multiply by the *same* constants, so any difference in the verdict
+comes from the perturbation and not from two spellings of ``exp``. Index 0 is
+the whole signal and 4..7 sit below the gate's 1e-3 dominance line, which is
+what lets one array exercise both tiers.
+"""
+
+_TIERED_EMITTED = """\
+import math
+
+_SIGNATURES = {{
+    "decay": {{
+        "kind": "function",
+        "result": "y",
+        "args": [{{"name": "x", "intent": "IN", "dtype": "float64"}}],
+    }}
+}}
+
+_DECAY = (
+    1.0,
+    0.1353352832366127,
+    0.01831563888873418,
+    0.0024787521766663585,
+    0.00033546262790251185,
+    4.5399929762484854e-05,
+    6.14421235332821e-06,
+    8.315287191035679e-07,
+)
+
+
+def decay(x):
+    y = [x * d for d in _DECAY]
+{perturbation}
+    return y
+"""
+
+
+def _tiered_source(perturbation: str) -> bytes:
+    return _TIERED_EMITTED.format(perturbation=perturbation).encode()
+
+
+def _tolerance_candidate(workspace: Path) -> Candidate:
+    """Drifts, in the tail, by less than the ULP bound.
+
+    Not bit-exact on purpose: a backend that could be bit-exact would be using
+    the other gate, so a case whose good candidate agrees exactly would check
+    this one on the one path it was not written for.
+    """
+    return Candidate(
+        unit="conformance:demo/decay",
+        transform="conformance.port",
+        files={Path("decay_numpy.py"): _tiered_source("    y[7] = math.nextafter(y[7], math.inf)")},
+    )
+
+
+def _tolerance_break(candidate: Candidate) -> Candidate:
+    """The same distance, moved into a dominant element instead of the tail.
+
+    The pair is the point of the tiering: a relative tolerance alone cannot
+    tell these two apart, because the relative difference is identical.
+    """
+    return replace(
+        candidate,
+        files={Path("decay_numpy.py"): _tiered_source("    y[0] *= 1.0 + 1e-13")},
+    )
+
+
+def _tolerance_oracle(workspace: Path, executor: Executor) -> OracleRef:
+    def w_decay(x: Any) -> Any:
+        return [x * d for d in _DECAY]
+
+    return OracleRef(
+        unit="conformance:demo/decay",
+        oracle="conformance.python-truth",
+        key="conformance:decay:1",
+        handle={"module": SimpleNamespace(w_decay=w_decay), "wrappers": {"decay": "w_decay"}},
+        cost="cheap",
+    )
+
+
 def _bitexact_oracle(workspace: Path, executor: Executor) -> OracleRef:
     """The reference, in Python. An ``Oracle`` hands over an opaque handle and
     the Verifier defines its type; this one wants ``{"module", "wrappers"}``
@@ -358,6 +451,15 @@ PLUGIN_SET = PluginSet(
             expect=Confidence.SYMBOLIC,
             config={"samples": 64},
             requires=("sympy", "mpmath"),
+        ),
+        VerifierCase(
+            name="differential.tolerance",
+            candidate=_tolerance_candidate,
+            break_candidate=_tolerance_break,
+            oracle=_tolerance_oracle,
+            expect=Confidence.ULP_BOUNDED,
+            submits_jobs=False,
+            requires=("numpy",),
         ),
         VerifierCase(
             name="differential.bitexact",
