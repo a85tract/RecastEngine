@@ -189,9 +189,15 @@ Ledger rows: **done**, and they reconcile. Rows 6 and 7 account for all 50
 escape above — the triage said 49 and the ledger said 50.
 
 Tagging the collection read-only: **deferred to P6**, with the rest of the
-archiving. Safe to defer because the filtering happened file by file at
-migration time rather than as a cleanup pass at the end, and cheaper because P2
-still has files to take out of the collection.
+archiving, and **coordinated with its author rather than done unilaterally** —
+CESM-Agent-Produced-Scripts and CESM-language-translator are a student's
+repositories, not this project's. Safe to defer because the filtering happened
+file by file at migration time rather than as a cleanup pass at the end, and
+cheaper because P4 still has three files to take out of the collection.
+
+Nothing downstream depends on the archiving landing on time. Work reaches this
+repository only through a maintainer, so what keeps the sealed buckets sealed is
+that nobody migrates them, not that the repository holding them is frozen.
 
 ## P4 — empty out the domain
 
@@ -244,7 +250,8 @@ patch it did need is a hole in the contract, and the hole is the finding.
 
 ## P6 — public
 
-Scrub → security review → archive the two source repositories read-only → flip
+Scrub → security review → archive the two source repositories read-only, with
+their author, since both are a student's → flip
 visibility → check that the SciRecast site's links resolve.
 
 There is no pointer to repoint. SciRecast is a Jekyll site rather than a

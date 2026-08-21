@@ -49,6 +49,14 @@ Rows 6 and 7 are P3's 50-file `EXCLUDE` bucket in full, as that phase's triage
 table records it. They stay in the archived private repository, which is the
 whole reason that repository is archived read-only rather than deleted.
 
+That repository is a student's, not this project's, so archiving it is agreed
+with its author rather than decided here. The mechanism does not rest on the
+agreement holding. "Stays behind" is enforced by nobody migrating those two
+directories, and every route from private material into this repository runs
+through a maintainer — so the control is one this project exercises, and the
+archiving is what preserves the *evidence* rather than what supplies the
+protection.
+
 That the counts have to *reconcile* — 42 and 8 against the triage's own total —
 is not bookkeeping. P3's triage briefly said 49, because it inferred that
 `08_cpg_tools/gen_stubs.py` was already in the translator's `pipeline/` and
