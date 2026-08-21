@@ -194,29 +194,44 @@ def run_recipe(
         raise ConfigError(f"recipe {recipe.name!r} declares no executor stage")
     executor = registry.get("executor", executor_stage.plugin)(**stage_config(executor_stage))
 
-    frontend_stage = next((s for s in stages if s.kind == "frontend"), None)
-    if frontend_stage is None:
+    frontend_stages = [s for s in stages if s.kind == "frontend"]
+    if not frontend_stages:
         raise ConfigError(f"recipe {recipe.name!r} declares no frontend stage")
-    frontend = registry.get("frontend", frontend_stage.plugin)(**stage_config(frontend_stage))
+    repeated = sorted(
+        {
+            s.plugin
+            for s in frontend_stages
+            if [t.plugin for t in frontend_stages].count(s.plugin) > 1
+        }
+    )
+    if repeated:
+        raise ConfigError(
+            f"recipe {recipe.name!r} declares frontend {repeated} more than once. "
+            "Frontends do not chain -- a second declaration of one would read the same "
+            "tree again and claim the same units -- so this is either a duplicate or an "
+            "attempt at layering, which belongs inside a Frontend of your own."
+        )
+    frontends = {
+        stage.plugin: registry.get("frontend", stage.plugin)(**stage_config(stage))
+        for stage in frontend_stages
+    }
 
     walked = [s for s in stages if s.kind not in ("executor", "frontend")]
     oracle_cache: dict[str, OracleRef] = {}
 
-    for unit in _selected_units(frontend, root, config):
+    for unit, owner in _selected_units(frontends, root, recipe, config):
         unit_run = UnitRun(unit=unit)
         run.units.append(unit_run)
         unit_workspace = workspace / unit.uid.replace(":", "_").replace("/", "_")
         unit_workspace.mkdir(parents=True, exist_ok=True)
 
         try:
-            facts = frontend.analyze(unit, root)
+            facts = frontends[owner].analyze(unit, root)
         except RecastError as error:
-            unit_run.outcomes.append(
-                StageOutcome(frontend_stage.kind, frontend_stage.plugin, "failed", str(error))
-            )
-            unit_run.stopped_by = frontend_stage.plugin
+            unit_run.outcomes.append(StageOutcome("frontend", owner, "failed", str(error)))
+            unit_run.stopped_by = owner
             continue
-        unit_run.outcomes.append(StageOutcome(frontend_stage.kind, frontend_stage.plugin, "ok"))
+        unit_run.outcomes.append(StageOutcome("frontend", owner, "ok"))
 
         for stage in walked:
             outcome = _walk_stage(
@@ -338,18 +353,45 @@ def _walk_stage(
     return StageOutcome(stage.kind, stage.plugin, "skipped", f"kind {stage.kind!r} not walked")
 
 
-def _selected_units(frontend: Any, root: Path, config: dict[str, Any]) -> list[Unit]:
-    discovered = list(frontend.discover(root))
+def _selected_units(
+    frontends: dict[str, Any], root: Path, recipe: Recipe, config: dict[str, Any]
+) -> list[tuple[Unit, str]]:
+    """Every frontend's units, unioned, each paired with the one that owns it.
+
+    Frontends are independent of each other: each reads the tree on its own and
+    the sets are unioned, which is what lets one project hold more than one
+    language. None of them sees another's Facts -- layering CESM conventions
+    onto Fortran analysis, say, happens inside a Frontend, not between two of
+    them, which is why ``analyze`` takes no upstream Facts.
+
+    Two frontends claiming one uid is an error rather than a first-wins. The
+    Unit would carry one of their Facts and nothing downstream records which,
+    so the run would be reproducible only by accident of declaration order.
+    """
+    discovered: list[tuple[Unit, str]] = []
+    claimed: dict[str, str] = {}
+    for name, frontend in frontends.items():
+        for unit in frontend.discover(root):
+            if unit.uid in claimed:
+                raise ConfigError(
+                    f"recipe {recipe.name!r}: frontends {claimed[unit.uid]!r} and {name!r} "
+                    f"both discovered {unit.uid!r}. A Unit has one set of Facts and no "
+                    "record of which frontend produced them, so one of the two has to be "
+                    "narrowed -- by config, or by not declaring both."
+                )
+            claimed[unit.uid] = name
+            discovered.append((unit, name))
+
     wanted = config.get("units")
     if wanted:
-        by_uid = {u.uid: u for u in discovered}
+        by_uid = {unit.uid: (unit, name) for unit, name in discovered}
         missing = [uid for uid in wanted if uid not in by_uid]
         if missing:
             raise ConfigError(f"units {missing} not found; discovered {sorted(by_uid)}")
         return [by_uid[uid] for uid in wanted]
     # Top-level units by default: a subprogram Unit exists for transforms at
     # that granularity, and analyzing both would do every file's work twice.
-    return [u for u in discovered if u.parent is None]
+    return [(unit, name) for unit, name in discovered if unit.parent is None]
 
 
 def _store_config(config: dict[str, Any]) -> dict[str, Any]:

@@ -37,6 +37,7 @@ __all__ = [
     "RecordingEvidenceStore",
     "RefusingExecutor",
     "StubFrontend",
+    "TwoFrontendsRecipe",
 ]
 
 
@@ -48,6 +49,16 @@ class StubFrontend(Frontend):
 
     def __init__(self, **_config: Any) -> None:
         pass
+
+    @classmethod
+    def claiming(cls, name: str, *uids: str) -> type[StubFrontend]:
+        """Another stub, under its own name, finding its own units.
+
+        For the checks about a recipe declaring more than one frontend, where
+        what matters is that the two are different plugins finding different
+        things -- a second language in the same tree.
+        """
+        return type(name, (cls,), {"name": name, "uids": tuple(uids)})
 
     def discover(self, root: Path) -> Iterable[Unit]:
         return [Unit(uid=uid, kind="module") for uid in self.uids]
@@ -162,6 +173,24 @@ class RecordingEvidenceStore(EvidenceStore):
 
     def query(self, **selectors: Any) -> Iterable[Evidence]:
         return list(type(self).written)
+
+
+class TwoFrontendsRecipe(Recipe):
+    """A run whose units come from two independent frontends.
+
+    Nothing here fails; the question is only whether both frontends' units are
+    walked, and whether each is analyzed by the one that found it.
+    """
+
+    name = "conformance.two-frontends"
+    summary = "A recipe with two frontends. Used to check the runner, not a plugin."
+
+    def stages(self, config: dict[str, Any]) -> list[Stage]:
+        return [
+            Stage("executor", config.get("executor", "local")),
+            *[Stage("frontend", name) for name in config["frontends"]],
+            Stage("transform", CountingTransform.name),
+        ]
 
 
 class GateFailsRecipe(Recipe):
