@@ -24,6 +24,8 @@ from recast.registry import REGISTRY
 
 _CASE_FIXTURES = {
     "executor_case": "executors",
+    "frontend_case": "frontends",
+    "transform_case": "transforms",
     "oracle_case": "oracles",
     "verifier_case": "verifiers",
     "evidence_store_case": "evidence_stores",

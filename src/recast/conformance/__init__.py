@@ -39,9 +39,11 @@ from typing import Any
 from recast.errors import ConfigError
 from recast.model import Candidate, Confidence, Facts, OracleRef, Unit
 from recast.plugins.executor import Executor, Job
+from recast.plugins.frontend import Frontend
 from recast.plugins.oracle import Oracle
 from recast.plugins.recipe import Recipe
 from recast.plugins.store import EvidenceStore, FindingStore
+from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
 
 __all__ = [
@@ -49,9 +51,12 @@ __all__ = [
     "EvidenceStoreCase",
     "ExecutorCase",
     "FindingStoreCase",
+    "FrontendCase",
     "OracleCase",
     "PluginSet",
     "RecipeCase",
+    "TransformCase",
+    "TransformSubject",
     "VerifierCase",
     "load_plugin_set",
 ]
@@ -116,6 +121,74 @@ class RecipeCase:
     name: str
     build: Callable[[], Recipe] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FrontendCase:
+    """One Frontend to check, and a source tree to point it at.
+
+    ``plant_tree`` is handed a scratch directory the suite owns and fills it
+    with source. It has to be a copy rather than the real thing, because two of
+    the checks are about what the frontend leaves behind and one of them writes
+    into the tree on purpose -- neither is safe against a directory somebody
+    is working in.
+
+    ``plant_workspace_artifact`` puts a file the frontend *would* discover
+    inside the engine's own workspace directory, and the check requires it not
+    to be discovered there. Only the case can write that file, because what
+    counts as discoverable is exactly the language knowledge the frontend has
+    and the suite does not.
+    """
+
+    name: str
+    plant_tree: Callable[[Path], None]
+    build: Callable[[], Frontend] | None = None
+    expect_uids: tuple[str, ...] = ()
+    """Units that must turn up. A frontend that discovers nothing is
+    deterministic, side-effect free, and useless."""
+
+    preprocesses: bool = False
+    """True if ``preprocess`` is overridden -- then it must record its flags."""
+
+    plant_workspace_artifact: Callable[[Path], None] | None = None
+    requires: tuple[str, ...] = ()
+    requires_commands: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TransformSubject:
+    """One thing to transform: the unit, its Facts, and where its source is.
+
+    ``config`` is per-invocation rather than per-case because a Transform that
+    reads source resolves it against ``config["root"]``, and the suite plants
+    each subject in a scratch directory it makes up at call time. The case's own
+    ``config`` is merged underneath this one.
+    """
+
+    unit: Unit
+    facts: Facts
+    config: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TransformCase:
+    """One Transform to check, with a subject it handles and one it does not.
+
+    ``subject`` returns a unit this Transform should translate, with the Facts
+    a Frontend produced for it. ``defers`` returns one carrying a site the rules
+    cannot handle: a partial Candidate with a populated ``deferred`` list is a
+    normal, useful result, and the check is that the Transform produces one
+    rather than raising. Leave ``defers`` unset only if nothing can defeat the
+    rules, which is a claim worth being sure about.
+    """
+
+    name: str
+    subject: Callable[[Path], TransformSubject]
+    build: Callable[[], Transform] | None = None
+    config: Mapping[str, Any] = field(default_factory=dict)
+    defers: Callable[[Path], TransformSubject] | None = None
+    requires: tuple[str, ...] = ()
+    requires_commands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +278,8 @@ class PluginSet:
 
     name: str
     executors: tuple[ExecutorCase, ...] = ()
+    frontends: tuple[FrontendCase, ...] = ()
+    transforms: tuple[TransformCase, ...] = ()
     oracles: tuple[OracleCase, ...] = ()
     verifiers: tuple[VerifierCase, ...] = ()
     evidence_stores: tuple[EvidenceStoreCase, ...] = ()

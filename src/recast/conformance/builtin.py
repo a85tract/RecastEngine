@@ -40,9 +40,12 @@ from recast.conformance import (
     EvidenceStoreCase,
     ExecutorCase,
     FindingStoreCase,
+    FrontendCase,
     OracleCase,
     PluginSet,
     RecipeCase,
+    TransformCase,
+    TransformSubject,
     VerifierCase,
 )
 from recast.model import Candidate, Confidence, Facts, OracleRef, Unit
@@ -233,9 +236,91 @@ def _different_source(facts: Facts) -> Facts:
     return replace(facts, provenance={**facts.provenance, "digest": "0" * 64})
 
 
+# --- fortran, translate.numpy ------------------------------------------------
+#
+# Both read source, so both get a copy of the example planted in a scratch
+# directory rather than the repository's own -- one frontend check writes into
+# the tree on purpose, and one asks whether the frontend did.
+
+_DEFERS = """\
+module conformance_defers
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+
+  subroutine mechanical(x, y)
+    real(r8), intent(in)  :: x
+    real(r8), intent(out) :: y
+    y = 2.0_r8 * x + 1.0_r8
+  end subroutine mechanical
+
+  subroutine refused(x, y)
+    real(r8), intent(in)  :: x
+    real(r8), intent(out) :: y
+    ! ASSOCIATE has no statement rule, so this block goes to the agent queue
+    ! while the one above still translates. The point of the case is the
+    ! mixture: a Candidate that is partial rather than absent.
+    associate (scaled => 2.0_r8 * x)
+      y = scaled + 1.0_r8
+    end associate
+  end subroutine refused
+
+end module conformance_defers
+"""
+
+
+def _plant_toy_physics(root: Path) -> None:
+    for source in sorted(TOY_PHYSICS.glob("*.f90")):
+        (root / source.name).write_text(source.read_text())
+
+
+def _plant_workspace_artifact(workspace: Path) -> None:
+    """What an f2py oracle leaves behind: compilable Fortran, under the
+    engine's own directory, that a frontend would otherwise read as source."""
+    (workspace / "wrappers.f90").write_text((TOY_PHYSICS / "toy_physics.f90").read_text())
+
+
+def _fortran_subject(scratch: Path, source: str | None, uid: str) -> TransformSubject:
+    root = scratch / f"src-{uid.rsplit(':', 1)[-1]}"
+    root.mkdir(parents=True, exist_ok=True)
+    if source is None:
+        _plant_toy_physics(root)
+    else:
+        (root / f"{uid.rsplit(':', 1)[-1]}.f90").write_text(source)
+    frontend = REGISTRY.get("frontend", "fortran")()
+    unit = next(u for u in frontend.discover(root) if u.uid == uid)
+    facts: Facts = frontend.analyze(unit, root)
+    return TransformSubject(unit=unit, facts=facts, config={"root": str(root)})
+
+
+def _translatable(scratch: Path) -> TransformSubject:
+    return _fortran_subject(scratch, None, F2PY_UNIT)
+
+
+def _with_a_refused_block(scratch: Path) -> TransformSubject:
+    return _fortran_subject(scratch, _DEFERS, "fortran:conformance_defers")
+
+
 PLUGIN_SET = PluginSet(
     name="recast",
     executors=(ExecutorCase(name="local"),),
+    frontends=(
+        FrontendCase(
+            name="fortran",
+            plant_tree=_plant_toy_physics,
+            expect_uids=(F2PY_UNIT, f"{F2PY_UNIT}/settle"),
+            plant_workspace_artifact=_plant_workspace_artifact,
+            requires=("fparser",),
+        ),
+    ),
+    transforms=(
+        TransformCase(
+            name="translate.numpy",
+            subject=_translatable,
+            defers=_with_a_refused_block,
+            requires=("fparser", "numpy"),
+        ),
+    ),
     oracles=(
         OracleCase(
             name="f2py-golden",

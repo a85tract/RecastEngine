@@ -35,7 +35,18 @@ from recast.model import (
     Verdict,
 )
 
+WORKSPACE_DIRNAME = ".recast"
+"""The one directory the engine writes into a project it is pointed at.
+
+Workspaces, oracle builds, and the default evidence store all land under it,
+which makes it the engine's own output rather than anybody's source. A
+``Frontend`` has to skip it: discovery that reads back a previous run's
+generated code turns the engine's output into its input, and the second run
+over a tree sees units the first one created.
+"""
+
 __all__ = [
+    "WORKSPACE_DIRNAME",
     "Access",
     "AccessViolation",
     "Candidate",

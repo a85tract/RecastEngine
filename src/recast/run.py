@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from recast import __version__
+from recast import WORKSPACE_DIRNAME, __version__
 from recast.errors import ConfigError, RecastError
 from recast.model import Candidate, Evidence, Facts, OracleRef, Unit, Verdict
 from recast.plugins.recipe import Recipe, Stage
@@ -174,7 +174,7 @@ def run_recipe(
     stages = recipe.stages(config)
     _require_available(stages, registry)
 
-    workspace = Path(config.get("workspace") or root / ".recast" / recipe.name)
+    workspace = Path(config.get("workspace") or root / WORKSPACE_DIRNAME / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
     run = RecipeRun(recipe=recipe.name, root=root, workspace=workspace)
 
@@ -354,7 +354,7 @@ def _selected_units(frontend: Any, root: Path, config: dict[str, Any]) -> list[U
 def _store_config(config: dict[str, Any]) -> dict[str, Any]:
     prepared = dict(config)
     root = Path(prepared.pop("root", "."))
-    store_root = Path(prepared.pop("store_root", root / ".recast" / "evidence"))
+    store_root = Path(prepared.pop("store_root", root / WORKSPACE_DIRNAME / "evidence"))
     if not store_root.is_absolute():
         store_root = root / store_root
     prepared["root"] = store_root
