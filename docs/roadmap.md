@@ -149,10 +149,11 @@ Nothing about the code is in question — `emit_diff` holds the emitter to the
 pipeline byte for byte across 27 modules, which is a stronger claim than any
 commit graph. What was wrong was the record of whose work it is.
 
-One thing this surfaced and does not settle: CESM-language-translator carries
-**no licence file**. The relay model in `CONTRIBUTING.md` rests on the author
-certifying the right to submit, and P6 already has to reach that author about
-archiving. The licence goes in the same conversation, and it is P6's to close.
+This also surfaced that CESM-language-translator carries **no licence file** —
+nor does CESM-Agent-Produced-Scripts. Settled the same day rather than left to
+P6: both are the maintainer's to license and all of it is Apache-2.0, the same
+as here. Writing the `LICENSE` file into each goes with the archiving; the
+reasoning is under P6.
 
 ## P3 — triage the 662 agent scripts (done, bar the archiving)
 
@@ -456,14 +457,20 @@ Scrub → security review → archive the two source repositories read-only, wit
 their author, since both are a student's → flip
 visibility → check that the SciRecast site's links resolve.
 
-That conversation with the author has a second item on it now. Neither source
-repository carries a licence file, and ~10k lines of one and the JAX backend of
-the other are in here under Apache-2.0. `CONTRIBUTING.md` says a maintainer
-relaying someone's work does not manufacture the author's certification, and
-that where it is needed and absent the thing to do is ask. This is that case,
-it is cheap to close while the archiving is being discussed anyway, and it is
-much more expensive after the flip. See "The history that was not carried"
-under P2 for how it surfaced.
+**The licensing of the relayed work is settled, 2026-08-21.** Neither source
+repository carries a licence file, which was raised here as something to ask
+the author about. It is not a question: both repositories are the maintainer's
+to license, and the answer for all of it is Apache-2.0, the same as this
+repository. Recorded rather than left implicit, because "no `LICENSE` file in
+the upstream" is exactly the observation that looks like an open problem to
+whoever notices it next, and it should cost them one paragraph rather than
+another round of asking.
+
+What remains is clerical and belongs with the archiving: put the `LICENSE` file
+into both source repositories before they go read-only, so the record does not
+depend on anyone remembering this note. The attribution half is already done —
+see "The history that was not carried" under P2, and the `NOTICE` entries it
+produced.
 
 There is no pointer to repoint. SciRecast is a Jekyll site rather than a
 submodule umbrella, and its `index.md`, `engine.md` and `contribute.md` already
