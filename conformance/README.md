@@ -16,6 +16,16 @@ An undeclared kind is reported as **unexercised, not passed**. pytest skips a
 check whose parameter set is empty, and that skip is the honest answer: the
 suite was not given anything to check.
 
+**It has been run against something out of tree.** The domain extension -- the
+only extension that exists outside this repository today -- declares a set of
+its own and passes: 25 checks over its frontend, its transform and its recipe,
+the other kinds reported as undeclared because it has none. It needed no engine
+patch, which is the clause P5 is eventually judged on, and getting the answer
+now rather than at P5 is the point of having written the suite early. Its
+fixture is a module built to need what that package adds and nothing else, so
+the checks say something about the extension rather than about the engine
+underneath it.
+
 ## Declaring your plugins
 
 Most kinds cannot be checked from the plugin alone. Asking whether a Verifier
