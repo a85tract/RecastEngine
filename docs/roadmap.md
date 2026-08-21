@@ -222,9 +222,49 @@ completion (the CLI resolving plugin recipes, and the frontend recording
 Fortran accessibility so the oracle wraps only public symbols — a fact any
 domain needs).
 
-**The refactor and port sides (freeCAM, JaxCAM6) are deliberately deferred**
-until their student tooling is ready; their entry-point slots are sketched in
-the extension's pyproject and nothing is declared before it exists.
+**The refactor side (freeCAM) is deliberately deferred** until its student
+tooling is ready; its entry-point slots are sketched in the extension's
+pyproject and nothing is declared before it exists.
+
+**The port side started 2026-08-20**, its tooling being ready enough to move.
+Its gate landed first, because nothing the backend produces is worth reading
+before something can judge it: `differential.tolerance` is a two-tier gate --
+a ULP bound on the elements that dominate a row, a relative bound on all of
+them -- and it is a subclass of the bit-exact gate rather than a second
+harness, sharing input generation, the calls, and the ULP counting, differing
+only in the policy that reads the numbers.
+
+The tiering is not a loosening. Its own tests run one perturbation at two
+indices: the same `1 + 1e-13` is `TOLERANCED` in the tail and `FAILED` in a
+dominant element, and `max_rel` is `1.0e-13` in *both* -- so a plain relative
+gate at 1e-12, which is what a single-tier version of this would have been,
+passes the defect. What the ULP tier buys is exactly that case.
+
+Three pieces remain: `port.jax` itself (`jaxize` and `jax_shim` from the
+collection, which transform the emitted NumPy module's AST rather than
+re-parsing Fortran, so the composition happens inside one Transform), a diff
+harness, and the oracle.
+
+**Two comparisons, and they must not be confused, because their standards are
+opposite.** One is scientific: the Fortran's numbers against the JAX port's,
+which cannot be bit-identical and never will be — that is what
+`differential.tolerance` gates, at the ULP tier, and it needs JAX installed to
+run. The other is about the migration: the code the collection's `jaxize.py`
+emits against the code the migrated `port.jax` emits, over the same inputs.
+That one has **no tolerance at all** — byte for byte, exactly as
+`tools/emit_diff.py` holds the translator's emitter — and it needs no JAX,
+because `build_module` is a pure AST transformation whose corpus is 109 suite
+directories already on disk, discovered rather than listed.
+
+The order follows from that: the migration diff comes first. If the migrated
+backend emits the same bytes, the scientific comparison is preserved for free,
+because it is the same code computing the same numbers — and 630 lines of
+migrated AST surgery is not reviewable any other way. That last one is a
+decision, not a port: the tooling anchors on the validated `*_numpy.py`
+module, while `PortRecipe` declares `dump-replay`. The NumPy module is itself
+bit-exact against the f2py oracle, so anchoring on it is a chain of trust
+rather than a weaker one -- but it is a different oracle from the one the
+recipe names, and the recipe or the anchor has to give.
 
 P3 located the port side's tooling. `jaxize`, `jax_shim` and `coverage_sweep`
 sit in CESM-Agent-Produced-Scripts and nowhere else, and they are what fills the

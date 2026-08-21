@@ -69,6 +69,15 @@ class BitexactVerifier(Verifier):
     name = "differential.bitexact"
     provides = Confidence.BIT_EXACT
 
+    dominant_at: float | None = None
+    """Fraction of a row's maximum above which an element is *dominant*.
+
+    ``None`` here: bit-exactness has no use for the distinction, since every
+    element has to agree. A gate that tolerates ULP drift does have one --
+    see ``recast.verify.tolerance`` -- and sets it, which is what turns the
+    per-element mask on in the comparison below.
+    """
+
     def verify(
         self,
         unit: Unit,
@@ -141,7 +150,6 @@ class BitexactVerifier(Verifier):
         trials = int(config.get("trials", 10))
         dims = dict(config.get("dims", {}))
         ranges = {str(k).lower(): tuple(v) for k, v in (config.get("ranges") or {}).items()}
-        rtol = config.get("rtol")
 
         # Module state first: the emitted header says "call <init> before
         # use", and the Fortran side's SAVE variables need the same call with
@@ -174,6 +182,7 @@ class BitexactVerifier(Verifier):
                 dims,
                 ranges,
                 prepare=getattr(translated, "_PREPARE_INPUTS", None),
+                dominant_at=config.get("dominant_at", self.dominant_at),
             )
             per_subprogram[name] = outcome
             if "error" in outcome:
@@ -184,6 +193,13 @@ class BitexactVerifier(Verifier):
             totals["max_ulp"] = max(totals["max_ulp"], outcome["max_ulp"])
             totals["nan_mismatch"] += outcome["nan_mismatch"]
             worst_rel = max(worst_rel, outcome["max_rel"])
+            if "max_ulp_dominant" in outcome:
+                totals["max_ulp_dominant"] = max(
+                    totals.get("max_ulp_dominant", 0), outcome["max_ulp_dominant"]
+                )
+                totals["dominant_points"] = (
+                    totals.get("dominant_points", 0) + outcome["dominant_points"]
+                )
 
         metrics = {
             "subprograms": per_subprogram,
@@ -211,6 +227,26 @@ class BitexactVerifier(Verifier):
                 f"{totals['nan_mismatch']} point(s) where one side produced NaN "
                 "and the other a number",
             )
+        return self._award(candidate, totals, per_subprogram, metrics, config)
+
+    def _award(
+        self,
+        candidate: Candidate,
+        totals: dict[str, Any],
+        per_subprogram: dict[str, Any],
+        metrics: dict[str, Any],
+        config: dict[str, Any],
+    ) -> Verdict:
+        """Which confidence the numbers earn.
+
+        Everything above this point -- generating inputs, calling both sides,
+        counting ULP -- is the same comparison whatever the gate. What differs
+        between gates is only the policy, so that is the part a subclass
+        overrides. Splitting it here is what lets a second differential gate
+        exist without a second harness to keep in step with this one.
+        """
+        rtol = config.get("rtol")
+        worst_rel = metrics["max_rel"]
         if totals["bit_exact"] == totals["points"]:
             return self._verdict(
                 candidate,
@@ -260,6 +296,7 @@ class BitexactVerifier(Verifier):
         dims: dict[str, int],
         ranges: dict[str, tuple[float, float]],
         prepare: Any = None,
+        dominant_at: float | None = None,
     ) -> dict[str, Any]:
         from recast.transform.numpy.vocabulary import pysafe
 
@@ -279,6 +316,8 @@ class BitexactVerifier(Verifier):
 
         points = bit_exact = nan_mismatch = 0
         max_ulp = 0
+        max_ulp_dominant = 0
+        dominant_points = 0
         max_rel = 0.0
         for trial in range(trials):
             # hash() is salted per process; a seed must not be.
@@ -337,27 +376,57 @@ class BitexactVerifier(Verifier):
             if isinstance(pairs, str):
                 return {"error": pairs}
             for label, ours, theirs in pairs:
-                a = np.asarray(ours, dtype=np.float64).ravel()
-                b = np.asarray(theirs, dtype=np.float64).ravel()
-                if a.shape != b.shape:
-                    return {"error": f"{label}: shape {a.shape} vs {b.shape}"}
-                audit = ulp_audit(a.tolist(), b.tolist())
+                shaped_ours = np.asarray(ours, dtype=np.float64)
+                shaped_theirs = np.asarray(theirs, dtype=np.float64)
+                if shaped_ours.shape != shaped_theirs.shape:
+                    return {"error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"}
+                a = shaped_ours.ravel()
+                b = shaped_theirs.ravel()
+                audit = ulp_audit(
+                    a.tolist(),
+                    b.tolist(),
+                    dominant=self._dominance(np, shaped_theirs, dominant_at),
+                )
                 points += audit["total_points"]
                 bit_exact += audit["bit_exact"]
                 nan_mismatch += audit["nan_mismatch"]
                 max_ulp = max(max_ulp, audit["max_ulp"])
+                if "max_ulp_dominant" in audit:
+                    max_ulp_dominant = max(max_ulp_dominant, audit["max_ulp_dominant"])
+                    dominant_points += audit["dominant_points"]
                 if audit["bit_exact"] != audit["total_points"]:
                     scale = np.maximum(np.abs(b), 1e-300)
                     with np.errstate(invalid="ignore"):
                         rel = float(np.nanmax(np.abs(a - b) / scale))
                     max_rel = max(max_rel, rel)
-        return {
+        outcome = {
             "points": points,
             "bit_exact": bit_exact,
             "max_ulp": max_ulp,
             "max_rel": max_rel,
             "nan_mismatch": nan_mismatch,
         }
+        if dominant_at is not None:
+            outcome["max_ulp_dominant"] = max_ulp_dominant
+            outcome["dominant_points"] = dominant_points
+        return outcome
+
+    @staticmethod
+    def _dominance(np: Any, reference: Any, dominant_at: float | None) -> list[bool] | None:
+        """Which elements a ULP bound is allowed to be held to.
+
+        ``|v| >= fraction * the maximum along the last axis``, so an element is
+        judged against its own row: a column of small values is not excused by
+        a large value somewhere else in the array. The *reference* side decides,
+        because whether an element matters is a fact about what it should have
+        been, not about the candidate being judged.
+        """
+        if dominant_at is None:
+            return None
+        magnitude = np.abs(reference)
+        scale = magnitude.max(axis=-1, keepdims=True) if magnitude.ndim > 1 else magnitude.max()
+        mask: list[bool] = (magnitude >= dominant_at * scale).ravel().tolist()
+        return mask
 
     @staticmethod
     def _paired_outputs(
