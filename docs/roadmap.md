@@ -262,13 +262,23 @@ whether the lowering changed the mathematics. That is `symbolic.notary`'s
 question, answered at fifty significant digits where float64's own 1e-16 noise
 cannot reach, with `1e-45` as the bar for "the same function" — a different
 coordinate system from ULP entirely, not a stricter setting of the same dial.
-And `jaxize` rewrites: a `for` loop becomes `lax.fori_loop`, an `if` becomes
-`lax.cond`, `and` becomes `jnp.logical_and`. Whether those preserve the
-expression is exactly what the notary exists to decide, and nothing currently
-asks it, because `port.jax` records no `Candidate.notes["rewrites"]` for it to
-read. The translate recipe carries the notary as an optional stage; the port
-recipe should, once the Transform records its rewrites. Deferred, not
-forgotten.
+And `jaxize` rewrites. Nothing currently asks the notary about any of them,
+because `port.jax` records no `Candidate.notes["rewrites"]` for it to read.
+
+How much of the lowering the notary could cover is worth stating before anyone
+starts, because it is less than the whole. The notary takes an expression and
+its replacement — one formula against another over the free symbols' physical
+ranges — so it reaches the expression-level rewrites: `and` and `or` becoming
+`jnp.logical_and`, `math.exp` becoming `jnp.exp`, a subscript store becoming
+`x.at[i].set(v)`. It does not reach the structural ones, and those are the
+larger half: a `for` loop becoming `lax.fori_loop` with an explicit carry
+tuple, an `if` becoming `lax.cond` over the union of both branches' assigned
+names. Proving a control-flow rewrite preserves meaning is a different and
+bigger question than proving two formulas are one function.
+
+So the third link, when it is built, closes part of the gap and should say
+which part. The translate recipe carries the notary as an optional stage and
+the port recipe should too. Deferred, not forgotten.
 
 Running it for real found what reading could not: the differential harness had
 **three f2py conventions baked in** while claiming to be oracle-agnostic. How a

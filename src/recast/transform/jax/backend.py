@@ -7,6 +7,13 @@ reinterpretation of them. What was dropped is the command-line front end,
 because the caller is now a ``Transform``; what was changed is the emitted
 header, which is the one thing that harness deliberately does not compare.
 
+**It carries no type annotations, on purpose.** What holds this module is the
+byte-for-byte diff rather than a type checker, and that diff reaches 96% of it;
+the exemption and the condition that would reverse it are in ``pyproject.toml``
+beside the mypy override. The short version: annotate this before widening the
+emitter's subset, not before anything else, because widening the subset is what
+retires the diff.
+
 It transforms the *Python* the NumPy backend emitted. Fortran is never
 re-parsed -- the anchor is the validated ``<module>_numpy.py``, and its
 emission grammar is stable enough to pattern-match. That is why the port
