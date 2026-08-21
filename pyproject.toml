@@ -139,12 +139,25 @@ ignore_missing_imports = true
 module = ["mpmath.*", "scipy.*", "sympy.*", "jax.*"]
 ignore_missing_imports = true
 
-# The JAX backend is a faithful port: tools/jax_diff.py holds every emitted
-# byte to the script it came from across 109 modules, and that check is only
-# meaningful while the code is recognisably the same code. Annotating 600
-# lines of AST surgery is the next slice, done with that diff green throughout;
-# until then the annotation rules are off *here only*, and every other kind of
-# type error still fails. Delete this block when the port is typed.
+# The JAX backend carries no annotations, and that is a decision rather than a
+# postponement. It is a faithful port, and what holds it is tools/jax_diff.py:
+# every emitted byte, against the script it came from, across 109 modules. That
+# is a stronger check than types, because it compares output rather than
+# absence of crashes -- and it is not a thin one. Measured: the diff exercises
+# 96% of the module's statements, and the twelve it misses are refusal branches
+# ("this construct is not in the subset, hand it back"), which construct nothing
+# and are the last place a type would have helped.
+#
+# The reason to revisit is not tidiness, it is the day the diff stops
+# protecting. 93 subprograms in that corpus are host-delegated because the
+# emitter's subset does not reach them, and widening that subset means this
+# code stops matching the script by design. Annotate it *before* that work,
+# while the diff is still green to catch the annotation pass itself: AST
+# surgery fails by emitting subtly wrong code rather than by crashing, and
+# after the diff retires nothing else is watching.
+#
+# Only the annotation rules are off, and only here. Every other kind of type
+# error in these modules still fails the build.
 [[tool.mypy.overrides]]
 module = ["recast.transform.jax.backend", "recast.transform.jax.runtime"]
 disallow_untyped_defs = false
