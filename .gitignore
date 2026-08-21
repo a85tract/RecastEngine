@@ -19,6 +19,11 @@ evidence-local/
 findings-local/
 *.log
 
+# The SBOM the hygiene workflow generates. CI uploads it as an artifact and
+# throws the runner away; tools/ci_local.sh writes it here instead, and a
+# generated inventory of the tree is not a fact about the tree worth keeping.
+recast-engine.cdx.json
+
 # Compiled oracles and native artifacts
 *.so
 *.o
