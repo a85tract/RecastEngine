@@ -1,0 +1,14 @@
+{
+  "units": ["fortran:toy_physics"],
+  "stages": {
+    "differential.tolerance": {
+      "trials": 5,
+      "dims": {"n": 8},
+      "ranges": {
+        "rho": [0.1, 2.0],
+        "dz": [10.0, 100.0],
+        "w": [-5.0, 5.0]
+      }
+    }
+  }
+}

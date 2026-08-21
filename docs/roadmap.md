@@ -245,6 +245,24 @@ frontend → `port.jax` → `numpy-anchor` → `differential.tolerance` → stor
 reaches a verdict; on a kernel with no transcendentals that verdict is
 `ULP_BOUNDED` at 1 ULP over 85 points, 76 of them bit-exact.
 
+**And it runs somewhere other than the machine that wrote it, as of
+2026-08-21.** Until then no CI job installed `jax` — every extra in `ci.yml` was
+`fortran`/`translate`/`verify` — so `tests/test_port_spine.py` skipped in CI and
+the port side had only ever run on one laptop, which is the same gap the `spine`
+job was created to close for the f2py chain. The `port-spine` job closes it,
+over `examples/toy_physics/port.json` as well as the test. It installs no
+compiler, and that is the anchoring decision showing through rather than a
+saving: `numpy-anchor` re-derives its reference, so nothing in the port run
+builds Fortran — and the link it therefore cannot check is exactly the one the
+`spine` job checks.
+
+It gates on the verdict and does *not* diff its summary, which is where it
+parts company with the `spine` job one line above it. Bit-exactness is a
+device-independent claim, so `verification.json` is held byte for byte. A ULP
+count is not one: XLA's CPU backend does not promise the same last bit on x86 as
+on arm64. `port-verification.json` is committed for a reader without JAX, and
+`candidate_device`/`reference_device` in it say which machine's answer it is.
+
 The oracle decision went to `numpy-anchor`: the reference is the validated
 NumPy translation of the same unit, re-derived from the same Facts rather than
 read off the Candidate, because an Oracle that saw the artifact would stop

@@ -31,3 +31,33 @@ lockfile, and a change in it is a change in what has been verified.
 [`toy_physics/verification.json`](toy_physics/verification.json) is the one
 this example produces, checked in so that a reader can see the claim without
 owning a Fortran compiler.
+
+## The same module, ported
+
+`toy_physics` also runs the `port` recipe, over the same sources and the same
+sampling config:
+
+    recast run port examples/toy_physics --config examples/toy_physics/port.json \
+        --summary examples/toy_physics/port-verification.json
+
+This one needs `jax` (`pip install 'recast-engine[fortran,translate,jax]'`) and
+**no Fortran compiler** — which is the anchoring decision showing through rather
+than a convenience. The reference is `numpy-anchor`: the NumPy translation of
+the same unit, re-derived from the same Facts, so nothing in this run builds
+Fortran. That makes the port's claim a chain — NumPy bit-exact against the
+Fortran above, JAX ULP-bounded against the NumPy here — and the honest part is
+that this run cannot check the first link. The run above is what checks it.
+
+The verdict is `ulp_bounded` rather than `bit_exact`, and that is the ceiling
+rather than a shortfall: XLA's transcendentals are not libm's. On this module —
+which has none — 76 of 85 points land bit-exact and the remaining nine within
+1 ULP, against a gate of 32.
+
+[`toy_physics/port-verification.json`](toy_physics/port-verification.json) is
+checked in for the same reason as its bit-exact sibling, with one difference in
+how much it is allowed to prove. A ULP count is not device-independent — XLA's
+CPU backend does not promise the same last bit on x86 as on arm64, and the
+summary records `candidate_device` and `reference_device` so a reader can see
+which machine produced it. So CI runs this example and gates on the verdict, but
+does not diff the file the way it diffs `verification.json`. Treat a changed ULP
+count here as a question, not an alarm.

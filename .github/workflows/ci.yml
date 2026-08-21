@@ -128,3 +128,30 @@ jobs:
       # The fortran frontend must still *register* without fparser installed;
       # the missing extra is reported when it is asked to parse, not before.
       - run: uv run --no-dev recast plugins | grep -qx "  fortran"
+
+  # The port spine: frontend -> port.jax -> numpy-anchor -> differential.tolerance.
+  # This is the only job that installs jax, and until it existed
+  # tests/test_port_spine.py skipped in CI and had run on one laptop only --
+  # the same gap the spine job above was created to close for the f2py chain.
+  #
+  # It needs no compiler, and that is a property of the oracle rather than a
+  # convenience: numpy-anchor re-derives the reference from the same Facts, so
+  # nothing here builds Fortran. The link this job cannot check is the one that
+  # does -- the NumPy translation being bit-exact against the Fortran, which is
+  # the spine job's claim above.
+  port-spine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv run --extra dev --extra fortran --extra translate --extra jax pytest tests/test_port_spine.py -v
+      # The public form of the same claim, on sources anyone can read.
+      - run: uv run --extra fortran --extra translate --extra jax recast run port examples/toy_physics --config examples/toy_physics/port.json --summary examples/toy_physics/port-verification.json
+      # No `git diff --exit-code` here, deliberately, and the asymmetry with the
+      # spine job is the point. Bit-exactness is a device-independent claim, so
+      # its summary is committed *and* checked byte for byte. A ULP count is
+      # not: XLA's CPU backend does not promise the same last bit on x86 as on
+      # arm64, so the committed port-verification.json is a record for a reader
+      # without JAX, not a regression signal. What this job gates on is the
+      # verdict -- the run exits non-zero unless every unit passes its gate.
