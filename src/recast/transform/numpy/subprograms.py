@@ -36,6 +36,7 @@ from typing import Any
 from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.semantics import Semantics, for_subprogram
+from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
 from recast.transform.numpy.expressions import Expressions, Remote
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import ALLOCATED_DTYPES, REFUSED, Statements
@@ -87,6 +88,54 @@ class Subprograms:
     patches: dict[str, dict[str, Any]] = field(default_factory=dict)
     """``"subprogram/block"`` -> an operator-audited replacement for a block
     the mechanical rules refuse. Applied verbatim, and recorded as such."""
+
+    deferred_handler: DeferredHandler | None = None
+    """Consulted at the moment a block is refused, with the refusal in hand.
+
+    The other half of ``patches``, and not a duplicate of it: a patch is known
+    before rendering starts and may add imports, a handler runs during
+    rendering and cannot. Supplying one makes the run non-deterministic; see
+    ``recast.transform.numpy.agentic`` for who is allowed to.
+    """
+
+    def _fill(
+        self,
+        subprogram: str,
+        block: str,
+        statement: Any,
+        span: Any,
+        refusal: Exception,
+        statements: Statements,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Ask the handler for this block. Returns ``(filled, why_not)``.
+
+        A handler that raises, or answers with something that is not a list of
+        source lines, leaves the site deferred and says what went wrong on the
+        block. Refusing is already a normal answer here, so a broken handler
+        degrades to the answer the site would have had anyway -- rather than
+        ending the run over one block, or swallowing the failure so that a
+        transform silently stops filling anything.
+        """
+        if self.deferred_handler is None:
+            return None, None
+        site = DeferredSite(
+            subprogram=subprogram,
+            block=block,
+            fortran=str(statement),
+            src_span=(int(span[0]), int(span[1])),
+            reason=str(refusal),
+            names=statements.names.as_protocol_table(),
+        )
+        try:
+            filled = self.deferred_handler(site)
+        except Exception as error:  # a plugin's handler is not the run's life
+            return None, f"handler raised {type(error).__name__}: {error}"
+        if filled is None:
+            return None, None
+        body = filled.get("python")
+        if not isinstance(body, list) or not all(isinstance(line, str) for line in body):
+            return None, "handler returned no 'python' list of source lines"
+        return dict(filled), None
 
     # -- the per-subprogram stack ---------------------------------------------
 
@@ -227,10 +276,28 @@ class Subprograms:
                 entry["status"] = "mechanical"
             except REFUSED as refusal:
                 pad = "    " * (2 if in_region else 1)
-                lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]} AGENT_QUEUE: {refusal}")
-                lines.append(f"{pad}raise NotImplementedError({str(refusal)!r})  # {block}")
-                entry["status"] = "agent_queue"
-                entry["reason"] = str(refusal)
+                filled, why_not = self._fill(
+                    subprogram["name"], block, statement, span, refusal, statements
+                )
+                if filled is not None:
+                    lines.append(
+                        f"{pad}# {block} <- L{span[0]}-L{span[1]} "
+                        f"AGENT-FILLED ({filled.get('reason', 'no reason given')})"
+                    )
+                    lines.extend(pad + line for line in filled["python"])
+                    # Everything the handler said rides into the report, which
+                    # is where a non-deterministic transform's provenance has
+                    # to end up -- the model and the prompt, not just the fact
+                    # that something answered.
+                    entry.update({k: v for k, v in filled.items() if k != "python"})
+                    entry["status"] = "agent_filled"
+                else:
+                    lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]} AGENT_QUEUE: {refusal}")
+                    lines.append(f"{pad}raise NotImplementedError({str(refusal)!r})  # {block}")
+                    entry["status"] = "agent_queue"
+                    entry["reason"] = str(refusal)
+                    if why_not:
+                        entry["handler_error"] = why_not
             entry["py_lines"] = [start + 1, len(lines)]
             report.append(entry)
 

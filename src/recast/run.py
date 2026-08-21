@@ -173,6 +173,7 @@ def run_recipe(
 
     stages = recipe.stages(config)
     _require_available(stages, registry)
+    _require_one_transform(recipe, stages)
 
     workspace = Path(config.get("workspace") or root / WORKSPACE_DIRNAME / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -385,6 +386,29 @@ def _evidence(
         },
         meta={"timestamp": datetime.now(UTC).isoformat()},
     )
+
+
+def _require_one_transform(recipe: Recipe, stages: list[Stage]) -> None:
+    """One Transform produces the Candidate, in one pass.
+
+    Stacking two transform stages does not compose them. The runner keeps one
+    Candidate per Unit, so the second stage's would replace the first's -- and
+    with it the first's files *and* its ``deferred`` list, which is precisely
+    the hand-off anyone stacking them was reaching for. Composition happens
+    inside a Transform instead: rules first, an ``AgentProvider`` for the sites
+    they refused, one Candidate out. See ``plugins/transform.py``.
+
+    Refusing here rather than at declaration time because a recipe may branch
+    on config, so the stage list is only knowable once the config is.
+    """
+    transforms = [stage.plugin for stage in stages if stage.kind == "transform"]
+    if len(transforms) > 1:
+        raise ConfigError(
+            f"recipe {recipe.name!r} declares {len(transforms)} transform stages "
+            f"({', '.join(transforms)}); a Unit has one Candidate, so all but the last "
+            "would be discarded along with what they deferred. Compose inside one "
+            "Transform."
+        )
 
 
 def _require_available(stages: list[Stage], registry: Registry) -> None:

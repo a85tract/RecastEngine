@@ -143,6 +143,21 @@ class NumpyTranslation(Transform):
     requires = ("interface", "constants", "effects")
     deterministic = True
 
+    def __init__(self, *, deterministic: bool | None = None) -> None:
+        """``deterministic=False`` is how a caller takes responsibility for a
+        behaviour hook.
+
+        The flag is read at plan time, off the plugin the recipe names, to
+        decide whether the run needs a hard gate. A transform that claimed
+        determinism and then consulted a model would slip past that rule, so
+        this one refuses a ``deferred_handler`` unless it was constructed
+        having said otherwise -- and the thing that constructs it that way is
+        a Transform somebody wrote, registered, and declared
+        ``deterministic = False`` on. See ``recast.transform.numpy.agentic``.
+        """
+        if deterministic is not None:
+            self.deterministic = deterministic
+
     def applicable(self, unit: Unit, facts: Facts) -> bool:
         return (
             unit.kind in ("module", "program")
@@ -181,6 +196,7 @@ class NumpyTranslation(Transform):
             function_stubs=config.get("function_stubs", {}),
             statement_stubs=config.get("statement_stubs", {}),
             patches=config.get("patches", {}),
+            deferred_handler=self._handler(config),
         )
         module = facts.interface["module"]
         stem = config.get("constants_stem", f"{module}_constants")
@@ -301,6 +317,28 @@ class NumpyTranslation(Transform):
                 }
             ),
         }
+
+    def _handler(self, config: dict[str, Any]) -> Any:
+        """The behaviour hook, if this instance is allowed to have one."""
+        handler = config.get("deferred_handler")
+        if handler is None:
+            return None
+        if self.deterministic:
+            raise ConfigError(
+                f"{self.name!r} was given a 'deferred_handler' while declaring "
+                "deterministic = True. A handler runs during the translation and its "
+                "answers vary, so the transform the recipe names has to be one that "
+                "says so -- construct this with NumpyTranslation(deterministic=False) "
+                "from a Transform of your own that declares it, or precompute the "
+                "sites into config['patches'] instead."
+            )
+        if not callable(handler):
+            raise ConfigError(
+                f"'deferred_handler' is {type(handler).__name__}, not callable. A "
+                "behaviour hook cannot come from a JSON config; it is supplied by a "
+                "Transform in Python."
+            )
+        return handler
 
     @staticmethod
     def _verified_source(unit: Unit, facts: Facts, config: dict[str, Any]) -> Path:
