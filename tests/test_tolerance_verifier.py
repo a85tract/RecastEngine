@@ -146,3 +146,47 @@ def test_bitexact_is_unchanged_by_the_dominance_machinery() -> None:
 
     assert BitexactVerifier.dominant_at is None
     assert ToleranceVerifier.dominant_at == 1e-3
+
+
+def test_the_device_each_side_ran_on_is_recorded_when_declared(tmp_path: Path) -> None:
+    """A ULP bound between a GPU and a CPU is a different claim from one
+    between two CPUs, and the verdict has to say which it was.
+
+    Declared rather than detected: the emitted module says ``_DEVICE`` and the
+    oracle puts one on its handle, so the core never imports an accelerator to
+    find out.
+    """
+    module = MODULE.format(perturbation="    pass") + '\n_DEVICE = "gpu:0"\n'
+    candidate = Candidate(
+        unit="tier:spread",
+        transform="test.tier",
+        files={Path("tier_numpy.py"): module.encode()},
+    )
+    oracle = OracleRef(
+        unit="tier:spread",
+        oracle="test.python-truth",
+        key="k",
+        handle={
+            "module": SimpleNamespace(w_spread=truth),
+            "wrappers": {"spread": "w_spread"},
+            "device": "cpu",
+        },
+    )
+    verdict = ToleranceVerifier().verify(
+        Unit(uid="tier:spread", kind="subprogram"),
+        candidate,
+        oracle,
+        tmp_path,
+        LocalExecutor(),
+        {},
+    )
+    assert verdict.metrics["candidate_device"] == "gpu:0"
+    assert verdict.metrics["reference_device"] == "cpu"
+
+
+def test_nothing_is_recorded_when_neither_side_says(judge: Any) -> None:
+    """Silence stays silence: the committed run summaries filter metrics by
+    type, so inventing an empty key here would put ``None`` in every one."""
+    verdict = judge("")
+    assert "candidate_device" not in verdict.metrics
+    assert "reference_device" not in verdict.metrics
