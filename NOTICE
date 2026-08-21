@@ -15,3 +15,19 @@ apply, per the ecosystem's governance model:
   2. Vulnerabilities discovered by this engine's cyber gate are recorded in
      Sec-Track, whose access is restricted to the PI's group to reduce the risk
      of malicious exploitation. No unpatched finding is published here.
+
+Work relayed from elsewhere
+---------------------------
+
+Some of this repository was written in another repository and reached this one
+through a maintainer. Where a commit could carry the author along, it did, and
+git records them. Where the material was rewritten as it moved, the file names
+its source and this section names whose work it was, because a provenance line
+is not attribution and both are needed. See CONTRIBUTING.md.
+
+  recast/transform/jax/  -- the JAX backend and its _f_* runtime, from
+     13_jax_backend/jaxize.py and jax_shim.py in CESM-Agent-Produced-Scripts.
+     Written by second5t <mouseisnotalwaysmouse@outlook.com>. The emission
+     rules, the kernel eligibility, the lax lowering and the two-tier gate's
+     argument are theirs; what changed on the way in was the command-line
+     front end, the emitted header, and the formatting.

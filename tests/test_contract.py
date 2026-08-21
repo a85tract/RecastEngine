@@ -73,6 +73,12 @@ def test_core_imports_no_domain_packages() -> None:
         # The differential gate generates and compares NumPy arrays -- that
         # is the comparison, not a convenience. Lazy, same rule as above.
         "recast.verify.bitexact": {"numpy"},
+        # The JAX backend, by the same rule that exempts the NumPy one: these
+        # are the target language's libraries and the code it emits imports
+        # them. Nothing here is imported by the engine -- the emitter is pure
+        # AST work and reads the runtime's text off disk rather than importing
+        # it, so translating to JAX does not require JAX.
+        "recast.transform.jax": {"jax", "numpy"},
     }
     root = Path(recast.__file__).parent
     offenders = []
