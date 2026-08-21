@@ -24,10 +24,19 @@ trail and the reason it is not committed.
 
 `verification.json` is the **current state**: one entry per unit and verifier,
 regenerated rather than appended. It carries the confidence, the artifact
-digest, the oracle's cache key, and the countable metrics, and deliberately
-omits wall-clock time and paths -- so two runs over the same revisions produce
-the same bytes. That is what makes it worth committing: it diffs like a
-lockfile, and a change in it is a change in what has been verified.
+digest, the oracle's *name*, and the countable metrics, and deliberately omits
+wall-clock time and paths -- so two runs over the same revisions produce the
+same bytes. That is what makes it worth committing: it diffs like a lockfile,
+and a change in it is a change in what has been verified.
+
+The oracle's **cache key** is deliberately not among those, and the reason is
+what makes the file diffable at all. The key folds the compiler's version, so
+recording it would make the summary a fact about the machine: this example's
+committed bytes come from gfortran 16 and CI's come from whatever the runner's
+distribution ships, and the byte comparison would fail there while nothing was
+wrong. The key belongs in the evidence manifest, which is a record of one run
+and is not compared to anything. What survives into the summary is only what
+two correct runs agree on.
 [`toy_physics/verification.json`](toy_physics/verification.json) is the one
 this example produces, checked in so that a reader can see the claim without
 owning a Fortran compiler.
