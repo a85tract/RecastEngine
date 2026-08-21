@@ -496,20 +496,91 @@ a verification, not an edit, and it has to include the deep ones:
 and `conformance/`. A deep link is how a rename gets discovered, by someone
 else, after the repository is already public.
 
-**Done when:** `docs/disclosure-ledger.md` has no open case, and every settled
-one that claims protection names a mechanism that is actually in place — the
-pattern in `check_hygiene.py`, the path off the migration manifest, the record
-class guarded. A row whose mechanism is still prose does not count. A row that
-was examined and *cleared* names no mechanism, and that is the point: it holds
-nothing because there is nothing left to hold, and the record of what was
-considered and dropped is what makes the ledger auditable rather than long.
+### What the security review is
 
-**No case is open, as of 2026-08-20.** The one that was — the extension's name
-in git history, which would have needed a rewrite of every hash in the
-repository — is cleared rather than executed, because the fact it would have
-hidden is published on the project's own public site. The reasoning is ledger
-row 9, and it is worth reading before this phase runs, since it is the only
-place a decision was made *not* to act.
+Named in the arrow above since this phase was written, and defined nowhere.
+`SECURITY.md` is about vulnerabilities reported *in* this engine and
+vulnerabilities found *by* it; neither is a review of this code before it goes
+out. A gate that is one word in an arrow chain, in a repository whose P0 says
+an agreement nothing verifies is not an agreement, is the defect the ledger
+exists to prevent, on the phase where it costs the most.
+
+It is not a generic audit, because the generic finding would be a false one:
+this engine compiles and runs other people's code **on purpose**. `oracle/f2py`
+shells out to a Fortran compiler, `verify/bitexact` imports the module under
+test, `transform/` writes the Python that then gets imported. "It executes
+untrusted code" is the product, not the bug.
+
+So the review is about *boundaries*, and its scope is where one is
+load-bearing:
+
+- **Operator config reaching a process argument.** `oracle/f2py.py` puts
+  `config["fflags"]` into `--f90flags=` and invokes meson/ninja. What else in
+  a config reaches an argv, and what a value that is not a flag does there.
+- **Generated code entering this process.** `verify/bitexact.py` imports
+  candidate and reference by path. Those the engine wrote; an oracle's
+  compiled artifact is a build product of operator-supplied source.
+- **Codegen itself.** `transform/` emits Python from Fortran, `transform/jax/`
+  by AST surgery. A source construct that escapes its emitted representation
+  is the injection to look for.
+- **`FindingStore.guard()`.** Ledger row 5 rests on it. A guard the ledger
+  cites is one the review runs at rather than reads.
+- **The agentic seam.** A `deterministic=False` Transform consults an
+  `AgentProvider`. Nothing implements one, so the question is what the
+  *contract* permits, not what an implementation does.
+- **Executors.** `executors/local` starts processes; P5's will submit jobs to a
+  scheduler under someone's allocation.
+
+**Passing is not "no findings".** It is that every surface above has either a
+boundary stated in the code and a test that holds it, or a written decision
+that it is deliberately unbounded and that the operator is the trust boundary.
+A surface nobody reached a conclusion about fails. Recording a conclusion *not*
+to act is the point, exactly as with the ledger's cleared rows. Defects found
+are fixed before the flip; `SECURITY.md`'s private-advisory route is for after
+it.
+
+**Done when:** five clauses, one per step of the arrow above. The check on this
+phase used to be the first of them alone — which is a precondition, not the
+work, and it was already satisfied while the repository was still private,
+unscrubbed and unreviewed. A phase whose check can pass before its steps run is
+not checked.
+
+1. **The ledger is clear.** `docs/disclosure-ledger.md` has no open case, and
+   every settled one that claims protection names a mechanism that is actually
+   in place — the pattern in `check_hygiene.py`, the path off the migration
+   manifest, the record class guarded. A row whose mechanism is still prose
+   does not count. A row that was examined and *cleared* names no mechanism,
+   and that is the point: it holds nothing because there is nothing left to
+   hold, and the record of what was considered and dropped is what makes the
+   ledger auditable rather than long.
+2. **The scrub has run on a runner, not on a laptop.** Both jobs of the
+   `hygiene` workflow green on GitHub: `check_hygiene.py` over the tree, and
+   `gitleaks` over full history at the version the workflow pins.
+   `tools/ci_local.sh` is a rehearsal and says so — it reports the local
+   scanner's version precisely because it is not the pinned one.
+3. **The security review has happened and is written down**, to the standard
+   above: every surface concluded on, in a document that outlives whoever ran
+   it.
+4. **Both source repositories are archived**, read-only, each carrying the
+   `LICENSE` file it does not have today.
+5. **The flip, and then the links.** Every link in SciRecast's `index.md`,
+   `engine.md` and `contribute.md` that points at this repository resolves —
+   including the deep ones into `src/recast/plugins/`,
+   `docs/writing-a-plugin.md` and `conformance/`.
+
+Clause 5 is the one still backed by prose, and is marked rather than hidden:
+there is no `tools/check_links.py` and the check is somebody remembering to
+click. Clause 2 is not satisfiable today for a reason outside this repository —
+both workflows are `workflow_dispatch` only while the Actions allowance is
+exhausted, so nothing has run on a runner since 2026-08-19.
+
+**Clause 1 is met: no case is open, as of 2026-08-20.** The one that was — the
+extension's name in git history, which would have needed a rewrite of every
+hash in the repository — is cleared rather than executed, because the fact it
+would have hidden is published on the project's own public site. The reasoning
+is ledger row 9, and it is worth reading before this phase runs, since it is
+the only place a decision was made *not* to act. Clauses 2 through 5 are not
+met, and none of them was being asked about until now.
 
 **Irreversible.** Both source repositories are private and carry NCAR paths, a
 username, an allocation account, PBS vulnerability research, and CPG audit
