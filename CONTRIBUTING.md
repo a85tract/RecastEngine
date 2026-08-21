@@ -70,14 +70,24 @@ disclosure ledger assume. It does not let that hand sign for the author.
 **Migrate with history wherever the material allows it.** A `git filter-repo`
 path rewrite keeps each commit's author, so the person who wrote the code is
 still recorded as having written it, with the maintainer as committer. That is
-the honest record and it is why P2 moves the pipeline that way rather than
-copying it.
+the honest record, and it is the first thing to try.
+
+**It did not turn out to be available here, and the qualifier is doing real
+work.** P2 planned to move the pipeline that way and did not: the source
+repository is a single commit — one import of a finished tool, not a history —
+and the material was decomposed into the plugin contract as it landed, so no
+commit could have carried a module across intact. Both of this repository's
+relays therefore fall under the rule below, and no commit here carries an
+outside author. That is a fact about what was available, and it is recorded
+rather than smoothed over, because "migrated with history" was written into
+this file and the roadmap before anyone checked whether the history existed.
 
 **When history cannot come along, say so in the file and in `NOTICE`.** P3's
 promotions were rewritten as they moved — de-site-ified, split, renamed — so no
-commit could carry them intact. Each promoted file names the source file in its
-header, and the receiving repository's `NOTICE` names whose work it was. A
-provenance line is not attribution; both are needed.
+commit could carry them intact, and P2's pipeline arrived the same way. Each
+file names the source file in its header, and the receiving repository's
+`NOTICE` names whose work it was. A provenance line is not attribution; both
+are needed, and the header alone was what P2 shipped until this was noticed.
 
 **Sign-off follows authorship, not delivery.** `Signed-off-by` certifies the
 right to submit, and only the author can certify that. A maintainer relaying
