@@ -223,6 +223,16 @@ class OracleCase:
     moves_the_key: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     move_the_source: Callable[[Facts], Facts] | None = None
     materializes: bool = False
+    submits_jobs: bool = True
+    """Whether materializing leaves this process through the executor.
+
+    True for anything that builds -- a compiled reference, a pinned run -- and
+    that is the default because those are the expensive ones the rule is
+    about. A cheap oracle that derives its reference in-process submits
+    nothing, so there is no executor for it to route around, and the check
+    skips by name rather than passing.
+    """
+
     executor: Callable[[], Executor] | None = None
     requires: tuple[str, ...] = ()
     requires_commands: tuple[str, ...] = ()
