@@ -27,7 +27,7 @@ and both are needed. See CONTRIBUTING.md.
 
   recast/transform/numpy/, recast/fortran/, recast/verify/ and
      recast/oracle/f2py.py  -- the translation pipeline, from pipeline/ in
-     CESM-language-translator. Written by second5t
+     CESM-language-translator. Written by Qinrun Dai, who commits as second5t
      <mouseisnotalwaysmouse@outlook.com>. translate.py became the NumPy
      backend and its rule layers; extract_interface.py, extract_constants.py,
      chunk.py and resolve_use.py became the Fortran frontend; notary.py,
@@ -41,7 +41,8 @@ and both are needed. See CONTRIBUTING.md.
 
   recast/transform/jax/  -- the JAX backend and its _f_* runtime, from
      13_jax_backend/jaxize.py and jax_shim.py in CESM-Agent-Produced-Scripts.
-     Written by second5t <mouseisnotalwaysmouse@outlook.com>. The emission
-     rules, the kernel eligibility, the lax lowering and the two-tier gate's
-     argument are theirs; what changed on the way in was the command-line
-     front end, the emitted header, and the formatting.
+     Written by Qinrun Dai, who commits as second5t
+     <mouseisnotalwaysmouse@outlook.com>. The emission rules, the kernel
+     eligibility, the lax lowering and the two-tier gate's argument are
+     theirs; what changed on the way in was the command-line front end, the
+     emitted header, and the formatting.
