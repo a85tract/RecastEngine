@@ -86,9 +86,23 @@ is the set the engine holds itself to, and the example worth copying.
 
 ## Naming
 
-Dotted and namespaced: `translate.numpy`, `port.jax`, `differential.bitexact`,
-`audit.llm`. The name goes into every Evidence record, so treat a rename as a
-breaking change.
+Two names, and they are allowed to differ.
+
+The **entry-point name** is the address: what a recipe or a config asks for.
+Dotted and namespaced -- `translate.numpy`, `port.jax`, `differential.bitexact`,
+`audit.llm` -- and unique per kind, which the registry enforces by refusing a
+silent override.
+
+The **`name` attribute** is the identity of the implementation: what answered.
+It lands in `Verdict.verifier`, `Candidate.transform` and `Facts.provenance`, so
+treat a rename as a breaking change.
+
+One implementation may sit behind more than one address, and then the two names
+differ on purpose. The CESM extension's `cesm` frontend is not a new analysis --
+it is the engine's `FortranFrontend` with CAM's kind table preloaded -- so it
+answers to `fortran`, and the difference between the two is recorded as the
+configuration it is. What you may not do is the reverse: two different
+implementations under one `name`. `conformance/` checks that one.
 
 ## Non-deterministic transforms
 

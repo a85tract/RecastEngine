@@ -247,24 +247,28 @@ a restricted `FindingStore` for Sec-Track. It passes `conformance/`.
 
 That last sentence needed a `conformance/` that runs, and until now there was
 none: the directory held a specification whose own status line said the harness
-would land in P2, and P2 closed without it. It runs now, over the two kinds P5's
-extension is made of -- `Executor` and `FindingStore` -- plus `EvidenceStore`,
-`Oracle`, `Verifier`, the recipe-level rules, and the runner's no-retry
-guarantee. An extension names its plugins to the suite by declaring a
-`PluginSet`, so a check that needs a candidate or an oracle can be handed one;
+would land in P2, and P2 closed without it. It runs now, over seven of the ten kinds --
+including the two P5's extension is made of, `Executor` and `FindingStore` --
+plus the recipe-level rules and the runner's no-retry guarantee. An extension
+names its plugins to the suite by declaring a `PluginSet`, so a check that needs
+a candidate, a source tree, or an oracle can be handed one;
 `recast/conformance/builtin.py` is the set the engine holds itself to, and CI
-runs it. Five kinds are still specification -- `Frontend` and `Transform` next,
-because they have an in-tree implementation to hold, and `Scanner`,
-`Adjudicator` and `AgentProvider` after the first implementation of each exists
-to hold. Each row of the suite's tables says which it is.
+runs it. `Scanner`, `Adjudicator` and `AgentProvider` are what remain, and none
+of the three has an implementation anywhere yet, so their checks wait for the
+first one of each rather than being written against nothing.
 
-It has already earned its place. The rule that an executor's refusal must reach
-the runner as a `RecastError` turned out not to hold for `f2py-golden`: it let a
-bare `RuntimeError` out, which `run.py` does not catch, so one build that could
-not be scheduled ended the whole run and cost every other unit its verdict.
-`OracleUnavailable` had been declared since P1 and raised nowhere. That is the
-shape of finding this phase is for, arriving one phase early because the checks
-were written before their subjects were examined.
+It has already earned its place twice. The rule that an executor's refusal must
+reach the runner as a `RecastError` turned out not to hold for `f2py-golden`: it
+let a bare `RuntimeError` out, which `run.py` does not catch, so one build that
+could not be scheduled ended the whole run and cost every other unit its
+verdict. `OracleUnavailable` had been declared since P1 and raised nowhere. And
+the rule that a Frontend reads source rather than the engine's own output turned
+out not to hold either: `run_recipe` writes its workspace into the tree it was
+pointed at, the f2py oracle leaves compilable wrappers there, and `SKIP_DIRS`
+did not list that directory -- so a second run over a tree discovered the first
+run's scaffolding as a unit to translate. Both are the shape of finding this
+phase is for, arriving one phase early because the checks were written before
+their subjects were examined.
 
 One rule stays deliberately unexercised: no Verifier in this repository submits
 a job, so nothing here can route around a refusing executor. `f2py-golden` is

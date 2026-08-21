@@ -26,6 +26,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
+from recast import WORKSPACE_DIRNAME
 from recast.errors import ConfigError, RecastError
 from recast.model import Facts, Unit
 from recast.plugins.frontend import Frontend
@@ -40,7 +41,16 @@ from the extension itself. A ``.F90`` that still needs cpp run over it is the
 ``preprocess`` hook's problem, not this list's.
 """
 
-SKIP_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__", ".venv", "build", "dist"})
+SKIP_DIRS = frozenset(
+    {".git", ".hg", ".svn", "__pycache__", ".venv", "build", "dist", WORKSPACE_DIRNAME}
+)
+"""Directories that are not somebody's source.
+
+``WORKSPACE_DIRNAME`` is in the list for a reason the others are not: it is the
+engine's *own* output. An oracle build leaves generated wrappers under it, and
+a discovery pass that reads them back finds units the previous run created --
+so the same tree yields a different unit set before and after a run, and the
+second run offers to translate the first one's scaffolding."""
 
 
 class UnparsableSource(RecastError):

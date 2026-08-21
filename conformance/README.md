@@ -3,9 +3,10 @@
 What a plugin must satisfy to be usable, and what an out-of-tree extension must
 pass to be an extension rather than a fork.
 
-**Status: five kinds — `Executor`, `Oracle`, `Verifier`, `EvidenceStore`,
-`FindingStore` — and the cross-cutting rules run; five kinds are still
-specification.** The tables below are the whole contract, and each row says
+**Status: seven kinds — `Frontend`, `Transform`, `Oracle`, `Verifier`,
+`Executor`, `EvidenceStore`, `FindingStore` — and the cross-cutting rules run;
+three kinds are still specification.** The tables below are the whole contract,
+and each row says
 whether it is executable yet. Where a check exists, a plugin that fails it fails
 the suite. Where one does not, the row is a claim nothing verifies -- which is
 what this entire file was before the harness landed, and the reason the
@@ -63,8 +64,8 @@ the SemVer promise everything out-of-tree rests on.
 
 | Kind | Must hold | Checked |
 |---|---|---|
-| `Frontend` | `discover` is deterministic and side-effect free; re-running on unchanged source yields identical `Unit` sets; `preprocess` records its flags in `Facts.provenance` | not yet |
-| `Transform` | `applicable` never raises; unhandled sites land in `deferred`, not exceptions; a `deterministic` Transform yields an identical `Candidate.digest()` for identical inputs, while a `deterministic = False` one instead records model, prompt digest, and sampling parameters in `Candidate.notes` so its Evidence replays to a valid artifact | not yet |
+| `Frontend` | it discovers the units the case names; `discover` and `analyze` are deterministic and leave the tree byte-for-byte unchanged; re-running on unchanged source yields identical `Unit` sets; `Unit.sources` are relative to the root; nothing under the engine's own `.recast/` is read as source; `preprocess` records its flags in `Facts.provenance` | `test_frontend.py` |
+| `Transform` | `requires` names real `Facts` fields; `applicable` never raises on degenerate input and is true for the case's own subject; unhandled sites land in `deferred`, not exceptions, and the partial Candidate still carries what did translate; a `deterministic` Transform yields an identical `Candidate.digest()` for identical inputs, while a `deterministic = False` one instead records `model` and `prompt_digest` in `Candidate.notes` so its Evidence replays to a valid artifact | `test_transform.py` |
 | `Oracle` | `key` is stable for unchanged inputs and changes for every perturbation the case declares — flags, rank count, wrapped surface — and when the source moves; the ref is filed under the key `key` reports; a refusing executor produces a `RecastError`, not an exception the runner does not catch; `release` is idempotent | `test_oracle.py` |
 | `Verifier` | a good candidate earns the verdict its case declares; a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; an executor that refuses the requested scale produces `FAILED`, not a retry at a smaller one; `Verdict.candidate` is the digest that was judged; `metrics` on any real comparison, `detail` on any failure | `test_verifier.py` |
 | `Scanner` | findings default to `EMBARGOED`/`PLAUSIBLE`; a scan of a clean tree yields nothing; a scan of the seeded fixture yields the seeded defect | not yet |
@@ -74,11 +75,38 @@ the SemVer promise everything out-of-tree rests on.
 | `FindingStore` | `guard` rejects above `max_access`, and `put` calls it; storage is not group- or world-readable | `test_finding_store.py` |
 | `AgentProvider` | `AgentResult.model` reports the model that actually answered, including after a fallback | not yet |
 
-`Frontend` and `Transform` are the ones to do next: both have an in-tree
-implementation to hold, which `Scanner`, `Adjudicator` and `AgentProvider` do
-not. Writing checks for a kind with no plugin anywhere produces checks nothing
-runs, and this file already carries enough of those; those three are better
-written beside the first implementation of each.
+`Scanner`, `Adjudicator` and `AgentProvider` are what remain, and none of them
+has an implementation anywhere -- in this repository or the domain extension.
+Writing their checks now produces checks nothing runs, and this file already
+carries enough of those. They are better written beside the first
+implementation of each, which is also when the fixtures they need (a seeded
+defect, a known false positive, a provider that falls back) can be real.
+
+**The `Frontend` row grew two clauses, and the second one found a bug.** The
+first is that `Unit.sources` are relative to the root -- the ABC says so, and an
+absolute path is a machine's, which travels into Evidence. The second is that
+nothing under the engine's own `.recast/` is read as source. `run_recipe` puts
+its workspace there by default and the f2py oracle leaves compilable wrappers
+under it, so discovery over a tree the engine had already run on returned
+`fortran:wrappers` -- the engine's output, offered back as its input, and a
+different unit set before and after a run. `SKIP_DIRS` did not list it. The
+directory now has a name, `recast.WORKSPACE_DIRNAME`, the frontend skips it, and
+`tests/test_fortran_frontend.py` pins it. The example was insulated from this
+only because its config pins `units`, which is not the same as being correct.
+
+**The `Transform` row grew three.** `requires` must name real `Facts` fields,
+because the runner reports an unknown name as a missing prerequisite -- so
+`requires = ("effect",)` does not fail loudly, it skips every unit while
+blaming the frontend for not producing something no frontend was asked for.
+`applicable` must be true for the case's own subject, for the same reason the
+Verifier row needs a good candidate: "never raises" is satisfied by
+`return False`. And the deferring Candidate must still carry the part that did
+translate, since a partial Candidate is what the agent layer patches into.
+
+The agentic clause pins two note keys, `model` and `prompt_digest`. Those are
+`AgentResult`'s own field names rather than this suite's invention, and pinning
+them now is cheap: there is no agentic Transform yet, so no one has to change,
+and the first one inherits a convention instead of inventing a third.
 
 **The `Oracle` row grew a clause, and the suite found the hole it describes.**
 `errors.py` has declared `OracleUnavailable` -- "the reference could not be
@@ -129,6 +157,25 @@ both designs satisfy it, one by construction and one by refusing.
 | **A failed gate does not drive a retry.** No `Verdict` reaches a `Transform`, and no stage re-runs because a later one failed. The suite runs a recipe whose gate always fails and requires exactly one `Transform.apply` call per Unit. | `test_runner.py` |
 | **A failed gate is still recorded.** A gate that failed and was recorded is audit trail; one that failed and vanished is a rumor. | `test_runner.py` |
 | **Execution goes through the Executor.** No `Oracle` or `Verifier` may route around it. | `test_oracle.py`; `test_verifier.py` has no in-tree subject — see below |
+| **Every plugin reports a name.** It lands in Evidence, and a record that does not say what produced it is a claim with no author. | `test_registry.py` |
+| **One name means one implementation.** Two plugins of a kind may answer to one name only when they *are* the same implementation. | `test_registry.py` |
+
+**Two names, and they are allowed to differ.** The entry-point name is the
+*address* — what a recipe or a config asks for (`translate.numpy`, `cesm`) —
+and the registry keeps it unique on its own, refusing a silent override. The
+plugin's `name` attribute is the *identity of the implementation*: what
+answered, and what lands in `Verdict.verifier`, `Candidate.transform` and
+`Facts.provenance`.
+
+They differ whenever one implementation is reachable under more than one
+address, which is a shape already in use: the domain extension's `cesm`
+frontend is not a new analysis, it is the engine's own `FortranFrontend`
+constructed with CAM's kind table, so it answers to `fortran` — and what makes
+two runs distinguishable is the configuration that provenance records, which is
+what the difference actually is. So the rule is not that the two names match.
+It is the reverse one: two *different* implementations must not answer to a
+single name, because then the name in a Verdict, a Candidate or a provenance
+record stops saying which code ran and nothing downstream can recover it.
 
 ## What the suite deliberately does not check
 
