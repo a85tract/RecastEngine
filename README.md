@@ -92,7 +92,7 @@ see [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md).
 | [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md) | how to extend the engine |
 | [`docs/roadmap.md`](docs/roadmap.md) | phases P0–P6 |
 | [`examples/`](examples/) | source trees the shipped recipes run over end to end |
-| [`conformance/`](conformance/) | what a plugin must satisfy |
+| [`conformance/`](conformance/) | what a plugin must satisfy, as a suite that runs |
 
 ## Contact
 

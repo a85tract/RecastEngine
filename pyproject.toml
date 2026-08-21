@@ -77,6 +77,11 @@ local = "recast.executors.local:factory"
 fs-evidence = "recast.store.filesystem:FilesystemEvidenceStore"
 fs-findings = "recast.store.filesystem:FilesystemFindingStore"
 
+# Not a plugin kind: a declaration of which plugins the conformance suite
+# should check, and what material each one's checks need. See conformance/.
+[project.entry-points."recast.conformance"]
+recast = "recast.conformance.builtin:PLUGIN_SET"
+
 [project.entry-points."recast.recipes"]
 translate = "recast.recipes:TranslateRecipe"
 refactor = "recast.recipes:RefactorRecipe"
