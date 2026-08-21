@@ -463,6 +463,76 @@ and P5's batch-backed Verifier is what will meet the other half. The check skips
 by name rather than passing, which is the arrangement that makes it useful on
 the day something does execute.
 
+### Started 2026-08-21, on the cyber half rather than the batch half
+
+The phase was read as blocked on HPC access, because its first sentence names
+PBS/Slurm. It is not: `conformance/test_executor.py` genuinely submits a probe
+job and waits on it twice, so an executor needs a scheduler to be checked — but
+the *other* kinds P5 names need nothing but a scratch directory, and the phase's
+question is about the contract, not about which kind asks it.
+
+So the first out-of-tree extension is `recast-sec`: the cyber half of CC-Test
+(`a85tract/CESM-CC-Test`, by Chien-Wei Huang, already in production on
+Derecho as `hpc-devsecops`) wired to the plugin contract. A real
+`secret` Scanner over gitleaks, SARIF to `Finding`, plus two stubs that exist
+only so the `audit` recipe reaches the stages nobody had reached before. It
+registered through `recast.scanners` and `recast.adjudicators` with **no engine
+change at all** — which is the half of the contract that works, and worth saying
+before the half that does not.
+
+`recast run audit` then produced this, and it is the reason the phase exists:
+
+    [ok ]  frontend    fortran
+    [skip] scanner     secret         kind 'scanner' not walked
+    [skip] scanner     composition    kind 'scanner' not walked
+    [skip] adjudicator adversarial    kind 'adjudicator' not walked
+    [ok ]  store       fs-findings    0 verdict(s) recorded
+    1 unit(s), 0 verdict(s), all passed
+
+A security audit that scanned nothing, reporting **all passed**. The stubs raise
+`NotImplementedError` on entry and neither raised, which is the proof that the
+runner never called them rather than an inference that it did not.
+
+Seven findings, five of them holes:
+
+1. **`run_recipe` demands an executor stage from every recipe**, so `audit` is
+   unrunnable as shipped. `Stage`'s own docstring says only "a recipe that
+   materializes an oracle or awards a verdict has to declare one", and
+   `conformance/test_recipes.py` skips its executor checks for `audit` on
+   exactly that reading. The runner is the one out of step, in two places — the
+   guard, and a later use of `executor_stage.plugin` for the evidence record.
+2. **`scanner` and `adjudicator` stages fall through `_walk_stage` to
+   `"skipped"`**, the same status an uninstalled optional plugin gets. Installed
+   and absent are indistinguishable in the output.
+3. **A `gate=True` stage is skipped rather than enforced.** The `audit` recipe
+   gates on its adjudicator; the run passed without it. A gate that can be
+   skipped is not a gate, and nothing in the runner ties `gate` to the kinds it
+   does not walk.
+4. **`fs-findings` is walked as an `EvidenceStore`.** The store branch iterates
+   `unit_run.verdicts` and calls `put(evidence)`; `UnitRun` has no findings
+   field at all. The `audit` recipe's terminal stage is structurally wrong, not
+   merely unimplemented — Findings have nowhere to accumulate.
+5. **A Scanner cannot report that it could not run.** `scan` returns an
+   iterable; gitleaks missing yields an empty one, which is what a clean scan
+   yields. `OracleUnavailable` exists for exactly this and has no counterpart
+   here. `hpc-devsecops` distinguishes `PASS` from `INCOMPLETE` and the
+   contract cannot carry the difference.
+6. **A Scanner's subject is not always a Unit.** `scan(unit, facts, ...)`
+   assumes a defect belongs to an addressable piece of software. gitleaks' value
+   is in *history* — a credential deleted in a later commit is still in the pack
+   — and `syft`/`grype` describe *whole-repository* state, which the CC-Test
+   script comments on deliberately. Per-Unit is the weakest reading and the only
+   one available; scanning the repository once per Unit is worse. The contract
+   gives a scanner no way to say what it is the scanner *of*.
+7. Paper cut: the `Adjudicator` ABC ships in `recast/plugins/scanner.py`. Its
+   kind is `adjudicator` and its entry-point group is `recast.adjudicators`, so
+   the obvious import is the one that fails.
+
+None of this was found by reading. Findings 1 through 4 needed a throwaway patch
+to `run.py` to get past each previous one, reverted rather than committed,
+because the patch is not the deliverable — the list is. Nothing in this
+repository changed to produce it.
+
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 
