@@ -166,6 +166,8 @@ both designs satisfy it, one by construction and one by refusing.
 | **A recipe declares the executor it needs, from config.** Any recipe with an `oracle` or `verifier` stage declares exactly one `executor` stage, first in the list, and takes its name from config — a hardcoded scheduler name is a site leak in a public recipe. | `test_recipes.py` |
 | **A failed gate does not drive a retry.** No `Verdict` reaches a `Transform`, and no stage re-runs because a later one failed. The suite runs a recipe whose gate always fails and requires exactly one `Transform.apply` call per Unit. | `test_runner.py` |
 | **A failed gate is still recorded.** A gate that failed and was recorded is audit trail; one that failed and vanished is a rumor. | `test_runner.py` |
+| **Every declared frontend contributes its units, and each Unit is analyzed by the one that found it.** Frontends do not chain; their sets union, which is what walks a project written in more than one language. Two claiming one uid is refused, not resolved. | `test_runner.py` |
+| **At most one transform stage.** A Unit has one Candidate, so a second would replace the first. | `test_recipes.py` |
 | **Execution goes through the Executor.** No `Oracle` or `Verifier` may route around it. | `test_oracle.py`; `test_verifier.py` has no in-tree subject — see below |
 | **Every plugin reports a name.** It lands in Evidence, and a record that does not say what produced it is a claim with no author. | `test_registry.py` |
 | **One name means one implementation.** Two plugins of a kind may answer to one name only when they *are* the same implementation. | `test_registry.py` |

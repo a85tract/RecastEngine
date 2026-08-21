@@ -269,6 +269,25 @@ enforces it by walking the package. Domain knowledge lives out of tree in a
 domain extension; language knowledge lives in `recast-fortran`, which ships
 in-tree as the reference frontend.
 
+**More than one frontend, one transform.** The two slots at the front of the
+spine compose in opposite ways, and each way follows from what the artifact is.
+A recipe may declare several `Frontend`s: they read the tree independently,
+their Unit sets union, and each Unit is analyzed by the one that found it —
+which is how a project written in more than one language is walked in one run.
+A recipe declares exactly one `Transform`: a Unit has one `Candidate`, so a
+second would replace the first rather than extend it. Both compositions that
+are *not* available across stages — layering one analysis on another, running
+rules and then a model — happen inside a plugin instead, by wrapping or
+subclassing.
+
+The gate has not caught up. `Transform` filters with `applicable`, so a Fortran
+transform skips a C Unit and says so; `Oracle` and `Verifier` have no such
+method, so every Unit in a mixed run reaches the same oracle whether or not it
+can build one. Multi-language is therefore walked but not yet gated, and the
+open question is what a Unit no oracle claims should produce — `FAILED`, by the
+same fail-closed rule that governs an oracle which could not materialize, but
+nothing is decided.
+
 **In-tree vs plugin.** The engine ships what one person needs on one machine:
 the full frontend/rule/verification stack, the NumPy/Numba/JAX/CUDA backends,
 and the `local` executor. Scale and operations arrive as plugins — batch

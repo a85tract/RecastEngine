@@ -24,7 +24,9 @@ from recast.conformance.doubles import (
     GateFailsRecipe,
     RecordingEvidenceStore,
     StubFrontend,
+    TwoFrontendsRecipe,
 )
+from recast.errors import ConfigError
 from recast.executors.local import factory as local_executor
 from recast.model import Confidence
 from recast.registry import Registry
@@ -78,3 +80,58 @@ def test_a_failed_gate_is_still_recorded(failed_gate_run: RecipeRun) -> None:
     assert all(unit_run.evidence for unit_run in failed_gate_run.units), (
         "the runner recorded evidence the unit does not know about"
     )
+
+
+def test_every_declared_frontend_contributes_its_units(tmp_path: Path) -> None:
+    """A recipe may declare several, and they do not chain.
+
+    Each reads the tree on its own, the Unit sets union, and each Unit is
+    analyzed by the frontend that found it -- which is what walks a project
+    written in more than one language in one run. Handing one frontend's Unit
+    to another is how a C file gets analyzed as Fortran.
+    """
+    CountingTransform.reset()
+    first = StubFrontend.claiming("conformance.first", "one:a", "one:b")
+    second = StubFrontend.claiming("conformance.second", "two:a")
+
+    registry = Registry()
+    registry.register("executor", "local", local_executor)
+    registry.register("frontend", first.name, first)
+    registry.register("frontend", second.name, second)
+    registry.register("transform", CountingTransform.name, CountingTransform)
+
+    run = run_recipe(
+        TwoFrontendsRecipe(),
+        tmp_path,
+        {"workspace": tmp_path / "ws", "frontends": [first.name, second.name]},
+        registry=registry,
+    )
+    assert [u.unit.uid for u in run.units] == ["one:a", "one:b", "two:a"]
+    owners = {u.unit.uid: [o.plugin for o in u.outcomes if o.kind == "frontend"] for u in run.units}
+    assert owners == {
+        "one:a": [first.name],
+        "one:b": [first.name],
+        "two:a": [second.name],
+    }
+    CountingTransform.reset()
+
+
+def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
+    """First-wins would make the run reproducible only by declaration order:
+    the Unit carries one frontend's Facts and nothing records whose."""
+    first = StubFrontend.claiming("conformance.first", "shared:a")
+    second = StubFrontend.claiming("conformance.second", "shared:a")
+
+    registry = Registry()
+    registry.register("executor", "local", local_executor)
+    registry.register("frontend", first.name, first)
+    registry.register("frontend", second.name, second)
+    registry.register("transform", CountingTransform.name, CountingTransform)
+
+    with pytest.raises(ConfigError, match="both discovered 'shared:a'"):
+        run_recipe(
+            TwoFrontendsRecipe(),
+            tmp_path,
+            {"workspace": tmp_path / "ws", "frontends": [first.name, second.name]},
+            registry=registry,
+        )

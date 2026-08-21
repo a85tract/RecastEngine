@@ -360,3 +360,93 @@ def test_the_summary_excludes_what_differs_between_machines(tmp_path: Path) -> N
     assert str(tmp_path) not in blob
     assert "timestamp" not in blob
     assert "shared-key" not in blob  # the oracle's key is provenance, not a claim
+
+
+# --- more than one frontend ---------------------------------------------------
+
+
+class OtherFrontend(Frontend):
+    """A second language in the same tree. Independent of the first: it reads
+    the source itself and never sees what the other one learned."""
+
+    name = "other-frontend"
+
+    def discover(self, root: Path) -> list[Unit]:
+        return [Unit(uid="other:gamma", kind="module")]
+
+    def analyze(self, unit: Unit, root: Path) -> Facts:
+        return Facts(unit=unit.uid, interface={"module": "gamma", "by": self.name})
+
+
+class ColludingFrontend(OtherFrontend):
+    """Claims a uid the first frontend already discovered."""
+
+    name = "colliding-frontend"
+
+    def discover(self, root: Path) -> list[Unit]:
+        return [Unit(uid="fake:alpha", kind="module")]
+
+
+def _multi_registry() -> Registry:
+    registry = _registry()
+    registry.register("frontend", "other-frontend", OtherFrontend)
+    registry.register("frontend", "colliding-frontend", ColludingFrontend)
+    return registry
+
+
+def _multi_stages(*frontends: str) -> list[Stage]:
+    return [
+        Stage("executor", "fake-exec"),
+        *[Stage("frontend", name) for name in frontends],
+        Stage("transform", "fake.transform"),
+        Stage("store", "fake-store"),
+    ]
+
+
+def test_every_declared_frontend_contributes_its_units(tmp_path: Path) -> None:
+    """The union, which is what lets one project hold more than one language.
+
+    Before this, the runner took the first frontend stage and dropped the rest
+    silently -- the second language's units never appeared and nothing said so.
+    """
+    recipe = FakeRecipe(_multi_stages("fake-frontend", "other-frontend"))
+    run = run_recipe(recipe, tmp_path, {}, registry=_multi_registry())
+    assert [u.unit.uid for u in run.units] == ["fake:alpha", "fake:beta", "other:gamma"]
+
+
+def test_each_unit_is_analyzed_by_the_frontend_that_found_it(tmp_path: Path) -> None:
+    """Ownership, not declaration order: handing one frontend's Unit to another
+    is how a C file gets analyzed as Fortran."""
+    recipe = FakeRecipe(_multi_stages("fake-frontend", "other-frontend"))
+    run = run_recipe(recipe, tmp_path, {}, registry=_multi_registry())
+    owners = {
+        unit_run.unit.uid: [o.plugin for o in unit_run.outcomes if o.kind == "frontend"]
+        for unit_run in run.units
+    }
+    assert owners == {
+        "fake:alpha": ["fake-frontend"],
+        "fake:beta": ["fake-frontend"],
+        "other:gamma": ["other-frontend"],
+    }
+
+
+def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
+    """First-wins would make the run reproducible only by accident of
+    declaration order: the Unit carries one of their Facts and nothing records
+    which."""
+    recipe = FakeRecipe(_multi_stages("fake-frontend", "colliding-frontend"))
+    with pytest.raises(ConfigError, match="both discovered 'fake:alpha'"):
+        run_recipe(recipe, tmp_path, {}, registry=_multi_registry())
+
+
+def test_declaring_one_frontend_twice_is_refused(tmp_path: Path) -> None:
+    """Frontends do not chain, so a repeat is a duplicate or a misunderstanding."""
+    recipe = FakeRecipe(_multi_stages("fake-frontend", "fake-frontend"))
+    with pytest.raises(ConfigError, match="more than once"):
+        run_recipe(recipe, tmp_path, {}, registry=_multi_registry())
+
+
+def test_a_named_unit_still_resolves_across_frontends(tmp_path: Path) -> None:
+    recipe = FakeRecipe(_multi_stages("fake-frontend", "other-frontend"))
+    run = run_recipe(recipe, tmp_path, {"units": ["other:gamma"]}, registry=_multi_registry())
+    assert [u.unit.uid for u in run.units] == ["other:gamma"]

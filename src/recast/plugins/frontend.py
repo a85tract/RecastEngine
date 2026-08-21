@@ -13,8 +13,25 @@ class Frontend(ABC):
     """Reads source. Never writes it.
 
     One Frontend per source language or per source model. ``recast-fortran``
-    ships in-tree as the reference implementation; a CESM extension layers
-    CESM conventions (CCPP metadata, CIME cases) on top of it.
+    ships in-tree as the reference implementation; a domain extension layers
+    its conventions (CCPP metadata, CIME cases) on top of it.
+
+    **A recipe may declare several, and they do not chain.** Each reads the
+    tree independently and their Unit sets are unioned, which is how a project
+    written in more than one language is walked in one run: the Unit remembers
+    which frontend found it and that one analyzes it. No Frontend sees
+    another's Facts -- that is why ``analyze`` takes none -- so layering one
+    analysis on another happens *inside* a Frontend, by wrapping or
+    subclassing, not between two of them.
+
+    Two frontends claiming the same ``uid`` is refused rather than resolved.
+    The Unit would carry one of their Facts with no record of whose, and the
+    run would be reproducible only by accident of declaration order.
+
+    It also has to skip ``recast.WORKSPACE_DIRNAME``. That directory is the
+    engine's own output -- workspaces, oracle builds, evidence -- and a
+    frontend that reads a previous run's generated code back has turned output
+    into input.
     """
 
     name: str
