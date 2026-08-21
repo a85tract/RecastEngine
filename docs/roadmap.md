@@ -296,9 +296,19 @@ and `conformance/`. A deep link is how a rename gets discovered, by someone
 else, after the repository is already public.
 
 **Done when:** `docs/disclosure-ledger.md` has no open case, and every settled
-one names a mechanism that is actually in place — the pattern in
-`check_hygiene.py`, the path off the migration manifest, the record class
-guarded. A ledger row whose mechanism is still prose does not count.
+one that claims protection names a mechanism that is actually in place — the
+pattern in `check_hygiene.py`, the path off the migration manifest, the record
+class guarded. A row whose mechanism is still prose does not count. A row that
+was examined and *cleared* names no mechanism, and that is the point: it holds
+nothing because there is nothing left to hold, and the record of what was
+considered and dropped is what makes the ledger auditable rather than long.
+
+**No case is open, as of 2026-08-20.** The one that was — the extension's name
+in git history, which would have needed a rewrite of every hash in the
+repository — is cleared rather than executed, because the fact it would have
+hidden is published on the project's own public site. The reasoning is ledger
+row 9, and it is worth reading before this phase runs, since it is the only
+place a decision was made *not* to act.
 
 **Irreversible.** Both source repositories are private and carry NCAR paths, a
 username, an allocation account, PBS vulnerability research, and CPG audit

@@ -43,7 +43,8 @@ that already exists in the two source repositories.
 | 5 | Unpatched findings from the `audit` recipe | restricted store | Coordinated disclosure. `EMBARGOED` by default, and nothing reaches a public store or CI log before `PUBLIC` **and** `PUBLISHED`. | P1, `SECURITY.md` |
 | 6 | `08_cpg_tools/` — the Code Property Graph toolchain, 42 files | stays behind | A static-analysis toolchain aimed at finding defects in software this project does not own. Publishing the tooling publishes the aim. | P3 triage |
 | 7 | `14_pbs_security/` — PBS D41 security research, 8 files | stays behind | Vulnerability research against a scheduler running in production at a real site. Same rule as row 5, applied to work that predates the engine. | P3 triage |
-| 8 | The name of the private CESM extension repository | hygiene `private-repo` | Naming a private repository publishes that it exists, and every mention is a link that 404s for the reader. The engine refers to it by what it is — "the domain extension" — which is also the more accurate word, since nothing in the contract is specific to that one package. | 2026-08-19 |
+| 8 | The name of the private CESM extension repository | hygiene `private-repo` | **Re-decided 2026-08-20, and half of the original reason is void.** It was settled on two grounds: that naming a private repository publishes that it exists, and that every mention is a link which 404s for the reader. The first no longer holds — the SciRecast site is public, its Pages build is live, and its `engine.md` names the extension in prose, twice. The project publishes the fact itself, so the engine withholding it protects nothing. What survives is the second ground, which is a documentation-quality concern rather than a disclosure control: until the extension is public, every mention here is a dead link, and "the domain extension" is the more accurate phrase anyway since nothing in the contract is specific to one package. The pattern stays on that ground and **retires when the extension goes public**. | 2026-08-19, re-decided 2026-08-20 |
+| 9 | Whether that same name in git history has to be rewritten out | none — nothing left to hold | **Examined and cleared, 2026-08-20.** Six commits' content and six commit messages carry the name, reaching back to the first commit, and row 8's pattern holds only the working tree. The case was open because removing a string from history needs `git filter-repo`, and a rewrite from the first commit changes every hash in the repository — including `6333399`, which the SciRecast site cites twice. It is cleared rather than executed, because the thing a rewrite would hide is already published by the project's own public site (see row 8). Rewriting every hash to conceal a fact the reader can look up is cost without a benefit. If the extension's name ever does become sensitive, the first action is the public site and not this history. | 2026-08-20 |
 
 Rows 6 and 7 are P3's 50-file `EXCLUDE` bucket in full, as that phase's triage
 table records it. They stay in the archived private repository, which is the
@@ -74,11 +75,10 @@ stops.
 
 ## Open
 
-| # | What | Noticed | Still undecided |
-|---|---|---|---|
-| A | That same name in git history — six commits' content and six commit messages, reaching back to the first commit | 2026-08-19, while settling row 8 | Row 8's mechanism holds the *working tree* going forward. History is a different object: `git filter-repo` is the only thing that removes a string from it, and a rewrite changes every commit hash after the earliest edit — including `6333399`, which the SciRecast site cites by name. Either the rewrite happens before the flip and the citation is updated, or the name stays in history and row 8 is a partial measure. **P6 cannot flip until this is answered.** |
+None. The one case that was open — the extension's name in git history — is
+settled as row 9, cleared rather than executed.
 
-Row A is the general shape of this problem, so it is worth stating once: a
+Row 9 is the general shape of a problem worth stating once: a
 hygiene pattern proves a string is absent from `HEAD`, and says nothing about
 whether it was ever committed. `gitleaks` covers full history in the hygiene
 workflow, but only for credential-shaped secrets — a repository name, a

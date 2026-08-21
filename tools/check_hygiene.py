@@ -35,10 +35,13 @@ RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("private-key", re.compile(r"-----BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY"), "private key"),
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"), "Anthropic API key"),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "GitHub token"),
-    # A private repository's name is not a secret in the credential sense, but
-    # naming it here publishes that it exists, and every mention is a link that
-    # 404s for the reader. The domain extension is referred to by what it is.
-    ("private-repo", re.compile(r"recast[-_]cesm", re.I), "private repo name"),  # hygiene: allow
+    # Not a secret in the credential sense, and half its original reason has
+    # lapsed: naming the extension no longer publishes that it exists, because
+    # the SciRecast site names it in public (ledger row 8, re-decided). What
+    # survives is that every mention here is a dead link until the extension
+    # is public, and that "the domain extension" is the more accurate phrase
+    # anyway. Retire this pattern when the extension goes public.
+    ("private-repo", re.compile(r"recast[-_]cesm", re.I), "unpublished name"),  # hygiene: allow
 ]
 
 SKIP_DIRS = {
