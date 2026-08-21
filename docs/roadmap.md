@@ -34,8 +34,10 @@ optional dependencies installed, and `test_contract.py` passes.
 
 ## P2 — migrate the translator (done)
 
-Move CESM-language-translator's `pipeline/` (22 modules, ~10k lines) in with
-history via `git filter-repo` path rewrite, refactoring as it lands:
+Move CESM-language-translator's `pipeline/` (22 modules, ~10k lines) in,
+refactoring as it lands. The plan said "with history, via a `git filter-repo`
+path rewrite", and that is **not what happened** — see "The history that was
+not carried" at the end of this phase:
 
 - `translate.py` (2,883 lines) splits into `rules/` + `backend/numpy`. It was
   parser, rule library, and emitter at once, which is why nothing else could
@@ -118,6 +120,40 @@ check has to be re-runnable against whatever the sources look like next.
 Accepted divergences pin the exact values they excuse, so a change upstream
 brings them back for re-confirmation instead of staying quietly excused.
 
+### The history that was not carried
+
+Found 2026-08-21, while looking at what `gitleaks` had scanned: **the
+`git filter-repo` pass this phase describes never ran.** All 71 commits in this
+repository are the maintainer's, the earliest is its own `Initial commit`, and
+no file under `src/recast/` has a commit older than the day it was written
+here. "Migrated with history" was written into this document and into
+`CONTRIBUTING.md` before anyone checked whether the history existed.
+
+It did not, in any useful sense. CESM-language-translator is **one commit** —
+`4743491`, "Initial commit: Deterministic Fortran-to-Python translation
+pipeline", 2026-07-06, by second5t. A path rewrite would have carried that
+single commit and nothing else. And the material was decomposed into the plugin
+contract as it landed — one `main()` became a Frontend, a Transform and three
+Verifiers — so no module crossed intact for a commit to be about.
+
+So the plan was wrong rather than skipped, and what replaces it is the rule
+`CONTRIBUTING.md` already gives for that case: name the source in the file, and
+name the author in `NOTICE`. The first half P2 shipped —
+`oracle/f2py.py` and its neighbours say where they came from. **The second half
+was missing until this was found**, and `NOTICE` named only the JAX backend's
+author while ~10k lines of the same person's work sat unattributed beside it.
+That is now a `NOTICE` entry, which is the thing that had to land before P6
+makes the omission public and permanent.
+
+Nothing about the code is in question — `emit_diff` holds the emitter to the
+pipeline byte for byte across 27 modules, which is a stronger claim than any
+commit graph. What was wrong was the record of whose work it is.
+
+One thing this surfaced and does not settle: CESM-language-translator carries
+**no licence file**. The relay model in `CONTRIBUTING.md` rests on the author
+certifying the right to submit, and P6 already has to reach that author about
+archiving. The licence goes in the same conversation, and it is P6's to close.
+
 ## P3 — triage the 662 agent scripts (done, bar the archiving)
 
 CESM-Agent-Produced-Scripts, every file given a destination. The plan said four
@@ -128,7 +164,7 @@ buckets; executing it needed eight, and the extra four are the findings.
 | `PRODUCT` | 177 | port outputs and their unit tests → Product Layer repos |
 | `HPC-EXEC` | 170 | interface here, implementation in an executor plugin |
 | `ARCHIVE` | 141 | one-shot: bound to a run, a bug, or a date that will not recur |
-| `P2` | 69 | already in CESM-language-translator — P2 migrates it, with history |
+| `P2` | 69 | already in CESM-language-translator — P2 migrates it from there |
 | `EXCLUDE` | 50 | stays behind: disclosure-ledger rows 6 and 7 |
 | `PROMOTED` | 28 | landed in the domain extension, de-site-ified, tested |
 | `POOL` | 22 | re-runnable tooling with no current need; promoted when one names it |
@@ -138,10 +174,13 @@ The table is generated from rules rather than hand-written, and lives with its
 reasoning in the domain extension's `migration/` directory. Four things the plan
 did not anticipate:
 
-**69 of the "reusable" files are already in the translator.** P2 migrates those
-with history; copying them in P3 would land them twice and throw away exactly
-the provenance the `git filter-repo` pass exists to keep. Whole planned areas —
+**69 of the "reusable" files are already in the translator.** P2 migrates
+those, so copying them in P3 would land them twice, from two directions, with
+nothing saying which copy is the one under test. Whole planned areas —
 golden-set generation, reference builds — belong to P2 on this finding alone.
+(This argument was originally written as being about the provenance a
+`git filter-repo` pass keeps. That pass did not happen; the duplication is
+reason enough on its own, and is the reason that actually applied.)
 
 **"Reusable, domain-independent" was two claims, and most survivors were
 neither.** What remained after the overlap was mostly unit tests for ported
@@ -411,6 +450,15 @@ patch it did need is a hole in the contract, and the hole is the finding.
 Scrub → security review → archive the two source repositories read-only, with
 their author, since both are a student's → flip
 visibility → check that the SciRecast site's links resolve.
+
+That conversation with the author has a second item on it now. Neither source
+repository carries a licence file, and ~10k lines of one and the JAX backend of
+the other are in here under Apache-2.0. `CONTRIBUTING.md` says a maintainer
+relaying someone's work does not manufacture the author's certification, and
+that where it is needed and absent the thing to do is ask. This is that case,
+it is cheap to close while the archiving is being discussed anyway, and it is
+much more expensive after the flip. See "The history that was not carried"
+under P2 for how it surfaced.
 
 There is no pointer to repoint. SciRecast is a Jekyll site rather than a
 submodule umbrella, and its `index.md`, `engine.md` and `contribute.md` already

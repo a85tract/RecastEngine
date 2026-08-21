@@ -20,10 +20,24 @@ Work relayed from elsewhere
 ---------------------------
 
 Some of this repository was written in another repository and reached this one
-through a maintainer. Where a commit could carry the author along, it did, and
-git records them. Where the material was rewritten as it moved, the file names
-its source and this section names whose work it was, because a provenance line
-is not attribution and both are needed. See CONTRIBUTING.md.
+through a maintainer. No commit here carries an outside author: both relays
+below were rewritten as they moved, so the file names its source and this
+section names whose work it was, because a provenance line is not attribution
+and both are needed. See CONTRIBUTING.md.
+
+  recast/transform/numpy/, recast/fortran/, recast/verify/ and
+     recast/oracle/f2py.py  -- the translation pipeline, from pipeline/ in
+     CESM-language-translator. Written by second5t
+     <mouseisnotalwaysmouse@outlook.com>. translate.py became the NumPy
+     backend and its rule layers; extract_interface.py, extract_constants.py,
+     chunk.py and resolve_use.py became the Fortran frontend; notary.py,
+     highprec_verify.py and rwset.py became the three verifiers; gen_wrapper.py
+     and the build half of diff_driver.py became the f2py-golden oracle. The
+     analysis, the translation rules, the wrapper rules and the verification
+     arguments are theirs; what changed on the way in was the decomposition
+     into the plugin contract -- what had been one function became a Frontend,
+     a Transform, and Verifiers that decide separately -- and the removal of
+     the site paths.
 
   recast/transform/jax/  -- the JAX backend and its _f_* runtime, from
      13_jax_backend/jaxize.py and jax_shim.py in CESM-Agent-Produced-Scripts.
