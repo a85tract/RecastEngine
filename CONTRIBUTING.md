@@ -59,6 +59,34 @@ identity. The e-mail has to be the one you author with — a sign-off in someone
 else's name certifies nothing. Forgot it? `git rebase --signoff origin/main`
 and force-push.
 
+### When the work arrives through someone else
+
+Most of what lands here starts in a private repository someone else owns — the
+translator and the agent-produced collection are both a student's — and reaches
+this repository through a maintainer. That is deliberate: a single hand between
+private material and a public repository is what the hygiene gate and the
+disclosure ledger assume. It does not let that hand sign for the author.
+
+**Migrate with history wherever the material allows it.** A `git filter-repo`
+path rewrite keeps each commit's author, so the person who wrote the code is
+still recorded as having written it, with the maintainer as committer. That is
+the honest record and it is why P2 moves the pipeline that way rather than
+copying it.
+
+**When history cannot come along, say so in the file and in `NOTICE`.** P3's
+promotions were rewritten as they moved — de-site-ified, split, renamed — so no
+commit could carry them intact. Each promoted file names the source file in its
+header, and the receiving repository's `NOTICE` names whose work it was. A
+provenance line is not attribution; both are needed.
+
+**Sign-off follows authorship, not delivery.** `Signed-off-by` certifies the
+right to submit, and only the author can certify that. A maintainer relaying
+someone's work adds their own sign-off as the submitter, and does not
+manufacture one in the author's name; if the author's certification is needed
+and absent, ask for it rather than supply it. Where a commit is rewritten
+heavily enough that the maintainer is genuinely a co-author, `Co-authored-by`
+records that and both sign.
+
 **Why DCO and not a CLA.** A CLA buys the right to relicense later, and its
 price is that every contributor signs a legal document before their first patch
 — which is the wrong toll to charge the graduate students and domain scientists
