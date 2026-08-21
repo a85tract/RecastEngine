@@ -84,6 +84,21 @@ on:
   and lifting them verbatim out of the production build log, never hand-copied,
   is the capability neither half supplies yet.
 
+  Sharper than "a capability neither half supplies", and worth stating that
+  way: the tool's own docstring makes it a rule — *everything that can change
+  numerics must come verbatim from the production build log, never hand-copied
+  or chosen for harness convenience*. `DEFAULT_FLAGS` in `oracle/f2py.py` is
+  hand-picked, conservatively and with its reasoning written down, but
+  hand-picked. So this is not a feature the engine lacks; it is a rule the
+  engine's own source pipeline wrote down and the engine does not yet keep.
+
+  **Decided 2026-08-21: this arrives as a relay**, like the JAX backend and for
+  the same reason — it is developed in its author's repository and merged
+  across, not rewritten here from the outside. Which fixes the shape of the
+  eventual change: the compiler half lands beside `profiles.py`, the log-
+  reading half goes to the domain extension, and `NOTICE` gains the entry
+  before either does. Not work this repository starts.
+
 The other three are P4's, below. Ten more files share a filename with something
 in `pipeline/` or `tests/` while differing in content; P3's triage flags each
 and decides none.
