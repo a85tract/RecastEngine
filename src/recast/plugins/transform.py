@@ -14,11 +14,16 @@ Verifier's job, and keeping the two apart is what makes the gate meaningful.
 A Transform may be rule-driven (``deterministic = True``) or consult an
 ``AgentProvider`` (``deterministic = False``). Both produce only a ``Candidate``,
 never a ``Verdict`` -- an LLM's confidence in its own output is worth nothing at
-the gate. The two are placements of the same slot, and a recipe may run them in
-series: a rule Transform handles the bulk and defers the rest, an agentic
-Transform consumes that ``deferred`` list, and both feed the same blind gate.
-See ``docs/architecture.md`` for why the agentic placement makes the wall
-between Transform and Verifier more load-bearing, not less.
+the gate.
+
+The two are placements of the same slot, and they compose *inside* one
+Transform rather than across two stages: the rules run, whatever they refused
+is attempted through the ``AgentProvider``, and one Candidate comes out. A
+recipe declares exactly one transform stage and the runner refuses more,
+because a Unit has one Candidate -- a second stage's would replace the first's
+along with the ``deferred`` list that was the whole point of running them in
+that order. See ``docs/architecture.md`` for why the agentic placement makes
+the wall between Transform and Verifier more load-bearing, not less.
 """
 
 from __future__ import annotations

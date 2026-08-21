@@ -68,6 +68,23 @@ def test_the_plan_is_reproducible(recipe_case: Any, build_recipe: Any) -> None:
     assert first == second
 
 
+def test_it_declares_at_most_one_transform(recipe_case: Any, build_recipe: Any) -> None:
+    """A Unit has one Candidate, so a second transform stage does not compose --
+    it replaces, and what it replaces includes the ``deferred`` list the second
+    stage would have been there to consume. Composition happens inside a
+    Transform: rules first, an ``AgentProvider`` for what they refused, one
+    Candidate out."""
+    transforms = [
+        stage.plugin
+        for stage in build_recipe(recipe_case).stages(dict(recipe_case.config))
+        if stage.kind == "transform"
+    ]
+    assert len(transforms) <= 1, (
+        f"{recipe_case.name!r} declares {len(transforms)} transform stages "
+        f"({transforms}); all but the last would be discarded"
+    )
+
+
 def test_it_declares_the_executor_it_needs(recipe_case: Any, build_recipe: Any) -> None:
     """An Oracle or a Verifier is handed an executor, so the recipe must name one.
 

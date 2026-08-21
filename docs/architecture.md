@@ -140,9 +140,9 @@ would be indistinguishable from one reached on attempt 1 — a multiple-comparis
 problem the manifest has no way to disclose.
 
 Iteration belongs in three places instead, all of them outside the gate:
-`Candidate.deferred` handed from a rule Transform to an agentic one, a
-Transform's own loop against cheap checks before it emits, and improving the
-rules out of band, where one fix amortizes across the corpus.
+`Candidate.deferred` handed from the rules to the agentic placement within one
+Transform, a Transform's own loop against cheap checks before it emits, and
+improving the rules out of band, where one fix amortizes across the corpus.
 
 ## Two placements of the LLM
 
@@ -152,7 +152,7 @@ carries a `deterministic` flag; an agentic Transform sets it `False` and reaches
 the model through the `AgentProvider` boundary, so which model answers is a
 swappable plugin, not a hardcoded dependency.
 
-The two placements answer different questions, and a recipe picks per stage:
+The two placements answer different questions, and one Transform may hold both:
 
 | | rule Transform (`deterministic = True`) | agentic Transform (`deterministic = False`) |
 |---|---|---|
@@ -160,10 +160,41 @@ The two placements answer different questions, and a recipe picks per stage:
 | per-unit output | reproducible bit for bit | varies across runs |
 | pays off when | a construct recurs across a large corpus, so one rule amortizes | units are few or novel and no rule exists yet to amortize |
 
-They compose through `deferred`. A rule Transform handles the bulk and lists what
-it could not do; an agentic Transform consumes that list and attempts it; both
-emit a `Candidate` into the **same** gate, which judges them without knowing
-which produced what.
+They compose through `deferred`, and the composition is inside a Transform
+rather than across two of them. The rules handle the bulk and list what they
+could not do; the agentic placement consumes that list and attempts it; one
+`Candidate` comes out and reaches the gate, which judges it without knowing
+which half produced which line.
+
+Not two stages. A recipe declares exactly one transform stage and `run_recipe`
+refuses more, because a Unit has one Candidate: a second stage's would replace
+the first's, taking with it both the files it emitted and the `deferred` list
+the second stage was there to consume. What that costs is that a rule Transform
+and an agentic one cannot be mixed and matched from a recipe's config the way
+two verifiers can — the pairing is a property of the Transform, and an
+extension that wants a different one supplies a different Transform.
+
+**Who declares it is who the recipe names.** `deterministic` is read at plan
+time, off the registered plugin, and it is what decides whether the recipe needs
+a hard gate — so a transform that claimed determinism and then consulted a model
+would slip past that rule entirely. The rule is therefore that agenticness is
+declared by a class somebody wrote and registered, not switched on from a config
+file. The reference transform enforces it rather than asking: `NumpyTranslation`
+refuses a behaviour hook unless it was constructed `deterministic=False`, and
+the thing that constructs it that way is a `Transform` of your own carrying its
+own honest declaration.
+
+Two ways for a plugin to supply what the rules refused, and they differ in
+*when* they arrive rather than in what they are worth. **Data, before the run**:
+`config["patches"]` is a replacement worked out ahead of time — the model ran
+out of band, its output is now input, and the run stays reproducible bit for
+bit. Because it is known before rendering, it may add module-level imports.
+**Behaviour, during the run**: `config["deferred_handler"]` is consulted at the
+moment a block is refused, with the refusal in hand, so it sees what the rules
+saw instead of reconstructing it from a previous run's report. It cannot add
+imports — the module header is assembled before the subprograms are — and it
+makes the run non-deterministic, which is what the paragraph above is about.
+See `recast/transform/numpy/agentic.py`.
 
 **The agentic placement makes the wall higher, not lower.** A Transform never
 judges its own output; with an LLM in the loop this is doubly load-bearing,

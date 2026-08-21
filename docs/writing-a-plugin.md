@@ -113,6 +113,53 @@ produced this artifact. A transform that cannot be reconstructed cannot be
 trusted no matter what the verifier says, because the next run is a different
 artifact.
 
+**Declare it on a class of your own.** `deterministic` is read at plan time, off
+the plugin the recipe names, and it is what decides whether the recipe needs a
+hard gate. So agenticness cannot be switched on from a config file: a transform
+that claimed determinism and then consulted a model would go through the gate
+rule unseen. Wrapping the engine's transform is the shape — and is what the CESM
+extension already does for its tables:
+
+```python
+class AgenticTranslation(Transform):
+    name = "yourpkg.translate.agentic"
+    deterministic = False  # the claim the gate reads
+
+    def __init__(self) -> None:
+        self._engine = NumpyTranslation(deterministic=False)
+
+    def apply(self, unit, facts, config):
+        candidate = self._engine.apply(unit, facts, {**config, "deferred_handler": self._fill})
+        candidate.transform = self.name
+        return candidate
+```
+
+`NumpyTranslation` refuses a handler unless it was constructed that way, so the
+rule is a mechanism rather than a convention.
+
+## Filling what the rules refused
+
+Two ways in, and they are not duplicates — they differ in when they arrive.
+
+**Data, before the run.** `config["patches"]` maps `"subprogram/block"` to a
+replacement worked out ahead of time. The model, if there was one, ran out of
+band; its output is now input, so the run stays reproducible bit for bit. Known
+before rendering starts, so it may add module-level imports.
+
+**Behaviour, during the run.** `config["deferred_handler"]` is a callable
+consulted at the moment a block is refused. It receives a `DeferredSite` — the
+Fortran, the refusal, the line span, the subprogram's name table — so it sees
+what the rules saw rather than reconstructing it from a previous run's report.
+It returns the body to emit plus whatever provenance it wants recorded, or
+`None` to leave the site deferred. It cannot add imports, because the module
+header is assembled before the subprograms are.
+
+A handler that raises, or answers with something that is not source lines,
+leaves its site deferred with the reason recorded on the block. One block's
+handler failing is not the run's death, and not a silence either.
+
+See `recast/transform/numpy/agentic.py` for the full contract.
+
 ## Scanners specifically
 
 `Finding.access` defaults to `EMBARGOED` and `disclosure` to `PLAUSIBLE`. Do not

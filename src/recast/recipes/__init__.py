@@ -65,8 +65,12 @@ class RefactorRecipe(Recipe):
         return [
             Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
-            Stage("transform", "refactor.adapters"),
-            Stage("transform", "refactor.patches"),
+            # One transform, one Candidate: the adapters and the ordered
+            # patches are halves of a single carve-out, and a Candidate carries
+            # both -- ``files`` for what is generated, ``patches`` for what is
+            # edited. Splitting them across two stages would have thrown the
+            # first half away, since a Unit has one Candidate.
+            Stage("transform", "refactor.carve"),
             Stage("verifier", "static.no-numerics-moved", gate=True),
             Stage("oracle", "pinned-run", config={"ranks": config.get("ranks", 512)}),
             Stage("verifier", "fullmodel.bitwise", gate=True),
