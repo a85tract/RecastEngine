@@ -663,13 +663,40 @@ def test_each_store_reports_what_it_actually_recorded(tmp_path: Path) -> None:
     assert details == ["1 verdict(s) recorded", "2 finding(s) recorded"]
 
 
-def test_the_finding_store_is_not_rooted_where_the_evidence_store_is(tmp_path: Path) -> None:
-    """A FindingStore may not share the evidence directory. Findings default to
-    ``Access.EMBARGOED``, and ``FilesystemFindingStore`` refuses a root that is
-    readable by anyone but its owner -- which the evidence directory is."""
+def test_the_finding_store_is_not_rooted_inside_the_project_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not merely a different directory from the evidence store -- a different
+    tree. A findings directory under the project root is ``git add -A`` away
+    from publishing an embargoed record, and ``0700`` does not stop that."""
+    monkeypatch.setenv("RECAST_FINDINGS_HOME", str(tmp_path / "elsewhere"))
     run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
-    assert MemoryFindingStore.roots[0].name == "findings"
-    assert MemoryFindingStore.roots[0].parent == tmp_path / WORKSPACE_DIRNAME
+    root = MemoryFindingStore.roots[0]
+    assert not root.is_relative_to(tmp_path / WORKSPACE_DIRNAME)
+    assert root.parent == tmp_path / "elsewhere"
+
+
+def test_two_projects_do_not_share_a_findings_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keyed by absolute path, not by directory name: two clones of one
+    repository are two projects here."""
+    monkeypatch.setenv("RECAST_FINDINGS_HOME", str(tmp_path / "elsewhere"))
+    first, second = tmp_path / "a" / "proj", tmp_path / "b" / "proj"
+    for root in (first, second):
+        root.mkdir(parents=True)
+        run_recipe(FakeRecipe(_both_stores_stages()), root, registry=_audit_registry())
+    # One construction per unit per run, so compare the distinct roots.
+    assert len(set(MemoryFindingStore.roots)) == 2
+    assert all(r.name.startswith("proj-") for r in MemoryFindingStore.roots)
+
+
+def test_the_evidence_store_still_lives_beside_the_source(tmp_path: Path) -> None:
+    """Only findings move. Evidence is meant to be committed, and the summary
+    that indexes it is written to be diffed in CI."""
+    run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
+    assert MemoryStore.written  # the evidence store ran
+    assert (tmp_path / WORKSPACE_DIRNAME).exists()
 
 
 def test_the_summary_says_nothing_about_findings(tmp_path: Path) -> None:

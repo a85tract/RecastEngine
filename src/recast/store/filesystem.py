@@ -54,13 +54,40 @@ class FilesystemEvidenceStore(EvidenceStore):
         raise NotImplementedError("P2: index manifests by unit/recipe/confidence")
 
 
+def _refuse_a_checkout(root: Path) -> None:
+    """Refuse a root inside a git working tree.
+
+    This is the accident ``FilesystemFindingStore`` was written to prevent, and
+    for a long time the only check standing in front of it was the permission
+    one -- which does not catch it. A ``0700`` directory inside a repository
+    passes every permission check there is and still reaches a remote on the
+    next push, and by then the record is in the history rather than in a file
+    someone can delete.
+
+    Walks the parents instead of asking git: the engine's rule is that nothing
+    leaves the process without an ``Executor``, and ``.git`` is a *file* rather
+    than a directory inside a worktree or a submodule -- the case a plain
+    ``is_dir()`` would wave through. Checked before the directory is created,
+    so a refusal does not leave one behind.
+    """
+    resolved = root.expanduser().resolve()
+    for directory in (resolved, *resolved.parents):
+        if (directory / ".git").exists():
+            raise RecastError(
+                f"{root} is inside the git working tree at {directory}; refusing to store "
+                "embargoed findings where a commit can reach them. Point RECAST_FINDINGS_HOME "
+                "or the store's store_root at a directory outside any checkout."
+            )
+
+
 @dataclass
 class FilesystemFindingStore(FindingStore):
     """A local stand-in for Sec-Track.
 
-    Refuses to operate on a world-readable directory. That check is here because
-    the realistic accident is not a wrong access class -- it is writing an
-    embargoed finding into a repository checkout that later gets pushed.
+    Refuses two roots, because the realistic accident has two shapes and a
+    wrong access class is neither of them: a directory the rest of the machine
+    can read, and a directory inside a repository checkout that later gets
+    pushed.
     """
 
     root: Path
@@ -68,6 +95,7 @@ class FilesystemFindingStore(FindingStore):
     max_access: Access = Access.EMBARGOED
 
     def __post_init__(self) -> None:
+        _refuse_a_checkout(self.root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.root.stat().st_mode & 0o077:
             raise RecastError(
