@@ -20,10 +20,10 @@ two are the domain extension's, by the maintainer's decision (2026-08-21), and
 for two different reasons. ``dynamic`` (sanitizer builds) needs a compiler and
 a build, and which compiler a CAM build expects is domain knowledge.
 ``audit`` (LLM source audit) is an advanced capability that stays out of the
-public repository. Both remain declared by the ``audit`` recipe as optional
-stages, which is how an out-of-tree plugin attaches: ``recast plan`` reports
-them as ``opt`` until the extension is installed, and never as a stub. The
-``adversarial`` adjudicator went with them -- it is Sec-Track's LLM refute
-step, not CC-Test's -- and the shipped ``audit`` recipe gates the way CC-Test
-does instead: on what the scanners found, at each scanner's ``blocks_on``.
+public repository -- and so do their stage names: the ``audit`` recipe here
+declares only what this repository ships, and the extension carries its own
+recipe for the rest, the way it carries ``translate-cam``. The ``adversarial``
+adjudicator went the same way -- it is Sec-Track's LLM refute step, not
+CC-Test's -- and the shipped ``audit`` recipe gates the way CC-Test does
+instead: on what the scanners found, at each scanner's ``blocks_on``.
 """

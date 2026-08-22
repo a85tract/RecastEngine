@@ -90,7 +90,7 @@ Two names, and they are allowed to differ.
 
 The **entry-point name** is the address: what a recipe or a config asks for.
 Dotted and namespaced -- `translate.numpy`, `port.jax`, `differential.bitexact`,
-`audit.llm` -- and unique per kind, which the registry enforces by refusing a
+`scan.mytool` -- and unique per kind, which the registry enforces by refusing a
 silent override.
 
 The **`name` attribute** is the identity of the implementation: what answered.

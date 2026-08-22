@@ -115,7 +115,7 @@ def test_valid_json_that_is_not_sarif_is_unavailable(tmp_path: Path) -> None:
     report = tmp_path / "r.sarif"
     report.write_text(json.dumps({"error": "rate limited"}))
     with pytest.raises(ScannerUnavailable, match="no SARIF 'runs' array"):
-        load(report, scanner="audit.llm")
+        load(report, scanner="conformance.llm-shaped")
 
 
 def test_a_failed_invocation_is_unavailable_even_with_zero_results() -> None:
@@ -124,7 +124,7 @@ def test_a_failed_invocation_is_unavailable_even_with_zero_results() -> None:
     "crashed" arrives looking like "clean"."""
     log = {"runs": [{"invocations": [{"executionSuccessful": False}], "results": []}]}
     with pytest.raises(ScannerUnavailable, match="failed invocation"):
-        findings_from(log, unit="u:a", scanner="audit.llm")
+        findings_from(log, unit="u:a", scanner="conformance.llm-shaped")
 
 
 def test_a_failed_invocation_says_why_when_the_tool_said() -> None:
@@ -139,7 +139,7 @@ def test_a_failed_invocation_says_why_when_the_tool_said() -> None:
         ]
     }
     with pytest.raises(ScannerUnavailable, match="no API key"):
-        findings_from(log, unit="u:a", scanner="audit.llm")
+        findings_from(log, unit="u:a", scanner="conformance.llm-shaped")
 
 
 def test_an_absent_invocation_is_not_a_failed_one() -> None:

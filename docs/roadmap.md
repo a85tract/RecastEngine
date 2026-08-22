@@ -684,8 +684,12 @@ is domain knowledge, so only the extension can say. `audit.llm` goes there too,
 for a different reason — it is an advanced capability that stays out of the
 public repository; and `CC-Test` could not have supplied it anyway, since the
 script only invokes `$REPO/.github/scripts/ai_audit.py`, which lives in the
-audited repository. Both stay declared by the `audit` recipe as optional
-stages, which is exactly how an out-of-tree plugin attaches.
+audited repository. Neither is named by the public `audit` recipe, not even as an
+optional slot — the maintainer's follow-up the same day, on seeing `audit.llm`
+in `recast plan`: a stage name is part of the repository, and a public recipe
+advertising a slot for a capability it does not ship is the thing the rule is
+about. The extension carries its own recipe for them, as it does for
+`translate-cam`.
 
 **The `audit` recipe is CC-Test's shape now, decided by the maintainer
 2026-08-21.** It had gated on an `adversarial` adjudicator, which turned out to

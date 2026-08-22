@@ -164,32 +164,28 @@ class AuditRecipe(Recipe):
     extension's deeper recipe; the engine keeps the ``Adjudicator`` contract
     and ships no implementation of it.
 
-    ``secret`` and ``composition`` are in-tree. ``audit.llm`` and
-    ``dynamic.asan`` are optional because they arrive from the domain
-    extension, not because they matter less: the LLM audit is an advanced
-    capability kept out of the public repository, and the sanitizer build
-    needs a compiler the domain extension knows and this engine does not.
-    Neither is a gate here, since an optional gate is a contradiction; the
-    extension's recipe gates on them. ``config["range"]`` scopes the history
-    scanner to a revision range, which is what the pre-push hook in
-    ``tools/`` passes.
+    This recipe declares exactly what this repository ships, and nothing it
+    does not. The other two of CC-Test's four families -- the LLM source
+    audit and the sanitizer build -- are the domain extension's, and it
+    carries its own recipe for them the way it carries ``translate-cam``. A
+    public recipe naming an optional slot for them would be advertising a
+    capability this repository does not have; the maintainer's rule is that
+    the LLM audit stays out of the public repository, and a stage name is
+    part of the repository. ``config["range"]`` scopes the history scanner to
+    a revision range, which is what the pre-push hook in ``tools/`` passes.
     """
 
     name = "audit"
     summary = "Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does."
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
-        stages = [
+        return [
             Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("scanner", "secret", gate=True),
             Stage("scanner", "composition", gate=True),
-            Stage("scanner", "audit.llm", optional=True),
+            Stage("store", "fs-findings"),
         ]
-        if config.get("dynamic"):
-            stages.append(Stage("scanner", "dynamic.asan", optional=True))
-        stages.append(Stage("store", "fs-findings"))
-        return stages
 
 
 BUILTIN: dict[str, type[Recipe]] = {
