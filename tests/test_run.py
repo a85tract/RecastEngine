@@ -1208,7 +1208,7 @@ def test_missing_tools_names_the_binary_before_the_run(tmp_path: Path) -> None:
     stages = _audit_stages()
     stages[2] = Stage("scanner", "fake.tooled")
     found = missing_tools(stages, {}, registry=_subject_registry())
-    assert found == {"fake.tooled": "definitely-not-a-real-binary is not on PATH"}
+    assert found == {"fake.tooled": "definitely-not-a-real-binary not on PATH"}
 
 
 def test_missing_tools_honours_the_operators_override(tmp_path: Path) -> None:
@@ -1252,4 +1252,4 @@ def test_plan_reports_a_missing_tool_beside_the_stage(capsys: pytest.CaptureFixt
     assert args.func(args) == 1
     out = capsys.readouterr().out
     assert "[????] scanner      fake.tooled" in out
-    assert "definitely-not-a-real-binary is not on PATH" in out
+    assert "definitely-not-a-real-binary not on PATH" in out
