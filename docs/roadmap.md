@@ -534,6 +534,45 @@ to `run.py` to get past each previous one, reverted rather than committed,
 because the patch is not the deliverable — the list is. Nothing in this
 repository changed to produce it.
 
+### Findings 1–4 closed, 2026-08-21
+
+All four were in `run.py`, and closing them is one commit. The runner now walks
+`scanner` and `adjudicator` stages, picks a store's branch from the store's own
+kind rather than from the stage's position, and asks for an executor only from a
+recipe that materializes an oracle or awards a verdict — the condition
+`Stage`'s docstring already stated and `conformance/test_recipes.py` already
+read. `recast run audit` reaches every stage it declares.
+
+Four decisions in that are not forced by the findings, and are the part worth
+arguing with:
+
+- **A confirmed finding fails an adjudicator declared as a gate.** The
+  alternative — report and pass — is what the hole produced, and an audit that
+  says what it found and passes anyway is a report. `hpc-devsecops` exits
+  non-zero on findings; this is the same answer.
+- **A stage kind the runner does not walk is refused before the run starts.**
+  Not skipped during it: `skipped` is the word an uninstalled optional plugin
+  gets, and reusing it is what made installed-and-unwalked invisible in the
+  first place. The refusal names the kind, and runs before the
+  plugins-are-registered check, because a kind nothing has heard of has no
+  registered plugins either and would otherwise be reported as a missing one.
+- **`agent` and `recipe` are refused as stages rather than ignored.** They are
+  registered kinds, so a recipe can name one; neither is a step. An `agent` is
+  consulted by a non-deterministic Transform, and a `recipe` is what the thing
+  *is*. Declaring either is a misunderstanding worth a message.
+- **The run summary still says nothing about findings, including how many.**
+  That file is written to be committed. A `Finding` defaults to
+  `Access.EMBARGOED`, and a count is a statement about embargoed material. The
+  `FindingStore` holds them, at `0700`.
+
+**Findings 5, 6 and 7 are open, and they are the ones the phase is actually
+about.** 1–4 were a runner that did not implement a contract everything else had
+already agreed on; the remainder are the contract being wrong. A Scanner still
+cannot distinguish a clean scan from one that could not run, still cannot say
+what it is the scanner *of* when the subject is a repository rather than a Unit,
+and `Adjudicator` still ships in `plugins/scanner.py`. None of those is fixable
+in `run.py`, which is why closing four of seven does not close the phase.
+
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 
