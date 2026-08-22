@@ -149,38 +149,46 @@ class PortRecipe(Recipe):
 
 
 class AuditRecipe(Recipe):
-    """The cyber half of CC-Test. Produces Findings, not Candidates.
+    """The cyber half of CC-Test, in CC-Test's shape. Findings, not Candidates.
 
-    Runs against any git repository -- ported or legacy, CESM or not. Confirmed
-    findings route to a FindingStore under embargo; nothing here writes to the
-    public evidence store.
+    Runs against any git repository -- ported or legacy, CESM or not. Findings
+    route to a FindingStore under embargo; nothing here writes to the public
+    evidence store.
+
+    The gates are the scanners themselves. ``hpc-devsecops`` has no
+    adjudication step: a check that found something is the verdict, each at
+    its own bar -- any secret, a Critical CVE -- and every check runs before
+    anything blocks, so the operator gets the whole list. The adversarial
+    adjudicator this recipe used to gate on is Sec-Track's discovery-loop
+    step, LLM-driven, and belongs with the other LLM stage in the domain
+    extension's deeper recipe; the engine keeps the ``Adjudicator`` contract
+    and ships no implementation of it.
 
     ``secret`` and ``composition`` are in-tree. ``audit.llm`` and
     ``dynamic.asan`` are optional because they arrive from the domain
     extension, not because they matter less: the LLM audit is an advanced
     capability kept out of the public repository, and the sanitizer build
     needs a compiler the domain extension knows and this engine does not.
-    ``config["range"]`` scopes the history scanner to a revision range, which
-    is what the pre-push hook in ``tools/`` passes.
+    Neither is a gate here, since an optional gate is a contradiction; the
+    extension's recipe gates on them. ``config["range"]`` scopes the history
+    scanner to a revision range, which is what the pre-push hook in
+    ``tools/`` passes.
     """
 
     name = "audit"
-    summary = "Secret scan, SBOM/CVE/VEX, LLM source audit, sanitizer builds."
+    summary = "Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does."
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         stages = [
             Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
-            Stage("scanner", "secret"),
-            Stage("scanner", "composition"),
+            Stage("scanner", "secret", gate=True),
+            Stage("scanner", "composition", gate=True),
             Stage("scanner", "audit.llm", optional=True),
         ]
         if config.get("dynamic"):
             stages.append(Stage("scanner", "dynamic.asan", optional=True))
-        stages += [
-            Stage("adjudicator", "adversarial", gate=True),
-            Stage("store", "fs-findings"),
-        ]
+        stages.append(Stage("store", "fs-findings"))
         return stages
 
 

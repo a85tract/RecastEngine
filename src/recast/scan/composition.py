@@ -57,6 +57,8 @@ class CompositionScanner(Scanner):
     subject = "repository"
     tool = ("syft", "grype")
     needs_build = False
+    blocks_on = Severity.CRITICAL
+    """hpc-devsecops blocks on Critical alone; High is counted and reported."""
 
     def scan(
         self,

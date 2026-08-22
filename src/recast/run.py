@@ -45,6 +45,7 @@ from recast.model import (
     Facts,
     Finding,
     OracleRef,
+    Severity,
     Unit,
     Verdict,
 )
@@ -389,6 +390,14 @@ def run_recipe(
             unit_run.outcomes.append(outcome)
             if stage.kind == "oracle" and outcome.status == "ok":
                 unit_run.oracle = oracle_cache[outcome.detail]
+            # A failed scanner gate fails the unit but does not stop it. The
+            # stop exists so that an hour is not spent verifying a candidate
+            # that already failed; scanners are independent checks with nothing
+            # downstream that needs a clean one, and hpc-devsecops runs every
+            # check before it blocks so the operator gets the whole list rather
+            # than the first item of it.
+            if outcome.status == "failed" and stage.kind == "scanner":
+                continue
             if outcome.status == "failed" and (stage.gate or stage.kind in ("transform", "oracle")):
                 unit_run.stopped_by = stage.plugin
                 # Fail fast, but not silently: the store stages still run, so
@@ -534,7 +543,18 @@ def _walk_stage(
         except ScannerUnavailable as error:
             return _incomplete(stage, str(error), waived)
         unit_run.findings.extend(found)
-        return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
+        if not stage.gate:
+            return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
+        # A scanner declared as a gate is hpc-devsecops's shape: what it found
+        # is the verdict, at the bar the scanner declares for its own tool.
+        bar = Severity(config.get("blocks_on", scanner.blocks_on))
+        blocking = [f for f in found if _SEVERITY_ORDER[f.severity] >= _SEVERITY_ORDER[bar]]
+        return StageOutcome(
+            stage.kind,
+            stage.plugin,
+            "failed" if blocking else "ok",
+            f"{len(found)} finding(s), {len(blocking)} at or above {bar.value}",
+        )
 
     if stage.kind == "adjudicator":
         if not unit_run.findings:
@@ -657,6 +677,9 @@ _NOT_STAGES = frozenset({"agent", "recipe"})
 # Kinds whose plugins take an ``Executor`` argument. A recipe declaring any of
 # them declares an executor; ``Stage``'s docstring says the same.
 _HANDED_AN_EXECUTOR = frozenset({"oracle", "verifier", "scanner", "adjudicator"})
+
+_SEVERITY_ORDER = {s: i for i, s in enumerate(Severity)}
+"""INFO < LOW < MEDIUM < HIGH < CRITICAL, in the order ``Severity`` declares them."""
 
 
 def _repository_scanners(stages: list[Stage], registry: Registry) -> frozenset[str]:

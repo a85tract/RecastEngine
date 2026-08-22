@@ -687,6 +687,19 @@ script only invokes `$REPO/.github/scripts/ai_audit.py`, which lives in the
 audited repository. Both stay declared by the `audit` recipe as optional
 stages, which is exactly how an out-of-tree plugin attaches.
 
+**The `audit` recipe is CC-Test's shape now, decided by the maintainer
+2026-08-21.** It had gated on an `adversarial` adjudicator, which turned out to
+be two repositories spliced: the scanners are `hpc-devsecops`'s daily gate, the
+adjudication is Sec-Track's research loop — LLM agents told to refute each
+finding, with a CONFIRMED / PLAUSIBLE / DOWNGRADED / REFUTED schema — and the
+daily gate never used it. It is LLM-driven, so by the same rule as `audit.llm`
+it belongs in the domain extension, and a public recipe gating on a plugin the
+public cannot install is a recipe the public cannot run. So the scanners are
+the gates, at each one's own `blocks_on` (`secret` on anything, `composition`
+on Critical, exactly the script's two bars), every check runs before anything
+blocks, and the engine keeps the `Adjudicator` contract with no implementation.
+`recast run audit` runs end to end from the engine alone for the first time.
+
 7 is `recast/plugins/adjudicator.py`. `from recast.plugins.adjudicator import
 Adjudicator` works, which is the whole fix.
 
