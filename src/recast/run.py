@@ -852,7 +852,17 @@ def _build_store(factory: Any, config: dict[str, Any]) -> Any:
 
 
 def _store_config(config: dict[str, Any], default_root: Path) -> dict[str, Any]:
+    """What a store's constructor sees: its own keys, and a resolved root.
+
+    A store is the one plugin constructed inside the walk, so the per-call
+    facts ``call_config`` adds -- ``root``, ``range`` -- arrive here and have
+    to be taken back out. ``range`` was not, and the first pre-push hook
+    invocation with a real range was what found it: a constructor given a
+    keyword it has no parameter for does not skip the key, it refuses to
+    construct.
+    """
     prepared = dict(config)
+    prepared.pop("range", None)
     root = Path(prepared.pop("root", "."))
     store_root = Path(prepared.pop("store_root", default_root))
     if not store_root.is_absolute():
