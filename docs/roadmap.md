@@ -909,6 +909,19 @@ click. Clause 2 is not satisfiable today for a reason outside this repository �
 both workflows are `workflow_dispatch` only while the Actions allowance is
 exhausted, so nothing has run on a runner since 2026-08-19.
 
+**Clause 3 is met: the review is written down, as of 2026-08-21.**
+`docs/security-review.md`, to the standard above — every surface concluded
+on, four defects fixed with a test each, the operator-is-the-boundary
+decisions recorded per surface so nobody re-finds them. Three of the four
+defects were the code under examination reaching a place only the operator
+should: a finding's uid used as a filename, a Fortran character initializer
+emitted as Python source, a declared extent handed to `eval`. All three were
+in paths written or first exercised this week, which the review takes as its
+own argument for being repeated whenever a new kind of input starts flowing.
+Two influences of the audited repository on its own audit — its VEX and its
+`.gitleaks.toml` — are kept as `hpc-devsecops` has them and recorded as
+decisions rather than defects.
+
 **Clause 1 is met: no case is open, as of 2026-08-20.** The one that was — the
 extension's name in git history, which would have needed a rewrite of every
 hash in the repository — is cleared rather than executed, because the fact it

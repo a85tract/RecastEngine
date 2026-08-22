@@ -50,6 +50,27 @@ a gate says otherwise."""
 INTEGER_TEXT = re.compile(r"-?\s*\d+")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 CHARACTER_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _character_literal(fortran: str) -> str:
+    """A Fortran character constant as a Python string literal.
+
+    This was ``text.replace('"', "'")`` -- the Fortran spelling emitted
+    verbatim with its quotes swapped -- which is wrong twice. A
+    double-quoted constant with an apostrophe in it became a Python syntax
+    error; and one with ``'; import os; ...`` in it became a statement
+    sequence in a module the verifier imports. The source under translation
+    is the input this engine takes from other people, so the second one is
+    an injection, found by the security review on 2026-08-21.
+
+    ``repr`` of the *value* is what ``expressions.py`` already does for the
+    same constant in an expression, and it cannot be escaped. The value is
+    the text between the quotes with Fortran's doubled-quote escape undone.
+    """
+    quote = fortran[0]
+    return repr(fortran[1:-1].replace(quote * 2, quote))
+
+
 ARRAY_TEXT = re.compile(r"\(/.*?/\)", re.S)
 DIVISION_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?\s*/\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?")
 MARKER = re.compile(r"^    # (B\d{3}) <- ")
@@ -249,7 +270,7 @@ class Modules:
             base = expression.replace(" ", "").split("_")[0].replace("d", "e")
             return f"np.float64('{base}')"
         if CHARACTER_TEXT.fullmatch(str(state["init_expr"]).strip()):
-            return str(state["init_expr"]).strip().replace('"', "'")
+            return _character_literal(str(state["init_expr"]).strip())
         if expression == "null()":
             return "None  # pointer, null-init"
         if re.fullmatch(r"huge\(1\)", expression):
