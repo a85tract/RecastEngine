@@ -51,6 +51,10 @@ for flag in {flags!r}:
     if report is not None:
         break
 
+# The `-o format=path` idiom (syft, grype): the path is after the '='.
+if report is not None and "=" in report:
+    report = report.split("=", 1)[1]
+
 payload = {payload!r}
 if report is not None and payload is not None:
     with open(report, "w") as handle:

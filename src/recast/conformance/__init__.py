@@ -124,12 +124,21 @@ class ScannerCase:
     A scanner that wraps nothing leaves ``tool`` None, and those checks skip by
     name rather than passing -- which is the arrangement that makes them useful
     on the day one does wrap something.
+
+    ``tool`` defaults to the plugin's own declaration. ``fakes`` is for a
+    scanner whose tool does not write SARIF to a report path -- grype answers
+    in its own JSON on stdout, syft writes an SBOM -- and is called with a
+    directory to populate and one of ``"clean"``, ``"garbage"``, ``"one"``:
+    fakes that scan clean, that emit unparseable output, and that report
+    exactly one result. Absent, the suite writes a SARIF-speaking fake of
+    ``tool`` itself.
     """
 
     name: str
     build: Callable[[], Scanner] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
-    tool: str | None = None
+    tool: str | tuple[str, ...] | None = None
+    fakes: Callable[[Path, str], None] | None = None
 
 
 @dataclass(frozen=True)

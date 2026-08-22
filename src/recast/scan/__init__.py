@@ -15,9 +15,9 @@ that script was ported -- it is shell, this is Python -- but the decisions about
 what to run, what to read back and what its silence is allowed to mean are
 theirs, and ``NOTICE`` says so.
 
-One of the four families ships today. ``composition`` (syft/grype),
-``audit`` (LLM source audit) and ``dynamic`` (sanitizer builds) are declared by
-the ``audit`` recipe and refused by name at ``recast plan`` until they exist,
-which is the honest state: a stub that registers and raises is worse than an
-absence the runner can report.
+Two of the four families ship today: ``secret`` and ``composition``. ``audit``
+(LLM source audit) and ``dynamic`` (sanitizer builds) are declared by the
+``audit`` recipe and refused by name at ``recast plan`` until they exist, which
+is the honest state: a stub that registers and raises is worse than an absence
+the runner can report.
 """

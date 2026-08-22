@@ -75,6 +75,7 @@ numpy-anchor = "recast.oracle.numpy_anchor:factory"
 
 [project.entry-points."recast.scanners"]
 secret = "recast.scan.secret:factory"
+composition = "recast.scan.composition:factory"
 
 [project.entry-points."recast.executors"]
 local = "recast.executors.local:factory"

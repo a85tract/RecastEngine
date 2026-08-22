@@ -691,13 +691,18 @@ def missing_tools(
         if stage.plugin not in registry.names(stage.kind):
             continue
         plugin = registry.get(stage.kind, stage.plugin)()
-        tool = getattr(plugin, "tool", None)
-        if not tool:
+        declared = getattr(plugin, "tool", None)
+        if not declared:
             continue
+        tools = (declared,) if isinstance(declared, str) else tuple(declared)
         stage_config = {**stage.config, **config.get("stages", {}).get(stage.plugin, {})}
-        binary = stage_config.get(tool, tool)
-        if shutil.which(binary) is None:
-            out[stage.plugin] = f"{binary} is not on PATH"
+        absent = [
+            stage_config.get(tool, tool)
+            for tool in tools
+            if shutil.which(stage_config.get(tool, tool)) is None
+        ]
+        if absent:
+            out[stage.plugin] = f"{' and '.join(absent)} not on PATH"
     return out
 
 
