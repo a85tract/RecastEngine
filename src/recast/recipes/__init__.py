@@ -154,6 +154,14 @@ class AuditRecipe(Recipe):
     Runs against any git repository -- ported or legacy, CESM or not. Confirmed
     findings route to a FindingStore under embargo; nothing here writes to the
     public evidence store.
+
+    ``secret`` and ``composition`` are in-tree. ``audit.llm`` and
+    ``dynamic.asan`` are optional because they arrive from the domain
+    extension, not because they matter less: the LLM audit is an advanced
+    capability kept out of the public repository, and the sanitizer build
+    needs a compiler the domain extension knows and this engine does not.
+    ``config["range"]`` scopes the history scanner to a revision range, which
+    is what the pre-push hook in ``tools/`` passes.
     """
 
     name = "audit"

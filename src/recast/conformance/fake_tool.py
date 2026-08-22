@@ -37,6 +37,9 @@ _STUB = '''\
 import sys
 
 argv = sys.argv[1:]
+if {record!r}:
+    with open({record!r}, "w") as handle:
+        handle.write("\\n".join(argv))
 report = None
 for flag in {flags!r}:
     if flag in argv:
@@ -76,12 +79,17 @@ def fake_tool(
     exit_code: int = 0,
     stderr: str = "",
     report_flags: tuple[str, ...] = ("--report-path", "-o", "--output"),
+    record_argv: Path | None = None,
 ) -> Path:
     """Write an executable ``name`` into ``directory`` and return its path.
 
     It writes ``sarif`` (or the raw ``payload``) to whichever path follows one
     of ``report_flags`` in its argv, falling back to stdout when the caller's
     tool does not take one, and exits with ``exit_code``.
+
+    ``record_argv`` names a file the fake writes its argv to, one item per
+    line, for a test that needs to see what the scanner asked for -- a
+    revision range, a VEX file -- rather than only what came back.
 
     ``payload`` is deliberately a string rather than only a document, because
     the case worth checking most is the one a document cannot express: output
@@ -100,6 +108,7 @@ def fake_tool(
             payload=body,
             stderr=stderr,
             exit_code=exit_code,
+            record=str(record_argv) if record_argv else "",
         )
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

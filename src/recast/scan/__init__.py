@@ -15,9 +15,12 @@ that script was ported -- it is shell, this is Python -- but the decisions about
 what to run, what to read back and what its silence is allowed to mean are
 theirs, and ``NOTICE`` says so.
 
-Two of the four families ship today: ``secret`` and ``composition``. ``audit``
-(LLM source audit) and ``dynamic`` (sanitizer builds) are declared by the
-``audit`` recipe and refused by name at ``recast plan`` until they exist, which
-is the honest state: a stub that registers and raises is worse than an absence
-the runner can report.
+Two of the four families ship here: ``secret`` and ``composition``. The other
+two are the domain extension's, by the maintainer's decision (2026-08-21), and
+for two different reasons. ``dynamic`` (sanitizer builds) needs a compiler and
+a build, and which compiler a CAM build expects is domain knowledge.
+``audit`` (LLM source audit) is an advanced capability that stays out of the
+public repository. Both remain declared by the ``audit`` recipe as optional
+stages, which is how an out-of-tree plugin attaches: ``recast plan`` reports
+them as ``opt`` until the extension is installed, and never as a stub.
 """

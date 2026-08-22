@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Fail-closed pre-push hook: run the audit recipe over exactly what this push
+# would publish, and refuse the push on a finding or an incomplete check.
+#
+# The shape is hpc-devsecops's hooks/pre-push (CESM-CC-Test, Chien-Wei Huang):
+# one range per ref, computed the way git itself sees the push. Git supplies:
+#   argv:  remote-name remote-url
+#   stdin: local-ref local-sha remote-ref remote-sha   (one line per ref)
+#
+# Exit codes are `recast run`'s: 2 incomplete, 1 findings, 0 clean. Git treats
+# any non-zero as "do not push". Emergency bypass: `git push --no-verify`.
+#
+# RECAST_BIN names the recast executable if it is not on PATH.
+
+set -uo pipefail
+
+REMOTE_NAME="${1:-origin}"
+REPO="$(git rev-parse --show-toplevel)" || exit 2
+RECAST="${RECAST_BIN:-recast}"
+ZERO=0000000000000000000000000000000000000000
+
+if ! command -v "$RECAST" >/dev/null 2>&1; then
+  echo "recast pre-push: '$RECAST' not found -- blocking push" >&2
+  echo "Activate the environment that has recast, or set RECAST_BIN." >&2
+  exit 2
+fi
+
+checked=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  [ "$local_sha" = "$ZERO" ] && continue  # deletion: no new content
+  checked=1
+
+  if [ "$remote_sha" != "$ZERO" ]; then
+    range="$remote_sha..$local_sha"
+  else
+    # A new branch. Scan what the remote does not already have: everything
+    # since the merge-base with the remote's HEAD, or -- with no remote HEAD
+    # to compare against -- everything.
+    remote_head="refs/remotes/$REMOTE_NAME/HEAD"
+    base="$(git merge-base "$local_sha" "$remote_head" 2>/dev/null || true)"
+    if [ -n "$base" ]; then
+      range="$base..$local_sha"
+    else
+      empty_tree="$(git hash-object -t tree /dev/null)"
+      range="$empty_tree..$local_sha"
+    fi
+  fi
+
+  echo "recast pre-push: checking $local_ref -> $remote_ref ($range)"
+  "$RECAST" run audit "$REPO" --range "$range"
+  rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+done
+
+[ "$checked" -eq 1 ] || echo "recast pre-push: no content-producing refs in this push"
+exit 0

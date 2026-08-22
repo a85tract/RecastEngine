@@ -314,8 +314,14 @@ def run_recipe(
     def call_config(stage: Stage) -> dict[str, Any]:
         """Per-call stages also learn where the source tree is; a plugin that
         is *constructed* from config (executor, frontend, store) takes paths
-        per call instead, so its constructor sees only its own keys."""
-        return {"root": root, **stage_config(stage)}
+        per call instead, so its constructor sees only its own keys.
+
+        ``range`` rides along the same way: a revision range is a fact about
+        the invocation -- this push, these commits -- and a scanner that can
+        scope to one reads it, while one that cannot (composition describes
+        the whole tree regardless, by design) ignores it."""
+        invocation = {"range": config["range"]} if config.get("range") else {}
+        return {"root": root, **invocation, **stage_config(stage)}
 
     # An executor stage is not a step: it declares the executor every stage
     # that runs something receives as an argument. The requirement is
