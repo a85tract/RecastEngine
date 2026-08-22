@@ -14,6 +14,15 @@ htmlcov/
 uv.lock
 
 # Engine working state -- never committed
+#
+# `.recast/` is where a run puts its per-unit workspace and its evidence store.
+# No pattern, anywhere, is what stops an embargoed Finding from being committed:
+# the findings store resolves outside the project and refuses a root inside a
+# checkout, because a .gitignore entry is a line anyone can delete and this one
+# would be protecting an unpatched vulnerability. See docs/disclosure-ledger.md,
+# row 5. This entry is about noise -- a run should not leave a dozen untracked
+# directories in `git status`. Unanchored, so it covers examples/*/.recast/ too.
+.recast/
 workspace/
 evidence-local/
 findings-local/
@@ -35,4 +44,3 @@ recast-engine.cdx.json
 # Anything site-specific belongs in a case repo, not here
 .env
 config.local.*
-examples/**/.recast/

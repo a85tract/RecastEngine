@@ -568,12 +568,13 @@ arguing with:
 Walking the store stage for real also turned up something that was not on the
 list, because nothing had ever reached that stage to turn it up: the runner's
 default put embargoed findings at `<project>/.recast/findings`, and `.recast/`
-is not in this repository's `.gitignore`. The store's permission check passes on
-a `0700` directory inside a checkout, so the one control in front of the
+was not in this repository's `.gitignore`. The store's permission check passes
+on a `0700` directory inside a checkout, so the one control in front of the
 accident its own docstring names did not cover it. The default now resolves
 outside the project and the store refuses a root inside a working tree whoever
 chose it — see row 5 of the disclosure ledger, amended rather than merely
-satisfied.
+satisfied. `.recast/` is ignored now too, but that is housekeeping and the row
+says so: an ignore rule is one line anyone can delete.
 
 **Findings 5, 6 and 7 are open, and they are the ones the phase is actually
 about.** 1–4 were a runner that did not implement a contract everything else had
