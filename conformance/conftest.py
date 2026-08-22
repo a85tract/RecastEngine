@@ -30,6 +30,7 @@ _CASE_FIXTURES = {
     "verifier_case": "verifiers",
     "evidence_store_case": "evidence_stores",
     "finding_store_case": "finding_stores",
+    "scanner_case": "scanners",
     "recipe_case": "recipes",
 }
 

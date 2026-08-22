@@ -844,15 +844,23 @@ def test_an_unavailable_adjudicator_leaves_the_findings_alone(tmp_path: Path) ->
     assert len(MemoryFindingStore.written) == 2 * len(run.units)
 
 
-def test_a_failure_outranks_an_incompleteness(tmp_path: Path) -> None:
-    """Worst wins. A run with both has something it checked and did not like,
-    and that is the more urgent of the two answers."""
+def test_an_incompleteness_outranks_a_failure(tmp_path: Path) -> None:
+    """A run that is both reports INCOMPLETE, matching hpc-devsecops.
+
+    The findings list of a run with a check that did not complete is itself
+    incomplete, so leading with the findings claims a completeness the run does
+    not have -- the operator's next move is to finish the run, not to read a
+    list that may be missing the worst entry. Both are non-zero regardless; this
+    decides the headline and which non-zero code the caller sees.
+    """
     stages = _audit_stages(
         Stage("scanner", "fake.missing"),
         Stage("adjudicator", "fake.confirm", gate=True),
     )
     run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
-    assert run.status is RunStatus.FAILED
+    assert run.status is RunStatus.INCOMPLETE
+    assert not run.passed
+    assert run.units[0].stopped_by == "fake.confirm", "the gate still stopped the unit"
 
 
 def test_a_run_that_walked_no_units_is_incomplete(tmp_path: Path) -> None:

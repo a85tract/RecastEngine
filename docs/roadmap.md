@@ -624,6 +624,47 @@ Not done here, and worth doing next to it: nothing preflights. `recast plan`
 could say gitleaks is missing before the run rather than three stages in, which
 is this repository's stated preference everywhere else.
 
+### What reading the original said about all of it, 2026-08-21
+
+The three states were designed here from the symmetry with `OracleUnavailable`,
+and then `hpc-devsecops` turned out to have had them all along: `passed` /
+`findings` / `incomplete`, exit `0` / `1` / `2`, written down as a contract in
+its `SECURITY.md`. The design was not new; it was **lost in the port**, which is
+the second time this phase that the shell prototype turned out more honest than
+the abstraction built from it.
+
+It disagreed in one place, and the engine was changed to match. `incomplete`
+outranks findings there and did not here — see "Passed, incomplete, failed" in
+`architecture.md` for the argument. The same reading found that
+`recast-sec`'s SARIF converter returned `[]` for a report that would not parse,
+which that same contract puts in the exit class of a missing tool.
+
+**Standing rule, set by the maintainer 2026-08-21: where migrated code disagrees
+with a source repository, the source is right.** Stated first in 2026-08 about
+`CESM-language-translator`, and now general — it covers
+`CESM-Agent-Produced-Scripts` and `CC-Test` too, and so anything built from
+their designs. Their answers have been run against real gates: bit-exact CESM
+cases for the pipeline, production use on Derecho for the security gate. Nothing
+in this repository has. A difference is a bug in the migration until shown
+otherwise.
+
+Two things came in from `CC-Test` as a result, neither of them by copying its
+code — the shell was never ported, and the pieces below are Python that already
+existed here or was written for this:
+
+- **`recast/sarif.py`.** SARIF is what security tools already speak, and
+  translating it is identical for every scanner that wraps one, so it was going
+  to be rewritten once per plugin. It moved out of `recast-sec` and gained the
+  two refusals above.
+- **`recast/conformance/fake_tool.py`.** `CC-Test`'s `tests/run.sh` fakes
+  gitleaks, syft and grype *on PATH* and asserts on the gate's exit codes. That
+  is a better test than faking the plugin, which replaces the code under test:
+  faking the tool leaves the argv, the subprocess and the report parsing in the
+  run. The technique is theirs; the pytest fixture is new. `ScannerCase` and
+  `conformance/test_scanner.py` are what make it reachable, and `recast-sec`
+  now declares a plugin set so the four checks run against the real gitleaks
+  scanner rather than against nothing.
+
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 
@@ -642,9 +683,17 @@ the upstream" is exactly the observation that looks like an open problem to
 whoever notices it next, and it should cost them one paragraph rather than
 another round of asking.
 
+**Extended 2026-08-21 to `CC-Test`**, on the same terms and for the same
+reason. It has no `LICENSE` file either, it is the maintainer's to license, and
+the answer is Apache-2.0. Recorded here rather than left to be noticed again by
+whoever reads that repository next. `recast-sec` is built from its design and
+will need its own `LICENSE` and `NOTICE` when it becomes a repository — no
+`NOTICE` entry is owed by *this* repository, since nothing of `CC-Test`'s was
+relayed into it.
+
 What remains is clerical and belongs with the archiving: put the `LICENSE` file
-into both source repositories before they go read-only, so the record does not
-depend on anyone remembering this note. The attribution half is already done —
+into all three source repositories before they go read-only, so the record does
+not depend on anyone remembering this note. The attribution half is already done —
 see "The history that was not carried" under P2, and the `NOTICE` entries it
 produced.
 

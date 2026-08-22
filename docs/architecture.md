@@ -163,6 +163,19 @@ already gating on that keeps gating; what the third state buys is the ability to
 say *which* — in `recast run`'s exit code (`2`, against `1` for a failure), in
 its last line, and in a waiver.
 
+A run that is both reports `INCOMPLETE`. That ordering is `hpc-devsecops`'s,
+which has been running it in production and states the exit contract in its
+`SECURITY.md`; the argument is that a run with a check that did not complete has
+an incomplete findings list, so leading with the findings claims a completeness
+the run does not have. Both are non-zero either way, so what this decides is the
+headline and which of the two codes a caller sees.
+
+`recast/sarif.py` is the shared half of every scanner that wraps such a tool:
+SARIF in, `Finding` out, at the safe end. Two of its rules are the same
+contract as above rather than conveniences — a report that will not parse and a
+report whose invocation says it failed are both `ScannerUnavailable`, never an
+empty list, because unparseable output and a clean scan are different facts.
+
 The waiver is `config["allow_incomplete"]`, a list of plugin names whose
 incompleteness the operator has agreed not to count. It exists because the
 alternative is worse than either: an operator whose only route to a green run is
