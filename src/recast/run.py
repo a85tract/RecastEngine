@@ -71,6 +71,8 @@ class RunStatus(StrEnum):
     already gating on ``passed`` keeps gating correctly without being told
     about this enum. What the enum buys is the ability to *say which*, in the
     exit status, in the last line of ``recast run``, and in a waiver.
+
+    When a run is both, it reports ``INCOMPLETE``. See ``_SEVERITY``.
     """
 
     PASSED = "passed"
@@ -81,7 +83,16 @@ class RunStatus(StrEnum):
 # Worst wins when a run is summarized from its units, and a unit from its
 # stages. Ordered rather than compared by name, so adding a state is a
 # deliberate placement rather than an accident of spelling.
-_SEVERITY = {RunStatus.PASSED: 0, RunStatus.INCOMPLETE: 1, RunStatus.FAILED: 2}
+#
+# INCOMPLETE outranks FAILED, which is the ordering `hpc-devsecops` has been
+# running in production with and states in its SECURITY.md: incomplete exits 2,
+# findings exit 1, only a completed clean check exits 0. The argument is that a
+# run with a check that did not complete has an incomplete findings list, so
+# announcing the findings implies a completeness the run does not have -- the
+# operator's next move is to make the run complete, not to read a list that may
+# be missing the worst entry. Both are non-zero either way; what this decides is
+# the headline and which of the two non-zero codes a caller sees.
+_SEVERITY = {RunStatus.PASSED: 0, RunStatus.FAILED: 1, RunStatus.INCOMPLETE: 2}
 
 
 @dataclass
@@ -144,11 +155,20 @@ class UnitRun:
 
     @property
     def status(self) -> RunStatus:
+        """Worst of what happened here, by ``_SEVERITY``.
+
+        Collected and ranked rather than returned from the first matching
+        branch, so this ordering and the run's are the same one table. Written
+        as a chain of ``if``s it was not: flipping ``_SEVERITY`` left this
+        answering by declaration order, which is exactly the drift the table
+        exists to prevent.
+        """
+        states = {RunStatus.PASSED}
         if self.stopped_by is not None or any(o.status == "failed" for o in self.outcomes):
-            return RunStatus.FAILED
+            states.add(RunStatus.FAILED)
         if any(o.status == "incomplete" and not o.waived for o in self.outcomes):
-            return RunStatus.INCOMPLETE
-        return RunStatus.PASSED
+            states.add(RunStatus.INCOMPLETE)
+        return max(states, key=lambda s: _SEVERITY[s])
 
     @property
     def passed(self) -> bool:

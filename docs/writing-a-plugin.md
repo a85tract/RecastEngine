@@ -175,4 +175,15 @@ the stage becomes `incomplete`, and the run cannot report `passed`. The same
 applies to an `Adjudicator`, where it matters more — it is usually the recipe's
 gate.
 
+If your tool emits SARIF — gitleaks, most static analyzers, an LLM audit —
+use `recast.sarif.findings_from` rather than writing the translation again. It
+raises `ScannerUnavailable` on a report that will not parse or that records a
+failed invocation, which are the two ways a crashed tool otherwise arrives
+looking like a clean scan.
+
+Then declare a `ScannerCase` in your conformance plugin set, naming the binary
+you wrap in `tool`. The suite fakes it on PATH — present and clean, present and
+garbage, absent entirely — and checks that your scanner can tell those apart.
+See `recast.conformance.fake_tool`.
+
 Read [SECURITY.md](../SECURITY.md) before writing one.

@@ -42,6 +42,7 @@ from recast.plugins.executor import Executor, Job
 from recast.plugins.frontend import Frontend
 from recast.plugins.oracle import Oracle
 from recast.plugins.recipe import Recipe
+from recast.plugins.scanner import Scanner
 from recast.plugins.store import EvidenceStore, FindingStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
@@ -107,6 +108,28 @@ class FindingStoreCase:
 
     name: str
     build: Callable[[Path], FindingStore]
+
+
+@dataclass(frozen=True)
+class ScannerCase:
+    """One Scanner to check.
+
+    ``tool`` names the external binary it wraps, when it wraps one, and
+    declaring it is what makes the interesting checks possible: the suite puts
+    a fake of that name on PATH, and takes it away again, to see whether the
+    plugin can tell "not installed" and "installed but producing garbage" apart
+    from "clean". Both are the same confusion the ``Scanner`` contract exists
+    to prevent, and neither is visible in a return value.
+
+    A scanner that wraps nothing leaves ``tool`` None, and those checks skip by
+    name rather than passing -- which is the arrangement that makes them useful
+    on the day one does wrap something.
+    """
+
+    name: str
+    build: Callable[[], Scanner] | None = None
+    config: Mapping[str, Any] = field(default_factory=dict)
+    tool: str | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +317,7 @@ class PluginSet:
     verifiers: tuple[VerifierCase, ...] = ()
     evidence_stores: tuple[EvidenceStoreCase, ...] = ()
     finding_stores: tuple[FindingStoreCase, ...] = ()
+    scanners: tuple[ScannerCase, ...] = ()
     recipes: tuple[RecipeCase, ...] = ()
 
 
