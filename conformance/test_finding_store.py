@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from recast.errors import AccessViolation
+from recast.errors import AccessViolation, RecastError
 from recast.model import Access
 
 # The contract's ordering, restated rather than imported. A change to the
@@ -64,3 +64,33 @@ def test_nothing_it_wrote_is_group_or_world_readable(
         if path.stat().st_mode & 0o077
     ]
     assert not exposed, "embargoed material left readable beyond its owner:\n" + "\n".join(exposed)
+
+
+def test_it_leaves_nothing_inside_a_git_checkout(
+    finding_store_case: Any, sample_finding: Any, tmp_path: Path
+) -> None:
+    """The other half of the accident this file's docstring names.
+
+    It was asserted there and checked nowhere, which is the shape of problem
+    this suite exists to catch: a ``0700`` directory inside a repository passes
+    every permission check above and still reaches a remote on the next push,
+    and by then the record is in the history rather than in a file anyone can
+    delete.
+
+    Stated as "leaves nothing" rather than "raises", because a store has more
+    than one honest way to satisfy it. Refusing the root outright is what the
+    filesystem store does; a store that persists somewhere else entirely --
+    Sec-Track's API, a database -- satisfies it by never touching the tree. What
+    neither may do is leave the record where a commit can reach it.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    try:
+        store = finding_store_case.build(checkout / "nested")
+        store.put(sample_finding(access=Access.EMBARGOED))
+    except RecastError:
+        pass  # refused the root, which is the strongest way to pass this
+    left = [
+        path for path in sorted(checkout.rglob("*")) if path.is_file() and ".git" not in path.parts
+    ]
+    assert not left, "embargoed material left inside a checkout:\n" + "\n".join(map(str, left))

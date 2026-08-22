@@ -24,6 +24,8 @@ contracts, the order, and what to write down.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import platform
 import sys
 from collections import Counter
@@ -536,25 +538,52 @@ def _require_walkable(recipe: Recipe, stages: list[Stage]) -> None:
         )
 
 
+def _findings_root(root: Path) -> Path:
+    """Where embargoed findings go when the operator has not said.
+
+    Deliberately *not* under ``root``. Everything else the engine writes belongs
+    beside the source it describes, and the evidence store is meant to be
+    committed -- but a ``Finding`` defaults to ``Access.EMBARGOED``, and a
+    default that puts one inside the working tree is one ``git add -A`` from
+    publishing it. ``FilesystemFindingStore`` refuses such a root outright; this
+    is what keeps the shipped ``audit`` recipe from meeting that refusal on
+    every run rather than only when someone misconfigures it.
+
+    Per project, because two checkouts' findings are not interchangeable, and
+    keyed by the absolute path rather than by the directory name, because two
+    clones of one repository are two projects here and would otherwise share a
+    directory. ``RECAST_FINDINGS_HOME`` overrides the base for anyone who keeps
+    embargoed material somewhere specific -- an encrypted volume, a host that is
+    not this one.
+    """
+    home = os.environ.get("RECAST_FINDINGS_HOME")
+    base = Path(home).expanduser() if home else Path.home() / WORKSPACE_DIRNAME / "findings"
+    resolved = root.expanduser().resolve()
+    key = hashlib.sha256(str(resolved).encode()).hexdigest()[:12]
+    return base / f"{resolved.name or 'root'}-{key}"
+
+
 def _build_store(factory: Any, config: dict[str, Any]) -> Any:
     """Construct a store, rooted where its access class belongs.
 
-    A FindingStore may not share the evidence directory: findings default to
-    ``Access.EMBARGOED`` and ``FilesystemFindingStore`` refuses a root anything
-    but the owner can read, which the evidence directory is not. The kind is
-    taken from the registered class where there is one -- both shipped stores
-    are classes. A store supplied as a factory *function* is built with the
-    evidence root, and a FindingStore built there refuses to operate rather
-    than quietly writing an embargoed record somewhere readable.
+    A FindingStore may not share the evidence directory, and may not sit under
+    the project root at all -- see ``_findings_root``. The kind is taken from
+    the registered class where there is one, and both shipped stores are
+    classes. A store supplied as a factory *function* is built with the evidence
+    root, which is the safe direction to be wrong in: a FindingStore built there
+    refuses to operate rather than quietly writing an embargoed record into the
+    checkout.
     """
     findings = isinstance(factory, type) and issubclass(factory, FindingStore)
-    return factory(**_store_config(config, "findings" if findings else "evidence"))
+    root = Path(config.get("root", "."))
+    default = _findings_root(root) if findings else root / WORKSPACE_DIRNAME / "evidence"
+    return factory(**_store_config(config, default))
 
 
-def _store_config(config: dict[str, Any], subdir: str = "evidence") -> dict[str, Any]:
+def _store_config(config: dict[str, Any], default_root: Path) -> dict[str, Any]:
     prepared = dict(config)
     root = Path(prepared.pop("root", "."))
-    store_root = Path(prepared.pop("store_root", root / WORKSPACE_DIRNAME / subdir))
+    store_root = Path(prepared.pop("store_root", default_root))
     if not store_root.is_absolute():
         store_root = root / store_root
     prepared["root"] = store_root
