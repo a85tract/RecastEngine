@@ -395,13 +395,12 @@ repository.
 
 ## Open questions
 
-- **Whether a Scanner takes an Executor too.** `Oracle` and `Verifier` now do;
-  `Scanner.scan` does not, deliberately and for now. A `needs_build` scanner
-  runs sanitizer builds and fuzz harnesses — `audit` declares a `dynamic.asan`
-  stage — so it has the same claim on the seam, and leaving it out is the one
-  place a plugin can still reach for `subprocess` without contradicting the
-  contract. Deferred rather than settled, because the first real scanner should
-  say what it actually needs.
+- ~~**Whether a Scanner takes an Executor too.**~~ Settled 2026-08-21, the way
+  this entry said it should be: by the first real scanner saying what it
+  needed. The gitleaks wrapper spent a day calling `subprocess` because the
+  contract handed it nothing else, and that was the contract's defect.
+  `Scanner.scan` and `Adjudicator.adjudicate` take the executor now; see
+  "Execution is passed in, not reached for".
 - **Sampler as an ABC.** Input generation currently lives inside verifiers
   (Hypothesis strategies, dump selection). If dump-driven and property-driven
   sampling need to compose, it becomes an eleventh kind.
