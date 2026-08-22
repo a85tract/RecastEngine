@@ -4,8 +4,14 @@ name: hygiene
 # after. Migrating 10k lines out of two NCAR-bound private repositories is
 # exactly the situation where a site path or an allocation account slips in.
 
-# Automatic runs are off while the Actions allowance is exhausted. Restore the
-# push, pull_request, and the Monday 06:00 UTC schedule when the quota resets.
+# Automatic runs are off while the Actions allowance is exhausted, and as of
+# 2026-08-21 the workflow itself is disabled on GitHub (`gh workflow disable`),
+# so even a manual dispatch is refused. The allowance returns in September.
+#
+# To restore, both halves are needed and only one of them is visible here:
+#   gh workflow enable hygiene.yml
+#   ...then put back the push, pull_request, and Monday 06:00 UTC schedule triggers below.
+# Until then, tools/ci_local.sh runs these same jobs from the same file.
 on:
   workflow_dispatch:
 
