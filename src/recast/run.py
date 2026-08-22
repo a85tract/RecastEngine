@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,8 +34,18 @@ from typing import Any
 
 from recast import WORKSPACE_DIRNAME, __version__
 from recast.errors import ConfigError, RecastError
-from recast.model import Candidate, Evidence, Facts, OracleRef, Unit, Verdict
+from recast.model import (
+    Candidate,
+    Disclosure,
+    Evidence,
+    Facts,
+    Finding,
+    OracleRef,
+    Unit,
+    Verdict,
+)
 from recast.plugins.recipe import Recipe, Stage
+from recast.plugins.store import FindingStore
 from recast.registry import REGISTRY, Registry
 
 __all__ = ["RecipeRun", "UnitRun", "run_recipe"]
@@ -65,8 +76,22 @@ class UnitRun:
     outcomes: list[StageOutcome] = field(default_factory=list)
     candidate: Candidate | None = None
     verdicts: list[Verdict] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    """What the Scanners found, as the Adjudicator left them.
+
+    Kept beside ``verdicts`` rather than merged into them, because they answer
+    different questions and go to different stores under different access
+    rules. A run has one or the other in practice: the ``audit`` recipe fills
+    this, the modernization recipes fill ``verdicts``.
+    """
+
     evidence: list[str] = field(default_factory=list)
     """Store URIs, one per recorded Verdict."""
+
+    records: list[str] = field(default_factory=list)
+    """FindingStore URIs, one per recorded Finding. Separate from
+    ``evidence`` because the two stores have different access classes and
+    conflating their URIs would lose that."""
 
     oracle: OracleRef = field(default_factory=lambda: NO_ORACLE)
     """The reference this unit's oracle-backed verifiers compare against."""
@@ -136,6 +161,13 @@ class RecipeRun:
                     # the run's Evidence manifest, which records all of it.
                     "oracle": unit_run.oracle.oracle if unit_run.oracle.key else None,
                     "stopped_by": unit_run.stopped_by,
+                    # Findings are deliberately absent, including their count.
+                    # This file is written to be committed; a Finding defaults
+                    # to Access.EMBARGOED, and SECURITY.md is explicit that
+                    # nothing reaches a public store or a CI log before
+                    # disclosure completes. A count is still a statement about
+                    # embargoed material. The FindingStore holds them, and
+                    # holds them at 0700.
                     "verdicts": [
                         {
                             "verifier": verdict.verifier,
@@ -180,6 +212,7 @@ def run_recipe(
         raise ConfigError(f"recipe {recipe.name!r} config: " + "; ".join(problems))
 
     stages = recipe.stages(config)
+    _require_walkable(recipe, stages)
     _require_available(stages, registry)
     _require_one_transform(recipe, stages)
 
@@ -197,10 +230,26 @@ def run_recipe(
         per call instead, so its constructor sees only its own keys."""
         return {"root": root, **stage_config(stage)}
 
+    # An executor stage is not a step. ``Stage`` says what it is for: "it
+    # declares the executor the run's Oracles and Verifiers receive as an
+    # argument... A recipe that materializes an oracle or awards a verdict has
+    # to declare one." So the requirement is conditional, and demanding one
+    # unconditionally made the ``audit`` recipe -- which produces Findings and
+    # neither materializes nor awards -- unrunnable as shipped. conformance/
+    # already read the contract this way and skipped its executor checks for
+    # that recipe; the runner was the one out of step.
     executor_stage = next((s for s in stages if s.kind == "executor"), None)
-    if executor_stage is None:
-        raise ConfigError(f"recipe {recipe.name!r} declares no executor stage")
-    executor = registry.get("executor", executor_stage.plugin)(**stage_config(executor_stage))
+    if executor_stage is None and any(s.kind in ("oracle", "verifier") for s in stages):
+        raise ConfigError(
+            f"recipe {recipe.name!r} materializes an oracle or awards a verdict "
+            "but declares no executor stage"
+        )
+    executor = (
+        registry.get("executor", executor_stage.plugin)(**stage_config(executor_stage))
+        if executor_stage is not None
+        else None
+    )
+    executor_name = executor_stage.plugin if executor_stage is not None else ""
 
     frontend_stages = [s for s in stages if s.kind == "frontend"]
     if not frontend_stages:
@@ -224,7 +273,7 @@ def run_recipe(
         for stage in frontend_stages
     }
 
-    walked = [s for s in stages if s.kind not in ("executor", "frontend")]
+    walked = [s for s in stages if s.kind not in _NOT_STEPS]
     oracle_cache: dict[str, OracleRef] = {}
 
     for unit, owner in _selected_units(frontends, root, recipe, config):
@@ -247,7 +296,7 @@ def run_recipe(
                 call_config(stage),
                 registry,
                 recipe,
-                executor_stage.plugin,
+                executor_name,
                 unit,
                 facts,
                 unit_run,
@@ -272,7 +321,7 @@ def run_recipe(
                                 call_config(later),
                                 registry,
                                 recipe,
-                                executor_stage.plugin,
+                                executor_name,
                                 unit,
                                 facts,
                                 unit_run,
@@ -349,8 +398,47 @@ def _walk_stage(
             stage.kind, stage.plugin, status, f"{verdict.confidence.value}: {verdict.detail}"
         )
 
+    if stage.kind == "scanner":
+        scanner = factory()
+        found = list(scanner.scan(unit, facts, workspace, config))
+        unit_run.findings.extend(found)
+        return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
+
+    if stage.kind == "adjudicator":
+        if not unit_run.findings:
+            return StageOutcome(stage.kind, stage.plugin, "skipped", "no findings to adjudicate")
+        adjudicator = factory()
+        unit_run.findings = [
+            adjudicator.adjudicate(finding, workspace, config) for finding in unit_run.findings
+        ]
+        confirmed = [f for f in unit_run.findings if f.disclosure is Disclosure.CONFIRMED]
+        tally = Counter(f.disclosure.value for f in unit_run.findings)
+        detail = ", ".join(f"{n} {name}" for name, n in sorted(tally.items()))
+        # A confirmed finding is a real defect that nobody has fixed, so an
+        # adjudicator stage declared as a gate fails on one. That is the same
+        # thing hpc-devsecops does when it exits non-zero on findings, and the
+        # reason the stage is worth gating on at all: an audit that reports
+        # what it found and passes anyway is a report, not a gate.
+        return StageOutcome(
+            stage.kind,
+            stage.plugin,
+            "failed" if confirmed else "ok",
+            detail,
+        )
+
     if stage.kind == "store":
-        store = factory(**_store_config(config))  # config still carries root here
+        store = _build_store(factory, config)
+        if isinstance(store, FindingStore):
+            # Findings, not Evidence. The two stores hold different things
+            # under different access rules -- ``FindingStore.guard`` refuses a
+            # record more sensitive than it can hold -- and walking a
+            # FindingStore against ``verdicts`` recorded nothing while
+            # reporting success.
+            for finding in unit_run.findings:
+                unit_run.records.append(store.put(finding))
+            return StageOutcome(
+                stage.kind, stage.plugin, "ok", f"{len(unit_run.findings)} finding(s) recorded"
+            )
         for verdict in unit_run.verdicts:
             evidence = _evidence(recipe, executor_name, unit, unit_run, verdict)
             unit_run.evidence.append(store.put(evidence))
@@ -358,7 +446,13 @@ def _walk_stage(
             stage.kind, stage.plugin, "ok", f"{len(unit_run.verdicts)} verdict(s) recorded"
         )
 
-    return StageOutcome(stage.kind, stage.plugin, "skipped", f"kind {stage.kind!r} not walked")
+    # Not reachable from a validated recipe -- ``_require_walkable`` refuses
+    # these before any work starts. Kept as a failure rather than a skip
+    # because the two are not the same answer, and this branch is what said
+    # "skipped" for every scanner and adjudicator stage until now.
+    return StageOutcome(
+        stage.kind, stage.plugin, "failed", f"the runner does not walk {stage.kind!r} stages"
+    )
 
 
 def _selected_units(
@@ -402,10 +496,65 @@ def _selected_units(
     return [(unit, name) for unit, name in discovered if unit.parent is None]
 
 
-def _store_config(config: dict[str, Any]) -> dict[str, Any]:
+# The steps the runner walks per unit, in the order the recipe lists them.
+_STEPS = frozenset({"transform", "oracle", "verifier", "scanner", "adjudicator", "store"})
+
+# Kinds that belong in a recipe without being a step. ``executor`` declares the
+# executor the oracles and verifiers receive; ``frontend`` runs once per unit
+# before the walk. Both are read before the walk starts, and left out of it.
+_NOT_STEPS = frozenset({"executor", "frontend"})
+
+# Registered kinds that are not stages at all, and so are refused rather than
+# ignored: an ``agent`` is consulted by a non-deterministic Transform rather
+# than scheduled, and a ``recipe`` is what this *is*, not something it can
+# contain. Naming them here rather than letting them fall through as unknown
+# kinds is what keeps the three sets a partition of ``registry.KINDS``, so a
+# tenth kind cannot be added without deciding which of the three it is.
+_NOT_STAGES = frozenset({"agent", "recipe"})
+
+
+def _require_walkable(recipe: Recipe, stages: list[Stage]) -> None:
+    """Refuse a stage the runner would not walk, before anything runs.
+
+    ``_walk_stage`` used to answer ``skipped`` for a kind it did not handle --
+    the same word an uninstalled optional plugin gets -- so a recipe could
+    declare a scanner, an adjudicator and a gate, walk none of them, and report
+    that every unit passed. Failing here instead is the same reasoning
+    ``Recipe.validate`` gives for itself: a problem worth reporting in a second
+    rather than three hours in.
+
+    Runs before ``_require_available`` deliberately. A kind the runner has never
+    heard of has no registered plugins either, so checking availability first
+    would report a missing plugin -- naming the plugin, which is fine, as the
+    problem, which it is not.
+    """
+    unwalkable = sorted({s.kind for s in stages if s.kind not in _STEPS | _NOT_STEPS})
+    if unwalkable:
+        raise ConfigError(
+            f"recipe {recipe.name!r} declares stage kind(s) {unwalkable} that the "
+            f"runner does not walk; stages are {sorted(_STEPS | _NOT_STEPS)}"
+        )
+
+
+def _build_store(factory: Any, config: dict[str, Any]) -> Any:
+    """Construct a store, rooted where its access class belongs.
+
+    A FindingStore may not share the evidence directory: findings default to
+    ``Access.EMBARGOED`` and ``FilesystemFindingStore`` refuses a root anything
+    but the owner can read, which the evidence directory is not. The kind is
+    taken from the registered class where there is one -- both shipped stores
+    are classes. A store supplied as a factory *function* is built with the
+    evidence root, and a FindingStore built there refuses to operate rather
+    than quietly writing an embargoed record somewhere readable.
+    """
+    findings = isinstance(factory, type) and issubclass(factory, FindingStore)
+    return factory(**_store_config(config, "findings" if findings else "evidence"))
+
+
+def _store_config(config: dict[str, Any], subdir: str = "evidence") -> dict[str, Any]:
     prepared = dict(config)
     root = Path(prepared.pop("root", "."))
-    store_root = Path(prepared.pop("store_root", root / WORKSPACE_DIRNAME / "evidence"))
+    store_root = Path(prepared.pop("store_root", root / WORKSPACE_DIRNAME / subdir))
     if not store_root.is_absolute():
         store_root = root / store_root
     prepared["root"] = store_root

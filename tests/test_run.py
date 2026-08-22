@@ -8,22 +8,35 @@ compiler-gated suite.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
+from recast import WORKSPACE_DIRNAME
 from recast.errors import ConfigError
-from recast.model import Candidate, Confidence, Facts, OracleRef, Unit, Verdict
+from recast.model import (
+    Candidate,
+    Confidence,
+    Disclosure,
+    Facts,
+    Finding,
+    OracleRef,
+    Severity,
+    Unit,
+    Verdict,
+)
 from recast.plugins.executor import Executor, Job, JobResult
 from recast.plugins.frontend import Frontend
 from recast.plugins.oracle import Oracle
 from recast.plugins.recipe import Recipe, Stage
-from recast.plugins.store import EvidenceStore
+from recast.plugins.scanner import Adjudicator, Scanner
+from recast.plugins.store import EvidenceStore, FindingStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
-from recast.registry import Registry
-from recast.run import run_recipe
+from recast.registry import KINDS, Registry
+from recast.run import _NOT_STAGES, _NOT_STEPS, _STEPS, run_recipe
 
 # --- a complete fake plugin set ----------------------------------------------
 
@@ -450,3 +463,286 @@ def test_a_named_unit_still_resolves_across_frontends(tmp_path: Path) -> None:
     recipe = FakeRecipe(_multi_stages("fake-frontend", "other-frontend"))
     run = run_recipe(recipe, tmp_path, {"units": ["other:gamma"]}, registry=_multi_registry())
     assert [u.unit.uid for u in run.units] == ["other:gamma"]
+
+
+# --- findings: scanners, adjudicators, and the store they belong in -----------
+#
+# The runner walked none of these until now: ``_walk_stage`` fell through to
+# ``skipped`` for both kinds, so the ``audit`` recipe reported that every unit
+# passed while its scanners were never called. These tests are the difference
+# between that and a gate.
+
+
+class FakeScanner(Scanner):
+    name = "fake.scan"
+    family = "audit"
+
+    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+        for n in range(2):
+            yield Finding(
+                uid=f"{unit.uid.replace(':', '_')}-{n}",
+                unit=unit.uid,
+                scanner=self.name,
+                title=f"plausible thing {n}",
+                severity=Severity.HIGH,
+            )
+
+
+class SilentScanner(Scanner):
+    """A clean scan. Distinct from a scan that did not happen -- which is
+    finding 5 in P5's list, and is not what this file can settle."""
+
+    name = "fake.silent"
+
+    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+        return []
+
+
+class ConfirmingAdjudicator(Adjudicator):
+    name = "fake.confirm"
+    verdict: ClassVar[Disclosure] = Disclosure.CONFIRMED
+
+    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+        finding.disclosure = type(self).verdict
+        return finding
+
+
+class RefutingAdjudicator(ConfirmingAdjudicator):
+    name = "fake.refute"
+    verdict: ClassVar[Disclosure] = Disclosure.REFUTED
+
+
+class NeverAdjudicator(Adjudicator):
+    name = "fake.never"
+
+    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+        raise AssertionError("adjudicated a finding that does not exist")
+
+
+class MemoryFindingStore(FindingStore):
+    name = "fake-findings"
+    written: ClassVar[list[Finding]] = []
+    roots: ClassVar[list[Path]] = []
+
+    def __init__(self, **config: Any) -> None:
+        type(self).roots.append(Path(config["root"]))
+
+    def put(self, finding: Finding) -> str:
+        self.guard(finding)
+        type(self).written.append(finding)
+        return f"finding://{finding.uid}"
+
+    def get(self, uid: str) -> Finding:
+        raise NotImplementedError
+
+    def query(self, **selectors: Any):
+        raise NotImplementedError
+
+
+def _audit_registry() -> Registry:
+    registry = _registry()
+    registry.register("scanner", "fake.scan", FakeScanner)
+    registry.register("scanner", "fake.silent", SilentScanner)
+    registry.register("adjudicator", "fake.confirm", ConfirmingAdjudicator)
+    registry.register("adjudicator", "fake.refute", RefutingAdjudicator)
+    registry.register("adjudicator", "fake.never", NeverAdjudicator)
+    registry.register("store", "fake-findings", MemoryFindingStore)
+    return registry
+
+
+def _audit_stages(*middle: Stage) -> list[Stage]:
+    """The audit shape: no executor, no transform, findings out rather than
+    candidates."""
+    return [
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.scan"),
+        *middle,
+        Stage("store", "fake-findings"),
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_finding_counters() -> None:
+    MemoryFindingStore.written = []
+    MemoryFindingStore.roots = []
+
+
+def test_a_scanner_stage_is_walked_rather_than_reported_as_skipped(tmp_path: Path) -> None:
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_audit_registry())
+    outcome = next(o for o in run.units[0].outcomes if o.kind == "scanner")
+    assert outcome.status == "ok"
+    assert outcome.detail == "2 finding(s)"
+    assert [f.title for f in run.units[0].findings] == ["plausible thing 0", "plausible thing 1"]
+
+
+def test_a_plausible_finding_alone_does_not_fail_the_run(tmp_path: Path) -> None:
+    """Precision is the adjudicator's job. A scanner that yields freely -- which
+    ``Scanner.scan`` asks it to -- would otherwise fail every run it improved."""
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_audit_registry())
+    assert run.passed
+
+
+def test_an_adjudicator_revises_the_findings_it_was_given(tmp_path: Path) -> None:
+    stages = _audit_stages(Stage("adjudicator", "fake.refute", gate=True))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+    outcome = next(o for o in run.units[0].outcomes if o.kind == "adjudicator")
+    assert outcome.status == "ok"
+    assert outcome.detail == "2 refuted"
+    assert all(f.disclosure is Disclosure.REFUTED for f in run.units[0].findings)
+    assert run.passed
+
+
+def test_a_confirmed_finding_fails_the_gate_it_was_declared_as(tmp_path: Path) -> None:
+    """An audit that reports what it found and passes anyway is a report, not a
+    gate -- and reporting all-passed was the whole defect."""
+    stages = _audit_stages(Stage("adjudicator", "fake.confirm", gate=True))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+    assert not run.passed
+    assert run.units[0].stopped_by == "fake.confirm"
+
+
+def test_a_failed_adjudication_gate_still_records_what_it_found(tmp_path: Path) -> None:
+    """Same rule as a failed verifier gate: the store stages still run. A
+    confirmed vulnerability that stopped the unit and then vanished is the one
+    record nobody can afford to lose."""
+    stages = _audit_stages(Stage("adjudicator", "fake.confirm", gate=True))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+    assert len(MemoryFindingStore.written) == 2 * len(run.units)
+    assert all(f.disclosure is Disclosure.CONFIRMED for f in MemoryFindingStore.written)
+    assert run.units[0].records == ["finding://fake_alpha-0", "finding://fake_alpha-1"]
+
+
+def test_an_adjudicator_with_nothing_to_adjudicate_is_not_called(tmp_path: Path) -> None:
+    stages = [
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.silent"),
+        Stage("adjudicator", "fake.never", gate=True),
+        Stage("store", "fake-findings"),
+    ]
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+    outcome = next(o for o in run.units[0].outcomes if o.kind == "adjudicator")
+    assert outcome.status == "skipped"
+    assert outcome.detail == "no findings to adjudicate"
+    assert run.passed
+
+
+# --- the two stores are two stores -------------------------------------------
+
+
+def _both_stores_stages() -> list[Stage]:
+    return [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("transform", "fake.transform"),
+        Stage("scanner", "fake.scan"),
+        Stage("verifier", "fake.pass", gate=True),
+        Stage("store", "fake-store"),
+        Stage("store", "fake-findings"),
+    ]
+
+
+def test_findings_go_to_the_finding_store_and_verdicts_to_the_evidence_store(
+    tmp_path: Path,
+) -> None:
+    """Walking a FindingStore over ``verdicts`` recorded nothing and reported
+    success. The two stores hold different things under different access rules,
+    so the runner picks by the store's kind, not by the stage's position."""
+    run = run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
+    assert run.passed
+    unit_run = run.units[0]
+    assert [type(w).__name__ for w in MemoryStore.written] == ["Evidence"] * len(run.units)
+    assert len(MemoryFindingStore.written) == 2 * len(run.units)
+    assert len(unit_run.evidence) == 1
+    assert len(unit_run.records) == 2
+    assert not set(unit_run.evidence) & set(unit_run.records)
+
+
+def test_each_store_reports_what_it_actually_recorded(tmp_path: Path) -> None:
+    run = run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
+    details = [o.detail for o in run.units[0].outcomes if o.kind == "store"]
+    assert details == ["1 verdict(s) recorded", "2 finding(s) recorded"]
+
+
+def test_the_finding_store_is_not_rooted_where_the_evidence_store_is(tmp_path: Path) -> None:
+    """A FindingStore may not share the evidence directory. Findings default to
+    ``Access.EMBARGOED``, and ``FilesystemFindingStore`` refuses a root that is
+    readable by anyone but its owner -- which the evidence directory is."""
+    run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
+    assert MemoryFindingStore.roots[0].name == "findings"
+    assert MemoryFindingStore.roots[0].parent == tmp_path / WORKSPACE_DIRNAME
+
+
+def test_the_summary_says_nothing_about_findings(tmp_path: Path) -> None:
+    """This file is written to be committed. A count is still a statement about
+    embargoed material, so it is absent along with the findings themselves."""
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_audit_registry())
+    assert run.units[0].findings
+    rendered = json.dumps(run.summary())
+    assert "finding" not in rendered
+    assert "plausible thing" not in rendered
+
+
+# --- what a recipe has to declare, and what it may not -----------------------
+
+
+def test_a_recipe_that_neither_materializes_nor_awards_needs_no_executor(
+    tmp_path: Path,
+) -> None:
+    """``Stage`` asks for an executor from "a recipe that materializes an oracle
+    or awards a verdict". Demanding one unconditionally made ``audit``
+    unrunnable as shipped."""
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_audit_registry())
+    assert run.passed
+    assert not any(o.kind == "executor" for o in run.units[0].outcomes)
+
+
+def test_a_recipe_that_awards_a_verdict_still_needs_an_executor(tmp_path: Path) -> None:
+    stages = [
+        Stage("frontend", "fake-frontend"),
+        Stage("transform", "fake.transform"),
+        Stage("verifier", "fake.pass", gate=True),
+        Stage("store", "fake-store"),
+    ]
+    with pytest.raises(ConfigError, match="no executor stage"):
+        run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+
+
+def test_a_stage_kind_the_runner_does_not_walk_is_refused_before_any_work(
+    tmp_path: Path,
+) -> None:
+    """It used to answer ``skipped`` -- the word an uninstalled optional plugin
+    gets -- so installed-and-unwalked and absent were indistinguishable."""
+    stages = _stages(Stage("mystery", "whatever"))
+    with pytest.raises(ConfigError, match="does not walk"):
+        run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
+
+
+def test_a_kind_that_is_not_a_stage_at_all_is_refused_rather_than_ignored(
+    tmp_path: Path,
+) -> None:
+    """An ``agent`` is consulted by a non-deterministic Transform rather than
+    scheduled, so declaring one as a stage is a misunderstanding, not a no-op."""
+    registry = _audit_registry()
+    registry.register("agent", "fake-agent", object)
+    with pytest.raises(ConfigError, match="does not walk"):
+        run_recipe(FakeRecipe(_stages(Stage("agent", "fake-agent"))), tmp_path, registry=registry)
+
+
+def test_an_unknown_kind_is_named_as_a_kind_and_not_as_a_missing_plugin(
+    tmp_path: Path,
+) -> None:
+    """Availability is checked second on purpose: a kind nothing registers has
+    no plugins either, so checking that first names the wrong problem."""
+    with pytest.raises(ConfigError, match="stage kind"):
+        run_recipe(
+            FakeRecipe(_stages(Stage("mystery", "whatever"))), tmp_path, registry=_audit_registry()
+        )
+
+
+def test_every_registered_kind_is_a_step_a_non_step_or_not_a_stage() -> None:
+    """The three sets partition ``KINDS``, so a tenth kind cannot be added
+    without deciding which it is -- the decision this whole section is about."""
+    assert _STEPS | _NOT_STEPS | _NOT_STAGES == set(KINDS)
+    assert not _STEPS & _NOT_STEPS
+    assert not _STEPS & _NOT_STAGES
+    assert not _NOT_STEPS & _NOT_STAGES
