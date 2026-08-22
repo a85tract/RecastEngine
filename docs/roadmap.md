@@ -656,6 +656,23 @@ existed here or was written for this:
   translating it is identical for every scanner that wraps one, so it was going
   to be rewritten once per plugin. It moved out of `recast-sec` and gained the
   two refusals above.
+A boundary was drawn at the same time, on the maintainer's instruction that
+anything domain-specific in the security distribution belongs in the domain
+extension. Checked rather than assumed: `check_hygiene.py` passes clean over
+that tree, and its only mentions of CESM or a site are attribution — whose work
+it is and where it runs in production. So nothing moved, and the useful part was
+writing the line down before the case that tests it. Three ways, matching
+"Engine, extension, product" in `architecture.md`: what runs against any git
+repository stays in the security distribution; what needs to know it is a
+climate model goes to the domain extension; what needs to know which machine it
+runs on is an `Executor` and belongs to neither.
+
+The case that will test it is `dynamic.asan`, unwritten. `CC-Test`'s
+`tools/asan.sh` hardcodes `ifx`/`icx` and a module load, and `hpc/asan-cam.pbs`
+is PBS plus CAM. Only the middle is a Scanner — build with `-fsanitize=address`,
+run, turn the ASan report into Findings — and the other two thirds have homes
+already.
+
 - **`recast/conformance/fake_tool.py`.** `CC-Test`'s `tests/run.sh` fakes
   gitleaks, syft and grype *on PATH* and asserts on the gate's exit codes. That
   is a better test than faking the plugin, which replaces the code under test:
