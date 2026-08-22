@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 import pytest
 
 from recast import WORKSPACE_DIRNAME
-from recast.errors import ConfigError
+from recast.errors import ConfigError, ScannerUnavailable
 from recast.model import (
     Candidate,
     Confidence,
@@ -36,7 +36,7 @@ from recast.plugins.store import EvidenceStore, FindingStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
 from recast.registry import KINDS, Registry
-from recast.run import _NOT_STAGES, _NOT_STEPS, _STEPS, run_recipe
+from recast.run import _NOT_STAGES, _NOT_STEPS, _STEPS, RunStatus, run_recipe
 
 # --- a complete fake plugin set ----------------------------------------------
 
@@ -773,3 +773,253 @@ def test_every_registered_kind_is_a_step_a_non_step_or_not_a_stage() -> None:
     assert not _STEPS & _NOT_STEPS
     assert not _STEPS & _NOT_STAGES
     assert not _NOT_STEPS & _NOT_STAGES
+
+
+# --- a scan that did not happen ----------------------------------------------
+#
+# The third state. `scan` returns an iterable, so "the tool is not installed"
+# and "the repository is clean" are the same value; the only thing that can
+# separate them is the scanner saying so, and the only thing that can keep the
+# difference is a run status with somewhere to put it.
+
+
+class MissingToolScanner(Scanner):
+    name = "fake.missing"
+
+    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+        raise ScannerUnavailable("gitleaks is not on PATH")
+        yield  # pragma: no cover - a real scanner is a generator; so is this
+
+
+class MissingModelAdjudicator(Adjudicator):
+    name = "fake.nomodel"
+
+    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+        raise ScannerUnavailable("no API key for the adversarial model")
+
+
+def _incomplete_registry() -> Registry:
+    registry = _audit_registry()
+    registry.register("scanner", "fake.missing", MissingToolScanner)
+    registry.register("adjudicator", "fake.nomodel", MissingModelAdjudicator)
+    return registry
+
+
+def test_an_unavailable_scanner_is_incomplete_not_ok(tmp_path: Path) -> None:
+    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is RunStatus.INCOMPLETE
+    assert not run.passed
+    outcome = run.units[0].outcomes[-1]
+    assert outcome.status == "incomplete"
+    assert outcome.detail == "gitleaks is not on PATH"
+
+
+def test_an_unavailable_scanner_is_incomplete_not_failed(tmp_path: Path) -> None:
+    """Failed means something was checked and did not hold. Nothing was."""
+    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is not RunStatus.FAILED
+    assert run.units[0].stopped_by is None
+
+
+def test_the_stages_after_an_unavailable_one_still_run(tmp_path: Path) -> None:
+    """Nothing is protected by stopping here. The run is already not a pass,
+    and the scanners that *can* run are the only findings anyone will get."""
+    stages = _audit_stages(Stage("scanner", "fake.missing"))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is RunStatus.INCOMPLETE
+    assert len(MemoryFindingStore.written) == 2 * len(run.units)
+
+
+def test_an_unavailable_adjudicator_leaves_the_findings_alone(tmp_path: Path) -> None:
+    """Returning them unchanged would say they were examined and left
+    plausible, which is a claim about the findings rather than about the
+    adjudicator. They are still stored: losing them because nobody could judge
+    them destroys the only record that there was something to judge."""
+    stages = _audit_stages(Stage("adjudicator", "fake.nomodel"))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is RunStatus.INCOMPLETE
+    assert all(f.disclosure is Disclosure.PLAUSIBLE for f in run.units[0].findings)
+    assert len(MemoryFindingStore.written) == 2 * len(run.units)
+
+
+def test_a_failure_outranks_an_incompleteness(tmp_path: Path) -> None:
+    """Worst wins. A run with both has something it checked and did not like,
+    and that is the more urgent of the two answers."""
+    stages = _audit_stages(
+        Stage("scanner", "fake.missing"),
+        Stage("adjudicator", "fake.confirm", gate=True),
+    )
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is RunStatus.FAILED
+
+
+def test_a_run_that_walked_no_units_is_incomplete(tmp_path: Path) -> None:
+    """It has not checked anything, which is what the word is for. The usual
+    cause is a frontend pointed at the wrong tree."""
+    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.scan")]
+    run = run_recipe(FakeRecipe(stages), tmp_path, {"units": []}, registry=_incomplete_registry())
+    run.units.clear()
+    assert run.status is RunStatus.INCOMPLETE
+    assert not run.passed
+
+
+# --- waivers -----------------------------------------------------------------
+
+
+def test_a_waived_scanner_stops_counting_but_keeps_reporting(tmp_path: Path) -> None:
+    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"allow_incomplete": ["fake.missing"]},
+        registry=_incomplete_registry(),
+    )
+    assert run.status is RunStatus.PASSED
+    outcome = run.units[0].outcomes[-1]
+    assert outcome.status == "incomplete", "a waiver may not edit the record"
+    assert outcome.waived
+    assert outcome.detail.endswith("(waived)")
+
+
+def test_a_waiver_does_not_reach_a_stage_it_does_not_name(tmp_path: Path) -> None:
+    stages = [
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.scan"),
+        Stage("scanner", "fake.missing"),
+        Stage("adjudicator", "fake.nomodel"),
+    ]
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"allow_incomplete": ["fake.missing"]},
+        registry=_incomplete_registry(),
+    )
+    assert run.status is RunStatus.INCOMPLETE
+    waived = {o.plugin: o.waived for o in run.units[0].outcomes if o.status == "incomplete"}
+    assert waived == {"fake.missing": True, "fake.nomodel": False}
+
+
+def test_a_waived_scan_carries_its_consequence_downstream(tmp_path: Path) -> None:
+    """A pinned interaction rather than an accident.
+
+    The waived scanner was the only one, so there are no findings, so the
+    adjudicator is ``skipped`` for want of work and the run passes. That reads
+    alarming and is the right answer: the operator did not fail to notice this
+    scanner could not run, they said so by name. What would be wrong is
+    reaching the same green without the waiver, and that is what the test
+    above checks.
+    """
+    stages = _audit_stages(Stage("adjudicator", "fake.refute", gate=True))
+    stages[1] = Stage("scanner", "fake.missing")
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"allow_incomplete": ["fake.missing"]},
+        registry=_incomplete_registry(),
+    )
+    assert run.status is RunStatus.PASSED
+    adjudicated = next(o for o in run.units[0].outcomes if o.kind == "adjudicator")
+    assert adjudicated.status == "skipped"
+    assert not MemoryFindingStore.written
+
+
+def test_waiving_a_gate_is_refused(tmp_path: Path) -> None:
+    """A gate that may be absent from a passing run is not a gate -- the same
+    argument that makes an optional gate a contradiction."""
+    stages = _audit_stages(Stage("adjudicator", "fake.nomodel", gate=True))
+    with pytest.raises(ConfigError, match="is not a gate"):
+        run_recipe(
+            FakeRecipe(stages),
+            tmp_path,
+            {"allow_incomplete": ["fake.nomodel"]},
+            registry=_incomplete_registry(),
+        )
+
+
+def test_a_waiver_for_a_stage_the_recipe_does_not_declare_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="reads as coverage"):
+        run_recipe(
+            FakeRecipe(_audit_stages()),
+            tmp_path,
+            {"allow_incomplete": ["fake.typo"]},
+            registry=_incomplete_registry(),
+        )
+
+
+def test_a_waiver_list_is_a_list(tmp_path: Path) -> None:
+    """A bare string is iterable, so it would silently waive nothing while
+    looking like it waived something."""
+    with pytest.raises(ConfigError, match="not a single string"):
+        run_recipe(
+            FakeRecipe(_audit_stages()),
+            tmp_path,
+            {"allow_incomplete": "fake.scan"},
+            registry=_incomplete_registry(),
+        )
+
+
+def test_the_summary_says_nothing_about_what_could_not_run(tmp_path: Path) -> None:
+    """Tempting and wrong. This file is regenerated and diffed in CI, and it
+    excludes what differs between machines for exactly this reason -- whether
+    gitleaks is installed is a fact about the machine, so recording it here
+    would make the file unstable and its diffs meaningless. The status, the
+    exit code and the Evidence manifest carry it; this does not."""
+    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    assert run.status is RunStatus.INCOMPLETE
+    assert "incomplete" not in json.dumps(run.summary())
+
+
+def test_the_cli_exits_differently_for_incomplete_than_for_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two non-zero exits, because a caller deciding whether to fix the code or
+    fix the machine should not have to parse the last line to find out which.
+
+    Registered into the real registry the way a domain package's plugins arrive,
+    since ``recast run`` builds its own and there is no other way in.
+    """
+    from recast.cli import build_parser
+    from recast.registry import REGISTRY
+
+    for kind, name, plugin in [
+        ("frontend", "fake-frontend", FakeFrontend),
+        ("scanner", "fake.missing", MissingToolScanner),
+        ("scanner", "fake.scan", FakeScanner),
+        ("adjudicator", "fake.confirm", ConfirmingAdjudicator),
+    ]:
+        REGISTRY.register(kind, name, plugin, replace=True)
+
+    class IncompleteRecipe(FakeRecipe):
+        name = "cli-incomplete"
+
+        def __init__(self) -> None:
+            super().__init__([Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")])
+
+    class FailedRecipe(FakeRecipe):
+        name = "cli-failed"
+
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    Stage("frontend", "fake-frontend"),
+                    Stage("scanner", "fake.scan"),
+                    Stage("adjudicator", "fake.confirm", gate=True),
+                ]
+            )
+
+    REGISTRY.register("recipe", "cli-incomplete", IncompleteRecipe, replace=True)
+    REGISTRY.register("recipe", "cli-failed", FailedRecipe, replace=True)
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "cli-incomplete", str(tmp_path)])
+    assert args.func(args) == 2
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out
+    assert "could not run: scanner fake.missing" in out
+
+    args = parser.parse_args(["run", "cli-failed", str(tmp_path)])
+    assert args.func(args) == 1
+    assert "FAILED" in capsys.readouterr().out

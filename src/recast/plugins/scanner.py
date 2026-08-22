@@ -48,6 +48,15 @@ class Scanner(ABC):
         Yield ``Disclosure.PLAUSIBLE`` freely -- precision is the adjudicator's
         job, not the scanner's. Suppressing an uncertain finding here loses it
         permanently; emitting it costs one adjudication pass.
+
+        Raise ``ScannerUnavailable`` when the scan could not run: the tool is
+        not on PATH, the API refused, the build this scanner needs is not
+        there. **Do not return an empty iterable for that.** An empty iterable
+        means "I ran and found nothing", the run is entitled to report a clean
+        scan on the strength of it, and a security gate that says clean when it
+        means untested is worse than one that says nothing. The runner marks
+        such a stage ``incomplete``, which is neither a pass nor a failure and
+        does not become either by omission.
         """
 
 
@@ -68,4 +77,11 @@ class Adjudicator(ABC):
 
         Must be prepared to return ``Disclosure.REFUTED``. An adjudicator that
         never refutes anything is not adding information.
+
+        Raise ``ScannerUnavailable`` on the same terms a Scanner does, and it
+        matters more here: an adjudicator is usually the recipe's gate, so
+        "the gate could not run" is the one incompleteness that must never read
+        as a pass. Returning the finding unchanged would say it was examined
+        and left ``PLAUSIBLE``, which is a claim about the finding rather than
+        about the adjudicator.
         """
