@@ -817,8 +817,11 @@ in this repository as `recast/scan/`, so the attribution is owed here and
 which.
 
 What remains is clerical and belongs with the archiving: put the `LICENSE` file
-into all three source repositories before they go read-only, so the record does
-not depend on anyone remembering this note. The attribution half is already done —
+into the two source repositories that will be public — the translation pipeline
+and `CC-Test` — before they go read-only, so the record does not depend on
+anyone remembering this note. The agent-produced scripts collection is not
+going public (maintainer, 2026-08-21), so it needs no licence file; what was
+promoted out of it is licensed where it landed. The attribution half is already done —
 see "The history that was not carried" under P2, and the `NOTICE` entries it
 produced.
 
