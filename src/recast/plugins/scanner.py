@@ -16,6 +16,36 @@ they belong in the open-source engine:
 
 Findings default to ``Access.EMBARGOED``. Lowering that is a coordinated
 disclosure decision made by a human, never by a scanner.
+
+What a scanner is *of*
+----------------------
+
+Two of the four families above are not about a Unit at all. gitleaks' value is
+in history -- a credential deleted in a later commit is still in the pack, and
+no file in a working tree shows it. syft and grype describe the dependency
+state of a whole repository, and that state is one fact, not one per module.
+Handing such a scanner a Unit and calling it once per Unit is N identical
+scans, the same findings attributed N times, and a runtime that grows with a
+number unrelated to the work; handing it the Unit's files instead is a
+materially weaker check than the tool exists to perform. The first in-tree
+scanner did the second of those for a day, and that day is why ``subject``
+exists.
+
+A scanner declares ``subject``. ``"unit"`` is walked once per Unit with that
+Unit's Facts. ``"repository"`` is walked once per run, against a Unit the
+runner synthesizes for the tree -- ``kind="repository"``, ``sources=()``,
+empty Facts -- so that adjudication, storage and the run's status work the
+same way for both and a repository finding is a ``Finding`` like any other.
+
+Where a scanner runs
+--------------------
+
+It receives an ``Executor``, the same one Oracles and Verifiers receive, and
+for the same reason: nothing that leaves the process may use ``subprocess``
+directly. The ``secret`` scanner ran gitleaks through ``subprocess`` for one
+day because the contract gave it nothing else, and that was the contract's
+defect rather than the scanner's. A recipe that declares a scanner declares an
+executor.
 """
 
 from __future__ import annotations
@@ -23,9 +53,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from recast.model import Facts, Finding, Unit
+from recast.plugins.executor import Executor
+
+Subject = Literal["unit", "repository"]
 
 
 class Scanner(ABC):
@@ -36,14 +69,39 @@ class Scanner(ABC):
     family: str = "audit"
     """``secret`` | ``composition`` | ``audit`` | ``dynamic``."""
 
+    subject: Subject = "unit"
+    """What one call examines. See the module docstring.
+
+    ``"unit"``: once per Unit, with its Facts. ``"repository"``: once per run,
+    with a synthesized Unit for the whole tree and empty Facts. A scanner of
+    history is a repository scanner -- history is a property of the tree, not
+    of any file in it.
+    """
+
+    tool: str | None = None
+    """The external binary this scanner runs, when it runs one.
+
+    Declared so the engine can ask before the run whether it is there:
+    ``recast plan`` reports a missing tool beside the stage, which is the cheap
+    check that should fail in a second rather than two stages in. The operator
+    may point at a different binary through ``config[tool]`` -- so a scanner
+    with ``tool = "gitleaks"`` reads ``config.get("gitleaks", "gitleaks")``.
+    ``None`` for a scanner that wraps nothing.
+    """
+
     needs_build: bool = False
     """True for sanitizer and fuzz scanners, which need a compiled artifact."""
 
     @abstractmethod
     def scan(
-        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+        self,
+        unit: Unit,
+        facts: Facts,
+        workspace: Path,
+        executor: Executor,
+        config: dict[str, Any],
     ) -> Iterable[Finding]:
-        """Yield findings for one Unit.
+        """Yield findings for ``unit`` -- a real one, or the repository.
 
         Yield ``Disclosure.PLAUSIBLE`` freely -- precision is the adjudicator's
         job, not the scanner's. Suppressing an uncertain finding here loses it
@@ -57,31 +115,6 @@ class Scanner(ABC):
         means untested is worse than one that says nothing. The runner marks
         such a stage ``incomplete``, which is neither a pass nor a failure and
         does not become either by omission.
-        """
 
-
-class Adjudicator(ABC):
-    """Promote or kill a Finding after independent verification.
-
-    Sec-Track's discovery loops run scan -> adversarially verify -> dedupe ->
-    reclassify, and the verify step is where most of the value is: loop-2 turned
-    108 raw findings into 43 confirmed and 59 downgraded. This ABC is that step.
-    """
-
-    name: str
-
-    @abstractmethod
-    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
-        """Return the finding with ``disclosure``, ``severity``, and
-        ``exploitability`` revised, and the reasoning recorded in ``evidence``.
-
-        Must be prepared to return ``Disclosure.REFUTED``. An adjudicator that
-        never refutes anything is not adding information.
-
-        Raise ``ScannerUnavailable`` on the same terms a Scanner does, and it
-        matters more here: an adjudicator is usually the recipe's gate, so
-        "the gate could not run" is the one incompleteness that must never read
-        as a pass. Returning the finding unchanged would say it was examined
-        and left ``PLAUSIBLE``, which is a claim about the finding rather than
-        about the adjudicator.
+        Run the tool through ``executor``. ``config["root"]`` is the tree.
         """

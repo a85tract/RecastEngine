@@ -81,13 +81,28 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     for problem in problems:
         print(f"config: {problem}", file=sys.stderr)
 
+    from recast.run import missing_tools
+
+    stages = recipe.stages(config)
+    # The preflight: a scanner that wraps a binary says so, and this asks for
+    # the binary now rather than letting the run find out two stages in.
+    # Reported beside the stage and counted as unavailable, because a plugin
+    # whose tool is absent will be ``incomplete`` at run time, and the point of
+    # ``plan`` is to say that before anything runs.
+    tools = missing_tools(stages, config, registry=REGISTRY)
+
     missing = 0
-    for i, stage in enumerate(recipe.stages(config), 1):
+    for i, stage in enumerate(stages, 1):
         available = stage.plugin in REGISTRY.names(stage.kind)
-        mark = "ok " if available else ("opt" if stage.optional else "MISS")
+        tool = tools.get(stage.plugin)
+        if tool:
+            mark = "????"
+        else:
+            mark = "ok " if available else ("opt" if stage.optional else "MISS")
         flags = " ".join(f for f, on in (("gate", stage.gate), ("optional", stage.optional)) if on)
-        print(f"{i:2d}. [{mark}] {stage.kind:12s} {stage.plugin:28s} {flags}")
-        if not available and not stage.optional:
+        note = f"  {tool}" if tool else ""
+        print(f"{i:2d}. [{mark}] {stage.kind:12s} {stage.plugin:28s} {flags}{note}")
+        if (not available or tool) and not stage.optional:
             missing += 1
 
     if missing or problems:

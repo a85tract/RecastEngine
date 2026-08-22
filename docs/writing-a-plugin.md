@@ -181,8 +181,17 @@ raises `ScannerUnavailable` on a report that will not parse or that records a
 failed invocation, which are the two ways a crashed tool otherwise arrives
 looking like a clean scan.
 
-Then declare a `ScannerCase` in your conformance plugin set, naming the binary
-you wrap in `tool`. The suite fakes it on PATH — present and clean, present and
+Declare what you scan. `subject = "unit"` is walked once per Unit with its
+Facts; `subject = "repository"` is walked once per run against a Unit that stands
+for the tree — history scanners and dependency scanners are the second kind,
+and walking them per Unit is N identical scans. Declare the binary you wrap in
+`tool`, so `recast plan` can ask for it before the run. Run it through the
+`executor` you are handed; the contract gives you one for the same reason it
+gives Oracles one.
+
+Then declare a `ScannerCase` in your conformance plugin set. It takes the
+binary from your scanner's `tool`, or from its own `tool` if you need to
+override it. The suite fakes it on PATH — present and clean, present and
 garbage, absent entirely — and checks that your scanner can tell those apart.
 See `recast.conformance.fake_tool`.
 

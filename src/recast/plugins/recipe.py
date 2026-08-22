@@ -31,9 +31,9 @@ class Stage:
     | ``adjudicator`` | ``executor`` | ``store``.
 
     Most kinds are steps the engine walks in order. An ``executor`` stage is not
-    a step: it declares the executor the run's Oracles and Verifiers receive as
-    an argument, and so it comes first. A recipe that materializes an oracle or
-    awards a verdict has to declare one.
+    a step: it declares the executor the run's Oracles, Verifiers, Scanners and
+    Adjudicators receive as an argument, and so it comes first. A recipe that
+    declares any of those four has to declare one.
     """
 
     plugin: str

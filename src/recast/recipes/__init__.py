@@ -161,6 +161,7 @@ class AuditRecipe(Recipe):
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         stages = [
+            Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
             Stage("scanner", "secret"),
             Stage("scanner", "composition"),
