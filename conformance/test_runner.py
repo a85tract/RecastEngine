@@ -145,6 +145,7 @@ def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
 
 def _scan_registry() -> Registry:
     registry = Registry()
+    registry.register("executor", "local", local_executor)
     registry.register("frontend", StubFrontend.name, StubFrontend)
     registry.register("scanner", QuietScanner.name, QuietScanner)
     registry.register("scanner", UnavailableScanner.name, UnavailableScanner)

@@ -9,6 +9,7 @@ compiler-gated suite.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -27,11 +28,12 @@ from recast.model import (
     Unit,
     Verdict,
 )
+from recast.plugins.adjudicator import Adjudicator
 from recast.plugins.executor import Executor, Job, JobResult
 from recast.plugins.frontend import Frontend
 from recast.plugins.oracle import Oracle
 from recast.plugins.recipe import Recipe, Stage
-from recast.plugins.scanner import Adjudicator, Scanner
+from recast.plugins.scanner import Scanner
 from recast.plugins.store import EvidenceStore, FindingStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
@@ -477,7 +479,9 @@ class FakeScanner(Scanner):
     name = "fake.scan"
     family = "audit"
 
-    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
         for n in range(2):
             yield Finding(
                 uid=f"{unit.uid.replace(':', '_')}-{n}",
@@ -494,7 +498,9 @@ class SilentScanner(Scanner):
 
     name = "fake.silent"
 
-    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
         return []
 
 
@@ -502,7 +508,9 @@ class ConfirmingAdjudicator(Adjudicator):
     name = "fake.confirm"
     verdict: ClassVar[Disclosure] = Disclosure.CONFIRMED
 
-    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+    def adjudicate(
+        self, finding: Finding, workspace: Path, executor: Any, config: dict[str, Any]
+    ) -> Finding:
         finding.disclosure = type(self).verdict
         return finding
 
@@ -515,7 +523,9 @@ class RefutingAdjudicator(ConfirmingAdjudicator):
 class NeverAdjudicator(Adjudicator):
     name = "fake.never"
 
-    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+    def adjudicate(
+        self, finding: Finding, workspace: Path, executor: Any, config: dict[str, Any]
+    ) -> Finding:
         raise AssertionError("adjudicated a finding that does not exist")
 
 
@@ -554,6 +564,7 @@ def _audit_stages(*middle: Stage) -> list[Stage]:
     """The audit shape: no executor, no transform, findings out rather than
     candidates."""
     return [
+        Stage("executor", "fake-exec"),
         Stage("frontend", "fake-frontend"),
         Stage("scanner", "fake.scan"),
         *middle,
@@ -614,6 +625,7 @@ def test_a_failed_adjudication_gate_still_records_what_it_found(tmp_path: Path) 
 
 def test_an_adjudicator_with_nothing_to_adjudicate_is_not_called(tmp_path: Path) -> None:
     stages = [
+        Stage("executor", "fake-exec"),
         Stage("frontend", "fake-frontend"),
         Stage("scanner", "fake.silent"),
         Stage("adjudicator", "fake.never", gate=True),
@@ -712,15 +724,22 @@ def test_the_summary_says_nothing_about_findings(tmp_path: Path) -> None:
 # --- what a recipe has to declare, and what it may not -----------------------
 
 
-def test_a_recipe_that_neither_materializes_nor_awards_needs_no_executor(
-    tmp_path: Path,
-) -> None:
-    """``Stage`` asks for an executor from "a recipe that materializes an oracle
-    or awards a verdict". Demanding one unconditionally made ``audit``
-    unrunnable as shipped."""
-    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_audit_registry())
+def test_a_recipe_that_hands_nothing_an_executor_needs_none(tmp_path: Path) -> None:
+    """The requirement is conditional on a stage that takes one. A recipe of
+    frontend and store alone -- odd, but legal -- declares none."""
+    stages = [Stage("frontend", "fake-frontend"), Stage("store", "fake-findings")]
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
     assert run.passed
     assert not any(o.kind == "executor" for o in run.units[0].outcomes)
+
+
+def test_a_recipe_that_declares_a_scanner_needs_an_executor(tmp_path: Path) -> None:
+    """A scanner is handed one, the way an oracle is: the in-tree gitleaks
+    wrapper spent a day calling subprocess because the contract gave it nothing
+    else, and that was the contract's defect."""
+    stages = _audit_stages()[1:]
+    with pytest.raises(ConfigError, match="handed an executor"):
+        run_recipe(FakeRecipe(stages), tmp_path, registry=_audit_registry())
 
 
 def test_a_recipe_that_awards_a_verdict_still_needs_an_executor(tmp_path: Path) -> None:
@@ -786,7 +805,9 @@ def test_every_registered_kind_is_a_step_a_non_step_or_not_a_stage() -> None:
 class MissingToolScanner(Scanner):
     name = "fake.missing"
 
-    def scan(self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]):
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
         raise ScannerUnavailable("gitleaks is not on PATH")
         yield  # pragma: no cover - a real scanner is a generator; so is this
 
@@ -794,7 +815,9 @@ class MissingToolScanner(Scanner):
 class MissingModelAdjudicator(Adjudicator):
     name = "fake.nomodel"
 
-    def adjudicate(self, finding: Finding, workspace: Path, config: dict[str, Any]) -> Finding:
+    def adjudicate(
+        self, finding: Finding, workspace: Path, executor: Any, config: dict[str, Any]
+    ) -> Finding:
         raise ScannerUnavailable("no API key for the adversarial model")
 
 
@@ -806,7 +829,11 @@ def _incomplete_registry() -> Registry:
 
 
 def test_an_unavailable_scanner_is_incomplete_not_ok(tmp_path: Path) -> None:
-    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.missing"),
+    ]
     run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
     assert run.status is RunStatus.INCOMPLETE
     assert not run.passed
@@ -817,7 +844,11 @@ def test_an_unavailable_scanner_is_incomplete_not_ok(tmp_path: Path) -> None:
 
 def test_an_unavailable_scanner_is_incomplete_not_failed(tmp_path: Path) -> None:
     """Failed means something was checked and did not hold. Nothing was."""
-    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.missing"),
+    ]
     run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
     assert run.status is not RunStatus.FAILED
     assert run.units[0].stopped_by is None
@@ -866,7 +897,11 @@ def test_an_incompleteness_outranks_a_failure(tmp_path: Path) -> None:
 def test_a_run_that_walked_no_units_is_incomplete(tmp_path: Path) -> None:
     """It has not checked anything, which is what the word is for. The usual
     cause is a frontend pointed at the wrong tree."""
-    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.scan")]
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.scan"),
+    ]
     run = run_recipe(FakeRecipe(stages), tmp_path, {"units": []}, registry=_incomplete_registry())
     run.units.clear()
     assert run.status is RunStatus.INCOMPLETE
@@ -877,7 +912,11 @@ def test_a_run_that_walked_no_units_is_incomplete(tmp_path: Path) -> None:
 
 
 def test_a_waived_scanner_stops_counting_but_keeps_reporting(tmp_path: Path) -> None:
-    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.missing"),
+    ]
     run = run_recipe(
         FakeRecipe(stages),
         tmp_path,
@@ -893,6 +932,7 @@ def test_a_waived_scanner_stops_counting_but_keeps_reporting(tmp_path: Path) -> 
 
 def test_a_waiver_does_not_reach_a_stage_it_does_not_name(tmp_path: Path) -> None:
     stages = [
+        Stage("executor", "fake-exec"),
         Stage("frontend", "fake-frontend"),
         Stage("scanner", "fake.scan"),
         Stage("scanner", "fake.missing"),
@@ -920,7 +960,7 @@ def test_a_waived_scan_carries_its_consequence_downstream(tmp_path: Path) -> Non
     above checks.
     """
     stages = _audit_stages(Stage("adjudicator", "fake.refute", gate=True))
-    stages[1] = Stage("scanner", "fake.missing")
+    stages[2] = Stage("scanner", "fake.missing")
     run = run_recipe(
         FakeRecipe(stages),
         tmp_path,
@@ -974,7 +1014,11 @@ def test_the_summary_says_nothing_about_what_could_not_run(tmp_path: Path) -> No
     gitleaks is installed is a fact about the machine, so recording it here
     would make the file unstable and its diffs meaningless. The status, the
     exit code and the Evidence manifest carry it; this does not."""
-    stages = [Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")]
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("scanner", "fake.missing"),
+    ]
     run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
     assert run.status is RunStatus.INCOMPLETE
     assert "incomplete" not in json.dumps(run.summary())
@@ -993,6 +1037,7 @@ def test_the_cli_exits_differently_for_incomplete_than_for_failed(
     from recast.registry import REGISTRY
 
     for kind, name, plugin in [
+        ("executor", "fake-exec", FakeExecutor),
         ("frontend", "fake-frontend", FakeFrontend),
         ("scanner", "fake.missing", MissingToolScanner),
         ("scanner", "fake.scan", FakeScanner),
@@ -1004,7 +1049,13 @@ def test_the_cli_exits_differently_for_incomplete_than_for_failed(
         name = "cli-incomplete"
 
         def __init__(self) -> None:
-            super().__init__([Stage("frontend", "fake-frontend"), Stage("scanner", "fake.missing")])
+            super().__init__(
+                [
+                    Stage("executor", "fake-exec"),
+                    Stage("frontend", "fake-frontend"),
+                    Stage("scanner", "fake.missing"),
+                ]
+            )
 
     class FailedRecipe(FakeRecipe):
         name = "cli-failed"
@@ -1012,6 +1063,7 @@ def test_the_cli_exits_differently_for_incomplete_than_for_failed(
         def __init__(self) -> None:
             super().__init__(
                 [
+                    Stage("executor", "fake-exec"),
                     Stage("frontend", "fake-frontend"),
                     Stage("scanner", "fake.scan"),
                     Stage("adjudicator", "fake.confirm", gate=True),
@@ -1031,3 +1083,173 @@ def test_the_cli_exits_differently_for_incomplete_than_for_failed(
     args = parser.parse_args(["run", "cli-failed", str(tmp_path)])
     assert args.func(args) == 1
     assert "FAILED" in capsys.readouterr().out
+
+
+# --- what a scanner is of ------------------------------------------------------
+#
+# gitleaks reads history and syft describes a whole tree; neither is a fact
+# about a Unit. A scanner says so with ``subject = "repository"`` and is walked
+# once, against a Unit the runner synthesizes for the tree.
+
+
+class TreeScanner(Scanner):
+    name = "fake.tree"
+    subject = "repository"
+    calls: ClassVar[list[str]] = []
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        type(self).calls.append(unit.uid)
+        yield Finding(
+            uid=f"tree-{len(type(self).calls)}",
+            unit=unit.uid,
+            scanner=self.name,
+            title="in history",
+        )
+
+
+class ExecutorRecordingScanner(Scanner):
+    name = "fake.exec-aware"
+    seen: ClassVar[list[Any]] = []
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        type(self).seen.append(executor)
+        return []
+
+
+class ToolScanner(Scanner):
+    name = "fake.tooled"
+    tool = "definitely-not-a-real-binary"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        return []
+
+
+def _subject_registry() -> Registry:
+    registry = _audit_registry()
+    registry.register("scanner", "fake.tree", TreeScanner)
+    registry.register("scanner", "fake.exec-aware", ExecutorRecordingScanner)
+    registry.register("scanner", "fake.tooled", ToolScanner)
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def _fresh_subject_counters() -> None:
+    TreeScanner.calls = []
+    ExecutorRecordingScanner.seen = []
+
+
+def test_a_repository_scanner_runs_once_against_the_tree(tmp_path: Path) -> None:
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.tree")
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_subject_registry())
+    assert TreeScanner.calls == [f"repository:{tmp_path.resolve().name}"]
+    tree = run.units[0]
+    assert tree.unit.kind == "repository"
+    assert tree.unit.sources == ()
+    assert [o.plugin for o in tree.outcomes] == ["fake.tree", "fake-findings"]
+
+
+def test_a_repository_scanner_is_not_walked_per_unit(tmp_path: Path) -> None:
+    """Nor recorded as skipped there: it was not asked."""
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.tree")
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_subject_registry())
+    for unit_run in run.units[1:]:
+        assert "fake.tree" not in [o.plugin for o in unit_run.outcomes]
+
+
+def test_a_unit_scanner_is_not_walked_against_the_tree(tmp_path: Path) -> None:
+    stages = _audit_stages(Stage("scanner", "fake.tree"))
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_subject_registry())
+    tree = run.units[0]
+    assert "fake.scan" not in [o.plugin for o in tree.outcomes]
+    assert all("fake.scan" in [o.plugin for o in u.outcomes] for u in run.units[1:])
+
+
+def test_a_repository_finding_is_adjudicated_stored_and_counted_like_any_other(
+    tmp_path: Path,
+) -> None:
+    """The reason the tree is a Unit rather than a special case."""
+    stages = _audit_stages(Stage("adjudicator", "fake.confirm", gate=True))
+    stages[2] = Stage("scanner", "fake.tree")
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_subject_registry())
+    tree = run.units[0]
+    assert tree.stopped_by == "fake.confirm"
+    assert run.status is RunStatus.FAILED
+    assert [f.unit for f in MemoryFindingStore.written] == [tree.unit.uid]
+    assert MemoryFindingStore.written[0].disclosure is Disclosure.CONFIRMED
+
+
+def test_the_tree_unit_is_only_there_when_something_scans_it(tmp_path: Path) -> None:
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_subject_registry())
+    assert all(u.unit.kind != "repository" for u in run.units)
+
+
+def test_scanners_receive_the_recipes_executor(tmp_path: Path) -> None:
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.exec-aware")
+    run_recipe(FakeRecipe(stages), tmp_path, registry=_subject_registry())
+    assert ExecutorRecordingScanner.seen
+    assert all(isinstance(e, FakeExecutor) for e in ExecutorRecordingScanner.seen)
+
+
+# --- the preflight -------------------------------------------------------------
+
+
+def test_missing_tools_names_the_binary_before_the_run(tmp_path: Path) -> None:
+    from recast.run import missing_tools
+
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.tooled")
+    found = missing_tools(stages, {}, registry=_subject_registry())
+    assert found == {"fake.tooled": "definitely-not-a-real-binary is not on PATH"}
+
+
+def test_missing_tools_honours_the_operators_override(tmp_path: Path) -> None:
+    """``config[tool]`` points at a different binary, as the scanner reads it."""
+    from recast.run import missing_tools
+
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.tooled")
+    config = {"stages": {"fake.tooled": {"definitely-not-a-real-binary": sys.executable}}}
+    assert missing_tools(stages, config, registry=_subject_registry()) == {}
+
+
+def test_missing_tools_ignores_scanners_that_wrap_nothing(tmp_path: Path) -> None:
+    from recast.run import missing_tools
+
+    assert missing_tools(_audit_stages(), {}, registry=_subject_registry()) == {}
+
+
+def test_plan_reports_a_missing_tool_beside_the_stage(capsys: pytest.CaptureFixture[str]) -> None:
+    from recast.cli import build_parser
+    from recast.registry import REGISTRY
+
+    REGISTRY.register("executor", "fake-exec", FakeExecutor, replace=True)
+    REGISTRY.register("frontend", "fake-frontend", FakeFrontend, replace=True)
+    REGISTRY.register("scanner", "fake.tooled", ToolScanner, replace=True)
+
+    class ToolRecipe(FakeRecipe):
+        name = "cli-tooled"
+
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    Stage("executor", "fake-exec"),
+                    Stage("frontend", "fake-frontend"),
+                    Stage("scanner", "fake.tooled"),
+                ]
+            )
+
+    REGISTRY.register("recipe", "cli-tooled", ToolRecipe, replace=True)
+    args = build_parser().parse_args(["plan", "cli-tooled"])
+    assert args.func(args) == 1
+    out = capsys.readouterr().out
+    assert "[????] scanner      fake.tooled" in out
+    assert "definitely-not-a-real-binary is not on PATH" in out

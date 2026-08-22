@@ -23,6 +23,7 @@ import pytest
 
 from recast.conformance.fake_tool import fake_tool, on_path
 from recast.errors import ScannerUnavailable
+from recast.executors.local import factory as local_executor
 from recast.model import Access, Disclosure, Facts, Unit
 
 _CLEAN = {"runs": [{"results": []}]}
@@ -45,10 +46,19 @@ def subject(tmp_path: Path) -> tuple[Unit, Facts]:
     return unit, Facts(unit=unit.uid)
 
 
+def _scanner(case: Any) -> Any:
+    return case.build() if case.build is not None else _from_registry(case.name)
+
+
+def _tool(case: Any) -> str | None:
+    """The case's declaration, else the plugin's own ``tool``."""
+    return case.tool if case.tool is not None else getattr(_scanner(case), "tool", None)
+
+
 def _scan(case: Any, subject: tuple[Unit, Facts], workspace: Path) -> list[Any]:
-    scanner = case.build() if case.build is not None else _from_registry(case.name)
     unit, facts = subject
-    return list(scanner.scan(unit, facts, workspace, {"root": workspace, **dict(case.config)}))
+    config = {"root": workspace, **dict(case.config)}
+    return list(_scanner(case).scan(unit, facts, workspace, local_executor(), config))
 
 
 def _from_registry(name: str) -> Any:
@@ -65,7 +75,7 @@ def test_a_tool_that_is_not_installed_is_not_a_clean_scan(
     Returning an empty iterable here tells the run the repository is clean, on
     the strength of a tool that was never invoked.
     """
-    if scanner_case.tool is None:
+    if _tool(scanner_case) is None:
         pytest.skip(f"{scanner_case.name} declares no external tool")
     empty = tmp_path / "empty-path"
     empty.mkdir()
@@ -80,11 +90,11 @@ def test_output_that_will_not_parse_is_not_a_clean_scan(
     a missing tool, and the same rule ``hpc-devsecops`` states in its
     SECURITY.md: malformed SARIF is in the exit class of a missing tool, not of
     a clean check."""
-    if scanner_case.tool is None:
+    if _tool(scanner_case) is None:
         pytest.skip(f"{scanner_case.name} declares no external tool")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_tool(bin_dir, scanner_case.tool, payload="panic: runtime error\n", exit_code=2)
+    fake_tool(bin_dir, _tool(scanner_case), payload="panic: runtime error\n", exit_code=2)
     with on_path(bin_dir), pytest.raises(ScannerUnavailable):
         _scan(scanner_case, subject, tmp_path)
 
@@ -93,11 +103,11 @@ def test_a_clean_report_really_is_a_clean_scan(
     scanner_case: Any, subject: tuple[Unit, Facts], tmp_path: Path
 ) -> None:
     """So the two checks above cannot be satisfied by raising at everything."""
-    if scanner_case.tool is None:
+    if _tool(scanner_case) is None:
         pytest.skip(f"{scanner_case.name} declares no external tool")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_tool(bin_dir, scanner_case.tool, sarif=_CLEAN)
+    fake_tool(bin_dir, _tool(scanner_case), sarif=_CLEAN)
     with on_path(bin_dir):
         assert _scan(scanner_case, subject, tmp_path) == []
 
@@ -106,11 +116,11 @@ def test_what_it_finds_arrives_at_the_safe_end(
     scanner_case: Any, subject: tuple[Unit, Facts], tmp_path: Path
 ) -> None:
     """A scanner opts *down* through an Adjudicator, never up by omission."""
-    if scanner_case.tool is None:
+    if _tool(scanner_case) is None:
         pytest.skip(f"{scanner_case.name} declares no external tool")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_tool(bin_dir, scanner_case.tool, sarif=_ONE)
+    fake_tool(bin_dir, _tool(scanner_case), sarif=_ONE)
     with on_path(bin_dir):
         found = _scan(scanner_case, subject, tmp_path)
     assert found, "the fake tool reported a result and the scanner yielded none"

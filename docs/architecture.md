@@ -111,8 +111,10 @@ recording or refusing executor without the plugin's cooperation.
 
 Which executor gets passed is declared by an `executor` stage, first in the
 list — it is not a step the engine walks but the ambient choice everything else
-inherits, so a recipe that materializes an oracle or awards a verdict has to
-name one. It names it *through config*, never literally: `pbs-<site>` is site
+inherits, so a recipe that declares an oracle, a verifier, a scanner or an
+adjudicator has to name one. Scanners joined that list late: the in-tree
+gitleaks wrapper spent a day calling `subprocess` because the contract handed
+it nothing else, and that was the contract's defect rather than the wrapper's. It names it *through config*, never literally: `pbs-<site>` is site
 knowledge and the four shipped recipes have to stay publishable. `refactor`
 goes further and rejects the default outright, because its gate is a pinned
 multi-rank run that `local` cannot finish — better a failed `recast plan` in a
@@ -169,6 +171,32 @@ which has been running it in production and states the exit contract in its
 an incomplete findings list, so leading with the findings claims a completeness
 the run does not have. Both are non-zero either way, so what this decides is the
 headline and which of the two codes a caller sees.
+
+### What a scanner is of
+
+Two of the four scanner families are not about a Unit. gitleaks' value is in
+history — a credential deleted in a later commit is still in the pack, and no
+file in a working tree shows it — and syft/grype describe the dependency state
+of a whole repository, which is one fact rather than one per module. Walking
+such a scanner once per Unit is N identical scans with the same findings
+attributed N times; handing it the Unit's files instead is a materially weaker
+check than the tool exists to perform. The first in-tree scanner did the second
+of those for a day.
+
+So a `Scanner` declares `subject`. `"unit"` is walked once per Unit with its
+Facts. `"repository"` is walked once per run, against a Unit the runner
+synthesizes for the tree — `kind="repository"`, no sources, empty Facts — and
+that Unit gets the recipe's adjudicator and store stages like any other. That is
+the point of making the tree a Unit rather than a special case: a finding about
+history is adjudicated, stored, gated and counted by exactly the machinery that
+handles a finding about a file, and nothing downstream has to know the
+difference.
+
+A scanner also declares `tool`, the binary it wraps, so `recast plan` can ask
+for it before the run instead of letting the run discover its absence two
+stages in. A missing tool is reported beside the stage and counts as
+unavailable, because that stage will be `incomplete` at run time and the point
+of `plan` is to say so first.
 
 `recast/sarif.py` is the shared half of every scanner that wraps such a tool:
 SARIF in, `Finding` out, at the safe end. Two of its rules are the same

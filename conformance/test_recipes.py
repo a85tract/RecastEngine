@@ -86,14 +86,16 @@ def test_it_declares_at_most_one_transform(recipe_case: Any, build_recipe: Any) 
 
 
 def test_it_declares_the_executor_it_needs(recipe_case: Any, build_recipe: Any) -> None:
-    """An Oracle or a Verifier is handed an executor, so the recipe must name one.
+    """Oracles, Verifiers, Scanners and Adjudicators are handed an executor, so
+    a recipe declaring any of them must name one.
 
     First in the list, because it is not a step: it has to be resolved before
     anything it is handed to runs.
     """
     stages = build_recipe(recipe_case).stages(dict(recipe_case.config))
-    if not {stage.kind for stage in stages} & {"oracle", "verifier"}:
-        pytest.skip(f"{recipe_case.name!r} has neither an oracle nor a verifier stage")
+    handed = {"oracle", "verifier", "scanner", "adjudicator"}
+    if not {stage.kind for stage in stages} & handed:
+        pytest.skip(f"{recipe_case.name!r} declares nothing that is handed an executor")
 
     executors = [stage for stage in stages if stage.kind == "executor"]
     assert len(executors) == 1, f"{recipe_case.name!r} declares {len(executors)} executor stages"

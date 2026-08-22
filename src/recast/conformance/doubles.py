@@ -234,7 +234,7 @@ class QuietScanner(Scanner):
     family = "audit"
 
     def scan(
-        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
     ) -> Iterable[Finding]:
         return []
 
@@ -251,7 +251,7 @@ class UnavailableScanner(Scanner):
     family = "audit"
 
     def scan(
-        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
     ) -> Iterable[Finding]:
         raise ScannerUnavailable("conformance: the tool this scanner wraps is not installed")
         yield  # pragma: no cover - makes this a generator, as a real scanner is
@@ -260,9 +260,9 @@ class UnavailableScanner(Scanner):
 class ScanIncompleteRecipe(Recipe):
     """Two scanners: one that found nothing, one that could not run.
 
-    No transform, no executor, no gate. What is being checked is the run's own
-    conclusion, and every other stage in it would only give it another way to
-    fail for an unrelated reason.
+    No transform, no gate. What is being checked is the run's own conclusion,
+    and every other stage in it would only give it another way to fail for an
+    unrelated reason. The executor is there because a scanner is handed one.
     """
 
     name = "conformance.scan-incomplete"
@@ -270,6 +270,7 @@ class ScanIncompleteRecipe(Recipe):
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         return [
+            Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", StubFrontend.name)),
             Stage("scanner", QuietScanner.name),
             Stage("scanner", UnavailableScanner.name),

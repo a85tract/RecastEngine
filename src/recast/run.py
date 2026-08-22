@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
+import shutil
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -51,7 +52,7 @@ from recast.plugins.recipe import Recipe, Stage
 from recast.plugins.store import FindingStore
 from recast.registry import REGISTRY, Registry
 
-__all__ = ["RecipeRun", "RunStatus", "UnitRun", "run_recipe"]
+__all__ = ["RecipeRun", "RunStatus", "UnitRun", "missing_tools", "run_recipe"]
 
 NO_ORACLE = OracleRef(unit="", oracle="none", key="", handle=None)
 """What a Verifier receives before any Oracle has materialized. Static
@@ -316,19 +317,20 @@ def run_recipe(
         per call instead, so its constructor sees only its own keys."""
         return {"root": root, **stage_config(stage)}
 
-    # An executor stage is not a step. ``Stage`` says what it is for: "it
-    # declares the executor the run's Oracles and Verifiers receive as an
-    # argument... A recipe that materializes an oracle or awards a verdict has
-    # to declare one." So the requirement is conditional, and demanding one
-    # unconditionally made the ``audit`` recipe -- which produces Findings and
-    # neither materializes nor awards -- unrunnable as shipped. conformance/
-    # already read the contract this way and skipped its executor checks for
-    # that recipe; the runner was the one out of step.
+    # An executor stage is not a step: it declares the executor every stage
+    # that runs something receives as an argument. The requirement is
+    # conditional on there being such a stage -- a recipe of frontend and
+    # store alone needs none -- and the set of kinds that are handed one is
+    # exactly ``_HANDED_AN_EXECUTOR``, which is the contract's list rather
+    # than the runner's guess. Scanners and adjudicators joined it the day the
+    # in-tree gitleaks wrapper was found calling subprocess because the
+    # contract had given it nothing else.
     executor_stage = next((s for s in stages if s.kind == "executor"), None)
-    if executor_stage is None and any(s.kind in ("oracle", "verifier") for s in stages):
+    handed = sorted({s.kind for s in stages if s.kind in _HANDED_AN_EXECUTOR})
+    if executor_stage is None and handed:
         raise ConfigError(
-            f"recipe {recipe.name!r} materializes an oracle or awards a verdict "
-            "but declares no executor stage"
+            f"recipe {recipe.name!r} declares {handed} stage(s), which are handed an "
+            "executor, but declares no executor stage"
         )
     executor = (
         registry.get("executor", executor_stage.plugin)(**stage_config(executor_stage))
@@ -362,28 +364,15 @@ def run_recipe(
     walked = [s for s in stages if s.kind not in _NOT_STEPS]
     oracle_cache: dict[str, OracleRef] = {}
 
-    for unit, owner in _selected_units(frontends, root, recipe, config):
-        unit_run = UnitRun(unit=unit)
-        run.units.append(unit_run)
-        unit_workspace = workspace / unit.uid.replace(":", "_").replace("/", "_")
-        unit_workspace.mkdir(parents=True, exist_ok=True)
-
-        try:
-            facts = frontends[owner].analyze(unit, root)
-        except RecastError as error:
-            unit_run.outcomes.append(StageOutcome("frontend", owner, "failed", str(error)))
-            unit_run.stopped_by = owner
-            continue
-        unit_run.outcomes.append(StageOutcome("frontend", owner, "ok"))
-
-        for stage in walked:
+    def walk(unit_run: UnitRun, facts: Facts, steps: list[Stage], unit_workspace: Path) -> None:
+        for stage in steps:
             outcome = _walk_stage(
                 stage,
                 call_config(stage),
                 registry,
                 recipe,
                 executor_name,
-                unit,
+                unit_run.unit,
                 facts,
                 unit_run,
                 unit_workspace,
@@ -400,7 +389,7 @@ def run_recipe(
                 # the failing Verdict is recorded. A gate that failed and was
                 # recorded is audit trail; one that failed and vanished is a
                 # rumor.
-                for later in walked[walked.index(stage) + 1 :]:
+                for later in steps[steps.index(stage) + 1 :]:
                     if later.kind == "store":
                         unit_run.outcomes.append(
                             _walk_stage(
@@ -409,7 +398,7 @@ def run_recipe(
                                 registry,
                                 recipe,
                                 executor_name,
-                                unit,
+                                unit_run.unit,
                                 facts,
                                 unit_run,
                                 unit_workspace,
@@ -419,6 +408,47 @@ def run_recipe(
                             )
                         )
                 break
+
+    # Repository scanners first, once, against a Unit that stands for the
+    # tree. They get the same adjudicator and store stages as everything else,
+    # so a finding about history is adjudicated, stored and counted exactly
+    # like a finding about a file -- which is the reason the tree is a Unit
+    # here rather than a special case threaded through every later stage.
+    # Unit-subject scanners are left out of this walk, and repository ones
+    # out of the per-unit walks below; neither is recorded as skipped on the
+    # other's subject, because it was not asked.
+    repository_scanners = _repository_scanners(walked, registry)
+    if repository_scanners:
+        tree = Unit(uid=f"repository:{root.resolve().name}", kind="repository")
+        tree_run = UnitRun(unit=tree)
+        run.units.append(tree_run)
+        tree_workspace = workspace / "repository"
+        tree_workspace.mkdir(parents=True, exist_ok=True)
+        steps = [
+            s
+            for s in walked
+            if (s.kind == "scanner" and s.plugin in repository_scanners)
+            or s.kind in ("adjudicator", "store")
+        ]
+        walk(tree_run, Facts(unit=tree.uid), steps, tree_workspace)
+    unit_steps = [
+        s for s in walked if not (s.kind == "scanner" and s.plugin in repository_scanners)
+    ]
+
+    for unit, owner in _selected_units(frontends, root, recipe, config):
+        unit_run = UnitRun(unit=unit)
+        run.units.append(unit_run)
+        unit_workspace = workspace / unit.uid.replace(":", "_").replace("/", "_")
+        unit_workspace.mkdir(parents=True, exist_ok=True)
+
+        try:
+            facts = frontends[owner].analyze(unit, root)
+        except RecastError as error:
+            unit_run.outcomes.append(StageOutcome("frontend", owner, "failed", str(error)))
+            unit_run.stopped_by = owner
+            continue
+        unit_run.outcomes.append(StageOutcome("frontend", owner, "ok"))
+        walk(unit_run, facts, unit_steps, unit_workspace)
     return run
 
 
@@ -494,7 +524,7 @@ def _walk_stage(
             # be a generator, and a generator that raises on its third item has
             # not run either. The exception has to surface where the stage's
             # status is decided.
-            found = list(scanner.scan(unit, facts, workspace, config))
+            found = list(scanner.scan(unit, facts, workspace, executor, config))
         except ScannerUnavailable as error:
             return _incomplete(stage, str(error), waived)
         unit_run.findings.extend(found)
@@ -506,7 +536,8 @@ def _walk_stage(
         adjudicator = factory()
         try:
             adjudicated = [
-                adjudicator.adjudicate(finding, workspace, config) for finding in unit_run.findings
+                adjudicator.adjudicate(finding, workspace, executor, config)
+                for finding in unit_run.findings
             ]
         except ScannerUnavailable as error:
             # The findings stay as the scanners left them -- PLAUSIBLE, and
@@ -615,6 +646,59 @@ _NOT_STEPS = frozenset({"executor", "frontend"})
 # kinds is what keeps the three sets a partition of ``registry.KINDS``, so a
 # tenth kind cannot be added without deciding which of the three it is.
 _NOT_STAGES = frozenset({"agent", "recipe"})
+
+
+# Kinds whose plugins take an ``Executor`` argument. A recipe declaring any of
+# them declares an executor; ``Stage``'s docstring says the same.
+_HANDED_AN_EXECUTOR = frozenset({"oracle", "verifier", "scanner", "adjudicator"})
+
+
+def _repository_scanners(stages: list[Stage], registry: Registry) -> frozenset[str]:
+    """Names of the declared scanners whose ``subject`` is the repository.
+
+    Asks the plugin, because the subject is the scanner's declaration and not
+    the recipe's -- a recipe does not know, and should not have to say, that
+    gitleaks reads history. An optional scanner that is not installed has no
+    subject to ask about and is left to ``_walk_stage`` to report as skipped.
+    """
+    names = set()
+    for stage in stages:
+        if stage.kind != "scanner" or stage.plugin not in registry.names("scanner"):
+            continue
+        if getattr(registry.get("scanner", stage.plugin)(), "subject", "unit") == "repository":
+            names.add(stage.plugin)
+    return frozenset(names)
+
+
+def missing_tools(
+    stages: list[Stage], config: dict[str, Any], *, registry: Registry = REGISTRY
+) -> dict[str, str]:
+    """Stage plugin -> why it cannot run here, for the stages that declare a ``tool``.
+
+    The preflight. A scanner that wraps gitleaks will say so at scan time by
+    raising ``ScannerUnavailable``, and the run will be ``incomplete`` -- two
+    stages in, after the frontend has read the tree. ``recast plan`` asks this
+    first, which is the same preference the rest of this repository states:
+    a problem worth reporting in a second rather than later.
+
+    Only for installed plugins of the kinds that wrap tools. A plugin that is
+    not registered is a different problem and ``plan`` already reports it.
+    """
+    out: dict[str, str] = {}
+    for stage in stages:
+        if stage.kind not in ("scanner", "adjudicator"):
+            continue
+        if stage.plugin not in registry.names(stage.kind):
+            continue
+        plugin = registry.get(stage.kind, stage.plugin)()
+        tool = getattr(plugin, "tool", None)
+        if not tool:
+            continue
+        stage_config = {**stage.config, **config.get("stages", {}).get(stage.plugin, {})}
+        binary = stage_config.get(tool, tool)
+        if shutil.which(binary) is None:
+            out[stage.plugin] = f"{binary} is not on PATH"
+    return out
 
 
 def _incomplete(stage: Stage, detail: str, waived: frozenset[str]) -> StageOutcome:

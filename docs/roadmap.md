@@ -580,10 +580,10 @@ chose it — see row 5 of the disclosure ledger, amended rather than merely
 satisfied. `.recast/` is ignored now too, but that is housekeeping and the row
 says so: an ignore rule is one line anyone can delete.
 
-**Findings 6 and 7 are open, and 6 is the one the phase is actually about.**
-1–4 were a runner that did not implement a contract everything else had already
-agreed on. The rest are the contract being wrong, which is a different kind of
-work and the kind P5 exists to find.
+**All seven are closed as of 2026-08-21.** 1–4 were a runner that did not
+implement a contract everything else had already agreed on. 5, 6 and 7 were the
+contract being wrong, which is a different kind of work and the kind P5 exists
+to find; what each one took is below.
 
 ### Finding 5 closed, 2026-08-21: a third run state
 
@@ -618,6 +618,36 @@ The verification summary says nothing about any of it, deliberately. Whether
 gitleaks is installed is a fact about the machine, and that file is the one
 place that leaves the machine out so its diffs mean something. Incompleteness
 belongs to the status, the exit code, and the Evidence manifest.
+
+### Findings 6 and 7 closed, 2026-08-21: what a scanner is of, and where it runs
+
+`Scanner.subject` is the answer to 6. `"unit"` is the old behaviour; a scanner
+that declares `"repository"` is walked once per run against a Unit the runner
+synthesizes for the tree, and that Unit goes through the recipe's adjudicator
+and store stages like any other. The alternative — a run-level findings list
+threaded through every later stage — was rejected because it would have made
+repository findings a second kind of thing everywhere downstream, and the
+engine's status, gating, storage and summary logic are all per-Unit. Making the
+tree a Unit costs one synthesized `Unit` and buys the whole pipeline unchanged.
+The in-tree gitleaks scanner is the first user: `gitleaks git <root>` over
+history when the root is a repository, `dir` when it is an export, and a
+subdirectory of a repository gets `dir` on purpose so that pointing the engine
+at a subtree does not quietly scan the enclosing history.
+
+The other half of 6 — a scanner has to shell out and the contract gave it no
+`Executor` — is closed by giving it one. `scan` and `adjudicate` take the same
+executor Oracles and Verifiers take, the `audit` recipe declares one (`local`
+by default, from config like every other), and the runner's executor
+requirement now reads "any stage kind that is handed one", which is the
+contract's list rather than the runner's guess. The `subprocess` call that was
+the only sanctioned one outside `executors/local.py` is gone.
+
+7 is `recast/plugins/adjudicator.py`. `from recast.plugins.adjudicator import
+Adjudicator` works, which is the whole fix.
+
+And the preflight, owed since finding 5: a scanner declares `tool`, and
+`recast plan` reports a binary that is not on PATH beside the stage, marked
+`????` and counted as unavailable, before the run has read anything.
 
 `recast-sec`'s gitleaks scanner is the consumer, and its old `return []` carried
 a comment saying there was no way to report this and that raising was not in the
