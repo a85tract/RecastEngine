@@ -111,3 +111,17 @@ def test_a_root_outside_any_checkout_is_accepted_and_kept_private(tmp_path: Path
     uri = store.put(_finding())
     assert uri.startswith("file://")
     assert not (tmp_path / "vault" / "findings").stat().st_mode & 0o077
+
+
+def test_a_run_level_range_does_not_reach_the_stores_constructor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one plugin constructed inside the walk. An invocation fact that is
+    not one of its parameters refuses the construction, and the fake store the
+    runner tests use swallows arbitrary keywords, so this has to be the real
+    class -- the pre-push hook's first real range found it that way."""
+    from recast.run import _build_store
+
+    monkeypatch.setenv("RECAST_FINDINGS_HOME", str(tmp_path / "vault"))
+    store = _build_store(FilesystemFindingStore, {"root": tmp_path, "range": "a..b"})
+    assert isinstance(store, FilesystemFindingStore)
