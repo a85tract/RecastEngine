@@ -22,5 +22,8 @@ a build, and which compiler a CAM build expects is domain knowledge.
 ``audit`` (LLM source audit) is an advanced capability that stays out of the
 public repository. Both remain declared by the ``audit`` recipe as optional
 stages, which is how an out-of-tree plugin attaches: ``recast plan`` reports
-them as ``opt`` until the extension is installed, and never as a stub.
+them as ``opt`` until the extension is installed, and never as a stub. The
+``adversarial`` adjudicator went with them -- it is Sec-Track's LLM refute
+step, not CC-Test's -- and the shipped ``audit`` recipe gates the way CC-Test
+does instead: on what the scanners found, at each scanner's ``blocks_on``.
 """

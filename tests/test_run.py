@@ -1307,3 +1307,111 @@ def test_report_only_exits_zero_without_changing_what_is_said(
     assert "INCOMPLETE" in capsys.readouterr().out
     args = parser.parse_args(["run", "cli-report-only", str(tmp_path)])
     assert args.func(args) == 2
+
+
+# --- a scanner as the gate -----------------------------------------------------
+#
+# hpc-devsecops has no adjudication step: a check that found something is the
+# verdict, each at its own bar, and every check runs before anything blocks.
+
+
+class CriticalScanner(Scanner):
+    name = "fake.critical"
+    blocks_on = Severity.CRITICAL
+    emit: ClassVar[tuple[Severity, ...]] = ()
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        for n, severity in enumerate(type(self).emit):
+            yield Finding(
+                uid=f"crit-{n}", unit=unit.uid, scanner=self.name, title="x", severity=severity
+            )
+
+
+class AfterScanner(Scanner):
+    name = "fake.after"
+    ran: ClassVar[int] = 0
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        type(self).ran += 1
+        return []
+
+
+def _gate_registry() -> Registry:
+    registry = _audit_registry()
+    registry.register("scanner", "fake.critical", CriticalScanner)
+    registry.register("scanner", "fake.after", AfterScanner)
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def _fresh_gate_counters() -> None:
+    CriticalScanner.emit = ()
+    AfterScanner.ran = 0
+
+
+def test_a_scanner_gate_fails_on_what_it_found(tmp_path: Path) -> None:
+    """``fake.scan`` yields HIGH findings and blocks on everything by default."""
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.scan", gate=True)
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
+    assert run.status is RunStatus.FAILED
+    outcome = next(o for o in run.units[0].outcomes if o.plugin == "fake.scan")
+    assert outcome.status == "failed"
+    assert outcome.detail == "2 finding(s), 2 at or above info"
+
+
+def test_a_scanner_that_is_not_a_gate_fails_nothing_whatever_it_found(tmp_path: Path) -> None:
+    run = run_recipe(FakeRecipe(_audit_stages()), tmp_path, registry=_gate_registry())
+    assert run.passed
+    assert run.units[0].findings
+
+
+def test_the_bar_is_the_scanners_own(tmp_path: Path) -> None:
+    """composition's shape: High is counted, Critical blocks."""
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.critical", gate=True)
+    CriticalScanner.emit = (Severity.HIGH, Severity.HIGH)
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
+    assert run.passed
+    outcome = next(o for o in run.units[0].outcomes if o.plugin == "fake.critical")
+    assert outcome.detail == "2 finding(s), 0 at or above critical"
+    CriticalScanner.emit = (Severity.HIGH, Severity.CRITICAL)
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
+    assert run.status is RunStatus.FAILED
+
+
+def test_the_operator_can_move_the_bar(tmp_path: Path) -> None:
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.critical", gate=True)
+    CriticalScanner.emit = (Severity.HIGH,)
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"stages": {"fake.critical": {"blocks_on": "high"}}},
+        registry=_gate_registry(),
+    )
+    assert run.status is RunStatus.FAILED
+
+
+def test_a_failed_scanner_gate_does_not_stop_the_other_scanners(tmp_path: Path) -> None:
+    """Every check runs before anything blocks, so the operator gets the whole
+    list rather than the first item of it. The stop exists for candidates
+    nobody should spend an hour verifying; a scan has nothing downstream that
+    needs it clean."""
+    stages = _audit_stages(Stage("scanner", "fake.after"))
+    stages[2] = Stage("scanner", "fake.scan", gate=True)
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
+    assert run.status is RunStatus.FAILED
+    assert AfterScanner.ran == len(run.units)
+    assert all(u.stopped_by is None for u in run.units)
+
+
+def test_what_a_failed_scanner_gate_found_is_still_stored(tmp_path: Path) -> None:
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.scan", gate=True)
+    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
+    assert len(MemoryFindingStore.written) == 2 * len(run.units)

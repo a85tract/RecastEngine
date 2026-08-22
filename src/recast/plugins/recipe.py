@@ -53,6 +53,13 @@ class Stage:
     gate: bool = False
     """If True, a failing Verdict stops this Unit from proceeding.
 
+    On a ``scanner`` stage it means something slightly different: the stage
+    fails the Unit when it finds anything at or above the scanner's
+    ``blocks_on``, but does not stop the walk, so the other scanners still
+    run and the operator gets the whole list. That is ``hpc-devsecops``'s
+    gate -- a check that found something is the verdict, with no adjudication
+    in between -- and the shipped ``audit`` recipe is built on it.
+
     Stops it -- there is no retry. A Verdict never flows back into a Transform,
     and no stage re-runs because a later one failed. For a ``deterministic``
     Transform a re-run is a no-op by construction; for an agentic one, feeding

@@ -55,7 +55,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
-from recast.model import Facts, Finding, Unit
+from recast.model import Facts, Finding, Severity, Unit
 from recast.plugins.executor import Executor
 
 Subject = Literal["unit", "repository"]
@@ -92,6 +92,17 @@ class Scanner(ABC):
 
     needs_build: bool = False
     """True for sanitizer and fuzz scanners, which need a compiled artifact."""
+
+    blocks_on: Severity = Severity.INFO
+    """The least severity that fails this scanner when it is declared a gate.
+
+    ``hpc-devsecops`` has no adjudication step: a check that found something
+    *is* the gate, and each check has its own bar -- any secret blocks, only a
+    Critical CVE blocks while High is reported as a number. That bar is the
+    scanner's to declare, since it is the scanner that knows what its tool's
+    levels mean. The default blocks on everything; ``composition`` raises it.
+    An operator overrides it per stage with ``config["blocks_on"]``.
+    """
 
     @abstractmethod
     def scan(

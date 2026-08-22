@@ -120,6 +120,23 @@ goes further and rejects the default outright, because its gate is a pinned
 multi-rank run that `local` cannot finish — better a failed `recast plan` in a
 second than a failed build an hour in.
 
+### A scanner can be the gate
+
+`hpc-devsecops` has no adjudication step. A check that found something is the
+verdict, each at its own bar — any secret blocks, a Critical CVE blocks while
+High is reported as a number — and every check runs before anything blocks, so
+the operator sees the whole list. The shipped `audit` recipe is that shape: its
+scanners are its gates. A `Scanner` declares `blocks_on`, the least severity
+that fails it when it is a gate; a scanner gate fails the Unit but does not
+stop the walk, because the stop exists for candidates nobody should spend an
+hour verifying, and a scan has nothing downstream that needs it clean.
+
+The `Adjudicator` contract stays. It is Sec-Track's discovery-loop step —
+adversarially refute each finding, reclassify — and it is LLM-driven, so its
+implementations live with the LLM audit in the domain extension, in a deeper
+recipe that gates on them. The engine ships the contract and no
+implementation.
+
 ### A gate stops the Unit; it does not drive a retry
 
 `Stage.gate` means the Unit stops. A `Verdict` never flows back into a
