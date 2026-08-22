@@ -133,6 +133,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             config = json.loads(path.read_text())
     if args.unit:
         config["units"] = list(args.unit)
+    if getattr(args, "range", None):
+        config["range"] = args.range
 
     root = Path(args.root)
     if not root.is_dir():
@@ -176,6 +178,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             for outcome in unit_run.outcomes:
                 if outcome.status == "incomplete" and not outcome.waived:
                     print(f"  could not run: {outcome.kind} {outcome.plugin}")
+    if getattr(args, "report_only", False):
+        # hpc-devsecops's default: say everything, block nothing, exit 0. The
+        # engine's default is the other way round, because `recast run` is what
+        # CI and the pre-push hook call and both need the exit status to mean
+        # something. The hook passes nothing and gets the blocking form.
+        return 0
     return {RunStatus.PASSED: 0, RunStatus.FAILED: 1, RunStatus.INCOMPLETE: 2}[run.status]
 
 
@@ -212,6 +220,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", help="operator config, .json or .toml")
     run.add_argument(
         "--unit", action="append", help="unit uid to run (repeatable; default: top-level units)"
+    )
+    run.add_argument(
+        "--range",
+        metavar="REV..REV",
+        help="scope history-reading scanners to a revision range; what the pre-push hook passes",
+    )
+    run.add_argument(
+        "--report-only",
+        action="store_true",
+        help="print the outcome and exit 0 regardless; the default exits 2 for incomplete, "
+        "1 for failed",
     )
     run.add_argument(
         "--summary",

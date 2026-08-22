@@ -13,6 +13,14 @@ Huang: ``gitleaks git <repo>`` over history, ``--exit-code 0`` so findings are
 read from the SARIF report rather than inferred from the exit status, a tool
 that is not installed counted as a check that did not complete. Written here
 as Python against the Scanner contract; the shell was not ported.
+
+``config["range"]`` narrows the history to a revision range, which is
+``hpc-devsecops``'s ``--range`` and the mode its pre-push hook uses: the hook
+computes ``<remote-sha>..<local-sha>`` per ref and scans exactly what the push
+would publish. ``recast run --range`` puts it here. Its ``--staged`` and
+``--worktree`` modes -- a diff on gitleaks' stdin -- are not here yet; the
+executor contract has no stdin, and growing it for one scanner's second mode
+is a decision for when something else needs it too.
 """
 
 from __future__ import annotations
@@ -54,6 +62,12 @@ class SecretScanner(Scanner):
             )
         root = Path(config.get("root", workspace)).resolve()
         mode = _mode(root)
+        revisions = config.get("range")
+        if revisions and mode != "git":
+            raise ScannerUnavailable(
+                f"a revision range ({revisions}) was given but {root} is not a git repository; "
+                "there is no history to scope"
+            )
 
         # The report goes to a temporary directory and not to the workspace.
         # gitleaks' SARIF quotes the matched secret, and the workspace is under
@@ -66,6 +80,7 @@ class SecretScanner(Scanner):
                     binary,
                     mode,
                     str(root),
+                    *(["--log-opts", str(revisions)] if revisions else []),
                     "--report-format",
                     "sarif",
                     "--report-path",

@@ -660,6 +660,33 @@ that is not CC-Test's to port: its original is a refute-prompt and a verdict
 schema in Sec-Track's discovery-loop scripts, which makes it the engine's first
 real `AgentProvider` consumer and a decision of its own.
 
+The range and the hook came after, and they are how `hpc-devsecops` is
+actually used: not a full-history scan on demand but a pre-push hook that
+computes `<remote-sha>..<local-sha>` per ref and scans exactly what the push
+would publish, blocking on a finding and on an incomplete check alike.
+`config["range"]` reaches every scanner as a fact about the invocation;
+`secret` turns it into `--log-opts`, `composition` ignores it because the
+dependency state is whole-repository regardless, by the script's own comment.
+`tools/pre-push` and `tools/install-hooks.sh` are the hook and its installer,
+checked by driving a real `git push` into a bare remote with `recast` faked on
+PATH. One divergence is deliberate and documented on the flag: `hpc-devsecops`
+defaults to report-only and blocks on `--block`, while `recast run` defaults to
+blocking and offers `--report-only`, because `run` is what CI and the hook call
+and both need the exit status to mean something. Its `--staged` and
+`--worktree` modes — a diff on gitleaks' stdin — are not here; the executor
+contract has no stdin, and growing it for one scanner's second mode waits for
+something else to need it.
+
+**Placement of the other two families, decided by the maintainer 2026-08-21.**
+`dynamic.asan` goes to the domain extension: `CC-Test`'s `tools/asan.sh`
+hardcodes `ifx`/`icx` and a module load, and which compiler a CAM build expects
+is domain knowledge, so only the extension can say. `audit.llm` goes there too,
+for a different reason — it is an advanced capability that stays out of the
+public repository; and `CC-Test` could not have supplied it anyway, since the
+script only invokes `$REPO/.github/scripts/ai_audit.py`, which lives in the
+audited repository. Both stay declared by the `audit` recipe as optional
+stages, which is exactly how an out-of-tree plugin attaches.
+
 7 is `recast/plugins/adjudicator.py`. `from recast.plugins.adjudicator import
 Adjudicator` works, which is the whole fix.
 

@@ -1253,3 +1253,57 @@ def test_plan_reports_a_missing_tool_beside_the_stage(capsys: pytest.CaptureFixt
     out = capsys.readouterr().out
     assert "[????] scanner      fake.tooled" in out
     assert "definitely-not-a-real-binary not on PATH" in out
+
+
+def test_a_run_level_range_reaches_every_stage(tmp_path: Path) -> None:
+    """A revision range is a fact about the invocation. The scanner that can
+    scope to one reads it; the one that cannot ignores it."""
+    seen: list[dict[str, Any]] = []
+
+    class ConfigRecordingScanner(Scanner):
+        name = "fake.config"
+
+        def scan(self, unit, facts, workspace, executor, config):
+            seen.append(dict(config))
+            return []
+
+    registry = _audit_registry()
+    registry.register("scanner", "fake.config", ConfigRecordingScanner)
+    stages = _audit_stages()
+    stages[2] = Stage("scanner", "fake.config")
+    run_recipe(FakeRecipe(stages), tmp_path, {"range": "a..b"}, registry=registry)
+    assert seen and all(c["range"] == "a..b" for c in seen)
+    run_recipe(FakeRecipe(stages), tmp_path, {}, registry=registry)
+    assert "range" not in seen[-1]
+
+
+def test_report_only_exits_zero_without_changing_what_is_said(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """hpc-devsecops's default; the engine's opt-in."""
+    from recast.cli import build_parser
+    from recast.registry import REGISTRY
+
+    REGISTRY.register("executor", "fake-exec", FakeExecutor, replace=True)
+    REGISTRY.register("frontend", "fake-frontend", FakeFrontend, replace=True)
+    REGISTRY.register("scanner", "fake.missing", MissingToolScanner, replace=True)
+
+    class R(FakeRecipe):
+        name = "cli-report-only"
+
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    Stage("executor", "fake-exec"),
+                    Stage("frontend", "fake-frontend"),
+                    Stage("scanner", "fake.missing"),
+                ]
+            )
+
+    REGISTRY.register("recipe", "cli-report-only", R, replace=True)
+    parser = build_parser()
+    args = parser.parse_args(["run", "cli-report-only", str(tmp_path), "--report-only"])
+    assert args.func(args) == 0
+    assert "INCOMPLETE" in capsys.readouterr().out
+    args = parser.parse_args(["run", "cli-report-only", str(tmp_path)])
+    assert args.func(args) == 2

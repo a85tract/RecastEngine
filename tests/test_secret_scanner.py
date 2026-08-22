@@ -66,3 +66,50 @@ def test_a_tool_that_dies_without_a_report_is_unavailable_with_its_stderr(
         pytest.raises(ScannerUnavailable, match=r"exited 3 .* not a git repository"),
     ):
         list(SecretScanner().scan(unit, facts, tmp_path, local_executor(), {"root": tmp_path}))
+
+
+# --- a revision range ------------------------------------------------------------
+
+
+def _argv_after(tmp_path: Path, config: dict) -> list[str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    record = tmp_path / "argv"
+    fake_tool(bin_dir, "gitleaks", sarif={"runs": [{"results": []}]}, record_argv=record)
+    unit, facts = _tree()
+    with on_path(bin_dir):
+        list(
+            SecretScanner().scan(
+                unit, facts, tmp_path, local_executor(), {"root": tmp_path, **config}
+            )
+        )
+    return record.read_text().split("\n")
+
+
+def test_a_range_scopes_the_history_scan(tmp_path: Path) -> None:
+    """hpc-devsecops's --range, and the mode its pre-push hook uses."""
+    (tmp_path / ".git").mkdir()
+    argv = _argv_after(tmp_path, {"range": "abc123..def456"})
+    assert argv[:2] == ["git", str(tmp_path.resolve())]
+    assert argv[argv.index("--log-opts") + 1] == "abc123..def456"
+
+
+def test_no_range_scans_the_whole_history(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    argv = _argv_after(tmp_path, {})
+    assert "--log-opts" not in argv
+
+
+def test_a_range_on_a_tree_that_is_not_a_repository_is_unavailable(tmp_path: Path) -> None:
+    """There is no history to scope. Silently scanning the directory instead
+    would report on something other than what was asked about."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_tool(bin_dir, "gitleaks", sarif={"runs": [{"results": []}]})
+    unit, facts = _tree()
+    with on_path(bin_dir), pytest.raises(ScannerUnavailable, match="not a git repository"):
+        list(
+            SecretScanner().scan(
+                unit, facts, tmp_path, local_executor(), {"root": tmp_path, "range": "a..b"}
+            )
+        )
