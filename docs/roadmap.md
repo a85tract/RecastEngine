@@ -649,7 +649,12 @@ exactly the three steps and the two counted severities of `hpc-devsecops`
 lines 120–140, which also carry the comment that settled the scope question:
 "dependency analysis intentionally describes the resulting repository state,
 rather than only the patch". A match sets `Finding.upstream` to the dependency,
-since the defect is theirs to fix and ours to ship. The `audit` recipe now runs
+since the defect is theirs to fix and ours to ship. Run for real the same day
+with syft 1.x and grype 0.117.0 over this repository: 84 packages in the SBOM
+(56 from the tree, 28 from `.venv`, which `dir:<root>` includes exactly as
+`hpc-devsecops` would), 0 matches at any severity, so the scanner's `0
+finding(s)` was checked against the tools' own output rather than taken on
+trust. The `audit` recipe now runs
 from the engine alone up to its gate, which is the adversarial adjudicator, and
 that is not CC-Test's to port: its original is a refute-prompt and a verdict
 schema in Sec-Track's discovery-loop scripts, which makes it the engine's first
