@@ -44,6 +44,7 @@ from recast.conformance import (
     OracleCase,
     PluginSet,
     RecipeCase,
+    ScannerCase,
     TransformCase,
     TransformSubject,
     VerifierCase,
@@ -509,6 +510,7 @@ PLUGIN_SET = PluginSet(
         ),
     ),
     finding_stores=(FindingStoreCase(name="fs-findings", build=_finding_store),),
+    scanners=(ScannerCase(name="secret", tool="gitleaks"),),
     recipes=(
         RecipeCase(name="translate"),
         RecipeCase(

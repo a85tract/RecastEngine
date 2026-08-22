@@ -73,6 +73,9 @@ numpy-anchor = "recast.oracle.numpy_anchor:factory"
 "translate.numpy" = "recast.transform.numpy.translate:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
 
+[project.entry-points."recast.scanners"]
+secret = "recast.scan.secret:factory"
+
 [project.entry-points."recast.executors"]
 local = "recast.executors.local:factory"
 
