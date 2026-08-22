@@ -73,6 +73,32 @@ def _finding_store(root: Path) -> FilesystemFindingStore:
     return FilesystemFindingStore(root=root / "findings")
 
 
+# --- composition -------------------------------------------------------------
+
+_GRYPE_ONE = {
+    "matches": [
+        {
+            "vulnerability": {"id": "CVE-0000-0001", "severity": "Critical"},
+            "artifact": {"name": "conformance-dep", "version": "1.0"},
+        }
+    ]
+}
+
+
+def _composition_fakes(bin_dir: Path, behaviour: str) -> None:
+    """syft writes an SBOM to ``-o spdx-json=<path>``; grype answers in its
+    own JSON on stdout. Neither speaks SARIF, so the suite's default fakes
+    would check the wrong shape."""
+    from recast.conformance.fake_tool import fake_tool
+
+    fake_tool(bin_dir, "syft", payload='{"spdxVersion": "SPDX-2.3"}')
+    if behaviour == "garbage":
+        fake_tool(bin_dir, "grype", payload="panic: runtime error\n", exit_code=1, report_flags=())
+    else:
+        matches = _GRYPE_ONE if behaviour == "one" else {"matches": []}
+        fake_tool(bin_dir, "grype", sarif=matches, report_flags=())
+
+
 # --- static.rwset ------------------------------------------------------------
 
 _RWSET_EMITTED = """\
@@ -510,7 +536,10 @@ PLUGIN_SET = PluginSet(
         ),
     ),
     finding_stores=(FindingStoreCase(name="fs-findings", build=_finding_store),),
-    scanners=(ScannerCase(name="secret", tool="gitleaks"),),
+    scanners=(
+        ScannerCase(name="secret"),
+        ScannerCase(name="composition", fakes=_composition_fakes),
+    ),
     recipes=(
         RecipeCase(name="translate"),
         RecipeCase(

@@ -78,15 +78,16 @@ class Scanner(ABC):
     of any file in it.
     """
 
-    tool: str | None = None
-    """The external binary this scanner runs, when it runs one.
+    tool: str | tuple[str, ...] | None = None
+    """The external binary this scanner runs, when it runs one -- or several.
 
     Declared so the engine can ask before the run whether it is there:
     ``recast plan`` reports a missing tool beside the stage, which is the cheap
     check that should fail in a second rather than two stages in. The operator
     may point at a different binary through ``config[tool]`` -- so a scanner
-    with ``tool = "gitleaks"`` reads ``config.get("gitleaks", "gitleaks")``.
-    ``None`` for a scanner that wraps nothing.
+    with ``tool = "gitleaks"`` reads ``config.get("gitleaks", "gitleaks")``, and
+    one with ``tool = ("syft", "grype")`` reads each. ``None`` for a scanner
+    that wraps nothing.
     """
 
     needs_build: bool = False

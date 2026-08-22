@@ -642,6 +642,19 @@ requirement now reads "any stage kind that is handed one", which is the
 contract's list rather than the runner's guess. The `subprocess` call that was
 the only sanctioned one outside `executors/local.py` is gone.
 
+`composition` followed the same day, and is the second user of `subject`:
+syft to an SBOM, grype over it with `--add-cpes-if-none` and the repository's
+`.vex/openvex.json` when there is one, Critical and High matches as Findings --
+exactly the three steps and the two counted severities of `hpc-devsecops`
+lines 120–140, which also carry the comment that settled the scope question:
+"dependency analysis intentionally describes the resulting repository state,
+rather than only the patch". A match sets `Finding.upstream` to the dependency,
+since the defect is theirs to fix and ours to ship. The `audit` recipe now runs
+from the engine alone up to its gate, which is the adversarial adjudicator, and
+that is not CC-Test's to port: its original is a refute-prompt and a verdict
+schema in Sec-Track's discovery-loop scripts, which makes it the engine's first
+real `AgentProvider` consumer and a decision of its own.
+
 7 is `recast/plugins/adjudicator.py`. `from recast.plugins.adjudicator import
 Adjudicator` works, which is the whole fix.
 
