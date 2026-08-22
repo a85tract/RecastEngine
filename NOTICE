@@ -46,3 +46,14 @@ and both are needed. See CONTRIBUTING.md.
      eligibility, the lax lowering and the two-tier gate's argument are
      theirs; what changed on the way in was the command-line front end, the
      emitted header, and the formatting.
+
+  recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
+     cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
+     (hpc-devsecops). Written by Chien-Wei Huang, who commits under that name
+     from Derecho and as Champollion9012 <hunte408@gmail.com>. Not a port: the
+     original is shell and none of it was carried. What is theirs is the
+     design -- which tools to run and how, SARIF as the common shape, the
+     three-way passed / findings / incomplete contract with its exit codes, a
+     missing tool counted as a check that did not complete, and the idea that
+     the honest place to fake a wrapped tool is PATH rather than the wrapper.
+     What is new is the expression of all of that against the plugin contract.

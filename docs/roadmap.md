@@ -518,7 +518,11 @@ Seven findings, five of them holes:
    yields. `OracleUnavailable` exists for exactly this and has no counterpart
    here. `hpc-devsecops` distinguishes `PASS` from `INCOMPLETE` and the
    contract cannot carry the difference.
-6. **A Scanner's subject is not always a Unit.** `scan(unit, facts, ...)`
+6. **A Scanner's subject is not always a Unit** — nor does it receive an
+   `Executor`, so one that shells out to gitleaks has to bypass the seam the
+   engine enforces everywhere else. The same question from the other side:
+   the contract says nothing about where or on what a scanner runs.
+   Originally stated as: a Scanner's subject is not always a Unit. `scan(unit, facts, ...)`
    assumes a defect belongs to an addressable piece of software. gitleaks' value
    is in *history* — a credential deleted in a later commit is still in the pack
    — and `syft`/`grype` describe *whole-repository* state, which the CC-Test
@@ -658,14 +662,25 @@ existed here or was written for this:
   two refusals above.
 A boundary was drawn at the same time, on the maintainer's instruction that
 anything domain-specific in the security distribution belongs in the domain
-extension. Checked rather than assumed: `check_hygiene.py` passes clean over
-that tree, and its only mentions of CESM or a site are attribution — whose work
-it is and where it runs in production. So nothing moved, and the useful part was
-writing the line down before the case that tests it. Three ways, matching
-"Engine, extension, product" in `architecture.md`: what runs against any git
-repository stays in the security distribution; what needs to know it is a
-climate model goes to the domain extension; what needs to know which machine it
-runs on is an `Executor` and belongs to neither.
+extension. Checked rather than assumed: `check_hygiene.py` passed clean over
+that tree, and its only mentions of CESM or a site were attribution. Nothing
+CESM-specific was there to move — and once that was established, the
+maintainer's next question was the right one: then why is it a separate
+distribution at all? It is not, any more. **`recast-sec` is gone, folded in as
+`recast/scan/` the same day**, on the argument `plugins/scanner.py` had been
+making since it was written — a check that runs against any git repository is
+engine territory, the way `recast/fortran/` is. What it had been for, the P5
+probe, it had finished: the findings are above. The `audit` recipe it was the
+only way to run is now runnable from the engine alone, up to the two plugins
+nobody has written, which `recast plan` refuses by name. The stubs did not come
+in; a registered plugin that raises on entry is worse than an absence the
+runner can report.
+
+The line itself survives the move, at the top of `recast/scan/__init__.py`,
+three ways matching "Engine, extension, product": what runs against any git
+repository is `recast/scan/`; what needs to know it is a climate model goes to
+the domain extension; what needs to know which machine it runs on is an
+`Executor` and belongs to neither.
 
 The case that will test it is `dynamic.asan`, unwritten. `CC-Test`'s
 `tools/asan.sh` hardcodes `ifx`/`icx` and a module load, and `hpc/asan-cam.pbs`
@@ -678,9 +693,10 @@ already.
   is a better test than faking the plugin, which replaces the code under test:
   faking the tool leaves the argv, the subprocess and the report parsing in the
   run. The technique is theirs; the pytest fixture is new. `ScannerCase` and
-  `conformance/test_scanner.py` are what make it reachable, and `recast-sec`
-  now declares a plugin set so the four checks run against the real gitleaks
-  scanner rather than against nothing.
+  `conformance/test_scanner.py` are what make it reachable. With the scanner
+  in-tree the builtin plugin set declares it, so those four checks run in this
+  repository's own suite against the real gitleaks wrapper, no longer skipped
+  as unexercised.
 
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
@@ -703,10 +719,10 @@ another round of asking.
 **Extended 2026-08-21 to `CC-Test`**, on the same terms and for the same
 reason. It has no `LICENSE` file either, it is the maintainer's to license, and
 the answer is Apache-2.0. Recorded here rather than left to be noticed again by
-whoever reads that repository next. `recast-sec` is built from its design and
-will need its own `LICENSE` and `NOTICE` when it becomes a repository — no
-`NOTICE` entry is owed by *this* repository, since nothing of `CC-Test`'s was
-relayed into it.
+whoever reads that repository next. The scanners built from its design now live
+in this repository as `recast/scan/`, so the attribution is owed here and
+`NOTICE` carries it — a design relay rather than a code one, and the entry says
+which.
 
 What remains is clerical and belongs with the archiving: put the `LICENSE` file
 into all three source repositories before they go read-only, so the record does
