@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,29 @@ class FilesystemEvidenceStore(EvidenceStore):
 
     def query(self, **selectors: Any) -> Iterable[Evidence]:
         raise NotImplementedError("P2: index manifests by unit/recipe/confidence")
+
+
+_SAFE = re.compile(r"[^A-Za-z0-9._@:+-]")
+
+
+def _record_name(uid: str) -> str:
+    """A filename for a finding, from a uid that was never meant to be one.
+
+    A uid is built from whatever the scanner saw, and what the scanner saw
+    came from the repository under audit: a dependency's name and version out
+    of grype, a rule id out of a ``.gitleaks.toml`` the target repository
+    supplies itself. ``root / f"{uid}.json"`` therefore let the audited code
+    choose where its own finding was written -- a name with ``/`` or ``..`` in
+    it lands outside the 0700 directory every other check here exists to keep
+    it inside. Found by the security review, 2026-08-21.
+
+    Anything outside a small safe set becomes ``_``, and a short digest of
+    the *original* uid is appended so two uids that differ only in replaced
+    characters do not overwrite each other. The uid itself is unchanged and
+    still inside the record.
+    """
+    slug = _SAFE.sub("_", uid)[:120]
+    return f"{slug}-{hashlib.sha256(uid.encode()).hexdigest()[:8]}.json"
 
 
 def _refuse_a_checkout(root: Path) -> None:
@@ -104,7 +128,7 @@ class FilesystemFindingStore(FindingStore):
 
     def put(self, finding: Finding) -> str:
         self.guard(finding)
-        path = self.root / f"{finding.uid}.json"
+        path = self.root / _record_name(finding.uid)
         path.write_text(
             json.dumps(
                 {

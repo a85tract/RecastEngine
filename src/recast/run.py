@@ -303,6 +303,7 @@ def run_recipe(
     _require_available(stages, registry)
     _require_one_transform(recipe, stages)
     waived = _waived(recipe, stages, config)
+    _require_valid_bars(recipe, stages, config)
 
     workspace = Path(config.get("workspace") or root / WORKSPACE_DIRNAME / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -784,6 +785,24 @@ def _waived(recipe: Recipe, stages: list[Stage], config: dict[str, Any]) -> froz
             "and in the recipe where a reader can see it."
         )
     return frozenset(names)
+
+
+def _require_valid_bars(recipe: Recipe, stages: list[Stage], config: dict[str, Any]) -> None:
+    """``config["blocks_on"]`` has to name a ``Severity`` -- checked here so a
+    typo fails in a second rather than as a ``ValueError`` two scans in."""
+    for stage in stages:
+        if stage.kind != "scanner":
+            continue
+        merged = {**stage.config, **config.get("stages", {}).get(stage.plugin, {})}
+        if "blocks_on" not in merged:
+            continue
+        try:
+            Severity(merged["blocks_on"])
+        except ValueError as error:
+            raise ConfigError(
+                f"recipe {recipe.name!r}, stage {stage.plugin!r}: blocks_on must be one of "
+                f"{[s.value for s in Severity]}, not {merged['blocks_on']!r}"
+            ) from error
 
 
 def _require_walkable(recipe: Recipe, stages: list[Stage]) -> None:

@@ -7,6 +7,18 @@ corpus, and batch patch adjudication are left to plugins.
 Every call is recorded. A non-deterministic transform is acceptable only if the
 run that produced it can be reconstructed, so ``AgentCall`` carries the model,
 the prompt digest, and the sampling parameters into ``Candidate.notes``.
+
+What the contract permits, stated because the security review asked: a
+provider's ``AgentResult.text`` can become the body of a deferred site, which
+is emitted into the candidate module, which a Verifier imports into this
+process. So a model's output runs here, with the operator's privileges, and
+nothing in this contract sandboxes it. The gates downstream are about
+correctness -- does it compute what the original computed -- not about what
+else it does on the way. That is the same trust the engine extends to the
+operator's own patches in ``config["patches"]``, and the operator who enables
+a provider is the boundary. An implementation that wants less trust puts the
+sandbox in the Executor the Verifier is handed, which is where execution was
+always meant to be confined.
 """
 
 from __future__ import annotations

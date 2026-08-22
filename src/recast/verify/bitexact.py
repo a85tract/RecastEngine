@@ -29,7 +29,9 @@ job is to judge translations, not queues.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import operator
 import re
 import sys
 from pathlib import Path
@@ -58,9 +60,47 @@ def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
     for name, value in dims.items():
         resolved = re.sub(rf"\b{re.escape(name.lower())}\b", str(value), resolved)
     try:
-        return int(eval(resolved, {"__builtins__": {}}, {}))  # noqa: S307 -- digits and operators by now
+        return int(_arithmetic(resolved))
     except Exception:
         return int(dims.get("default_dim", DEFAULT_DIMENSION))
+
+
+_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _arithmetic(text: str) -> float:
+    """Integer arithmetic over the operators a Fortran extent can use.
+
+    This was ``eval`` with empty builtins, on text that came from a declared
+    dimension in the source under verification -- and the source under
+    verification is the input this engine exists to take from other people.
+    An empty ``__builtins__`` does not make ``eval`` safe, and a dimension
+    expression has no business reaching anything but arithmetic. Anything
+    that is not a number or one of the operators above is a ``ValueError``,
+    which the caller turns into the default extent exactly as before.
+    """
+
+    def walk(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in _OPERATORS:
+            return _OPERATORS[type(node.op)](walk(node.left), walk(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _OPERATORS:
+            return _OPERATORS[type(node.op)](walk(node.operand))
+        raise ValueError(f"not arithmetic: {ast.dump(node)}")
+
+    return walk(ast.parse(text, mode="eval"))
 
 
 class BitexactVerifier(Verifier):
