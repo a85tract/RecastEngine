@@ -22,15 +22,18 @@ from recast.conformance.doubles import (
     CountingTransform,
     FailingVerifier,
     GateFailsRecipe,
+    QuietScanner,
     RecordingEvidenceStore,
+    ScanIncompleteRecipe,
     StubFrontend,
     TwoFrontendsRecipe,
+    UnavailableScanner,
 )
 from recast.errors import ConfigError
 from recast.executors.local import factory as local_executor
 from recast.model import Confidence
 from recast.registry import Registry
-from recast.run import RecipeRun, run_recipe
+from recast.run import RecipeRun, RunStatus, run_recipe
 
 
 @pytest.fixture
@@ -134,4 +137,91 @@ def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
             tmp_path,
             {"workspace": tmp_path / "ws", "frontends": [first.name, second.name]},
             registry=registry,
+        )
+
+
+# --- a scan that did not happen is not a scan that found nothing -------------
+
+
+def _scan_registry() -> Registry:
+    registry = Registry()
+    registry.register("frontend", StubFrontend.name, StubFrontend)
+    registry.register("scanner", QuietScanner.name, QuietScanner)
+    registry.register("scanner", UnavailableScanner.name, UnavailableScanner)
+    return registry
+
+
+def test_a_scanner_that_could_not_run_does_not_report_a_clean_scan(tmp_path: Path) -> None:
+    """The two scanners in this recipe return the same thing: nothing. One ran.
+
+    ``scan`` yields an iterable, so a missing tool and a clean repository are
+    the same value, and the only thing that can tell them apart is whether the
+    scanner said so. A run that cannot carry the difference reports the second
+    as the first, on a security gate.
+    """
+    run = run_recipe(
+        ScanIncompleteRecipe(), tmp_path, {"workspace": tmp_path / "ws"}, registry=_scan_registry()
+    )
+    assert run.status is RunStatus.INCOMPLETE
+    assert not run.passed, "an incomplete run is not a pass"
+
+    statuses = {o.plugin: o.status for u in run.units for o in u.outcomes}
+    assert statuses[QuietScanner.name] == "ok"
+    assert statuses[UnavailableScanner.name] == "incomplete"
+
+
+def test_incomplete_is_not_the_word_an_absent_optional_plugin_gets(tmp_path: Path) -> None:
+    """``skipped`` is a declaration the operator made. ``incomplete`` is a
+    plugin that is installed, was asked, and could not answer. One word for
+    both is how the first bug in this file's subject got in."""
+    run = run_recipe(
+        ScanIncompleteRecipe(), tmp_path, {"workspace": tmp_path / "ws"}, registry=_scan_registry()
+    )
+    words = {o.status for u in run.units for o in u.outcomes}
+    assert "incomplete" in words
+    assert "skipped" not in words
+
+
+def test_incomplete_is_not_failed_either(tmp_path: Path) -> None:
+    """A failed run checked something and did not like it. Collapsing the two
+    costs the operator the one thing that tells them whether to fix their
+    environment or their code."""
+    run = run_recipe(
+        ScanIncompleteRecipe(), tmp_path, {"workspace": tmp_path / "ws"}, registry=_scan_registry()
+    )
+    assert run.status is not RunStatus.FAILED
+    assert all(u.stopped_by is None for u in run.units), (
+        "an unavailable scanner stopped the unit; the stages that could still run should"
+    )
+
+
+def test_a_waiver_changes_the_conclusion_and_not_the_record(tmp_path: Path) -> None:
+    """The operator may agree not to count a scanner they know cannot run here.
+
+    What they may not do is make it look like it ran. The outcome still says
+    ``incomplete``, and says that it was waived -- so the difference between a
+    waived run and a clean one stays visible in the place it would otherwise
+    disappear from.
+    """
+    run = run_recipe(
+        ScanIncompleteRecipe(),
+        tmp_path,
+        {"workspace": tmp_path / "ws", "allow_incomplete": [UnavailableScanner.name]},
+        registry=_scan_registry(),
+    )
+    assert run.status is RunStatus.PASSED
+    outcome = next(o for u in run.units for o in u.outcomes if o.plugin == UnavailableScanner.name)
+    assert outcome.status == "incomplete"
+    assert outcome.waived
+    assert "waived" in outcome.detail
+
+
+def test_a_waiver_naming_nothing_is_refused(tmp_path: Path) -> None:
+    """A waiver that matches no declared stage reads as coverage."""
+    with pytest.raises(ConfigError, match="reads as coverage"):
+        run_recipe(
+            ScanIncompleteRecipe(),
+            tmp_path,
+            {"workspace": tmp_path / "ws", "allow_incomplete": ["conformance.no-such-scanner"]},
+            registry=_scan_registry(),
         )

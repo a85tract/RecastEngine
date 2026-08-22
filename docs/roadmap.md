@@ -576,13 +576,53 @@ chose it — see row 5 of the disclosure ledger, amended rather than merely
 satisfied. `.recast/` is ignored now too, but that is housekeeping and the row
 says so: an ignore rule is one line anyone can delete.
 
-**Findings 5, 6 and 7 are open, and they are the ones the phase is actually
-about.** 1–4 were a runner that did not implement a contract everything else had
-already agreed on; the remainder are the contract being wrong. A Scanner still
-cannot distinguish a clean scan from one that could not run, still cannot say
-what it is the scanner *of* when the subject is a repository rather than a Unit,
-and `Adjudicator` still ships in `plugins/scanner.py`. None of those is fixable
-in `run.py`, which is why closing four of seven does not close the phase.
+**Findings 6 and 7 are open, and 6 is the one the phase is actually about.**
+1–4 were a runner that did not implement a contract everything else had already
+agreed on. The rest are the contract being wrong, which is a different kind of
+work and the kind P5 exists to find.
+
+### Finding 5 closed, 2026-08-21: a third run state
+
+A Scanner can now say it could not run. `ScannerUnavailable` is the counterpart
+to `OracleUnavailable`, raised by a `Scanner` or an `Adjudicator` whose tool is
+not on PATH or whose model has no key, and the stage it produces is
+`incomplete` — a fourth word beside `ok`, `failed` and `skipped`, kept distinct
+from `skipped` because an absent optional plugin is a declaration the operator
+made and this is a plugin that was installed, asked, and could not answer.
+
+A run therefore reports one of three states rather than a boolean, and the
+choice between the available designs is the part worth recording. Folding
+`incomplete` into `failed` was rejected: the `audit` recipe's LLM scanner is
+optional by declaration, and failing every run on a machine without an API key
+teaches operators to delete the stage, which makes the recipe lie instead of the
+run. Folding it into `passed` is the defect itself. So: three states, `passed`
+False for all but one of them — anything already gating on `passed` keeps gating
+without being told this enum exists — and two distinct non-zero exits from
+`recast run`, so a caller can tell "fix the code" from "fix the machine" without
+parsing output.
+
+Waivers are `config["allow_incomplete"]`, and every restriction on them is
+there because the unrestricted version reintroduces the bug. The stage still
+reports `incomplete (waived)`, since a waiver that edited the record would be
+indistinguishable from the stage having run. A name no stage declares is
+refused, because a waiver matching nothing reads as coverage — the failure the
+disclosure ledger warns about for hygiene patterns, one system over. And a
+`gate` may not be waived, because a gate that can be absent from a passing run
+is not a gate.
+
+The verification summary says nothing about any of it, deliberately. Whether
+gitleaks is installed is a fact about the machine, and that file is the one
+place that leaves the machine out so its diffs mean something. Incompleteness
+belongs to the status, the exit code, and the Evidence manifest.
+
+`recast-sec`'s gitleaks scanner is the consumer, and its old `return []` carried
+a comment saying there was no way to report this and that raising was not in the
+contract either. Both halves of that are now false, which is what closing a
+contract finding is supposed to look like from the outside.
+
+Not done here, and worth doing next to it: nothing preflights. `recast plan`
+could say gitleaks is missing before the run rather than three stages in, which
+is this repository's stated preference everywhere else.
 
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.

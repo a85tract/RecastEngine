@@ -36,6 +36,23 @@ class OracleUnavailable(RecastError):
     """The reference could not be materialized. Verdicts must be FAILED, not skipped."""
 
 
+class ScannerUnavailable(RecastError):
+    """A Scanner or Adjudicator could not run at all. The stage is INCOMPLETE.
+
+    The counterpart to ``OracleUnavailable``, raised for the same reason and
+    answered differently. ``scan`` returns an iterable, so a scanner whose tool
+    is missing yields nothing -- which is byte-for-byte what a clean scan
+    yields. A security gate that cannot tell "found nothing" from "never ran"
+    reports the second as the first, which is the failure this engine refuses
+    everywhere else.
+
+    Distinct from an uninstalled *optional plugin*, which the runner reports as
+    ``skipped``. That is a declaration the operator made when they left it out
+    of the environment; this is a plugin that is installed, was asked, and could
+    not answer.
+    """
+
+
 class AccessViolation(RecastError):
     """An attempt to write a record into a store not cleared to hold it.
 

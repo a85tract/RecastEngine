@@ -99,7 +99,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     from pathlib import Path
 
-    from recast.run import run_recipe
+    from recast.run import RunStatus, run_recipe
 
     recipe = _recipe(args.recipe)
     config = {}
@@ -137,18 +137,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for unit_run in run.units:
         print(f"{unit_run.unit.uid}")
         for outcome in unit_run.outcomes:
-            mark = {"ok": "ok ", "failed": "FAIL", "skipped": "skip"}[outcome.status]
+            mark = {"ok": "ok ", "failed": "FAIL", "skipped": "skip", "incomplete": "????"}[
+                outcome.status
+            ]
             detail = f"  {outcome.detail}" if outcome.detail else ""
             print(f"  [{mark}] {outcome.kind:10s} {outcome.plugin:26s}{detail}")
         for uri in unit_run.evidence:
             print(f"  evidence: {uri}")
     verdicts = [v for u in run.units for v in u.verdicts]
     print()
-    print(
-        f"{len(run.units)} unit(s), {len(verdicts)} verdict(s), "
-        f"{'all passed' if run.passed else 'FAILED'}"
-    )
-    return 0 if run.passed else 1
+    # Three words for three states, and two distinct non-zero exits. A caller
+    # that only checks for zero keeps behaving as it did; one that wants to
+    # tell "checked and did not like it" from "did not check" now can, without
+    # parsing this line.
+    said = {
+        RunStatus.PASSED: "all passed",
+        RunStatus.INCOMPLETE: "INCOMPLETE -- something could not run, so nothing here is a pass",
+        RunStatus.FAILED: "FAILED",
+    }[run.status]
+    print(f"{len(run.units)} unit(s), {len(verdicts)} verdict(s), {said}")
+    if run.status is RunStatus.INCOMPLETE:
+        for unit_run in run.units:
+            for outcome in unit_run.outcomes:
+                if outcome.status == "incomplete" and not outcome.waived:
+                    print(f"  could not run: {outcome.kind} {outcome.plugin}")
+    return {RunStatus.PASSED: 0, RunStatus.FAILED: 1, RunStatus.INCOMPLETE: 2}[run.status]
 
 
 def _cmd_doctor(_args: argparse.Namespace) -> int:

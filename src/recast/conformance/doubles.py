@@ -22,10 +22,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from recast.model import Candidate, Confidence, Evidence, Facts, OracleRef, Unit, Verdict
+from recast.errors import ScannerUnavailable
+from recast.model import (
+    Candidate,
+    Confidence,
+    Evidence,
+    Facts,
+    Finding,
+    OracleRef,
+    Unit,
+    Verdict,
+)
 from recast.plugins.executor import Executor, Job, JobResult
 from recast.plugins.frontend import Frontend
 from recast.plugins.recipe import Recipe, Stage
+from recast.plugins.scanner import Scanner
 from recast.plugins.store import EvidenceStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
@@ -34,10 +45,13 @@ __all__ = [
     "CountingTransform",
     "FailingVerifier",
     "GateFailsRecipe",
+    "QuietScanner",
     "RecordingEvidenceStore",
     "RefusingExecutor",
+    "ScanIncompleteRecipe",
     "StubFrontend",
     "TwoFrontendsRecipe",
+    "UnavailableScanner",
 ]
 
 
@@ -210,4 +224,53 @@ class GateFailsRecipe(Recipe):
             Stage("transform", CountingTransform.name),
             Stage("verifier", FailingVerifier.name, gate=True),
             Stage("store", RecordingEvidenceStore.name),
+        ]
+
+
+class QuietScanner(Scanner):
+    """Ran, found nothing. The answer an unavailable scanner must not give."""
+
+    name = "conformance.quiet-scanner"
+    family = "audit"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+    ) -> Iterable[Finding]:
+        return []
+
+
+class UnavailableScanner(Scanner):
+    """Could not run at all -- the tool it wraps is not there.
+
+    The double exists because the difference between this and ``QuietScanner``
+    is invisible in the return value, and a suite that cannot construct both
+    cannot check that the runner tells them apart.
+    """
+
+    name = "conformance.unavailable-scanner"
+    family = "audit"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, config: dict[str, Any]
+    ) -> Iterable[Finding]:
+        raise ScannerUnavailable("conformance: the tool this scanner wraps is not installed")
+        yield  # pragma: no cover - makes this a generator, as a real scanner is
+
+
+class ScanIncompleteRecipe(Recipe):
+    """Two scanners: one that found nothing, one that could not run.
+
+    No transform, no executor, no gate. What is being checked is the run's own
+    conclusion, and every other stage in it would only give it another way to
+    fail for an unrelated reason.
+    """
+
+    name = "conformance.scan-incomplete"
+    summary = "A recipe whose scanner cannot run. Used to check the runner, not a plugin."
+
+    def stages(self, config: dict[str, Any]) -> list[Stage]:
+        return [
+            Stage("frontend", config.get("frontend", StubFrontend.name)),
+            Stage("scanner", QuietScanner.name),
+            Stage("scanner", UnavailableScanner.name),
         ]

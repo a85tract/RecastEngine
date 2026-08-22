@@ -31,11 +31,12 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from recast import WORKSPACE_DIRNAME, __version__
-from recast.errors import ConfigError, RecastError
+from recast.errors import ConfigError, RecastError, ScannerUnavailable
 from recast.model import (
     Candidate,
     Disclosure,
@@ -50,12 +51,37 @@ from recast.plugins.recipe import Recipe, Stage
 from recast.plugins.store import FindingStore
 from recast.registry import REGISTRY, Registry
 
-__all__ = ["RecipeRun", "UnitRun", "run_recipe"]
+__all__ = ["RecipeRun", "RunStatus", "UnitRun", "run_recipe"]
 
 NO_ORACLE = OracleRef(unit="", oracle="none", key="", handle=None)
 """What a Verifier receives before any Oracle has materialized. Static
 verifiers ignore it; an oracle-backed verifier handed this fails closed on
 its own rules, which is the correct outcome for a recipe ordered wrongly."""
+
+
+class RunStatus(StrEnum):
+    """What a run is entitled to claim.
+
+    Three states rather than a boolean, because the two ways of not passing are
+    not the same answer and folding them together is how "nothing ran" comes
+    out as "nothing wrong". A ``FAILED`` run checked something and did not like
+    it. An ``INCOMPLETE`` run did not check.
+
+    ``INCOMPLETE`` is not a pass: ``passed`` is False for it, so anything
+    already gating on ``passed`` keeps gating correctly without being told
+    about this enum. What the enum buys is the ability to *say which*, in the
+    exit status, in the last line of ``recast run``, and in a waiver.
+    """
+
+    PASSED = "passed"
+    INCOMPLETE = "incomplete"
+    FAILED = "failed"
+
+
+# Worst wins when a run is summarized from its units, and a unit from its
+# stages. Ordered rather than compared by name, so adding a state is a
+# deliberate placement rather than an accident of spelling.
+_SEVERITY = {RunStatus.PASSED: 0, RunStatus.INCOMPLETE: 1, RunStatus.FAILED: 2}
 
 
 @dataclass
@@ -65,9 +91,24 @@ class StageOutcome:
     kind: str
     plugin: str
     status: str
-    """``ok`` | ``failed`` | ``skipped``."""
+    """``ok`` | ``failed`` | ``skipped`` | ``incomplete``.
+
+    ``skipped`` and ``incomplete`` are deliberately different words. Skipped is
+    a plugin the operator left out of the environment and declared optional;
+    incomplete is a plugin that is installed, was asked, and could not answer.
+    Reusing one word for both is what let a scanner that never ran look like a
+    scanner that found nothing.
+    """
 
     detail: str = ""
+
+    waived: bool = False
+    """True when ``incomplete`` was allowed for this plugin by config.
+
+    The outcome still says ``incomplete`` and still prints. A waiver changes
+    what the *run* concludes, never what the stage reports -- a waiver that
+    edited the record would be indistinguishable from the stage having run.
+    """
 
 
 @dataclass
@@ -102,8 +143,16 @@ class UnitRun:
     """The stage that ended this unit's run early, if any."""
 
     @property
+    def status(self) -> RunStatus:
+        if self.stopped_by is not None or any(o.status == "failed" for o in self.outcomes):
+            return RunStatus.FAILED
+        if any(o.status == "incomplete" and not o.waived for o in self.outcomes):
+            return RunStatus.INCOMPLETE
+        return RunStatus.PASSED
+
+    @property
     def passed(self) -> bool:
-        return self.stopped_by is None and all(o.status != "failed" for o in self.outcomes)
+        return self.status is RunStatus.PASSED
 
 
 @dataclass
@@ -116,8 +165,22 @@ class RecipeRun:
     units: list[UnitRun] = field(default_factory=list)
 
     @property
+    def status(self) -> RunStatus:
+        """The worst of the units, and ``INCOMPLETE`` when there are none.
+
+        A run that discovered nothing to walk used to report the same False as
+        a run whose gate failed. It has not checked anything, which is exactly
+        what ``INCOMPLETE`` is for -- and the usual cause is a frontend pointed
+        at the wrong tree, which is a fact about the invocation rather than
+        about the code.
+        """
+        if not self.units:
+            return RunStatus.INCOMPLETE
+        return max((u.status for u in self.units), key=lambda s: _SEVERITY[s])
+
+    @property
     def passed(self) -> bool:
-        return bool(self.units) and all(u.passed for u in self.units)
+        return self.status is RunStatus.PASSED
 
     def summary(self) -> dict[str, Any]:
         """The run's verification status, as a record worth committing.
@@ -217,6 +280,7 @@ def run_recipe(
     _require_walkable(recipe, stages)
     _require_available(stages, registry)
     _require_one_transform(recipe, stages)
+    waived = _waived(recipe, stages, config)
 
     workspace = Path(config.get("workspace") or root / WORKSPACE_DIRNAME / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -305,6 +369,7 @@ def run_recipe(
                 unit_workspace,
                 executor,
                 oracle_cache,
+                waived,
             )
             unit_run.outcomes.append(outcome)
             if stage.kind == "oracle" and outcome.status == "ok":
@@ -330,6 +395,7 @@ def run_recipe(
                                 unit_workspace,
                                 executor,
                                 oracle_cache,
+                                waived,
                             )
                         )
                 break
@@ -348,6 +414,7 @@ def _walk_stage(
     workspace: Path,
     executor: Any,
     oracle_cache: dict[str, OracleRef],
+    waived: frozenset[str] = frozenset(),
 ) -> StageOutcome:
     if stage.optional and stage.plugin not in registry.names(stage.kind):
         return StageOutcome(stage.kind, stage.plugin, "skipped", "optional plugin not installed")
@@ -402,7 +469,14 @@ def _walk_stage(
 
     if stage.kind == "scanner":
         scanner = factory()
-        found = list(scanner.scan(unit, facts, workspace, config))
+        try:
+            # Listed here rather than consumed lazily downstream: ``scan`` may
+            # be a generator, and a generator that raises on its third item has
+            # not run either. The exception has to surface where the stage's
+            # status is decided.
+            found = list(scanner.scan(unit, facts, workspace, config))
+        except ScannerUnavailable as error:
+            return _incomplete(stage, str(error), waived)
         unit_run.findings.extend(found)
         return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
 
@@ -410,9 +484,17 @@ def _walk_stage(
         if not unit_run.findings:
             return StageOutcome(stage.kind, stage.plugin, "skipped", "no findings to adjudicate")
         adjudicator = factory()
-        unit_run.findings = [
-            adjudicator.adjudicate(finding, workspace, config) for finding in unit_run.findings
-        ]
+        try:
+            adjudicated = [
+                adjudicator.adjudicate(finding, workspace, config) for finding in unit_run.findings
+            ]
+        except ScannerUnavailable as error:
+            # The findings stay as the scanners left them -- PLAUSIBLE, and
+            # still on their way to the store. Dropping them because nobody
+            # could adjudicate them would lose the only record that there was
+            # something to adjudicate.
+            return _incomplete(stage, str(error), waived)
+        unit_run.findings = adjudicated
         confirmed = [f for f in unit_run.findings if f.disclosure is Disclosure.CONFIRMED]
         tally = Counter(f.disclosure.value for f in unit_run.findings)
         detail = ", ".join(f"{n} {name}" for name, n in sorted(tally.items()))
@@ -513,6 +595,57 @@ _NOT_STEPS = frozenset({"executor", "frontend"})
 # kinds is what keeps the three sets a partition of ``registry.KINDS``, so a
 # tenth kind cannot be added without deciding which of the three it is.
 _NOT_STAGES = frozenset({"agent", "recipe"})
+
+
+def _incomplete(stage: Stage, detail: str, waived: frozenset[str]) -> StageOutcome:
+    """The stage could not run. Neither a pass nor a failure, and not silent."""
+    allowed = stage.plugin in waived
+    return StageOutcome(
+        stage.kind,
+        stage.plugin,
+        "incomplete",
+        f"{detail} (waived)" if allowed else detail,
+        waived=allowed,
+    )
+
+
+def _waived(recipe: Recipe, stages: list[Stage], config: dict[str, Any]) -> frozenset[str]:
+    """Plugins whose ``incomplete`` the operator has agreed not to count.
+
+    ``config["allow_incomplete"]`` is a list of plugin names. It exists because
+    the alternative to a waiver is worse than either: an operator whose LLM
+    audit scanner has no API key on this machine, and whose only way to get a
+    green run is to delete the stage from the recipe, has been given a reason
+    to make the recipe lie rather than the run.
+
+    Three things it deliberately does not do. It does not silence the outcome
+    -- the stage still reports ``incomplete``, and still says ``(waived)``, so
+    the difference between a waived run and a clean one is visible in the same
+    place it would otherwise be invisible. It does not accept a name no stage
+    declares, because a waiver that matches nothing reads as coverage and is
+    the failure `docs/disclosure-ledger.md` warns about for hygiene patterns.
+    And it does not apply to a gate: waiving a gate's unavailability means the
+    gate can be absent from a passing run, which is the same argument that
+    makes an optional gate a contradiction.
+    """
+    names = config.get("allow_incomplete") or []
+    if isinstance(names, str):
+        raise ConfigError("allow_incomplete is a list of plugin names, not a single string")
+    declared = {stage.plugin for stage in stages}
+    unknown = sorted(name for name in names if name not in declared)
+    if unknown:
+        raise ConfigError(
+            f"allow_incomplete names {unknown}, which recipe {recipe.name!r} does not declare; "
+            "a waiver that matches nothing reads as coverage"
+        )
+    gates = sorted(s.plugin for s in stages if s.gate and s.plugin in set(names))
+    if gates:
+        raise ConfigError(
+            f"allow_incomplete names gate stage(s) {gates}; a gate that may be absent from a "
+            "passing run is not a gate. Drop the gate or drop the waiver -- deliberately, "
+            "and in the recipe where a reader can see it."
+        )
+    return frozenset(names)
 
 
 def _require_walkable(recipe: Recipe, stages: list[Stage]) -> None:

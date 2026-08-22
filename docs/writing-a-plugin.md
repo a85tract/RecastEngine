@@ -167,4 +167,12 @@ override either downward. Emit uncertain findings freely — precision is the
 `Adjudicator`'s job, and a finding suppressed at scan time is lost, while a
 false positive costs one adjudication pass.
 
+**Raise `ScannerUnavailable` when you could not run, and never return an empty
+iterable for it.** Empty means "I ran and found nothing", and the run is entitled
+to report a clean scan on the strength of it. The tool is not on PATH, the API
+refused, the sanitizer build is missing: all of those are `ScannerUnavailable`,
+the stage becomes `incomplete`, and the run cannot report `passed`. The same
+applies to an `Adjudicator`, where it matters more — it is usually the recipe's
+gate.
+
 Read [SECURITY.md](../SECURITY.md) before writing one.

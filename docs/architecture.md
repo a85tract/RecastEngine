@@ -144,6 +144,41 @@ Iteration belongs in three places instead, all of them outside the gate:
 Transform, a Transform's own loop against cheap checks before it emits, and
 improving the rules out of band, where one fix amortizes across the corpus.
 
+### Passed, incomplete, failed
+
+A run reports one of three states, not a boolean. `FAILED` checked something and
+did not like it. `INCOMPLETE` did not check: a `Scanner` or `Adjudicator` raised
+`ScannerUnavailable` because the tool it wraps is not on PATH, the model has no
+key, the build it needed is not there.
+
+The two are one word apart and a long way apart in what they ask of the reader —
+fix the code, or fix the machine — but the reason for the split is the third
+case they were both being folded into. `Scanner.scan` returns an iterable, so a
+missing gitleaks yields exactly what a clean repository yields. Without somewhere
+to put "did not run", a security gate reports untested as clean, which is worse
+than reporting nothing at all.
+
+`INCOMPLETE` is not a pass. `RecipeRun.passed` is False for it, so anything
+already gating on that keeps gating; what the third state buys is the ability to
+say *which* — in `recast run`'s exit code (`2`, against `1` for a failure), in
+its last line, and in a waiver.
+
+The waiver is `config["allow_incomplete"]`, a list of plugin names whose
+incompleteness the operator has agreed not to count. It exists because the
+alternative is worse than either: an operator whose only route to a green run is
+to delete a stage from the recipe has been given a reason to make the recipe lie
+rather than the run. It is deliberately narrow. The stage still reports
+`incomplete` and still says `(waived)`, because a waiver that edited the record
+would be indistinguishable from the stage having run. A name no stage declares is
+refused, since a waiver matching nothing reads as coverage. And a `gate` cannot
+be waived at all — a gate that may be absent from a passing run is not a gate,
+the same argument that makes an optional gate a contradiction.
+
+One thing deliberately stays out: the verification summary. Whether gitleaks is
+installed is a fact about the machine, and that file exists to be regenerated and
+diffed across machines. Incompleteness lives in the status, the exit code, and
+the run's `Evidence` manifest, which records the environment on purpose.
+
 ## Two placements of the LLM
 
 A `Transform` may be rule-driven or it may consult an LLM, and the engine treats
