@@ -58,6 +58,11 @@ ALLOCATED_DTYPES = {
 """Declared dtype -> the dtype an ``allocate`` requests. Anything else gets
 ``np.float64``, which is what the declaration meant if it said nothing."""
 
+EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*)?\)", re.I)
+"""``size(a)``, ``size(a, 2)``, ``ubound(a, dim=2)`` inside a declared bound."""
+
+DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
+
 BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*|\d+|[()+\-*/ ]")
 """What a declared bound is allowed to be made of. Bound texts are simple by
 construction; anything richer refuses the statement that needed the bound."""
@@ -99,6 +104,9 @@ class Statements:
     consumed_labels: set[str] = field(default_factory=set)
     """Labels a ``do`` or a region wrapper accounts for; their ``continue``
     statements emit as markers rather than as targets still owed a jump."""
+
+    region_depth: int = 0
+    """How many goto regions are open around the sequence being emitted."""
 
     active_labels: list[Any] = field(default_factory=list)
     """The loop-exit label (or ``None``) of each enclosing ``do``, innermost
@@ -212,6 +220,15 @@ class Statements:
             return self._block(node, indent)
         raise NoRule(f"no statement rule for {type(node).__name__}")
 
+    MAX_REGION_DEPTH = 20
+    """How deep goto regions may nest before they stop being formed.
+
+    A subprogram whose labels interleave can nest a region per label, and the
+    pipeline hit a case where widening them did not terminate. Past this the
+    statements are emitted flat: any goto among them then refuses, which is a
+    visible refusal rather than a translation that took minutes to produce.
+    """
+
     def sequence(self, nodes: list[Any], indent: int) -> list[str]:
         """A statement sequence, structuring forward goto-regions.
 
@@ -220,6 +237,8 @@ class Statements:
         the outermost one belongs to the *last* matching label.
         """
         pad = "    " * indent
+        if self.region_depth > self.MAX_REGION_DEPTH:
+            return [line for node in nodes for line in self.render(node, indent)]
         labelled = {}
         targets = {}
         for at, node in enumerate(nodes):
@@ -244,9 +263,11 @@ class Statements:
             lines.append(f"{pad}    try:")
             self.active_labels.append(("region", label))
             self.consumed_labels.add(label)
+            self.region_depth += 1
             try:
                 body = self.sequence(nodes[at : back[-1] + 1], indent + 2)
             finally:
+                self.region_depth -= 1
                 self.active_labels.pop()
             lines.extend(body or [f"{pad}        pass"])
             lines.append(f"{pad}        break  # natural exit")
@@ -266,9 +287,11 @@ class Statements:
                 continue
             lines = [f"{pad}try:  # forward-goto region (label {label})"]
             self.active_labels.append(("region", label))
+            self.region_depth += 1
             try:
                 lines.extend(self.sequence(nodes[:at], indent + 1) or [f"{pad}    pass"])
             finally:
+                self.region_depth -= 1
                 self.active_labels.pop()
             lines.append(f"{pad}except _FGoto as _g:")
             lines.append(f"{pad}    if _g.args[0] != '{label}':")
@@ -605,11 +628,11 @@ class Statements:
         opened = False
         for child in node.children:
             if isinstance(child, f03.If_Then_Stmt):
-                lines.append(f"{pad}if {self.expressions.render(child.children[0])}:")
+                lines.append(f"{pad}if {self._condition(child)}:")
                 opened = True
             elif isinstance(child, f03.Else_If_Stmt):
                 self._flush(lines, body, pad)
-                lines.append(f"{pad}elif {self.expressions.render(child.children[0])}:")
+                lines.append(f"{pad}elif {self._condition(child)}:")
             elif isinstance(child, f03.Else_Stmt):
                 self._flush(lines, body, pad)
                 lines.append(f"{pad}else:")
@@ -629,6 +652,12 @@ class Statements:
         elif lines and lines[-1].endswith(":"):
             lines.append(f"{pad}    pass")
 
+    def _condition(self, node: Any) -> str:
+        """An IF's condition. fparser reports it as ``None`` for a construct
+        whose test it could not attach; the branch still has to open."""
+        rendered = self.expressions.render(node.children[0]) if node.children[0] else ""
+        return rendered or "True"
+
     def _case_construct(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
         select = node.children[0]
@@ -642,8 +671,14 @@ class Statements:
                 if not first:
                     self._flush(lines, body, pad)
                 chosen = child.children[0]
-                if chosen is None or "DEFAULT" in str(child).upper().replace(" ", ""):
-                    lines.append(f"{pad}else:")
+                if chosen is None or getattr(chosen, "children", (None,))[0] is None:
+                    # `case default` with nothing before it: there is no `if`
+                    # for an `else` to attach to.
+                    if first:
+                        lines.append(f"{pad}if True:  # SELECT CASE default-only")
+                        first = False
+                    else:
+                        lines.append(f"{pad}else:")
                 else:
                     values = walk(
                         chosen,
@@ -652,6 +687,7 @@ class Statements:
                             f03.Int_Literal_Constant,
                             f03.Char_Literal_Constant,
                             f03.Real_Literal_Constant,
+                            f03.Logical_Literal_Constant,
                         ),
                     )
                     if any(
@@ -667,7 +703,7 @@ class Statements:
                         else:
                             conditions.append(f"({selector} == {self.expressions.render(value)})")
                     keyword = "if" if first else "elif"
-                    lines.append(f"{pad}{keyword} {' or '.join(conditions)}:")
+                    lines.append(f"{pad}{keyword} {' or '.join(conditions) or 'True'}:")
                     first = False
             elif isinstance(child, f03.End_Select_Stmt):
                 self._flush(lines, body, pad)
@@ -925,6 +961,9 @@ class Statements:
         # touches as extra trailing actuals.
         for host_var in record.get("host_vars") or ():
             inputs.append(self.names.symbol(host_var))
+        # Python takes no positional argument after a keyword one, and
+        # Fortran's optionals can leave a gap anywhere in the list.
+        inputs = [a for a in inputs if "=" not in a] + [a for a in inputs if "=" in a]
         target = f"{prefix}{pysafe(emit_name(record))}"
         if broadcasts:
             call = f"_f_ecall({target}, {', '.join(inputs)})"
@@ -1137,12 +1176,23 @@ class Statements:
         """Declared bound text -> Python. Bound texts are simple -- names,
         integers, ``+ - * /``, parentheses, ``size(a, n)`` -- by construction;
         anything else refuses the statement that needed the bound."""
-        match = re.fullmatch(r"SIZE\(\s*(\w+)\s*,\s*(\d+)\s*\)", text, re.IGNORECASE)
-        if match:  # an automatic array sized off another argument
-            return f"np.size({self.names.symbol(match.group(1))}, {int(match.group(2)) - 1})"
-        match = re.fullmatch(r"SIZE\(\s*(\w+)\s*\)", text, re.IGNORECASE)
-        if match:
-            return f"np.size({self.names.symbol(match.group(1))})"
+
+        # An automatic array sized off another argument. UBOUND is the same
+        # question with unit lower bounds, which every translated array has,
+        # and the dimension may be written with or without ``dim=``.
+        def extent(match: re.Match[str]) -> str:
+            name = self.names.symbol(match.group(1).lower())
+            dimension = match.group(2)
+            if dimension is None:
+                return f"np.size({name})"
+            axis = int(DIM_KEYWORD.sub("", dimension)) - 1
+            return f"np.size({name}, {axis})"
+
+        if EXTENT.fullmatch(text):
+            return EXTENT.sub(extent, text)
+        substituted = EXTENT.sub(extent, text)
+        if substituted != text:
+            text = substituted
         rendered, position = [], 0
         for match in BOUND_TOKENS.finditer(text):
             if match.start() != position:
