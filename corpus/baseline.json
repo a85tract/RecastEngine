@@ -2,13 +2,9 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 637,
-   "deferred": 52,
+   "blocks": 649,
+   "deferred": 40,
    "refusals": [
-    [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     12
-    ],
     [
      "formatted internal write",
      9
@@ -126,7 +122,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:bspline_sub_module": {
-     "deferred": 24,
+     "deferred": 12,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -136,11 +132,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "42/293 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+37 more)",
+       "detail": "48/305 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+43 more)",
        "metrics": {
-        "blocks_checked": 293,
-        "blocks_deferred": 24,
-        "blocks_matched": 251,
+        "blocks_checked": 305,
+        "blocks_deferred": 12,
+        "blocks_matched": 257,
         "blocks_waived": 0
        },
        "passed": false
@@ -635,7 +631,7 @@
    "refusals": [
     [
      "unknown function or array reference 'X'",
-     44
+     46
     ],
     [
      "call to external subroutine 'X'",
@@ -676,10 +672,6 @@
     [
      "generic 'X': ambiguous between ['X', 'X']",
      3
-    ],
-    [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     2
     ],
     [
      "no expression rule for Subscript_Triplet: start_ : end_",
@@ -1263,12 +1255,12 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 400,
-   "deferred": 38,
+   "blocks": 425,
+   "deferred": 13,
    "refusals": [
     [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     27
+     "unknown function or array reference 'X'",
+     3
     ],
     [
      "seq-assoc: formal rank > actual rank work",
@@ -1297,16 +1289,12 @@
     [
      "no expression rule for Ac_Implied_Do: (alpha(i) * (N.8_wp * (i - N) + N), i = N, deg + N)",
      1
-    ],
-    [
-     "unknown function or array reference 'X'",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 38,
+     "deferred": 13,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1316,11 +1304,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "70/400 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, calcsc/B001, quad/B004 (+65 more)",
+       "detail": "83/425 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+78 more)",
        "metrics": {
-        "blocks_checked": 400,
-        "blocks_deferred": 38,
-        "blocks_matched": 330,
+        "blocks_checked": 425,
+        "blocks_deferred": 13,
+        "blocks_matched": 342,
         "blocks_waived": 0
        },
        "passed": false
@@ -1332,15 +1320,11 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 0,
-   "deferred": 81,
+   "deferred": 52,
    "refusals": [
     [
      "unknown function or array reference 'X'",
      49
-    ],
-    [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     29
     ],
     [
      "multi-line action in single-line if",
@@ -1358,7 +1342,7 @@
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 81,
+     "deferred": 52,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1380,13 +1364,9 @@
   },
   "roots": {
    "bare_files": 0,
-   "blocks": 226,
-   "deferred": 12,
+   "blocks": 230,
+   "deferred": 8,
    "refusals": [
-    [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     4
-    ],
     [
      "call to external subroutine 'X'",
      3
@@ -1415,7 +1395,7 @@
    "status": "failed",
    "units": {
     "fortran:root_module": {
-     "deferred": 12,
+     "deferred": 8,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1425,11 +1405,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "9/226 blocks disagree: ridders/B007, bdqrf/B006, muller/B013, chandrupatla/B009, toms748/B007 (+4 more)",
+       "detail": "9/230 blocks disagree: ridders/B007, bdqrf/B006, muller/B013, chandrupatla/B009, toms748/B007 (+4 more)",
        "metrics": {
-        "blocks_checked": 226,
-        "blocks_deferred": 12,
-        "blocks_matched": 217,
+        "blocks_checked": 230,
+        "blocks_deferred": 8,
+        "blocks_matched": 221,
         "blocks_waived": 0
        },
        "passed": false
@@ -1440,16 +1420,12 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 170,
-   "deferred": 23,
+   "blocks": 174,
+   "deferred": 19,
    "refusals": [
     [
      "seq-assoc: rank mismatch w",
      7
-    ],
-    [
-     "literal 'X' was never hoisted, so it has no name to emit",
-     5
     ],
     [
      "unknown function or array reference 'X'",
@@ -1468,6 +1444,10 @@
      1
     ],
     [
+     "seq-assoc: formal rank > actual rank l",
+     1
+    ],
+    [
      "no expression rule for Ac_Implied_Do: (i, i = N, n)",
      1
     ],
@@ -1479,7 +1459,7 @@
    "status": "failed",
    "units": {
     "fortran:bvls_module": {
-     "deferred": 3,
+     "deferred": 0,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1489,11 +1469,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "17/65 blocks disagree: bvls_wrapper/B003, bvls/B001, bvls/B002, bvls/B003, select_another_coeff_to_solve_for/B002 (+12 more)",
+       "detail": "19/68 blocks disagree: bvls_wrapper/B003, bvls/B001, bvls/B002, bvls/B003, initialize/B019 (+14 more)",
        "metrics": {
-        "blocks_checked": 65,
-        "blocks_deferred": 3,
-        "blocks_matched": 48,
+        "blocks_checked": 68,
+        "blocks_deferred": 0,
+        "blocks_matched": 49,
         "blocks_waived": 0
        },
        "passed": false
@@ -1501,7 +1481,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 20,
+     "deferred": 19,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1511,10 +1491,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "16/93 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+11 more)",
+       "detail": "17/94 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+12 more)",
        "metrics": {
-        "blocks_checked": 93,
-        "blocks_deferred": 20,
+        "blocks_checked": 94,
+        "blocks_deferred": 19,
         "blocks_matched": 77,
         "blocks_waived": 0
        },

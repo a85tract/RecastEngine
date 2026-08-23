@@ -47,8 +47,10 @@ Everything a particular backend emits is backend knowledge and arrives in the
 protocol below instead.
 """
 
-HOISTED_LITERAL = re.compile(r"[FI]_[0-9EMP]+")
-"""``F_273P15``, ``I_5``. A hoisted literal is a constant, not a variable read."""
+HOISTED_LITERAL = re.compile(r"(?:F32|[FI])_[0-9EMP]+")
+"""``F_273P15``, ``F32_273P15``, ``I_5``. A hoisted literal is a constant, not
+a variable read; ``F32_`` marks one written in Fortran's default real kind,
+which is a different value from the same digits suffixed."""
 
 DISCARD = re.compile(r"_wm\d*|_|_g")
 """Scaffolding targets: a discarded value, a where-mask, a region label."""

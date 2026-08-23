@@ -94,14 +94,15 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     kind, payload = parameter["kind"], parameter["payload"]
     where = f"# {source}:{parameter['line']} ({parameter['base_type']})"
     if kind == "array":
-        wrapped = re.sub(r"\[", "np.array([", payload, count=1).replace("]", "])", 1)
-        return f"{name} = {wrapped}  {where} [array param]"
+        return f"{name} = {_array(payload)}  {where} [array param]"
     if kind == "int64":
         return f"{name} = np.int64({payload})  {where}"
     if kind == "int":
         return f"{name} = np.int32({int(payload)})  {where}"
-    if kind == "real":
-        return f"{name} = np.float64('{payload}')  {where}"
+    if kind in ("real", "real32"):
+        spelled = _real(payload, kind == "real32")
+        note = " [unsuffixed default REAL]" if kind == "real32" else ""
+        return f"{name} = {spelled}  {where}{note}"
     if kind == "logical":
         return f"{name} = {'True' if payload else 'False'}  {where}"
     if kind == "ref":
@@ -117,13 +118,15 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
     about = f"# local param {parameter['name']} in {parameter['subprogram']}"
     if kind == "array":
         return (
-            f"{constant} = np.array({payload})"
+            f"{constant} = {_array(payload, bare=True)}"
             f"  # local param array {parameter['name']} in {parameter['subprogram']}"
         )
     if kind == "int":
         return f"{constant} = np.int32({int(payload)})  {about}"
-    if kind == "real":
-        return f"{constant} = np.float64('{payload}')  {about}"
+    if kind in ("real", "real32"):
+        spelled = _real(payload, kind == "real32")
+        note = " [unsuffixed default REAL]" if kind == "real32" else ""
+        return f"{constant} = {spelled}  {about}{note}"
     if kind == "logical":
         return f"{constant} = {'True' if payload else 'False'}  {about}"
     if kind in ("ref", "expr"):
@@ -140,7 +143,7 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
 def _hoisted(name: str, entry: dict[str, Any]) -> str:
     value = entry["value"]
     if entry["is_real"]:
-        spelled = f"np.float64('{value}')"
+        spelled = _real(value, name.startswith("F32_"))
     else:
         # Python 3 forbids a leading zero on a decimal literal.
         if LEADING_ZERO.match(value):
@@ -150,7 +153,65 @@ def _hoisted(name: str, entry: dict[str, Any]) -> str:
     return f"{name} = {spelled}  # {where}"
 
 
-def _expression(tokens: list[dict[str, str]]) -> str:
+def _array(payload: str, *, bare: bool = False) -> str:
+    """A literal array constructor. Character elements need ``dtype=object``:
+    NumPy would otherwise pick a fixed-width string dtype off the longest
+    element, and a later assignment of a longer name would be truncated."""
+    dtype = ", dtype=object" if "'" in payload else ""
+    if bare:
+        return f"np.array({payload}{dtype})"
+    inner = re.sub(r"\[", "np.array([", payload, count=1)
+    return inner.replace("]", f"]{dtype})", 1)
+
+
+def _real(value: str, default_kind: bool) -> str:
+    """A real constant, at the precision the compiler evaluated it in.
+
+    A literal in Fortran's default real kind is single precision, and the
+    value the program sees is that single, promoted -- ``0.1`` is
+    0.10000000149011612 where ``0.1_r8`` is 0.1. Writing the decimal text
+    into a float64 would give the second for both.
+    """
+    if default_kind:
+        return f"np.float64(np.float32('{value}'))"
+    return f"np.float64('{value}')"
+
+
+INTRINSIC_SPELLING = {
+    "abs": "np.abs",
+    "acos": "np.arccos",
+    "asin": "np.arcsin",
+    "atan": "np.arctan",
+    "atan2": "np.arctan2",
+    "cos": "np.cos",
+    "dble": "np.float64",
+    "exp": "np.exp",
+    "float": "np.float64",
+    "int": "int",
+    "log": "np.log",
+    "log10": "np.log10",
+    "max": "max",
+    "min": "min",
+    "mod": "np.mod",
+    "modulo": "np.mod",
+    "nint": "np.rint",
+    "real": "np.float64",
+    "sign": "np.sign",
+    "sin": "np.sin",
+    "sqrt": "np.sqrt",
+    "tan": "np.tan",
+}
+"""Intrinsic -> how this target spells it in a constant expression."""
+
+INQUIRY_SPELLING = {
+    "epsilon": "np.finfo(np.float64).eps",
+    "huge": "np.finfo(np.float64).max",
+    "tiny": "np.finfo(np.float64).tiny",
+}
+"""Type inquiries: the argument only says which type is being asked about."""
+
+
+def _expression(tokens: list[dict[str, Any]]) -> str:
     """A constant expression over earlier parameters, re-spelled token-wise.
 
     The target evaluates the same float64 arithmetic the Fortran compiler
@@ -160,11 +221,21 @@ def _expression(tokens: list[dict[str, str]]) -> str:
     for token in tokens:
         if token["t"] == "ref":
             spelled.append(token["v"].upper())
-        elif token["t"] == "real":
-            spelled.append(f"np.float64('{token['v']}')")
+        elif token["t"] in ("real", "real32"):
+            spelled.append(_real(token["v"], token["t"] == "real32"))
+        elif token["t"] == "call":
+            spelled.append(_call(token))
         else:  # int literals and operators pass through
             spelled.append(token["v"])
     return " ".join(spelled)
+
+
+def _call(token: dict[str, Any]) -> str:
+    name = token["v"]
+    if name in INQUIRY_SPELLING:
+        return INQUIRY_SPELLING[name]
+    arguments = ", ".join(_expression(argument) for argument in token["args"])
+    return f"{INTRINSIC_SPELLING.get(name, name)}({arguments})"
 
 
 def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> str:
