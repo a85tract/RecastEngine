@@ -265,6 +265,7 @@ class NumpyTranslation(Transform):
             statement_stubs=config.get("statement_stubs", {}),
             intrinsics=config.get("intrinsic_overrides", {}),
             call_transforms=config.get("call_transforms", {}),
+            function_transforms=config.get("function_transforms", {}),
             patches=config.get("patches", {}),
             deferred_handler=self._handler(config),
         )

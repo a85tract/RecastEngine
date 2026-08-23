@@ -55,6 +55,17 @@ class CallSite:
     def pad(self) -> str:
         return "    " * self.indent
 
+    @property
+    def positional(self) -> tuple[Any, ...]:
+        """The actuals written without a keyword, in order.
+
+        Several of these calls are told apart by how many they have -- the
+        same name means three different things at one, two and three.
+        """
+        from recast.fortran._parse import f03
+
+        return tuple(a for a in self.actuals if not isinstance(a, f03.Actual_Arg_Spec))
+
     def value(self, position: int) -> str:
         """Actual at ``position``, rendered, keyword or not."""
         return self.render(self.node(position))
