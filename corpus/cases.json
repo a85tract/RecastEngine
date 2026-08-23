@@ -1,0 +1,150 @@
+{
+  "_comment": "Public translation corpus: what the engine alone -- no domain extension installed -- is held to. Each case names the files of one submodule that make up the translation unit, what has to happen to them first (cpp), and which module units are the subject. Run: python tools/corpus.py run [case...]; the record is corpus/baseline.json.",
+  "cases": {
+    "minpack": {
+      "submodule": "minpack",
+      "upstream": "https://github.com/fortran-lang/minpack",
+      "license": "MIT",
+      "about": "Nonlinear least squares (modern MINPACK), one module",
+      "files": [
+        "src/minpack.f90"
+      ]
+    },
+    "quadpack": {
+      "submodule": "quadpack",
+      "upstream": "https://github.com/jacobwilliams/quadpack",
+      "license": "BSD-3-Clause",
+      "about": "1-D adaptive quadrature; quadpack_double is quadpack_generic.F90 included under cpp",
+      "files": [
+        "src/quadpack_double.F90"
+      ],
+      "cpp": {
+        "defines": [
+          "MOD_INCLUDE=1"
+        ],
+        "include": [
+          "src"
+        ]
+      }
+    },
+    "specfun": {
+      "submodule": "specfun",
+      "upstream": "https://github.com/jacobwilliams/specfun",
+      "license": "BSD-3-Clause",
+      "about": "Special functions (Zhang & Jin), one 12.6k-line module",
+      "files": [
+        "src/specfun.F90"
+      ]
+    },
+    "polyroots": {
+      "submodule": "polyroots-fortran",
+      "upstream": "https://github.com/jacobwilliams/polyroots-fortran",
+      "license": "BSD-3-Clause",
+      "about": "Polynomial root finding",
+      "files": [
+        "src/polyroots_module.F90"
+      ]
+    },
+    "pchip": {
+      "submodule": "pchip",
+      "upstream": "https://github.com/jacobwilliams/pchip",
+      "license": "BSD-3-Clause",
+      "about": "SLATEC PCHIP piecewise cubic Hermite interpolation",
+      "files": [
+        "src/pchip_module.f90"
+      ]
+    },
+    "slsqp": {
+      "submodule": "slsqp",
+      "upstream": "https://github.com/jacobwilliams/slsqp",
+      "license": "BSD-3-Clause",
+      "about": "SLSQP optimizer, a BLAS subset and BVLS; the OO wrapper module is left out",
+      "files": [
+        "src/slsqp_kinds.F90",
+        "src/slsqp_support.F90",
+        "src/bvls_module.f90",
+        "src/slsqp_core.f90"
+      ]
+    },
+    "bspline": {
+      "submodule": "bspline-fortran",
+      "upstream": "https://github.com/jacobwilliams/bspline-fortran",
+      "license": "BSD-3-Clause",
+      "about": "B-splines: kinds, blas, sub and defc modules, without the OO layer",
+      "files": [
+        "src/bspline_kinds_module.F90",
+        "src/bspline_blas_module.F90",
+        "src/bspline_sub_module.f90",
+        "src/bspline_defc_module.F90"
+      ]
+    },
+    "roots": {
+      "submodule": "roots-fortran",
+      "upstream": "https://github.com/jacobwilliams/roots-fortran",
+      "license": "BSD-3-Clause",
+      "about": "Scalar root finding, object-oriented style -- a stress test",
+      "files": [
+        "src/root_module.F90"
+      ]
+    },
+    "fortran-utils": {
+      "submodule": "fortran-utils",
+      "upstream": "https://github.com/certik/fortran-utils",
+      "license": "MIT",
+      "about": "Sorting, splines, special functions, linear algebra over LAPACK interfaces",
+      "files": [
+        "src/types.f90",
+        "src/constants.f90",
+        "src/utils.f90",
+        "src/sorting.f90",
+        "src/splines.f90",
+        "src/special.f90",
+        "src/optimize.f90",
+        "src/mesh.f90",
+        "src/ppm.f90",
+        "src/linalg.f90"
+      ]
+    },
+    "fftpack": {
+      "submodule": "fftpack",
+      "upstream": "https://github.com/fortran-lang/fftpack",
+      "license": "MIT",
+      "about": "FFTPACK: 58 files of bare subprograms (no module) plus the wrapper module",
+      "files": [
+        "src/*.f90"
+      ]
+    },
+    "numfor": {
+      "submodule": "numfor",
+      "upstream": "https://github.com/numericfor/numfor",
+      "license": "none stated upstream",
+      "about": "Integration, FITPACK-style goto interpolation, random numbers, strings",
+      "files": [
+        "src/**/*.f90"
+      ],
+      "exclude": [
+        "src/tests/**"
+      ]
+    },
+    "cloudsc": {
+      "submodule": "dwarf-p-cloudsc",
+      "upstream": "https://github.com/ecmwf-ifs/dwarf-p-cloudsc",
+      "license": "Apache-2.0",
+      "about": "IFS CLOUDSC cloud microphysics kernel and its parameter modules -- the closest thing here to CAM physics",
+      "files": [
+        "src/common/module/parkind1.F90",
+        "src/common/module/yomcst.F90",
+        "src/common/module/yoethf.F90",
+        "src/common/module/yoecldp.F90",
+        "src/common/module/yoephli.F90",
+        "src/common/module/yomphyder.F90",
+        "src/cloudsc_fortran/cloudsc.F90"
+      ],
+      "cpp": {
+        "include": [
+          "src/common/include"
+        ]
+      }
+    }
+  }
+}
