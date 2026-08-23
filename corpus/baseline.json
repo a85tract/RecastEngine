@@ -293,8 +293,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 458,
-   "deferred": 136,
+   "blocks": 460,
+   "deferred": 134,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -354,14 +354,6 @@
     ],
     [
      "generic 'X': ambiguous between ['X', 'X', 'X']",
-     1
-    ],
-    [
-     "no expression rule for Ac_Implied_Do: (n * pi, n = N, nzeros)",
-     1
-    ],
-    [
-     "no expression rule for Ac_Implied_Do: (n * pi, n = N, nmax + nzeros)",
      1
     ],
     [
@@ -508,7 +500,7 @@
      }
     },
     "fortran:special": {
-     "deferred": 32,
+     "deferred": 30,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -518,10 +510,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "19/79 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+14 more)",
+       "detail": "21/81 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+16 more)",
        "metrics": {
-        "blocks_checked": 79,
-        "blocks_deferred": 32,
+        "blocks_checked": 81,
+        "blocks_deferred": 30,
         "blocks_matched": 60,
         "blocks_waived": 0
        },
@@ -1255,8 +1247,8 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 425,
-   "deferred": 13,
+   "blocks": 427,
+   "deferred": 11,
    "refusals": [
     [
      "unknown function or array reference 'X'",
@@ -1281,20 +1273,12 @@
     [
      "seq-assoc: formal rank > actual rank t",
      1
-    ],
-    [
-     "no expression rule for Ac_Implied_Do: (N, i = N, deg)",
-     1
-    ],
-    [
-     "no expression rule for Ac_Implied_Do: (alpha(i) * (N.8_wp * (i - N) + N), i = N, deg + N)",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 13,
+     "deferred": 11,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1304,10 +1288,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "83/425 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+78 more)",
+       "detail": "85/427 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+80 more)",
        "metrics": {
-        "blocks_checked": 425,
-        "blocks_deferred": 13,
+        "blocks_checked": 427,
+        "blocks_deferred": 11,
         "blocks_matched": 342,
         "blocks_waived": 0
        },
@@ -1352,7 +1336,7 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2432)",
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2442)",
        "metrics": {
         "blocks_checked": 0
        },
@@ -1420,8 +1404,8 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 174,
-   "deferred": 19,
+   "blocks": 175,
+   "deferred": 18,
    "refusals": [
     [
      "seq-assoc: rank mismatch w",
@@ -1445,10 +1429,6 @@
     ],
     [
      "seq-assoc: formal rank > actual rank l",
-     1
-    ],
-    [
-     "no expression rule for Ac_Implied_Do: (i, i = N, n)",
      1
     ],
     [
@@ -1481,7 +1461,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 19,
+     "deferred": 18,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1491,10 +1471,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "17/94 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+12 more)",
+       "detail": "18/95 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+13 more)",
        "metrics": {
-        "blocks_checked": 94,
-        "blocks_deferred": 19,
+        "blocks_checked": 95,
+        "blocks_deferred": 18,
         "blocks_matched": 77,
         "blocks_waived": 0
        },

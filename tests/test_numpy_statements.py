@@ -131,6 +131,16 @@ contains
     call consume(n, j, flat)
   end subroutine calls
 
+  subroutine sections(a, b, n)
+    real(r8), intent(inout) :: a(10), b(0:9)
+    integer, intent(in) :: n
+    integer :: ks(3)
+    a(n:1:-1) = 0.0_r8
+    a(:n:-1) = 1.0_r8
+    b(9:0:-1) = 2.0_r8
+    ks = (/ (2*n, n = 1, 3) /)
+  end subroutine sections
+
   subroutine backward(n, s)
     integer, intent(in) :: n
     real(r8), intent(inout) :: s
@@ -407,12 +417,42 @@ def test_a_nested_where_ands_the_outer_mask_in(sources: dict[str, Path]) -> None
     assert "    c[...][(~_wm)] = 0.0" in lines  # the ELSEWHERE branch
 
 
-def test_a_masked_elsewhere_is_refused(sources: dict[str, Path]) -> None:
-    """ELSEWHERE with its own mask condition composes three masks; emitting
-    only the negation would assign through the wrong one."""
+def test_a_masked_elsewhere_takes_from_what_is_left(sources: dict[str, Path]) -> None:
+    """ELSEWHERE with its own condition selects from the elements no earlier
+    branch claimed, not from the whole array: the running remainder is
+    narrowed by each masked branch in turn, so a later one cannot reach an
+    element an earlier one already assigned."""
     statements, nodes = build(sources["emit_mod"], "masked")
-    with pytest.raises(REFUSED):
-        statements.render(pick(nodes, f03.Where_Construct, 1), 1)
+    assert statements.render(pick(nodes, f03.Where_Construct, 1), 1) == [
+        "    _wm = (a > 0.0)",
+        "    _wn = (~_wm)",
+        "    c[...][_wm] = 1.0",
+        "    _we0_1 = (_wn & (a < 0.0))",
+        "    _wn = (_wn & (~(a < 0.0)))",
+        "    c[...][_we0_1] = 0.0",
+    ]
+
+
+def test_a_descending_section_carries_its_declared_lower_bound(
+    sources: dict[str, Path],
+) -> None:
+    """The stop edge underflows at the first element, and an array declared
+    from 0 shifts by 0, not by 1 -- so the runtime is handed the bound and
+    either edge may be left implied."""
+    statements, nodes = build(sources["emit_mod"], "sections")
+    rendered = [statements.render(node, 1)[0] for node in nodes[:3]]
+    assert rendered[0] == "    a[_f_rstep(n, 1, (-1), 1)] = 0.0"
+    assert rendered[1] == "    a[_f_rstep(None, n, (-1), 1)] = 1.0"
+    assert rendered[2] == "    b[_f_rstep(I_9, 0, (-1), 0)] = F_2P0"
+
+
+def test_an_implied_do_in_an_array_constructor_is_a_comprehension(
+    sources: dict[str, Path],
+) -> None:
+    statements, nodes = build(sources["emit_mod"], "sections")
+    assert statements.render(nodes[3], 1) == [
+        "    ks[...] = np.array([[(2 * n) for n in range(1, I_3 + 1)]])"
+    ]
 
 
 # --- loops and gotos ---------------------------------------------------------

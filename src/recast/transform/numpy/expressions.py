@@ -161,6 +161,8 @@ class Expressions:
             return repr(str(node)[1:-1])
         if isinstance(node, f03.Logical_Literal_Constant):
             return "True" if ".TRUE." in str(node).upper() else "False"
+        if isinstance(node, f03.Ac_Implied_Do):
+            return self._implied_do(node)
         if isinstance(node, f03.Complex_Literal_Constant):
             # Not through the literal table: a complex literal's two halves are
             # written where they are read, and the zero-literal rule hoists
@@ -234,6 +236,19 @@ class Expressions:
             return f"({rendered_left} {LOGICAL_OPS[spelling]} {rendered_right})"
 
         raise NoRule(f"operator {operator!r}")
+
+    def _implied_do(self, node: Any) -> str:
+        """``(expr, i = lo, hi [, step])`` inside an array constructor: a
+        comprehension, because the loop is the constructor's own."""
+        values, control = node.children
+        variable = pysafe(str(control.children[0]).lower())
+        bounds = list(control.children[1])
+        low, high = self.render(bounds[0]), self.render(bounds[1])
+        step = self.render(bounds[2]) if len(bounds) > 2 else None
+        items = values.children if hasattr(values, "children") else [values]
+        body = ", ".join(self.render(item) for item in items)
+        span = f"range({low}, {high} + 1, {step})" if step else f"range({low}, {high} + 1)"
+        return f"[{body} for {variable} in {span}]"
 
     def _power(self, left: str, right: str, left_node: Any, right_node: Any) -> str | None:
         """``x**n``, which the reference compiler may have lowered two ways."""
@@ -318,7 +333,12 @@ class Expressions:
         """``lo:hi`` inclusive becomes ``lo':hi'+1`` exclusive."""
         step = self.render(position.step) if position.step is not None else None
         if step is not None and step.lstrip("(").startswith("-"):
-            return f"_f_rstep({self.render(position.lower)}, {self.render(position.upper)}, {step})"
+            # A descending section: the runtime works the edges out, because
+            # either may be implied and the stop edge underflows at the first
+            # element. The declared lower bound goes with them.
+            lower = self.render(position.lower) if position.lower is not None else "None"
+            upper = self.render(position.upper) if position.upper is not None else "None"
+            return f"_f_rstep({lower}, {upper}, {step}, {position.origin})"
         start = ""
         if position.lower is not None:
             folded = indexing.fold_index(position.lower, position.origin, WHITELIST_INT)

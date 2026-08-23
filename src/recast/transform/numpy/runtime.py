@@ -139,10 +139,19 @@ def _f_copy_out(dst: Any, src: Any) -> None:
         dst.ravel()[:n] = src.ravel()[:n]
 
 
-def _f_rstep(lo: Any, hi: Any, st: Any) -> Any:
-    """Fortran lo:hi:st (st<0, inclusive, 1-based) -> python slice; the
-    exclusive stop edge underflows at hi==1, which needs None."""
-    return slice(lo - 1, hi - 2 if hi >= 2 else None, st)
+def _f_rstep(lo: Any, hi: Any, st: Any, lb: Any = 1) -> Any:
+    """Fortran lo:hi:st (st<0, inclusive) -> python slice.
+
+    ``lb`` is the array's declared lower bound, 1 unless it says otherwise.
+    Either edge may be None: Fortran lets a section leave one implied, and
+    the exclusive stop edge underflows at the first element, which also
+    needs None."""
+    start = None if lo is None else lo - lb
+    stop = None
+    if hi is not None:
+        index = hi - lb
+        stop = index - 1 if index >= 1 else None
+    return slice(start, stop, st)
 
 
 def _f_vdot(a: Any, b: Any) -> Any:

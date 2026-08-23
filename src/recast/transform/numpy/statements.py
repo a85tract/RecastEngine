@@ -388,15 +388,29 @@ class Statements:
         pad = "    " * indent
         depth = len(self.masks)
         variable = "_wm" if depth == 0 else f"_wm{depth + 1}"
+        # What no branch so far has claimed. Carried explicitly because a
+        # masked ELSEWHERE narrows it: each one takes the elements its own
+        # condition selects and leaves the rest to the branches after it.
+        remaining = "_wn" if depth == 0 else f"_wn{depth + 1}"
+        masked_elsewhere = any(
+            isinstance(child, f03.Masked_Elsewhere_Stmt) for child in node.children if child
+        )
+        seen = 0
         lines: list[str] = []
         local = variable
         for child in node.children:
             if isinstance(child, f03.Where_Construct_Stmt):
                 lines.append(f"{pad}{variable} = {self._mask_expression(child.children[0])}")
+                if masked_elsewhere:
+                    lines.append(f"{pad}{remaining} = (~{variable})")
+            elif isinstance(child, f03.Masked_Elsewhere_Stmt):
+                seen += 1
+                condition = self._mask_expression(child.children[0])
+                local = f"_we{depth}_{seen}"
+                lines.append(f"{pad}{local} = ({remaining} & {condition})")
+                lines.append(f"{pad}{remaining} = ({remaining} & (~{condition}))")
             elif isinstance(child, f03.Elsewhere_Stmt):
-                if len([c for c in child.children if c is not None]) > 1:
-                    raise NoRule("masked ELSEWHERE")
-                local = f"(~{variable})"
+                local = remaining if masked_elsewhere else f"(~{variable})"
             elif isinstance(child, f03.End_Where_Stmt):
                 pass
             elif isinstance(child, f03.Assignment_Stmt):
