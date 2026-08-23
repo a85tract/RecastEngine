@@ -166,6 +166,13 @@ class Subprograms:
             companion_globals=self.companion_globals,
             use_bindings=self.use_bindings,
         )
+        shadowed = {a["name"] for a in semantics.subprogram["args"]}
+        shadowed |= {loc["name"] for loc in semantics.subprogram.get("locals") or ()}
+        allocated = {
+            name: bounds
+            for name, bounds in self.record.get("module_allocate_bounds", {}).items()
+            if name not in shadowed
+        }
         expressions = Expressions(
             semantics,
             names,
@@ -175,6 +182,7 @@ class Subprograms:
             stubs=dict(self.function_stubs),
             intrinsics={k: v for k, v in self.intrinsics.items() if isinstance(v, dict)},
             elemental=_is_elemental(semantics.subprogram),
+            allocated_bounds=allocated,
         )
         return Statements(
             semantics,

@@ -614,6 +614,8 @@ def extract(
         rec["dtype"] = dtype_of(rec["fortran_type"], rec["kind"], kind_map)
 
     state_names = {s["name"] for s in module_state}
+    visible = state_names | {p["name"] for p in module_parameters}
+    allocated_bounds = _module_allocate_bounds(sub_scope, state_names, visible)
 
     # Accessibility. A common convention is a bare `private` up top and an
     # explicit public list -- and a wrapper that `use`s a private symbol does
@@ -660,6 +662,10 @@ def extract(
         "use_statements": [str(u) for u in walk(sub_scope, f03.Use_Stmt)],
         "module_parameters": module_parameters,
         "module_state": module_state,
+        # Module state whose ALLOCATE gave it a lower bound its declaration
+        # does not carry. Module-wide because the ALLOCATE is usually in the
+        # init routine and the references are everywhere else.
+        "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map),
         "generics": _generics(mod_spec),
@@ -806,3 +812,52 @@ def _host_associate(
     for rec in records:
         if rec.get("host") and seen[rec["name"]] > 1:
             rec["emit_name"] = f"{rec['host']}__{rec['name']}"
+
+
+CONFLICTING_BOUNDS = "conflicting"
+"""A module allocatable allocated with lower bounds that do not agree, or
+with one no other subprogram can evaluate. A reference to it cannot be
+shifted statically, and saying so is the only honest answer."""
+
+
+def _module_allocate_bounds(scope: Any, state_names: set[str], visible: set[str]) -> dict[str, Any]:
+    """Module state -> the bounds its ALLOCATE gave it, module-wide.
+
+    ``allocate(x(ntot, 0:nspec))`` sets a lower bound the declaration does
+    not carry, and the ALLOCATE is typically in an init routine while the
+    references are in every other one. Without this each of those gets the
+    blanket one-based shift and lands a slot off.
+
+    A bound is usable only if every subprogram can evaluate it: a literal,
+    or a name visible module-wide. A local of the allocating subprogram, an
+    expression, or two ALLOCATEs that disagree leave the name marked
+    conflicting, and a reference to it refuses rather than shifting wrongly.
+    """
+    found: dict[str, Any] = {}
+    for allocation in walk(scope, f03.Allocation):
+        target, shape = allocation.children[0], allocation.children[1]
+        if not isinstance(target, f03.Name):
+            continue
+        name = str(target).lower()
+        if name not in state_names:
+            continue
+        bounds: list[dict[str, str]] = []
+        rebased = False
+        unusable = False
+        for spec in walk(shape, f03.Allocate_Shape_Spec):
+            low, high = spec.children
+            text = "1" if low is None else str(low).split("_")[0]
+            if text != "1":
+                rebased = True
+                if not re.fullmatch(r"-?\d+", text) and text.lower() not in visible:
+                    unusable = True
+            bounds.append({"lb": text, "ub": str(high)})
+        if not rebased:
+            continue
+        previous = found.get(name)
+        disagrees = previous is not None and (
+            previous == CONFLICTING_BOUNDS
+            or [d["lb"] for d in previous] != [d["lb"] for d in bounds]
+        )
+        found[name] = CONFLICTING_BOUNDS if unusable or disagrees else bounds
+    return found
