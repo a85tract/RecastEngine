@@ -266,6 +266,8 @@ class NumpyTranslation(Transform):
             intrinsics=config.get("intrinsic_overrides", {}),
             call_transforms=config.get("call_transforms", {}),
             function_transforms=config.get("function_transforms", {}),
+            handle_producers=frozenset(config.get("handle_producers", ())),
+            type_bound_procedures=frozenset(config.get("type_bound_procedures", ())),
             patches=config.get("patches", {}),
             deferred_handler=self._handler(config),
         )

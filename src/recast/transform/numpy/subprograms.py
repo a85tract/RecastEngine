@@ -89,6 +89,8 @@ class Subprograms:
     intrinsics: dict[str, Any] = field(default_factory=dict)
     call_transforms: dict[str, Any] = field(default_factory=dict)
     function_transforms: dict[str, Any] = field(default_factory=dict)
+    handle_producers: frozenset[str] = frozenset()
+    type_bound_procedures: frozenset[str] = frozenset()
 
     patches: dict[str, dict[str, Any]] = field(default_factory=dict)
     """``"subprogram/block"`` -> an operator-audited replacement for a block
@@ -183,6 +185,8 @@ class Subprograms:
             remotes=self.remotes,
             stubs=dict(self.function_stubs),
             function_transforms=dict(self.function_transforms),
+            handle_producers=self.handle_producers,
+            type_bound=self.type_bound_procedures,
             intrinsics={k: v for k, v in self.intrinsics.items() if isinstance(v, dict)},
             elemental=_is_elemental(semantics.subprogram),
             allocated_bounds=allocated,

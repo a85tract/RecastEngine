@@ -340,6 +340,14 @@ class Statements:
     def _assignment(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
         target, _, value = node.children
+        if (
+            isinstance(target, f03.Name)
+            and isinstance(value, (f03.Part_Ref, f03.Structure_Constructor))
+            and str(value.children[0]).lower() in self.expressions.handle_producers
+        ):
+            # The right-hand side is a lookup that answers with a handle, so
+            # the name it lands in holds one too.
+            self.expressions.handles.add(self.names.symbol(str(target)))
         if isinstance(target, f03.Name) and self.semantics.derived_type_of(str(target)):
             # Assigning a whole derived type is a DEEP COPY in Fortran.
             return [
@@ -1035,6 +1043,7 @@ class Statements:
                             if isinstance(a, f03.Actual_Arg_Spec)
                         },
                         render=self.expressions.render,
+                        holds_handle=self.expressions.handles.add,
                     )
                 )
             )
