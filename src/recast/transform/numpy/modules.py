@@ -77,6 +77,7 @@ ARRAY_TEXT = re.compile(r"\(/.*?/\)", re.S)
 DIVISION_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?\s*/\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?")
 MARKER = re.compile(r"^    # (B\d{3}) <- ")
 DEFINITION = re.compile(r"^def (\w+)\(")
+DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 
 @dataclass
@@ -295,6 +296,14 @@ class Modules:
             return [
                 f"{pysafe(state['name'])} = {value}  # module state "
                 f"({state['dtype']}), Fortran save-init"
+            ]
+        derived = DERIVED_TYPE.match(str(state.get("dtype", "")))
+        if derived:
+            name = derived.group(1).lower()
+            factory = f"_make_{name}()" if name in self._all_types() else "_new_derived()"
+            return [
+                f"{pysafe(state['name'])} = {factory}  # module state "
+                f"({state['dtype']}), set by init"
             ]
         return [f"{pysafe(state['name'])} = None  # module state ({state['dtype']}), set by init"]
 
