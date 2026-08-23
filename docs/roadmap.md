@@ -468,6 +468,24 @@ code.
    dummy is a slice from that element, `xxk[0:, k - 1]` in column order,
    not an element. A fixture with exactly that call is the test.
 
+### The public corpus, 2026-08-22
+
+The done-when below now has a public form. `corpus/` pins twelve
+open-source Fortran libraries as submodules -- least squares, quadrature,
+special functions, roots, splines, an optimizer, FFTs, a cloud-microphysics
+kernel -- and `tools/corpus.py` walks the `translate` recipe over each with
+no extension installed, recording per unit what the rules refused and why.
+`corpus/baseline.json` is the record and the work list, and it settles a
+question the relay kept raising: a rule goes into the engine when code
+nobody here wrote needs it, and into the extension when only CAM does.
+
+The first baseline says two things above everything else. Calls between
+sibling modules of one tree are refused, because the recipe takes
+companions only from config where the translator's `auto_translate`
+derives them from USE; and files of bare subprograms are not units at all,
+which is fifty-eight of fftpack's fifty-nine files and CLOUDSC's kernel
+itself. Neither is a CAM question, so neither was ever asked.
+
 **Done when:** the engine passes its tests with the CESM extension
 uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own
 `validate_*` scripts. This phase is the only real proof that the engine is
