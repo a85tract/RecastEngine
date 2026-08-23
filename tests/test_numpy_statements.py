@@ -507,9 +507,9 @@ def test_a_descending_section_carries_its_declared_lower_bound(
     either edge may be left implied."""
     statements, nodes = build(sources["emit_mod"], "sections")
     rendered = [statements.render(node, 1)[0] for node in nodes[:3]]
-    assert rendered[0] == "    a[_f_rstep(n, 1, (-1), 1)] = 0.0"
-    assert rendered[1] == "    a[_f_rstep(None, n, (-1), 1)] = 1.0"
-    assert rendered[2] == "    b[_f_rstep(I_9, 0, (-1), 0)] = F_2P0"
+    assert rendered[0] == "    a[_f_rstep_lb(n, 1, (-1), 1)] = 0.0"
+    assert rendered[1] == "    a[_f_rstep_lb(None, n, (-1), 1)] = 1.0"
+    assert rendered[2] == "    b[_f_rstep_lb(I_9, 0, (-1), 0)] = F_2P0"
 
 
 def test_an_implied_do_in_an_array_constructor_is_a_comprehension(
