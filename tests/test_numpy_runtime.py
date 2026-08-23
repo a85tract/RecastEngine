@@ -319,3 +319,23 @@ def test_list_directed_write_starts_with_a_blank_and_pads_to_width() -> None:
     record = runtime._f_list_write(np.int32(42))
     assert record.startswith(" ")
     assert record == " " + "42".rjust(12) + " "
+
+
+# --- copy-out ----------------------------------------------------------------
+
+
+def test_copy_out_writes_the_overlap_and_leaves_the_rest() -> None:
+    """A pcols-wide buffer receiving an ncol-wide result keeps its tail, as
+    a by-reference OUT did; an unsupplied optional is left alone."""
+    buffer = np.full(4, -1.0)
+    runtime._f_copy_out(buffer, np.array([1.0, 2.0]))
+    assert list(buffer) == [1.0, 2.0, -1.0, -1.0]
+    two_d = np.zeros((3, 3))
+    runtime._f_copy_out(two_d, np.ones((2, 2)))
+    assert two_d.sum() == 4.0 and two_d[2, 2] == 0.0
+    same = np.zeros(2)
+    runtime._f_copy_out(same, np.array([5.0, 6.0]))
+    assert list(same) == [5.0, 6.0]
+    runtime._f_copy_out(same, 7.0)
+    assert list(same) == [7.0, 7.0]
+    runtime._f_copy_out(None, np.ones(2))  # nothing to write into, no error

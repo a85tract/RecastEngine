@@ -461,12 +461,12 @@ def test_deallocate_returns_the_names_to_none(sources: dict[str, Path]) -> None:
 # --- calls -------------------------------------------------------------------
 
 
-def test_out_intents_come_back_as_assignments(sources: dict[str, Path]) -> None:
+def test_a_whole_array_out_intent_is_copied_into_the_buffer(sources: dict[str, Path]) -> None:
     """An inout array actual appears on both sides, and the target is the
     buffer -- the caller may be aliasing it."""
     statements, nodes = build(sources["emit_mod"], "calls")
     generic = pick(nodes, f03.Call_Stmt)
-    assert statements.render(generic, 1) == ["    a[...] = scale_vector(a, s)"]
+    assert statements.render(generic, 1) == ["    _f_copy_out(a, scale_vector(a, s))"]
 
 
 def test_an_unsupplied_optional_out_still_occupies_the_tuple(sources: dict[str, Path]) -> None:
@@ -486,7 +486,7 @@ def test_a_missing_required_actual_is_refused(sources: dict[str, Path]) -> None:
 def test_an_elemental_call_over_an_array_actual_broadcasts(sources: dict[str, Path]) -> None:
     statements, nodes = build(sources["emit_mod"], "calls")
     assert statements.render(pick(nodes, f03.Call_Stmt, 4), 1) == [
-        "    a[...] = _f_ecall(e_scale, a, s)"
+        "    _f_copy_out(a, _f_ecall(e_scale, a, s))"
     ]
 
 
@@ -534,7 +534,7 @@ def test_a_companion_generic_dispatches_to_its_specific(sources: dict[str, Path]
         sources["caller_mod"], "drive", companions=(sibling,), remotes=remotes
     )
     assert statements.render(pick(nodes, f03.Call_Stmt), 1) == [
-        "    a[...] = _sib.cscale_vector(a, s)"
+        "    _f_copy_out(a, _sib.cscale_vector(a, s))"
     ]
     assert statements.render(nodes[1], 1) == ["    s = _sib.rise(s)"]
 

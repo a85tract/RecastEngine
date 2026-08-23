@@ -773,6 +773,21 @@ class Statements:
         else:
             call = f"{prefix}{pysafe(name)}({', '.join(inputs)})"
         if outputs:
+            # A whole-array OUT actual is copied into the caller's buffer by
+            # the runtime rather than assigned through ``[...]``: the callee
+            # may return a narrower array than the buffer it was handed.
+            has_array = any("[...]" in target for target in outputs)
+            if has_array and len(outputs) == 1:
+                base = outputs[0].replace("[...]", "")
+                return [f"{pad}_f_copy_out({base}, {call})"]
+            if has_array:
+                lines = [f"{pad}_out = {call}"]
+                for i, target in enumerate(outputs):
+                    if "[...]" in target:
+                        lines.append(f"{pad}_f_copy_out({target.replace('[...]', '')}, _out[{i}])")
+                    else:
+                        lines.append(f"{pad}{target} = _out[{i}]")
+                return lines
             return [f"{pad}{', '.join(outputs)} = {call}"]
         return [f"{pad}{call}"]
 
