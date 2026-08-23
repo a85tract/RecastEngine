@@ -1,36 +1,48 @@
 [submodule "corpus/minpack"]
 	path = corpus/minpack
 	url = https://github.com/fortran-lang/minpack.git
+	shallow = true
 [submodule "corpus/quadpack"]
 	path = corpus/quadpack
 	url = https://github.com/jacobwilliams/quadpack.git
+	shallow = true
 [submodule "corpus/specfun"]
 	path = corpus/specfun
 	url = https://github.com/jacobwilliams/specfun.git
+	shallow = true
 [submodule "corpus/polyroots-fortran"]
 	path = corpus/polyroots-fortran
 	url = https://github.com/jacobwilliams/polyroots-fortran.git
+	shallow = true
 [submodule "corpus/pchip"]
 	path = corpus/pchip
 	url = https://github.com/jacobwilliams/pchip.git
+	shallow = true
 [submodule "corpus/slsqp"]
 	path = corpus/slsqp
 	url = https://github.com/jacobwilliams/slsqp.git
+	shallow = true
 [submodule "corpus/bspline-fortran"]
 	path = corpus/bspline-fortran
 	url = https://github.com/jacobwilliams/bspline-fortran.git
+	shallow = true
 [submodule "corpus/roots-fortran"]
 	path = corpus/roots-fortran
 	url = https://github.com/jacobwilliams/roots-fortran.git
+	shallow = true
 [submodule "corpus/fortran-utils"]
 	path = corpus/fortran-utils
 	url = https://github.com/certik/fortran-utils.git
+	shallow = true
 [submodule "corpus/fftpack"]
 	path = corpus/fftpack
 	url = https://github.com/fortran-lang/fftpack.git
+	shallow = true
 [submodule "corpus/numfor"]
 	path = corpus/numfor
 	url = https://github.com/numericfor/numfor.git
+	shallow = true
 [submodule "corpus/dwarf-p-cloudsc"]
 	path = corpus/dwarf-p-cloudsc
 	url = https://github.com/ecmwf-ifs/dwarf-p-cloudsc.git
+	shallow = true

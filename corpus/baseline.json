@@ -1,0 +1,1656 @@
+{
+ "cases": {
+  "bspline": {
+   "bare_files": 0,
+   "blocks": 582,
+   "deferred": 107,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     32
+    ],
+    [
+     "do while / infinite do",
+     17
+    ],
+    [
+     "unknown function or array reference 'X'",
+     14
+    ],
+    [
+     "literal 'X' was never hoisted, so it has no name to emit",
+     12
+    ],
+    [
+     "formatted internal write",
+     9
+    ],
+    [
+     "no elementwise rule for 'X'",
+     5
+    ],
+    [
+     "multi-line action in single-line if",
+     5
+    ],
+    [
+     "no statement rule for Block_Construct",
+     3
+    ],
+    [
+     "seq-assoc: rank mismatch w",
+     2
+    ],
+    [
+     "size with a dim= or mask= keyword",
+     2
+    ],
+    [
+     "seq-assoc: rank mismatch ws",
+     1
+    ],
+    [
+     "seq-assoc: rank mismatch iwork",
+     1
+    ],
+    [
+     "seq-assoc: formal rank > actual rank v",
+     1
+    ],
+    [
+     "seq-assoc: rank mismatch work",
+     1
+    ],
+    [
+     "no statement rule for Error_Stop_Stmt",
+     1
+    ],
+    [
+     "write with IOSTAT= control",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:bspline_blas_module": {
+     "deferred": 0,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/44 blocks disagree: dnrm2/B012, dnrm2/B013",
+       "metrics": {
+        "blocks_checked": 44,
+        "blocks_deferred": 0,
+        "blocks_matched": 42,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:bspline_defc_module": {
+     "deferred": 76,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "29/252 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B031, defcmn/B034, defcmn/B037 (+24 more)",
+       "metrics": {
+        "blocks_checked": 252,
+        "blocks_deferred": 76,
+        "blocks_matched": 223,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:bspline_kinds_module": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:bspline_sub_module": {
+     "deferred": 31,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "40/286 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+35 more)",
+       "metrics": {
+        "blocks_checked": 286,
+        "blocks_deferred": 31,
+        "blocks_matched": 246,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "cloudsc": {
+   "bare_files": 1,
+   "blocks": 30,
+   "deferred": 172,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     168
+    ],
+    [
+     "allocate without shape specs",
+     4
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:parkind1": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:yoecldp": {
+     "deferred": 125,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 125,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:yoephli": {
+     "deferred": 17,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 17,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:yoethf": {
+     "deferred": 20,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "20 blocks match",
+       "metrics": {
+        "blocks_checked": 20,
+        "blocks_deferred": 20,
+        "blocks_matched": 20,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:yomcst": {
+     "deferred": 10,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "10 blocks match",
+       "metrics": {
+        "blocks_checked": 10,
+        "blocks_deferred": 10,
+        "blocks_matched": 10,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:yomphyder": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    }
+   }
+  },
+  "fftpack": {
+   "bare_files": 58,
+   "blocks": 0,
+   "deferred": 0,
+   "refusals": [],
+   "status": "failed",
+   "units": {
+    "fortran:fftpack": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    }
+   }
+  },
+  "fortran-utils": {
+   "bare_files": 0,
+   "blocks": 387,
+   "deferred": 207,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     114
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X']",
+     40
+    ],
+    [
+     "unknown function or array reference 'X'",
+     14
+    ],
+    [
+     "no expression rule for Subscript_Triplet: i : i",
+     5
+    ],
+    [
+     "no elementwise rule for 'X'",
+     4
+    ],
+    [
+     "assignment to non-array ref sj",
+     3
+    ],
+    [
+     "goto N is not a loop-exit pattern",
+     3
+    ],
+    [
+     "structure constructor 'X'",
+     2
+    ],
+    [
+     "no statement rule for Inquire_Stmt",
+     2
+    ],
+    [
+     "rank of unknown reference 'X'",
+     2
+    ],
+    [
+     "assignment to non-array ref sy",
+     2
+    ],
+    [
+     "do while / infinite do",
+     2
+    ],
+    [
+     "no statement rule for Rewind_Stmt",
+     2
+    ],
+    [
+     "formatted internal write",
+     2
+    ],
+    [
+     "write with ADVANCE= control",
+     1
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X', 'X']",
+     1
+    ],
+    [
+     "no expression rule for Ac_Implied_Do: (n * pi, n = N, nzeros)",
+     1
+    ],
+    [
+     "no expression rule for Ac_Implied_Do: (n * pi, n = N, nmax + nzeros)",
+     1
+    ],
+    [
+     "assignment to non-array ref dj",
+     1
+    ],
+    [
+     "multi-line action in single-line if",
+     1
+    ],
+    [
+     "assignment to non-array ref dy",
+     1
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (N.0_dp, N.0_dp)",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: is - N : is - N",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: i1 : i2",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:constants": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:linalg": {
+     "deferred": 101,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "8/193 blocks disagree: deig/B012, deig/B013, deigvals/B011, zdet/B007, ddiag/B004 (+3 more)",
+       "metrics": {
+        "blocks_checked": 193,
+        "blocks_deferred": 101,
+        "blocks_matched": 185,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:mesh": {
+     "deferred": 3,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/7 blocks disagree: meshgrid/B001, meshgrid/B002",
+       "metrics": {
+        "blocks_checked": 7,
+        "blocks_deferred": 3,
+        "blocks_matched": 5,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:optimize": {
+     "deferred": 8,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "8 blocks match",
+       "metrics": {
+        "blocks_checked": 8,
+        "blocks_deferred": 8,
+        "blocks_matched": 8,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:ppm": {
+     "deferred": 4,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "11/17 blocks disagree: loadppm/B001, loadppm/B002, loadppm/B004, loadppm/B005, loadppm/B008 (+6 more)",
+       "metrics": {
+        "blocks_checked": 17,
+        "blocks_deferred": 4,
+        "blocks_matched": 6,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:sorting": {
+     "deferred": 17,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/23 blocks disagree: iargsort/B004, rargsort/B004",
+       "metrics": {
+        "blocks_checked": 23,
+        "blocks_deferred": 17,
+        "blocks_matched": 21,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:special": {
+     "deferred": 48,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "15/63 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+10 more)",
+       "metrics": {
+        "blocks_checked": 63,
+        "blocks_deferred": 48,
+        "blocks_matched": 48,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:splines": {
+     "deferred": 12,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "3/42 blocks disagree: spline3/B001, spline3ders/B001, iixexp/B001",
+       "metrics": {
+        "blocks_checked": 42,
+        "blocks_deferred": 12,
+        "blocks_matched": 39,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:types": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:utils": {
+     "deferred": 14,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "6/34 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B010, loadtxt/B011, savetxt/B001 (+1 more)",
+       "metrics": {
+        "blocks_checked": 34,
+        "blocks_deferred": 14,
+        "blocks_matched": 28,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "minpack": {
+   "bare_files": 0,
+   "blocks": 90,
+   "deferred": 14,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     7
+    ],
+    [
+     "no statement rule for Block_Construct",
+     5
+    ],
+    [
+     "no statement rule for Error_Stop_Stmt",
+     1
+    ],
+    [
+     "do while / infinite do",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:minpack_module": {
+     "deferred": 14,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "15/90 blocks disagree: dogleg/B005, enorm/B008, fdjac1/B001, fdjac2/B001, hybrd1/B002 (+10 more)",
+       "metrics": {
+        "blocks_checked": 90,
+        "blocks_deferred": 14,
+        "blocks_matched": 75,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "numfor": {
+   "bare_files": 85,
+   "blocks": 684,
+   "deferred": 182,
+   "refusals": [
+    [
+     "unknown function or array reference 'X'",
+     64
+    ],
+    [
+     "call to external subroutine 'X'",
+     59
+    ],
+    [
+     "no elementwise rule for 'X'",
+     11
+    ],
+    [
+     "do while / infinite do",
+     9
+    ],
+    [
+     "formatted internal write",
+     6
+    ],
+    [
+     "structure constructor 'X'",
+     4
+    ],
+    [
+     "no expression rule for Subscript_Triplet: i : i",
+     4
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
+     4
+    ],
+    [
+     "no expression rule for Subscript_Triplet: : LEN(Sout) - N",
+     4
+    ],
+    [
+     "no statement rule for Associate_Construct",
+     3
+    ],
+    [
+     "out actual arg is not a variable/section",
+     3
+    ],
+    [
+     "generic 'X': no match",
+     2
+    ],
+    [
+     "no statement rule for Select_Type_Construct",
+     1
+    ],
+    [
+     "write with IOSTAT= control",
+     1
+    ],
+    [
+     "assignment to non-array ref chr",
+     1
+    ],
+    [
+     "assignment to non-array ref sout",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: LEN(S) - LEN(suffix) :",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: : LEN(prefix)",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: n :",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: : n",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: start_ : end_",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:array_utils": {
+     "deferred": 6,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "9/64 blocks disagree: merge_sorted/B001, std/B002, save_array1d/B005, save_array1d/B013, save_array1d/B021 (+4 more)",
+       "metrics": {
+        "blocks_checked": 64,
+        "blocks_deferred": 6,
+        "blocks_matched": 55,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:arrays": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:basic": {
+     "deferred": 5,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "55 blocks match",
+       "metrics": {
+        "blocks_checked": 55,
+        "blocks_deferred": 5,
+        "blocks_matched": 55,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:csplines": {
+     "deferred": 22,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "13/54 blocks disagree: cspleps/B001, csplint/B005, csplint/B006, csplint/B012, csplint/B014 (+8 more)",
+       "metrics": {
+        "blocks_checked": 54,
+        "blocks_deferred": 22,
+        "blocks_matched": 41,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:exponential": {
+     "deferred": 1,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "3/6 blocks disagree: rng_expon/B002, ran_expon_pdf_s/B002, ran_expon_pdf_v/B002",
+       "metrics": {
+        "blocks_checked": 6,
+        "blocks_deferred": 1,
+        "blocks_matched": 3,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fitpack": {
+     "deferred": 38,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/94 blocks disagree: splrep_msg/B002",
+       "metrics": {
+        "blocks_checked": 94,
+        "blocks_deferred": 38,
+        "blocks_matched": 93,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fstring": {
+     "deferred": 17,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/14 blocks disagree: readf/B003",
+       "metrics": {
+        "blocks_checked": 14,
+        "blocks_deferred": 17,
+        "blocks_matched": 13,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:func_integ": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:gauss": {
+     "deferred": 2,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "7/14 blocks disagree: ran_ugaussian/B003, ran_gauss_pdf_s0/B001, ran_gauss_pdf_s1/B002, ran_gauss_pdf_s2/B002, ran_gauss_pdf_v0/B001 (+2 more)",
+       "metrics": {
+        "blocks_checked": 14,
+        "blocks_deferred": 2,
+        "blocks_matched": 7,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:grids": {
+     "deferred": 5,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "9/38 blocks disagree: linspace/B001, logspace/B004, geomspace/B005, geomspace/B006, geomspace/B008 (+4 more)",
+       "metrics": {
+        "blocks_checked": 38,
+        "blocks_deferred": 5,
+        "blocks_matched": 29,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:histograms": {
+     "deferred": 8,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "8/27 blocks disagree: histogram/B005, histogram/B011, get_bins/B003, get_bins/B004, get_bins/B009 (+3 more)",
+       "metrics": {
+        "blocks_checked": 27,
+        "blocks_deferred": 8,
+        "blocks_matched": 19,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:integrate": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:interpolate": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:mt19937_64": {
+     "deferred": 0,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "23 blocks match",
+       "metrics": {
+        "blocks_checked": 23,
+        "blocks_deferred": 0,
+        "blocks_matched": 23,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:mt95": {
+     "deferred": 43,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/147 blocks disagree: genrand_encode/B002, genrand_decode/B002",
+       "metrics": {
+        "blocks_checked": 147,
+        "blocks_deferred": 43,
+        "blocks_matched": 145,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:mtrandom": {
+     "deferred": 1,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/33 blocks disagree: read_urandom/B001, read_urandom/B002",
+       "metrics": {
+        "blocks_checked": 33,
+        "blocks_deferred": 1,
+        "blocks_matched": 31,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:numfor": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:polynomial": {
+     "deferred": 2,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/28 blocks disagree: polyder/B005, polyint/B004",
+       "metrics": {
+        "blocks_checked": 28,
+        "blocks_deferred": 2,
+        "blocks_matched": 26,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:qadaptive": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:qsimpson": {
+     "deferred": 0,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2 blocks match",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 0,
+        "blocks_matched": 2,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:qtanhsinh": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:quadpack": {
+     "deferred": 0,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "9 blocks match",
+       "metrics": {
+        "blocks_checked": 9,
+        "blocks_deferred": 0,
+        "blocks_matched": 9,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:randist": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:random": {
+     "deferred": 3,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/13 blocks disagree: generate_random_seed/B001",
+       "metrics": {
+        "blocks_checked": 13,
+        "blocks_deferred": 3,
+        "blocks_matched": 12,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:sorting": {
+     "deferred": 1,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "10 blocks match",
+       "metrics": {
+        "blocks_checked": 10,
+        "blocks_deferred": 1,
+        "blocks_matched": 10,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:strings": {
+     "deferred": 28,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/53 blocks disagree: str2i/B001",
+       "metrics": {
+        "blocks_checked": 53,
+        "blocks_deferred": 28,
+        "blocks_matched": 52,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:uniform": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:utils": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    }
+   }
+  },
+  "pchip": {
+   "bare_files": 0,
+   "blocks": 154,
+   "deferred": 4,
+   "refusals": [
+    [
+     "do while / infinite do",
+     2
+    ],
+    [
+     "seq-assoc: formal rank > actual rank wk",
+     2
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:pchip_module": {
+     "deferred": 4,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/154 blocks disagree: dpchbs/B005, dpchsw/B001",
+       "metrics": {
+        "blocks_checked": 154,
+        "blocks_deferred": 4,
+        "blocks_matched": 152,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "polyroots": {
+   "bare_files": 0,
+   "blocks": 385,
+   "deferred": 53,
+   "refusals": [
+    [
+     "literal 'X' was never hoisted, so it has no name to emit",
+     21
+    ],
+    [
+     "do while / infinite do",
+     20
+    ],
+    [
+     "no statement rule for Block_Construct",
+     2
+    ],
+    [
+     "seq-assoc: formal rank > actual rank work",
+     2
+    ],
+    [
+     "call to external subroutine 'X'",
+     2
+    ],
+    [
+     "no statement rule for Error_Stop_Stmt",
+     2
+    ],
+    [
+     "multi-line action in single-line if",
+     1
+    ],
+    [
+     "no expression rule for Ac_Implied_Do: (N, i = N, deg)",
+     1
+    ],
+    [
+     "no expression rule for Ac_Implied_Do: (alpha(i) * (N.8_wp * (i - N) + N), i = N, deg + N)",
+     1
+    ],
+    [
+     "unknown function or array reference 'X'",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:polyroots_module": {
+     "deferred": 53,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "62/385 blocks disagree: fxshfr/B006, fxshfr/B007, calcsc/B001, quad/B004, dcbcrt/B001 (+57 more)",
+       "metrics": {
+        "blocks_checked": 385,
+        "blocks_deferred": 53,
+        "blocks_matched": 323,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "quadpack": {
+   "bare_files": 0,
+   "blocks": 0,
+   "deferred": 90,
+   "refusals": [
+    [
+     "unknown function or array reference 'X'",
+     48
+    ],
+    [
+     "literal 'X' was never hoisted, so it has no name to emit",
+     29
+    ],
+    [
+     "no statement rule for Block_Construct",
+     7
+    ],
+    [
+     "do while / infinite do",
+     3
+    ],
+    [
+     "multi-line action in single-line if",
+     1
+    ],
+    [
+     "seq-assoc: formal rank > actual rank work",
+     1
+    ],
+    [
+     "no statement rule for Error_Stop_Stmt",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:quadpack_double": {
+     "deferred": 90,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 1787)",
+       "metrics": {
+        "blocks_checked": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "roots": {
+   "bare_files": 0,
+   "blocks": 226,
+   "deferred": 12,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     3
+    ],
+    [
+     "literal 'X' was never hoisted, so it has no name to emit",
+     3
+    ],
+    [
+     "operator 'X'",
+     1
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X']",
+     1
+    ],
+    [
+     "allocate without shape specs",
+     1
+    ],
+    [
+     "unknown function or array reference 'X'",
+     1
+    ],
+    [
+     "do while / infinite do",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: i : i",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:root_module": {
+     "deferred": 12,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "9/226 blocks disagree: ridders/B007, bdqrf/B006, muller/B013, chandrupatla/B009, toms748/B007 (+4 more)",
+       "metrics": {
+        "blocks_checked": 226,
+        "blocks_deferred": 12,
+        "blocks_matched": 217,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "slsqp": {
+   "bare_files": 0,
+   "blocks": 163,
+   "deferred": 30,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     11
+    ],
+    [
+     "do while / infinite do",
+     5
+    ],
+    [
+     "unknown function or array reference 'X'",
+     4
+    ],
+    [
+     "literal 'X' was never hoisted, so it has no name to emit",
+     3
+    ],
+    [
+     "no elementwise rule for 'X'",
+     3
+    ],
+    [
+     "seq-assoc: rank mismatch w",
+     2
+    ],
+    [
+     "seq-assoc: formal rank > actual rank w",
+     1
+    ],
+    [
+     "no expression rule for Ac_Implied_Do: (i, i = N, n)",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:bvls_module": {
+     "deferred": 4,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "24/64 blocks disagree: bvls_wrapper/B003, bvls/B001, bvls/B003, select_another_coeff_to_solve_for/B002, test_coef_j_for_diag_elt_and_direction_of_change/B002 (+",
+       "metrics": {
+        "blocks_checked": 64,
+        "blocks_deferred": 4,
+        "blocks_matched": 40,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:slsqp_core": {
+     "deferred": 26,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "10/87 blocks disagree: slsqpb/B006, inexact_linesearch/B006, lsi/B001, lsi/B004, termination/B003 (+5 more)",
+       "metrics": {
+        "blocks_checked": 87,
+        "blocks_deferred": 26,
+        "blocks_matched": 77,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:slsqp_kinds": {
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "skipped",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset"
+    },
+    "fortran:slsqp_support": {
+     "deferred": 0,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/12 blocks disagree: dnrm2/B001",
+       "metrics": {
+        "blocks_checked": 12,
+        "blocks_deferred": 0,
+        "blocks_matched": 11,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  },
+  "specfun": {
+   "bare_files": 0,
+   "blocks": 1500,
+   "deferred": 103,
+   "refusals": [
+    [
+     "no expression rule for Complex_Literal_Constant: (N.0_wp, N.0_wp)",
+     55
+    ],
+    [
+     "goto N is not a loop-exit pattern",
+     23
+    ],
+    [
+     "do while / infinite do",
+     6
+    ],
+    [
+     "no statement rule for Data_Stmt",
+     6
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (N.0E-100_wp, N.0_wp)",
+     5
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (N.0E+300_wp, N.0_wp)",
+     4
+    ],
+    [
+     "no statement rule for Block_Construct",
+     1
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (0D0, 1D0)",
+     1
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (N.N, N.N)",
+     1
+    ],
+    [
+     "no expression rule for Complex_Literal_Constant: (N.0D-N, N.0_wp)",
+     1
+    ]
+   ],
+   "status": "failed",
+   "units": {
+    "fortran:specfun_module": {
+     "deferred": 103,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "234/1500 blocks disagree: cpdsa/B001, cfs/B007, lqmn/B005, lqmn/B006, lqmn/B007 (+229 more)",
+       "metrics": {
+        "blocks_checked": 1500,
+        "blocks_deferred": 103,
+        "blocks_matched": 1266,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    }
+   }
+  }
+ },
+ "schema": 1
+}
