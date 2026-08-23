@@ -197,8 +197,40 @@ class Modules:
         merged.update(self.subprograms.record.get("types", {}))
         return merged
 
-    @staticmethod
-    def _factory(type_name: str, components: dict[str, Any]) -> list[str]:
+    def _component_shape(self, component: dict[str, Any]) -> str | None:
+        """A derived-type component's allocation shape, or None.
+
+        Module scope, so no subprogram-local name applies: an extent is a
+        digit or a constant reachable here -- a module parameter, a
+        use-imported one, a companion's global. Anything else leaves the
+        component None in the factory rather than a guessed size.
+        """
+        extents = []
+        for dim in component.get("dims") or []:
+            if dim.get("lb") not in (None, "1") or not dim.get("ub"):
+                return None
+            text = dim["ub"].strip().lower()
+            if re.fullmatch(r"\d+", text):
+                extents.append(text)
+                continue
+            if not re.fullmatch(r"[a-z_]\w*", text):
+                return None
+            for table in (
+                {
+                    p["name"]: p["name"].upper()
+                    for p in self.subprograms.record["module_parameters"]
+                },
+                self.subprograms.use_parameters,
+                self.subprograms.companion_globals,
+            ):
+                if text in table:
+                    extents.append(table[text])
+                    break
+            else:
+                return None
+        return ", ".join(extents) or None
+
+    def _factory(self, type_name: str, components: dict[str, Any]) -> list[str]:
         lines = [
             f"def _make_{type_name}():",
             f'    """factory for type({type_name}) (components per Derived_Type_Def)."""',
@@ -207,8 +239,8 @@ class Modules:
         for name, component in components.items():
             safe = pysafe(name)
             dims = component.get("dims")
-            if dims and all(d["ub"] and re.fullmatch(r"\d+", d["ub"]) for d in dims):
-                shape = ", ".join(d["ub"] for d in dims)
+            shape = self._component_shape(component) if dims else None
+            if shape is not None:
                 lines.append(f"    o.{safe} = np.zeros(({shape},))")
             elif dims:
                 lines.append(f"    o.{safe} = None")
@@ -244,8 +276,17 @@ class Modules:
                     # Module-level array state: a zero buffer, filled by the
                     # module's init routine (Fortran SAVE semantics).
                     dtype = STATE_DTYPES.get(state["dtype"], "np.float64")
+                    shape = ", ".join(extents)
+                    if dtype == "object":
+                        # A character array: np.zeros of dtype object is an
+                        # array of the integer 0, and the first thing done to
+                        # it is a string comparison.
+                        return [
+                            f"{state['name']} = np.full(({shape},), '', dtype=object)"
+                            "  # module array state"
+                        ]
                     return [
-                        f"{state['name']} = np.zeros(({', '.join(extents)},), "
+                        f"{state['name']} = np.zeros(({shape},), "
                         f"dtype={dtype})  # module array state"
                     ]
             return [

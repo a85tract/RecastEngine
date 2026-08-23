@@ -999,3 +999,32 @@ end module inner_lit
     facts = frontend.analyze(unit, root)
     assert facts.constants["literal_map"]["inner"]["0.25_r8"] == "F_0P25"
     assert isinstance(unit, Unit)
+
+
+def test_a_write_only_f77_dummy_is_given_the_intent_its_use_shows(tmp_path: Path) -> None:
+    """A dummy declared without INTENT that the body only assigns to is
+    intent(out); without the attribute the return convention drops it from
+    the signature and from the return, and the value is lost."""
+    from recast.fortran import interface
+
+    source = """\
+module f77ish
+  implicit none
+contains
+  subroutine rates(x, made, used, buf, n)
+    real :: x, made, used, buf(4)
+    integer :: n
+    made = x * 2.0
+    used = x + used
+    buf(1) = x
+    n = 3
+  end subroutine rates
+end module f77ish
+"""
+    record = interface.extract(_write(tmp_path, "f77ish.f90", source))
+    intents = {a["name"]: a["intent"] for a in record["subprograms"][0]["args"]}
+    assert intents["made"] == "OUT"  # assigned, never read
+    assert intents["n"] == "OUT"
+    assert intents["used"] == "UNKNOWN"  # read on its own right-hand side
+    assert intents["x"] == "UNKNOWN"  # only read
+    assert intents["buf"] == "UNKNOWN"  # an array mutates through its buffer

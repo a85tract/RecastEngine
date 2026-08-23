@@ -671,6 +671,7 @@ def extract(
         extract_subprogram(s, kind_map, state_names, sub_names, overrides.get(sub_name_of(s)))
         for s in subs
     ]
+    _infer_write_only_intents(subs, subprograms)
     _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
@@ -733,6 +734,49 @@ def emit_name(record: dict[str, Any]) -> str:
     and this is the smallest one that keeps every call resolvable.
     """
     return str(record.get("emit_name") or record["name"])
+
+
+def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) -> None:
+    """Give a write-only F77 dummy the intent its use says it has.
+
+    A dummy declared without INTENT that the body only ever assigns to --
+    bare name on the left, never read anywhere -- is semantically
+    ``intent(out)``. Without the attribute the return convention leaves it
+    out of the signature and out of the return, so the value the routine
+    computed is dropped on the floor. Scalars only: an array dummy mutates
+    through the buffer it was passed and is not lost either way.
+    """
+    by_name = {sub_name_of(s): s for s in subs}
+    for record in records:
+        candidates = [
+            argument
+            for argument in record["args"]
+            if argument["intent"] == "UNKNOWN"
+            and not argument.get("dims")
+            and not argument.get("optional")
+            and argument.get("dtype") in ("float64", "float32", "int32", "int64", "bool")
+        ]
+        node = by_name.get(record["name"])
+        if not candidates or node is None:
+            continue
+        exec_part = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
+        if exec_part is None:
+            continue
+        mentions: dict[str, int] = {}
+        for name in walk(exec_part, f03.Name):
+            key = str(name).lower()
+            mentions[key] = mentions.get(key, 0) + 1
+        assigned: dict[str, int] = {}
+        for assignment in walk(exec_part, f03.Assignment_Stmt):
+            target = assignment.children[0]
+            if isinstance(target, f03.Name):
+                key = str(target).lower()
+                assigned[key] = assigned.get(key, 0) + 1
+        for argument in candidates:
+            written = assigned.get(argument["name"], 0)
+            if written and mentions.get(argument["name"], 0) == written:
+                argument["intent"] = "OUT"
+                argument["intent_inferred"] = "write-only"
 
 
 def _host_associate(
