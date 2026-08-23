@@ -360,6 +360,7 @@ def build(
     externals: dict[str, dict[str, Any]] | None = None,
     stubs: dict[str, str] | None = None,
     function_stubs: dict[str, str] | None = None,
+    call_transforms: dict[str, Any] | None = None,
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
     record = interface.extract(src, kind_assumptions=KINDS)
@@ -374,7 +375,12 @@ def build(
         stubs=function_stubs or {},
     )
     statements = Statements(
-        semantics, names, expressions, externals=externals or {}, stubs=stubs or {}
+        semantics,
+        names,
+        expressions,
+        externals=externals or {},
+        stubs=stubs or {},
+        call_transforms=call_transforms or {},
     )
     subprogram = next(
         sub
@@ -683,6 +689,37 @@ def test_a_stubbed_framework_call_emits_its_stub(sources: dict[str, Path]) -> No
     assert statements.render(pick(nodes, f03.Call_Stmt, 5), 1) == [
         "    pass  # outfld (infra stub)"
     ]
+
+
+def test_a_call_transform_answers_before_anything_else_is_consulted(
+    sources: dict[str, Path],
+) -> None:
+    """A call whose meaning is a framework's is neither translatable nor
+    stubbable: the answer depends on the call's own arguments. The domain
+    package supplies a callable, and it is asked first -- before the stub
+    table, before this module's own procedures."""
+
+    def transform(site: Any) -> list[str]:
+        return [f"{site.pad}{site.value(0)} = scaled_by({site.value(1)})  # scale_it"]
+
+    statements, nodes = build(
+        sources["emit_mod"],
+        "calls",
+        stubs={"scale_it": "pass"},
+        call_transforms={"scale_it": transform},
+    )
+    assert statements.render(pick(nodes, f03.Call_Stmt, 0), 1) == [
+        "    a = scaled_by(s)  # scale_it"
+    ]
+
+
+def test_a_call_transform_may_refuse_like_any_rule(sources: dict[str, Path]) -> None:
+    def transform(site: Any) -> list[str]:
+        raise REFUSED[0](f"{site.name} needs an argument it was not given")
+
+    statements, nodes = build(sources["emit_mod"], "calls", call_transforms={"scale_it": transform})
+    with pytest.raises(REFUSED):
+        statements.render(pick(nodes, f03.Call_Stmt, 0), 1)
 
 
 def test_a_stub_wins_over_a_registered_external_of_the_same_name(sources: dict[str, Path]) -> None:

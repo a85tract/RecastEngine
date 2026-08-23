@@ -140,16 +140,12 @@
   },
   "cloudsc": {
    "bare_files": 1,
-   "blocks": 30,
-   "deferred": 172,
+   "blocks": 34,
+   "deferred": 168,
    "refusals": [
     [
      "call to external subroutine 'X'",
      168
-    ],
-    [
-     "allocate without shape specs",
-     4
     ]
    ],
    "status": "failed",
@@ -164,94 +160,90 @@
      "stopped_by": "static.rwset"
     },
     "fortran:yoecldp": {
-     "deferred": 125,
+     "deferred": 124,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "0 blocks match",
+       "detail": "1/1 blocks disagree: yrecldp_load_parameters/B001",
        "metrics": {
-        "blocks_checked": 0,
-        "blocks_deferred": 125,
+        "blocks_checked": 1,
+        "blocks_deferred": 124,
         "blocks_matched": 0,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
     "fortran:yoephli": {
-     "deferred": 17,
+     "deferred": 16,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "0 blocks match",
+       "detail": "1/1 blocks disagree: yrephli_load_parameters/B001",
        "metrics": {
-        "blocks_checked": 0,
-        "blocks_deferred": 17,
+        "blocks_checked": 1,
+        "blocks_deferred": 16,
         "blocks_matched": 0,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
     "fortran:yoethf": {
-     "deferred": 20,
+     "deferred": 19,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "20 blocks match",
+       "detail": "1/21 blocks disagree: yrthf_copy_parameters/B001",
        "metrics": {
-        "blocks_checked": 20,
-        "blocks_deferred": 20,
+        "blocks_checked": 21,
+        "blocks_deferred": 19,
         "blocks_matched": 20,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
     "fortran:yomcst": {
-     "deferred": 10,
+     "deferred": 9,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "10 blocks match",
+       "detail": "1/11 blocks disagree: yrcst_copy_parameters/B001",
        "metrics": {
-        "blocks_checked": 10,
-        "blocks_deferred": 10,
+        "blocks_checked": 11,
+        "blocks_deferred": 9,
         "blocks_matched": 10,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
@@ -1291,8 +1283,8 @@
   },
   "roots": {
    "bare_files": 0,
-   "blocks": 231,
-   "deferred": 7,
+   "blocks": 232,
+   "deferred": 6,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -1307,10 +1299,6 @@
      1
     ],
     [
-     "allocate without shape specs",
-     1
-    ],
-    [
      "no expression rule for Subscript_Triplet: i : i",
      1
     ]
@@ -1318,7 +1306,7 @@
    "status": "failed",
    "units": {
     "fortran:root_module": {
-     "deferred": 7,
+     "deferred": 6,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1328,10 +1316,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/231 blocks disagree: toms748/B007, bracket/B004",
+       "detail": "3/232 blocks disagree: root_scalar_by_type/B001, toms748/B007, bracket/B004",
        "metrics": {
-        "blocks_checked": 231,
-        "blocks_deferred": 7,
+        "blocks_checked": 232,
+        "blocks_deferred": 6,
         "blocks_matched": 229,
         "blocks_waived": 0
        },
