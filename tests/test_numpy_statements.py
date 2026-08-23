@@ -361,6 +361,7 @@ def build(
     stubs: dict[str, str] | None = None,
     function_stubs: dict[str, str] | None = None,
     call_transforms: dict[str, Any] | None = None,
+    function_transforms: dict[str, Any] | None = None,
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
     record = interface.extract(src, kind_assumptions=KINDS)
@@ -373,6 +374,7 @@ def build(
         externals=externals or {},
         remotes=remotes or {},
         stubs=function_stubs or {},
+        function_transforms=function_transforms or {},
     )
     statements = Statements(
         semantics,
@@ -720,6 +722,19 @@ def test_a_call_transform_may_refuse_like_any_rule(sources: dict[str, Path]) -> 
     statements, nodes = build(sources["emit_mod"], "calls", call_transforms={"scale_it": transform})
     with pytest.raises(REFUSED):
         statements.render(pick(nodes, f03.Call_Stmt, 0), 1)
+
+
+def test_a_function_transform_answers_a_reference_the_stub_table_cannot(
+    sources: dict[str, Path],
+) -> None:
+    """The reference-side twin: a fixed string cannot answer a query whose
+    answer depends on what was passed."""
+    statements, nodes = build(
+        sources["emit_mod"],
+        "framework",
+        function_transforms={"hist_fld_active": lambda args: f"_active({args[0]})"},
+    )
+    assert statements.render(nodes[1], 1) == ["    if _active('X'):", "        s = 0.0"]
 
 
 def test_a_stub_wins_over_a_registered_external_of_the_same_name(sources: dict[str, Path]) -> None:

@@ -124,6 +124,16 @@ class Expressions:
     remotes: dict[str, Remote] = field(default_factory=dict)
     """Local name -> where it actually lives, for companion modules."""
 
+    function_transforms: dict[str, Any] = field(default_factory=dict)
+    """Function name -> a domain package's answer for it, given the rendered
+    arguments.
+
+    The reference-side twin of ``Statements.call_transforms``. A fixed-string
+    stub cannot answer ``dycore_is('LR')`` or ``rad_cnst_get_spec_idx(m, s)``:
+    the answer depends on what was passed. Consulted before the stub table,
+    and before this file's own procedures, as the pipeline consults its own.
+    """
+
     stubs: dict[str, str] = field(default_factory=dict)
     """Framework function -> the text that stands in for it.
 
@@ -444,6 +454,9 @@ class Expressions:
         if name in self.statement_functions:
             return f"{pysafe(name)}({', '.join(arguments)})"
 
+        transform = self.function_transforms.get(name)
+        if transform is not None:
+            return str(transform(list(arguments)))
         remote = self.remotes.get(name)
         record = self.semantics.procedures.get(name)
         if record is None and remote is None:
@@ -659,6 +672,9 @@ class Expressions:
         call = self._call(name, items, arguments)
         if call is not None:
             return call
+        transform = self.function_transforms.get(name)
+        if transform is not None:
+            return str(transform(list(arguments)))
         external = self.externals.get(name)
         if external is not None and external.get("kind") == "function":
             return f"_ext.{name}({', '.join(arguments)})"
