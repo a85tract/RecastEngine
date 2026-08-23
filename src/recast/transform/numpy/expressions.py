@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recast.fortran._parse import f03
+from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import (
@@ -390,7 +391,16 @@ class Expressions:
             name = self.semantics.dispatch(name, items)
             remote = self.remotes[name]
             record = self.semantics.procedures.get(name)
-        target = f"{remote.alias}.{remote.name}" if remote else pysafe(name)
+        target = (
+            f"{remote.alias}.{remote.name}"
+            if remote
+            else pysafe(emit_name(record or {"name": name}))
+        )
+        if record is not None and not remote:
+            arguments = [
+                *arguments,
+                *(self.names.symbol(hv) for hv in record.get("host_vars") or ()),
+            ]
         if record is not None and self._broadcasts(record, items):
             # An ELEMENTAL procedure called with an array actual has to be
             # mapped over it; its body was written at scalar rank.

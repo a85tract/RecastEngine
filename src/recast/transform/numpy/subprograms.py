@@ -35,6 +35,7 @@ from typing import Any
 
 from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
+from recast.fortran.interface import emit_name, subprogram_key
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
 from recast.transform.numpy.expressions import Expressions, Remote
@@ -260,7 +261,8 @@ class Subprograms:
                 lines.append("    pass  # label block consumed by region")
                 report.append(
                     {
-                        "subprogram": subprogram["name"],
+                        "subprogram": emit_name(subprogram),
+                        "key": subprogram_key(subprogram),
                         "block": block,
                         "src_span": list(span),
                         "status": "mechanical",
@@ -269,7 +271,8 @@ class Subprograms:
                 )
                 continue
             entry: dict[str, Any] = {
-                "subprogram": subprogram["name"],
+                "subprogram": emit_name(subprogram),
+                "key": subprogram_key(subprogram),
                 "block": block,
                 "src_span": list(span),
             }
@@ -293,7 +296,7 @@ class Subprograms:
             except REFUSED as refusal:
                 pad = "    " * (2 if in_region else 1)
                 filled, why_not = self._fill(
-                    subprogram["name"], block, statement, span, refusal, statements
+                    emit_name(subprogram), block, statement, span, refusal, statements
                 )
                 if filled is not None:
                     lines.append(
@@ -343,7 +346,10 @@ class Subprograms:
                 (keyword if argument["optional"] else positional).append(
                     pysafe(argument["name"]) + ("=None" if argument["optional"] else "")
                 )
-        return f"def {pysafe(subprogram['name'])}({', '.join(positional + keyword)}):"
+        # Host association: an internal procedure receives the host variables
+        # it touches as trailing parameters.
+        positional.extend(pysafe(hv) for hv in subprogram.get("host_vars") or ())
+        return f"def {pysafe(emit_name(subprogram))}({', '.join(positional + keyword)}):"
 
     # -- the determinizing prologue -------------------------------------------
 
@@ -355,8 +361,12 @@ class Subprograms:
             return []
         lines = []
         if subprogram.get("result_dims"):
-            shape = ", ".join(d.get("ub", "1") for d in subprogram["result_dims"])
-            lines.append(f"    {subprogram['result']} = np.zeros(({shape},), dtype=np.float64)")
+            dims = subprogram["result_dims"]
+            if all(d.get("ub") for d in dims):
+                shape = ", ".join(d["ub"] for d in dims)
+                lines.append(f"    {subprogram['result']} = np.zeros(({shape},), dtype=np.float64)")
+            # An assumed-shape or deferred result has no extent to allocate
+            # here; the body's own assignment sizes it.
         elif subprogram["result_dtype"] in ("float64", "float32"):
             lines.append(f"    {subprogram['result']} = 0.0")
         if subprogram["result_dtype"] in ("int32", "int64"):

@@ -81,9 +81,42 @@ def _subprograms_of(scope: Any) -> list[tuple[str, Any]]:
 
     out = []
     for sub in walk(scope, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
+        if _inside_interface(sub):
+            # An interface body declares a signature and has no code; an
+            # abstract interface `func` beside a real `func` would otherwise
+            # be discovered twice under one uid.
+            continue
         stmt = walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
-        out.append((str(stmt.children[1]).lower(), sub))
+        name = str(stmt.children[1]).lower()
+        host = _host_of(sub)
+        # An internal procedure is named under its host: two hosts may each
+        # contain a `func`, and one uid per subprogram is the contract.
+        out.append((f"{host}/{name}" if host else name, sub))
     return out
+
+
+def _host_of(node: Any) -> str | None:
+    """The name of the subprogram this one is contained in, if any."""
+    from recast.fortran._parse import f03, walk
+
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if isinstance(parent, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
+            stmt = walk(parent, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
+            return str(stmt.children[1]).lower()
+        parent = getattr(parent, "parent", None)
+    return None
+
+
+def _inside_interface(node: Any) -> bool:
+    from recast.fortran._parse import f03
+
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if isinstance(parent, f03.Interface_Block):
+            return True
+        parent = getattr(parent, "parent", None)
+    return False
 
 
 def _external_calls(sub: Any, known: set[str]) -> list[str]:
@@ -210,7 +243,7 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import STD, digest
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
-        from recast.fortran.interface import _scope_of
+        from recast.fortran.interface import _scope_of, subprogram_key
         from recast.fortran.rwset import block_rwsets, scope_for
 
         path = self._source_of(unit, Path(root))
@@ -229,18 +262,19 @@ class FortranFrontend(Frontend):
         _mod_name, _spec, scope = _scope_of(parse_file(path), path)
         nodes = dict(_subprograms_of(scope))
         defined = set(nodes)
+        plain_names = {key.rsplit("/", 1)[-1] for key in defined}
 
         module_uid = unit.parent or unit.uid
         wanted = self._selected(unit, defined)
 
-        subprograms = [s for s in record["subprograms"] if s["name"] in wanted]
+        subprograms = [s for s in record["subprograms"] if subprogram_key(s) in wanted]
         callgraph: dict[str, list[str]] = {}
         effects: dict[str, Any] = {}
         for sub in subprograms:
-            sub_name = sub["name"]
+            sub_name = subprogram_key(sub)
             sub_uid = f"{module_uid}/{sub_name}"
             callgraph[sub_uid] = [f"{module_uid}/{c}" for c in sub["calls"]] + _external_calls(
-                nodes[sub_name], defined
+                nodes[sub_name], plain_names
             )
             scope = scope_for(record, sub_name, externals=self.externals)
             effects[sub_uid] = {
@@ -295,7 +329,7 @@ class FortranFrontend(Frontend):
         """
         if unit.kind != "subprogram":
             return defined
-        name = unit.uid.rsplit("/", 1)[-1]
+        name = unit.uid[len(unit.parent) + 1 :] if unit.parent else unit.uid.rsplit("/", 1)[-1]
         if name not in defined:
             raise UnparsableSource(
                 f"unit {unit.uid!r} names subprogram {name!r}, which the source no longer defines"

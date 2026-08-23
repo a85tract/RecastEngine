@@ -35,6 +35,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from recast.fortran._parse import f03, parse, walk
+from recast.fortran.interface import emit_name, subprogram_key
 from recast.transform.numpy import runtime
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.numpy.vocabulary import pysafe
@@ -175,10 +176,10 @@ class Modules:
             lines.extend(self._state(state))
         lines.append("")
         for record in self.subprograms.record["subprograms"]:
-            node = nodes.get(record["name"])
+            node = nodes.get(subprogram_key(record))
             if node is None:
                 continue
-            rendered, entries = self.subprograms.render(node, record["name"])
+            rendered, entries = self.subprograms.render(node, subprogram_key(record))
             lines.extend(rendered)
             report.extend(entries)
         return lines, report
@@ -332,7 +333,7 @@ class Modules:
                         {"lb": d.get("lb", "1"), "ub": d.get("ub")} for d in argument["dims"]
                     ]
                 arguments.append(entry)
-            table[subprogram["name"]] = {
+            table[emit_name(subprogram)] = {
                 "kind": subprogram["kind"],
                 "args": arguments,
                 "result": subprogram.get("result"),
@@ -347,11 +348,9 @@ class Modules:
         tree = parse(source)
         found = walk(tree, f03.Module)
         scope = found[0] if found else tree
-        nodes = {}
-        for node in walk(scope, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
-            heading = walk(node, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
-            nodes[str(heading.children[1]).lower()] = node
-        return nodes
+        from recast.fortran.frontend import _subprograms_of
+
+        return dict(_subprograms_of(scope))
 
     def _rebase(self, text: str, report: list[dict[str, Any]]) -> None:
         """Rewrite every entry's ``py_lines`` as final-file line numbers.
@@ -374,7 +373,9 @@ class Modules:
             if marked and current:
                 markers.append((current, marked.group(1), number))
         ordered = [
-            pysafe(s["name"]) for s in self.subprograms.record["subprograms"] if s["name"] in starts
+            pysafe(emit_name(s))
+            for s in self.subprograms.record["subprograms"]
+            if pysafe(emit_name(s)) in starts
         ]
         ends = {}
         for at, name in enumerate(ordered):
