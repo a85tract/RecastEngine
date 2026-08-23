@@ -22,9 +22,11 @@ numbers elided) so the same refusal counts once however many times it fires.
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import glob
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -133,6 +135,7 @@ def run_case(name: str) -> dict[str, Any]:
         record["units"][unit_run.unit.uid] = entry
     record["refusals"] = reasons.most_common()
     record["bare_files"] = _bare_files(root)
+    _translated(name, root, run, record)
     record["blocks"] = sum(
         (e.get("verdicts", {}).get("static.rwset", {}).get("metrics", {}).get("blocks_checked", 0))
         for e in record["units"].values()
@@ -141,21 +144,94 @@ def run_case(name: str) -> dict[str, Any]:
     return record
 
 
+def _translated(name: str, root: Path, run: Any, record: dict[str, Any]) -> None:
+    """Write what was emitted, and say how far each unit's artifact got.
+
+    Three bars, each stricter than the last and none of them the real one:
+
+    *mechanical* -- the rules refused nothing, so the file has no
+    ``NotImplementedError`` standing where code should be.
+    *parses* -- the emitted text is Python. A translation that does not
+    parse is not a translation, however few blocks it refused.
+    *imports* -- it and everything it imports load, which needs its
+    constants module, its companions' modules, and every shim it calls to
+    exist. This is where a call to something nobody defines shows up.
+
+    The real bar is the differential against a build of the same Fortran,
+    and it is further on than any of these.
+    """
+    emitted = root / "translated"
+    if emitted.exists():
+        shutil.rmtree(emitted)
+    emitted.mkdir()
+    artifacts: dict[str, list[str]] = {}
+    for unit_run in run.units:
+        if unit_run.candidate is None:
+            continue
+        names = []
+        for relative, text in unit_run.candidate.files.items():
+            (emitted / Path(relative).name).write_bytes(text)
+            names.append(Path(relative).name)
+        artifacts[unit_run.unit.uid] = names
+
+    for unit_run in run.units:
+        entry = record["units"][unit_run.unit.uid]
+        files = artifacts.get(unit_run.unit.uid)
+        if not files:
+            entry["artifact"] = "none"
+            continue
+        entry["mechanical"] = entry.get("deferred", 0) == 0
+        module = next((f for f in files if f.endswith("_numpy.py")), None)
+        try:
+            for one in files:
+                ast.parse((emitted / one).read_text())
+            entry["parses"] = True
+        except SyntaxError as error:
+            entry["parses"] = False
+            entry["syntax_error"] = f"{Path(error.filename or '').name}:{error.lineno}: {error.msg}"
+            continue
+        if module is None:
+            continue
+        entry["imports"], reason = _imports(emitted, module)
+        if reason:
+            entry["import_error"] = reason
+
+
+def _imports(where: Path, module: str) -> tuple[bool, str]:
+    """Import one emitted module in a subprocess, with its siblings beside it."""
+    probe = subprocess.run(  # noqa: S603 -- our own argv
+        [sys.executable, "-c", f"import {module[:-3]}"],
+        cwd=where,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+    )
+    if probe.returncode == 0:
+        return True, ""
+    last = [line for line in probe.stderr.strip().splitlines() if line.strip()]
+    return False, (last[-1] if last else "no output")[:160]
+
+
 def report(baseline: dict[str, Any]) -> None:
     print(
-        f"{'case':14} {'units':>5} {'bare':>4} {'blocks':>6} {'deferred':>8} {'rwset':>8}  "
-        "status / top refusals"
+        f"{'case':14} {'units':>5} {'bare':>4} {'mech':>6} {'parse':>6} {'import':>7} "
+        f"{'rwset':>7} {'deferred':>9}  top refusal"
     )
     for name, record in baseline["cases"].items():
         units = record["units"]
         rw = [e.get("verdicts", {}).get("static.rwset") for e in units.values()]
         rw = [v for v in rw if v]
+        total = len(units)
+
+        def tally(key: str, seen: dict[str, Any] = units, n: int = total) -> str:
+            return f"{sum(1 for e in seen.values() if e.get(key)):>3}/{n}" if n else "  -"
+
         rw_text = f"{sum(1 for v in rw if v['passed'])}/{len(rw)}" if rw else "-"
-        top = "; ".join(f"{n}x {r[:48]}" for r, n in list(record["refusals"])[:2])
+        top = "; ".join(f"{n}x {r[:34]}" for r, n in list(record["refusals"])[:1])
         print(
-            f"{name:14} {len(units):>5} {record.get('bare_files', 0):>4} {record['blocks']:>6} "
-            f"{record['deferred']:>8} {rw_text:>8}  "
-            f"{record['status']} {top}"
+            f"{name:14} {total:>5} {record.get('bare_files', 0):>4} {tally('mechanical'):>6} "
+            f"{tally('parses'):>6} {tally('imports'):>7} {rw_text:>7} "
+            f"{record['deferred']:>9}  {top}"
         )
 
 
