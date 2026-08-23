@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recast.fortran._parse import f03
-from recast.fortran.interface import emit_name
+from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import (
@@ -345,6 +345,11 @@ class Expressions:
         """An array element or slice, shifted to zero-based."""
         declaration = self.semantics.declaration(name)
         dims = self.allocated_bounds.get(name, (declaration or {}).get("dims"))
+        if dims == CONFLICTING_BOUNDS:
+            raise NoRule(
+                f"module allocatable {name!r} is allocated with lower bounds that do not "
+                "agree, or with one this subprogram cannot evaluate"
+            )
         positions = indexing.describe(arglist, dims, rank_of=self.semantics.rank)
         parts = [self._position(p) for p in positions]
         return f"{self.names.symbol(name)}[{', '.join(parts)}]"

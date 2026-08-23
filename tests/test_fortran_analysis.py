@@ -1021,3 +1021,42 @@ end module f77ish
     assert intents["used"] == "UNKNOWN"  # read on its own right-hand side
     assert intents["x"] == "UNKNOWN"  # only read
     assert intents["buf"] == "UNKNOWN"  # an array mutates through its buffer
+
+
+def test_a_module_allocatable_records_the_lower_bound_its_allocate_gave_it(
+    tmp_path: Path,
+) -> None:
+    """``allocate(x(0:n))`` sets a bound the declaration does not carry, and
+    the allocate is in the init routine while the references are everywhere
+    else. Without the module-wide record each of those gets the blanket
+    one-based shift and lands a slot off."""
+    from recast.fortran import interface
+    from recast.fortran.interface import CONFLICTING_BOUNDS
+
+    source = """\
+module allocs
+  implicit none
+  integer, parameter :: nmax = 8
+  real, allocatable :: grid(:), agree(:), clash(:), local_bound(:)
+contains
+  subroutine init(n)
+    integer, intent(in) :: n
+    integer :: helper
+    helper = n
+    allocate(grid(0:nmax))
+    allocate(agree(0:nmax))
+    allocate(clash(0:nmax))
+    allocate(local_bound(helper:nmax))
+  end subroutine init
+
+  subroutine again()
+    allocate(agree(0:nmax))
+    allocate(clash(2:nmax))
+  end subroutine again
+end module allocs
+"""
+    bounds = interface.extract(_write(tmp_path, "allocs.f90", source))["module_allocate_bounds"]
+    assert [d["lb"] for d in bounds["grid"]] == ["0"]
+    assert [d["lb"] for d in bounds["agree"]] == ["0"], "two allocates that agree are one answer"
+    assert bounds["clash"] == CONFLICTING_BOUNDS, "0 and 2 cannot both be the shift"
+    assert bounds["local_bound"] == CONFLICTING_BOUNDS, "a local of the allocating routine"
