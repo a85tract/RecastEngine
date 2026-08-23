@@ -421,6 +421,54 @@ backend and the `recast.port.kernel-to-jax` named in `plugins/transform.py`.
 `transform/numpy/runtime.py` ships, so the two backends can be held to the same
 anchors rather than drifting into separate notions of correct.
 
+### Three things the PRODUCT pass handed back, 2026-08-22
+
+The pass over the 177 files P3 filed as port *outputs*
+(the extension's `migration/product-177.tsv`) found 143 already in the kernel
+repositories and nine that were tooling; the rest of what it found is the
+engine's, and none of it is a file to copy. Each is an item here until it is
+code.
+
+1. **Intel's libimf as a third libm.** `transform/numpy/runtime.py` models
+   two maths libraries -- glibc's scalar functions, which the strict path
+   uses, and NumPy's SIMD ones, which it avoids -- because the gfortran
+   oracle links the first. Two collection scripts
+   (`03_diff_test/run_mg2_intel_bitexact.py`, `run_mg2_ldpreload_verify.py`)
+   show the same question against an Intel-built CESM: `ifort` links
+   libimf, whose `exp`/`log`/`pow` differ from glibc's at the ULP, and the
+   scripts get bit-exact only by loading libimf over glibc -- through
+   `ctypes` in one, `LD_PRELOAD` in the other -- before the translated
+   module runs. Which libm the oracle was linked against is compiler
+   knowledge, the same kind `transform/profiles.py` already keeps for
+   `-fp-model`, and it belongs there as a profile field the strict runtime
+   reads. The scripts stay with the translator: they are bound to a CESM
+   dump. The manifest already said "P2 takes it from here"; it did not.
+
+2. **One test per lowering rule.** Seven tests migrated to the
+   extension's `tests/port_jax/` exercise rules that live in
+   `transform/jax/backend.py`: `while` to `lax.while_loop`, `break` to a
+   `_brk` flag with in-list guards, a valued early return beside a terminal
+   one, INOUT rebinding where NumPy mutated in place, `endrun` as an error
+   channel, statement functions as closures, log-only-branch stripping. They
+   exercise them on CESM modules, so they skip without a suite on disk.
+   `tests/test_jax_transform.py` has seven tests and none is about a
+   construct: they check that one `apply` yields both halves, that
+   delegation is not deferral, that the artifact reproduces. Each rule
+   above wants a synthetic Fortran fixture here, the way
+   `tests/test_numpy_*` are built, so the backend's coverage is checked in
+   the engine's own tests rather than inferred from a private suite.
+
+3. **Sequence association is mistranslated.** Recorded in the docstring of
+   the migrated `test_pkg_cld_sediment_jax.py`: the Fortran actual
+   `xxk(1,k)` -- an array element passed as the start address of a
+   `pcols`-long dummy -- is emitted as the scalar `xxk[0, k - 1]`, and the
+   callee indexes it. The NumPy translation is wrong before JAX is reached,
+   so both backends crash on `cfint2`, and the test covers the two
+   subprograms it can. This is `transform/numpy`'s: the frontend knows the
+   dummy's rank and the actual's, and an element actual against an array
+   dummy is a slice from that element, `xxk[0:, k - 1]` in column order,
+   not an element. A fixture with exactly that call is the test.
+
 **Done when:** the engine passes its tests with the CESM extension
 uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own
 `validate_*` scripts. This phase is the only real proof that the engine is
