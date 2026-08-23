@@ -575,8 +575,8 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 766,
-   "deferred": 100,
+   "blocks": 769,
+   "deferred": 97,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -596,10 +596,6 @@
     ],
     [
      "no expression rule for Subscript_Triplet: i : i",
-     4
-    ],
-    [
-     "out actual arg is not a variable/section",
      4
     ],
     [
@@ -632,6 +628,10 @@
     ],
     [
      "no expression rule for Subscript_Triplet: m : m",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: : j - N",
      1
     ],
     [
@@ -930,7 +930,7 @@
      }
     },
     "fortran:mt95": {
-     "deferred": 9,
+     "deferred": 6,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -940,10 +940,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/181 blocks disagree: genrand_encode/B002, genrand_decode/B002",
+       "detail": "5/184 blocks disagree: genrand_encode/B002, genrand_decode/B002, genrand_load_state/B004, genrand_dump_state/B003, genrand_dump_state/B004",
        "metrics": {
-        "blocks_checked": 181,
-        "blocks_deferred": 9,
+        "blocks_checked": 184,
+        "blocks_deferred": 6,
         "blocks_matched": 179,
         "blocks_waived": 0
        },

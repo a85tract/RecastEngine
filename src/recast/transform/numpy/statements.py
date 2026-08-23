@@ -1159,10 +1159,11 @@ class Statements:
             if self.semantics.is_array(name):
                 return f"{self.names.symbol(name)}[...]"
             return self.names.symbol(name)
-        if isinstance(actual, f03.Part_Ref) and self.semantics.is_array(
-            str(actual.children[0]).lower()
-        ):
+        if isinstance(actual, f03.Part_Ref):
+            # Subscripted, so an array whatever this file was told about it.
             return self.expressions.subscript(str(actual.children[0]).lower(), actual.children[1])
+        if isinstance(actual, f03.Data_Ref):
+            return self.expressions.render(actual)
         raise NoRule("out actual arg is not a variable/section")
 
     def _external_call(self, name: str, external: dict[str, Any], node: Any, pad: str) -> list[str]:

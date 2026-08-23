@@ -403,6 +403,9 @@ class Expressions:
                     component.children[1], None, rank_of=self.semantics.rank
                 )
                 parts.append(f"{head}[{', '.join(self._position(p) for p in positions)}]")
+            elif isinstance(component, f03.Data_Ref):
+                # fparser nests them when the chain is long enough.
+                parts.append(self._data_ref(component))
             else:
                 raise NoRule(f"data-ref component {type(component).__name__}")
         return ".".join(parts)
