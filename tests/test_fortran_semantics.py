@@ -19,9 +19,15 @@ pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 from recast.fortran import interface, semantics
 from recast.fortran._parse import f03, parse, walk
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module shapes_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   real(r8), parameter :: pi = 3.14159_r8
   integer :: counter
@@ -74,7 +80,7 @@ end module shapes_mod
 def sem(tmp_path: Path) -> semantics.Semantics:
     src = tmp_path / "shapes.f90"
     src.write_text(SOURCE)
-    return semantics.for_subprogram(interface.extract(src), "drive")
+    return semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "drive")
 
 
 @pytest.fixture
@@ -161,7 +167,7 @@ def test_an_elemental_function_broadcasts_its_actuals(tmp_path: Path) -> None:
     one takes the rank of what it is given."""
     src = tmp_path / "shapes.f90"
     src.write_text(SOURCE)
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     sem = semantics.for_subprogram(record, "drive")
     from fparser.two.Fortran2003 import Part_Ref
 
@@ -180,7 +186,7 @@ def test_a_call_to_the_modules_own_generic_interface_refuses_a_rank(tmp_path: Pa
     """
     src = tmp_path / "shapes.f90"
     src.write_text(SOURCE)
-    sem = semantics.for_subprogram(interface.extract(src), "drive")
+    sem = semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "drive")
     from fparser.two.Fortran2003 import Part_Ref
 
     with pytest.raises(semantics.Unanalyzable):
@@ -228,7 +234,7 @@ def test_an_array_constructor_does_not_crash_the_constant_test(tmp_path: Path) -
         "  subroutine go(out)\n    real, intent(out) :: out(3)\n"
         "    out = [1.0, 2.0, 3.0]\n  end subroutine go\nend module c_mod\n"
     )
-    sem = semantics.for_subprogram(interface.extract(src), "go")
+    sem = semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "go")
     sub = walk(parse(src), f03.Subroutine_Subprogram)[0]
     part = next(c for c in sub.children if isinstance(c, f03.Execution_Part))
     for node in walk(part):

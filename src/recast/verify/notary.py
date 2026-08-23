@@ -1,6 +1,6 @@
 """``symbolic.notary``: every rewritten expression proves itself equivalent.
 
-Migrated from CESM-language-translator ``pipeline/notary.py`` and the
+Migrated from the source pipeline's ``pipeline/notary.py`` and the
 expression half of ``pipeline/highprec_verify.py``, which were the same idea
 written twice: sample two expressions over their physical input ranges at 50
 significant digits -- about 166 bits, three times a double's mantissa -- and

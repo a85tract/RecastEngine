@@ -1,6 +1,6 @@
 """A language-neutral constant expression, and one fold to render it.
 
-Migrated from the ``ExprPrinter`` in CESM-language-translator
+Migrated from the ``ExprPrinter`` in the source pipeline
 ``pipeline/resolve_use.py``, which printed the same parsed expression as both
 Fortran and Python so that a stand-in module and a translated constants file
 would agree bit-for-bit by construction rather than by review.

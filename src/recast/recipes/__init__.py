@@ -2,7 +2,7 @@
 
 Each one names the real project it was abstracted from. They are stage
 declarations only -- the plugins they name arrive from ``recast-fortran``
-(in-tree, P2) or a domain extension (the CESM case, P4).
+(in-tree, P2) or a domain extension (P4).
 
 Read these four side by side and the claim that the engine is domain-independent
 becomes checkable: they differ only in which plugin fills each slot.
@@ -18,7 +18,7 @@ from recast.plugins.recipe import Recipe, Stage
 class TranslateRecipe(Recipe):
     """Rule-driven language translation, gated on a compiled oracle.
 
-    Abstracted from CESM-language-translator: Fortran to NumPy, then optionally
+    Abstracted from the source pipeline: Fortran to NumPy, then optionally
     to Numba or CUDA, with the untouched Fortran compiled through f2py as the
     reference and bit-exactness as the acceptance bar.
     """
@@ -48,8 +48,8 @@ class TranslateRecipe(Recipe):
 class RefactorRecipe(Recipe):
     """Architectural refactoring of a monolith, gated on a pinned full-model run.
 
-    Abstracted from freeCAM: generate C-interoperable adapters and an ordered
-    series of source patches that carve a Python control plane into iCESM,
+    Abstracted from a control-plane port: generate C-interoperable adapters and an ordered
+    series of source patches that carve a Python control plane into a coupled model,
     leaving the numerical routines untouched, then prove the result still
     reproduces the pinned reference bit-for-bit at production rank count.
 
@@ -93,7 +93,7 @@ class RefactorRecipe(Recipe):
 class PortRecipe(Recipe):
     """CPU to accelerator porting, gated on captured dumps.
 
-    Abstracted from CESM-jax-kernels: rewrite a physics kernel for JAX or
+    Abstracted from a kernel port: rewrite a physics kernel for JAX or
     Numba, and gate it where bit-exactness is not available -- XLA's
     transcendentals are not libm's, so the honest ceiling is a ULP bound.
 
@@ -151,7 +151,7 @@ class PortRecipe(Recipe):
 class AuditRecipe(Recipe):
     """The cyber half of CC-Test, in CC-Test's shape. Findings, not Candidates.
 
-    Runs against any git repository -- ported or legacy, CESM or not. Findings
+    Runs against any git repository -- ported or legacy, in this domain or not. Findings
     route to a FindingStore under embargo; nothing here writes to the public
     evidence store.
 

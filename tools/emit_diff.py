@@ -9,6 +9,12 @@ statement -- byte for byte, because the pipeline's output is what the
 bit-exact gates have been run against and a single reflowed parenthesis is
 indistinguishable from a wrong number until run time.
 
+The pipeline's ``ifx`` profile spells its transcendentals through a maths
+library that is not the system one, and the table saying which lives with the
+package that knows the build. Point ``RECAST_INTRINSICS`` at it
+(``module`` or ``module:NAME``) or every such call reads as a difference --
+without it this harness reports 169 where with it it reports 90.
+
 Live against the pipeline's code, not against its stored output: comparing
 against a golden file older than the code that wrote it is how this
 repository once reported fixing a bug the pipeline did not have.
@@ -151,6 +157,38 @@ def load(root: Path, relative: str | None) -> dict[str, Any]:
 # config -- their ``module_py`` still says ``wv_sat_methods_numpy``. The
 # companion's meaning is the config's, so the source is taken from here rather
 # than from the overwritten file. Upstream's to fix; listed for the author.
+def _intrinsics() -> dict[str, Any]:
+    """The intrinsic spellings the pipeline emits under its ``ifx`` profile.
+
+    A maths library that is not the system one is a fact about the build, and
+    the package that knows the build ships the table -- so this harness is
+    told where to find it rather than knowing: ``--intrinsics
+    <module>:<name>``, or ``RECAST_INTRINSICS`` in the same form. Without one
+    the comparison is against a translation that spells the transcendentals
+    differently, and every one of them shows up as a difference.
+    """
+    import importlib
+    import os
+
+    spec = os.environ.get("RECAST_INTRINSICS", "")
+    if not spec:
+        return {}
+    module, _, attribute = spec.partition(":")
+    return dict(getattr(importlib.import_module(module), attribute or "OVERRIDES"))
+
+
+CAM_KINDS = {
+    "r8": "float64",
+    "r4": "float32",
+    "i8": "int64",
+    "shr_kind_r8": "float64",
+    "shr_kind_r4": "float32",
+    "shr_kind_i8": "int64",
+    "shr_kind_i4": "int32",
+}
+"""What the extension supplies at run time. Spelled out here because this
+harness talks to the pipeline directly, with no plugin in the path."""
+
 COMPANION_SOURCES: dict[str, str] = {
     "extracted/interface.json": "src_fortran/wv_sat_methods.F90",
 }
@@ -296,6 +334,7 @@ def main() -> int:
     sys.path.insert(0, str(root / "pipeline"))
     import translate as pipeline
 
+    intrinsic_overrides = _intrinsics()
     scratch = ns.scratch or Path(tempfile.mkdtemp(prefix="emit_diff_"))
     scratch.mkdir(parents=True, exist_ok=True)
     kinds = ["subprograms", "lines", "blocks", "deferred", "modules", "constants", "different"]
@@ -330,7 +369,7 @@ def main() -> int:
         source = root / (override or gold["source_file"])
         intents = json.loads((root / intents_p).read_text()) if intents_p else None
 
-        interface = finterface.extract(source, intent_overrides=intents)
+        interface = finterface.extract(source, kind_assumptions=CAM_KINDS, intent_overrides=intents)
         constants = fconstants.extract(source)
         use_params = load(root, use_p)
         externals = load(root, ext_p)
@@ -370,6 +409,7 @@ def main() -> int:
             remotes=remotes,
             function_stubs=dict(pipeline.INFRA_FN_STUBS),
             statement_stubs=dict(pipeline.INFRA_STUBS),
+            intrinsics=intrinsic_overrides,
         )
 
         counts = dict.fromkeys(totals, 0)

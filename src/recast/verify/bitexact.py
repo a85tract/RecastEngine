@@ -1,6 +1,6 @@
 """``differential.bitexact``: the translation against the compiled truth.
 
-Migrated from the comparison half of CESM-language-translator
+Migrated from the comparison half of the source pipeline
 ``diff_driver.py`` and the tolerance ladder of its ``tests/test_diff.py``.
 The candidate's emitted module and the oracle's compiled Fortran are called
 side by side on the same generated inputs, and every output is compared bit
@@ -19,7 +19,7 @@ pass.
 
 Inputs are generated deterministically per (subprogram, trial): shapes come
 from the interface's dimensions resolved against the operator's ``dims``
-table, values from per-name ``ranges``. The physical ranges that make CAM
+table, values from per-name ``ranges``. The physical ranges that make a model
 kernels behave -- temperatures in kelvin, pressures in pascals -- are domain
 knowledge and arrive in config; the engine's defaults are only wide, not
 wise. Subprograms with deferred blocks are skipped and said so: their

@@ -27,8 +27,6 @@ __all__ = [
     "ARRAY_TRANSFORM",
     "ELEMENTAL_ARRAY",
     "ELEMENTAL_SCALAR",
-    "INTEL_ARRAY",
-    "INTEL_SCALAR",
     "LOGICAL_OPS",
     "REDUCTIONS",
     "RELATIONAL_OPS",
@@ -156,56 +154,6 @@ npy_math takes a SIMD path that differs from glibc by an ULP, and an ULP is
 the difference between a bit-exact gate passing and failing.
 """
 
-INTEL_SCALAR: dict[str, str] = {
-    "exp": "intel_math.exp",
-    "log": "intel_math.log",
-    "log10": "intel_math.log10",
-    "sqrt": "intel_math.sqrt",
-    "sin": "intel_math.sin",
-    "cos": "intel_math.cos",
-    "tan": "intel_math.tan",
-    "asin": "intel_math.asin",
-    "acos": "intel_math.acos",
-    "atan": "intel_math.atan",
-    "atan2": "intel_math.atan2",
-    "sinh": "intel_math.sinh",
-    "cosh": "intel_math.cosh",
-    "tanh": "intel_math.tanh",
-    "erf": "intel_math.erf",
-    "erfc": "intel_math.erfc",
-    "gamma": "intel_math.gamma",
-    "dsqrt": "intel_math.sqrt",
-    "dsin": "intel_math.sin",
-    "dcos": "intel_math.cos",
-    "datan": "intel_math.atan",
-    "dlog": "intel_math.log",
-    "dlog10": "intel_math.log10",
-    "dexp": "intel_math.exp",
-    "alog": "intel_math.log",
-    "alog10": "intel_math.log10",
-    "fabs": "intel_math.fabs",
-}
-"""Overrides of ``ELEMENTAL_SCALAR`` under a profile with ``intel_math``.
-
-The reference binary's transcendentals came from libimf, so the translation's
-do too; ``intel_math`` is the ctypes binding in this package. Kept as a
-separate table rather than folded in, because which table applies is a fact
-about the compiler, not about the intrinsic.
-"""
-
-INTEL_ARRAY: dict[str, str] = {
-    "exp": "intel_math.vexp",
-    "log": "intel_math.vlog",
-    "log10": "intel_math.vlog10",
-    "sqrt": "intel_math.vsqrt",
-    "sin": "intel_math.vsin",
-    "cos": "intel_math.vcos",
-    "tanh": "intel_math.vtanh",
-    "erf": "intel_math.verf",
-    "erfc": "intel_math.verfc",
-}
-"""The array half of the same overrides."""
-
 REDUCTIONS: dict[str, str] = {
     "all": "np.all",
     "any": "np.any",
@@ -244,7 +192,7 @@ RELATIONAL_OPS: dict[str, str] = {
     ">=": ">=",
     ".GE.": ">=",
 }
-"""Both spellings of every comparison. Fortran kept the F77 forms and CAM uses
+"""Both spellings of every comparison. Fortran kept the F77 forms and real code uses
 them interchangeably, sometimes in the same expression."""
 
 LOGICAL_OPS: dict[str, str] = {

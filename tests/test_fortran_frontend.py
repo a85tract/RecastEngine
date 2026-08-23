@@ -28,9 +28,15 @@ from recast.fortran import UnparsableSource, factory
 from recast.fortran import frontend as frontend_mod
 from recast.fortran.interface import IntentConflict, UnknownOverride
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module micro_mg2_0
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   private
   public :: micro_mg_tend, mg_init
@@ -400,7 +406,7 @@ contains
 end module vis_mod
 """
     )
-    record = interface.extract(source)
+    record = interface.extract(source, kind_assumptions=KINDS)
     visibility = {s["name"]: s["public"] for s in record["subprograms"]}
     assert visibility == {"seen": True, "hidden": False}
 
@@ -418,7 +424,7 @@ contains
 end module open_mod
 """
     )
-    record = interface.extract(open_source)
+    record = interface.extract(open_source, kind_assumptions=KINDS)
     visibility = {s["name"]: s["public"] for s in record["subprograms"]}
     assert visibility == {"bold": True, "shy": False}
 

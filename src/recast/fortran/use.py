@@ -1,6 +1,6 @@
 """Resolving use-imported constants across source files.
 
-Migrated from CESM-language-translator ``pipeline/resolve_use.py``. A module
+Migrated from the source pipeline's ``pipeline/resolve_use.py``. A module
 under translation imports named constants -- ``cpair``, ``epsilo`` -- from
 modules that are not themselves being translated. This finds their
 initializers in the real sources, follows them transitively, and returns them

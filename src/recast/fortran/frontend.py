@@ -3,7 +3,7 @@
 This is the module the ``recast.frontends`` entry point names, and the only one
 in the package that the engine calls directly. Everything under it -- parsing,
 interfaces, constants, chunking, effects -- is analysis migrated from the
-CESM-language-translator pipeline; this file is the part that binds it to the
+source pipeline; this file is the part that binds it to the
 ``Frontend`` contract and decides nothing else.
 
 Two properties are worth stating because they are easy to break later.
@@ -35,7 +35,7 @@ from recast.plugins.frontend import Frontend
 UID_PREFIX = "fortran"
 
 SUFFIXES = frozenset({".f90", ".f95", ".f03", ".f08", ".f", ".for", ".ftn"})
-"""Matched case-insensitively, so ``.F90`` (the CESM convention) is included.
+"""Matched case-insensitively, so ``.F90`` (a common convention) is included.
 
 Fixed-form suffixes are here because fparser's reader picks free or fixed form
 from the extension itself. A ``.F90`` that still needs cpp run over it is the

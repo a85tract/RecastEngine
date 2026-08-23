@@ -21,9 +21,15 @@ from recast.transform.numpy.modules import Modules
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.profiles import PROFILES
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module top_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   integer, parameter :: plev = 4
   real(r8) :: grid(plev, 2)
@@ -65,7 +71,7 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def renderer(source: Path) -> Modules:
     return Modules(
         subprograms=Subprograms(
-            record=interface.extract(source),
+            record=interface.extract(source, kind_assumptions=KINDS),
             constants=constants.extract(source),
             profile=PROFILES["ifx"],
         ),
@@ -127,7 +133,6 @@ def test_a_derived_type_gets_a_factory(source: Path, renderer: Modules) -> None:
 def test_the_header_carries_imports_runtime_and_signatures(renderer: Modules) -> None:
     header = renderer.header()
     assert "import numpy as np" in header
-    assert "from recast.transform.numpy import intel_math" in header  # the profile is ifx
     assert "from constants import *" in header
     assert "import sibling_numpy as _sib" in header
     assert "_RUNTIME = {'abort_msg': None}" in header

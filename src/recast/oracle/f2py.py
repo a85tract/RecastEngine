@@ -1,6 +1,6 @@
 """``f2py-golden``: the untouched Fortran, compiled, as the reference.
 
-Migrated from the build half of CESM-language-translator ``diff_driver.py``
+Migrated from the build half of the source pipeline's ``diff_driver.py``
 and the wrapper rules of ``gen_wrapper.py``. f2py does not translate
 anything: it compiles the original source with a real Fortran compiler and
 generates glue so Python can call the resulting machine code directly. That
@@ -78,7 +78,7 @@ def wrappers_for(
     name, because the specifics are private.
 
     ``parameters`` are integer constants the argument dimensions name but the
-    file use-imports -- CAM's ``pcols`` and ``pver`` -- emitted as local
+    file use-imports -- a grid's ``pcols`` and ``pver``, say -- emitted as local
     PARAMETERs so f2py can fold the declared shapes (the pipeline's
     ``gen_wrapper --local-params``). A file of bare subprograms gets no
     ``use`` line at all: the callee is an external, and the borrowed module

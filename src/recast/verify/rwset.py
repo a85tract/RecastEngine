@@ -1,6 +1,6 @@
 """``static.rwset``: cross-check a translation's dataflow against the source's.
 
-Migrated from CESM-language-translator ``pipeline/rwset.py``, target half. For
+Migrated from the source pipeline's ``pipeline/rwset.py``, target half. For
 every block, the source's read and write sets are compared against the sets of
 the code the Transform emitted for it. Any inequality fails the block, which
 keeps it out of differential testing and sends it to the agent queue instead.
@@ -40,7 +40,7 @@ LITERALS = frozenset({"None", "True", "False"})
 """The only emitted names that can never stand for a source symbol.
 
 Deliberately this short. ``sum``, ``min``, ``len`` and ``int`` look like Python
-builtins and are perfectly ordinary Fortran variable names -- CESM has a local
+builtins and are perfectly ordinary Fortran variable names -- one corpus has a local
 called ``sum`` -- so a verifier that skipped them by default would silently
 drop a real dataflow edge on exactly the code most likely to have one.
 Everything a particular backend emits is backend knowledge and arrives in the

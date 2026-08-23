@@ -7,7 +7,7 @@ on PATH, leaves the plugin's argv construction, its subprocess handling and its
 report parsing in the run, which is where the interesting failures are.
 
 The technique is borrowed from ``tests/run.sh`` in ``hpc-devsecops``
-(a85tract/CESM-CC-Test, by Chien-Wei Huang), which generates stub scanners and
+(by Chien-Wei Huang), which generates stub scanners and
 asserts on the gate's exit codes. Nothing is copied -- that harness is shell and
 this is a pytest fixture -- but the idea that the honest place to fake a wrapped
 tool is PATH rather than the wrapper is theirs, and it is a better test than

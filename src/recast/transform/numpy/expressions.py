@@ -40,8 +40,6 @@ from recast.transform.numpy.vocabulary import (
     ARRAY_TRANSFORM,
     ELEMENTAL_ARRAY,
     ELEMENTAL_SCALAR,
-    INTEL_ARRAY,
-    INTEL_SCALAR,
     LOGICAL_OPS,
     REDUCTIONS,
     RELATIONAL_OPS,
@@ -117,11 +115,11 @@ class Expressions:
     stubs: dict[str, str] = field(default_factory=dict)
     """Framework function -> the text that stands in for it.
 
-    A call into a framework the translation does not carry -- CAM's history
+    A call into a framework the translation does not carry -- a model's history
     buffer answering whether a field is active, its unit manager handing out a
     file unit -- has an answer that is a property of the framework, not of the
     language. So it is supplied, like ``intent_overrides`` and ``externals``,
-    and the domain package that knows CAM ships the table. Without one the
+    and the domain package that knows the framework ships the table. Without one the
     call is refused and becomes a deferred site, which is the honest outcome:
     the engine genuinely does not know what ``hist_fld_active`` returns.
 
@@ -130,6 +128,20 @@ class Expressions:
     to a stubbed name refuses even when the table has an answer -- the wider
     placement this module briefly had turned a refusal the pipeline hands to
     a human into a fabricated constant.
+    """
+
+    intrinsics: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Spellings that replace this backend's own, as ``{"scalar": {...},
+    "array": {...}}`` keyed by intrinsic name -- and ``"**"`` for the power
+    operator, which is not an intrinsic but is lowered the same way.
+
+    A reference binary linked against a maths library that is not the system
+    one -- Intel's libimf under ``ifx``, whose ``exp`` and ``pow`` are an ULP
+    from glibc's on some arguments -- computes different numbers, and a
+    translation held to it has to call the same library. Which library, and
+    what to call it, is a fact about the build rather than about Fortran, so
+    it arrives as configuration like the stub tables do; the package that
+    knows the build ships the binding.
     """
 
     statement_functions: frozenset[str] = frozenset()
@@ -198,17 +210,13 @@ class Expressions:
 
     @property
     def scalar_table(self) -> dict[str, str]:
-        """Intrinsic -> spelling on a scalar, under this profile."""
-        if self.profile.intel_math:
-            return {**ELEMENTAL_SCALAR, **INTEL_SCALAR}
-        return ELEMENTAL_SCALAR
+        """Intrinsic -> spelling on a scalar argument."""
+        return {**ELEMENTAL_SCALAR, **self.intrinsics.get("scalar", {})}
 
     @property
     def array_table(self) -> dict[str, str]:
-        """Intrinsic -> spelling on an array, under this profile."""
-        if self.profile.intel_math:
-            return {**ELEMENTAL_ARRAY, **INTEL_ARRAY}
-        return ELEMENTAL_ARRAY
+        """Intrinsic -> spelling on an array argument."""
+        return {**ELEMENTAL_ARRAY, **self.intrinsics.get("array", {})}
 
     def binary(self, left: Any, operator: str, right: Any) -> str:
         """A binary operation, with the three that are not what they look like."""
@@ -268,12 +276,10 @@ class Expressions:
         except Unanalyzable:
             over_arrays = False
         if over_arrays or self.elemental:
-            if self.profile.intel_math:
-                return f"intel_math.vpow({left}, {right})"
-            return f"_f_vpow({left}, {right})"
-        if self.profile.intel_math:
-            return f"intel_math.pow({left}, {right})"
-        return None
+            spelling = self.intrinsics.get("array", {}).get("**", "_f_vpow")
+            return f"{spelling}({left}, {right})"
+        scalar = self.intrinsics.get("scalar", {}).get("**")
+        return f"{scalar}({left}, {right})" if scalar else None
 
     def _comparison(self, spelling: str, left: Any, right: Any, rl: str, rr: str) -> str:
         if not (self.semantics.is_character(left) or self.semantics.is_character(right)):

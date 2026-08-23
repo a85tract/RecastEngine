@@ -1,6 +1,6 @@
 """``differential.tolerance``: the gate for a backend that cannot be bit-exact.
 
-Migrated from the gate in ``CESM-Agent-Produced-Scripts`` ``13_jax_backend/
+Migrated from the gate in the source collection's ``13_jax_backend/
 diffutil.py``, whose rationale rests on ``ulp_analysis_beljaars.py`` in the
 same collection. Both are agent-produced and were never held to a bit gate --
 unlike the translator this engine's other verifiers came from -- so what is

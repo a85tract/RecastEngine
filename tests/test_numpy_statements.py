@@ -25,9 +25,15 @@ from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import REFUSED, Statements
 from recast.transform.profiles import PROFILES
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module emit_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   real(r8), parameter :: pi = 3.14159_r8
   real(r8) :: state(10)
@@ -290,7 +296,7 @@ end module emit_mod
 
 COMPANION = """\
 module sibling_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
 
   interface cscale
@@ -321,7 +327,7 @@ end module sibling_mod
 
 CALLER = """\
 module caller_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   use sibling_mod, only: cscale, rise
   implicit none
 contains
@@ -356,7 +362,7 @@ def build(
     function_stubs: dict[str, str] | None = None,
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     semantics = for_subprogram(record, name, companions=companions)
     names = names_for(semantics, constants.extract(src))
     expressions = Expressions(
@@ -724,7 +730,7 @@ def test_sequence_association_takes_leading_axes_whole(sources: dict[str, Path])
 def test_a_companion_generic_dispatches_to_its_specific(sources: dict[str, Path]) -> None:
     """The generic lives in a sibling translated module; the overload is
     picked here and the call goes through the sibling's alias."""
-    sibling = interface.extract(sources["sibling_mod"])
+    sibling = interface.extract(sources["sibling_mod"], kind_assumptions=KINDS)
     remotes = {s["name"]: Remote("_sib", s["name"]) for s in sibling["subprograms"]}
     statements, nodes = build(
         sources["caller_mod"], "drive", companions=(sibling,), remotes=remotes

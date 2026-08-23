@@ -38,7 +38,7 @@ _trees: dict[tuple[str, str], Any] = {}
 def walk(node: Any, types: Any = object) -> list[Any]:
     """Every node of the given types under ``node``, in source order.
 
-    A stack rather than fparser's recursion: a CAM kernel nests forty deep in
+    A stack rather than fparser's recursion: a physics kernel nests forty deep in
     places, and the recursive walk raises RecursionError on it before any
     rule gets a chance to refuse. Accepts a node, or a list or tuple of them,
     as fparser's does -- some nodes hold their children in bare containers.

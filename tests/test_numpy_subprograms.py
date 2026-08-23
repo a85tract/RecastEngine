@@ -21,9 +21,15 @@ from recast.fortran._parse import f03, parse, walk
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.profiles import PROFILES
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module asm_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   real(r8) :: counter
 
@@ -98,12 +104,18 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-def build(source: Path, patches: dict[str, Any] | None = None, profile: str = "ifx") -> Subprograms:
+def build(
+    source: Path,
+    patches: dict[str, Any] | None = None,
+    profile: str = "ifx",
+    intrinsics: dict[str, Any] | None = None,
+) -> Subprograms:
     return Subprograms(
-        record=interface.extract(source),
+        record=interface.extract(source, kind_assumptions=KINDS),
         constants=constants.extract(source),
         profile=PROFILES[profile],
         patches=patches or {},
+        intrinsics=intrinsics or {},
     )
 
 
@@ -149,22 +161,25 @@ def test_a_return_nested_in_a_branch_does_not_stand_in_for_the_final_one(source:
 # --- the compiler profile ----------------------------------------------------
 
 
-def test_the_ifx_profile_takes_transcendentals_from_libimf(source: Path) -> None:
-    """ifx links libimf, whose exp and pow are an ULP from glibc's on some
-    arguments; the translation calls the same library."""
-    lines, _ = build(source, profile="ifx").render(node_of(source, "blend"), "blend")
-    body = "\n".join(lines)
-    assert "intel_math.exp(x)" in body
-    assert "intel_math.pow(x, y)" in body
-    assert "math.exp(" not in body.replace("intel_math.exp(", "")
-
-
-def test_the_gfortran_profile_uses_the_system_libm(source: Path) -> None:
-    lines, _ = build(source, profile="gfortran").render(node_of(source, "blend"), "blend")
+def test_by_default_the_transcendentals_are_the_system_libm(source: Path) -> None:
+    lines, _ = build(source).render(node_of(source, "blend"), "blend")
     body = "\n".join(lines)
     assert "math.exp(x)" in body
     assert "(x ** y)" in body
-    assert "intel_math" not in body
+
+
+def test_an_override_table_replaces_them(source: Path) -> None:
+    """A reference binary linked against a maths library that is not the
+    system one computes different numbers, and a translation held to it has
+    to call the same library. Which one is a fact about the build, so it
+    arrives as configuration and the package that knows the build ships it.
+    ``**`` rides along, being lowered the same way."""
+    overrides = {"scalar": {"exp": "other_libm.exp", "**": "other_libm.pow"}}
+    lines, _ = build(source, intrinsics=overrides).render(node_of(source, "blend"), "blend")
+    body = "\n".join(lines)
+    assert "other_libm.exp(x)" in body
+    assert "other_libm.pow(x, y)" in body
+    assert "math.exp(" not in body
 
 
 # --- the prologue ------------------------------------------------------------

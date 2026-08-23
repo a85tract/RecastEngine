@@ -1,7 +1,7 @@
 """The extension contract.
 
 Everything in RecastEngine's core is written against these ABCs. Nothing in the
-core imports a concrete Fortran, CESM, JAX, or scheduler implementation.
+core imports a concrete Fortran, domain, JAX, or scheduler implementation.
 
 That constraint is the whole point: it is what lets a domain extension supply
 the domain knowledge, and what lets an extension add capability at runtime instead

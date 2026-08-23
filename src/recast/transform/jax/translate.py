@@ -1,4 +1,4 @@
-"""``port.jax``: a CAM-style kernel retargeted to JAX, in one pass.
+"""``port.jax``: a physics kernel retargeted to JAX, in one pass.
 
 The port recipe names one Transform and this is it, but the work has two
 halves. The JAX backend transforms the *Python* the NumPy backend emitted --
