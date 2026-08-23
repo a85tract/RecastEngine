@@ -408,7 +408,7 @@ class Expressions:
             # element. The declared lower bound goes with them.
             lower = self.render(position.lower) if position.lower is not None else "None"
             upper = self.render(position.upper) if position.upper is not None else "None"
-            return f"_f_rstep({lower}, {upper}, {step}, {position.origin})"
+            return f"_f_rstep_lb({lower}, {upper}, {step}, {position.origin})"
         start = ""
         if position.lower is not None:
             folded = indexing.fold_index(position.lower, position.origin, WHITELIST_INT)
