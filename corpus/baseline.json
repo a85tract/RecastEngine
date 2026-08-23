@@ -1517,22 +1517,46 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1573,
-   "deferred": 30,
+   "blocks": 1582,
+   "deferred": 27,
    "refusals": [
     [
      "goto N is not a loop-exit pattern",
      20
     ],
     [
-     "no statement rule for Data_Stmt",
-     10
+     "itika/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "DATA value Name: gamma",
+     1
+    ],
+    [
+     "elit3/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "elit3/D002: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cgama/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "lgama/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cpsi/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 30,
+     "deferred": 27,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1542,10 +1566,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "262/1573 blocks disagree: cpdsa/B001, cpdsa/B003, cfs/B005, cfs/B007, lqmn/B005 (+257 more)",
+       "detail": "271/1582 blocks disagree: cpdsa/B001, cpdsa/B003, cfs/B005, cfs/B007, lqmn/B005 (+266 more)",
        "metrics": {
-        "blocks_checked": 1573,
-        "blocks_deferred": 30,
+        "blocks_checked": 1582,
+        "blocks_deferred": 27,
         "blocks_matched": 1311,
         "blocks_waived": 0
        },

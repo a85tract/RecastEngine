@@ -35,7 +35,7 @@ from typing import Any
 
 from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
-from recast.fortran.interface import emit_name, subprogram_key
+from recast.fortran.interface import emit_name, node_span, subprogram_key
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
 from recast.transform.numpy.expressions import Expressions, Remote
@@ -216,6 +216,30 @@ class Subprograms:
             lines.extend(prologue)
 
         report: list[dict[str, Any]] = []
+        # DATA sits in the specification part, and is a static
+        # initialisation: its assignments go after the prologue, before any
+        # statement can read the names. Its own block ids, because the
+        # execution-part chunking never saw it.
+        for at, statement in enumerate(walk(_specification(node), f03.Data_Stmt), start=1):
+            block = f"D{at:03d}"
+            span = node_span(statement)
+            data_entry: dict[str, Any] = {
+                "subprogram": emit_name(subprogram),
+                "key": subprogram_key(subprogram),
+                "block": block,
+                "src_span": [int(span[0] or 0), int(span[1] or 0)],
+            }
+            before = len(lines)
+            try:
+                lines.extend(statements.data_statement(statement, 1))
+                data_entry["status"] = "mechanical"
+            except REFUSED as refusal:
+                lines.append(f"    pass  # DATA {refusal} (AGENT_QUEUE)")
+                data_entry["status"] = "agent_queue"
+                data_entry["reason"] = str(refusal)
+            data_entry["py_lines"] = [before, len(lines)]
+            report.append(data_entry)
+
         blocks = list(chunk_subprogram(node))
 
         # A subprogram-level forward goto-region: `goto L` in top-level
@@ -532,6 +556,11 @@ class Subprograms:
         if lower in (None, "1", ":"):
             return upper
         return f"({upper}) - ({statements.bound(lower)}) + 1"
+
+
+def _specification(node: Any) -> Any:
+    """A subprogram's specification part, or an empty list if it has none."""
+    return next((c for c in node.children if isinstance(c, f03.Specification_Part)), [])
 
 
 def _is_elemental(subprogram: dict[str, Any]) -> bool:

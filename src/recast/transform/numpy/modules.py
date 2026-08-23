@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from recast.errors import ConfigError
 from recast.fortran._parse import f03, parse, walk
 from recast.fortran.interface import emit_name, subprogram_key
 from recast.transform.numpy import runtime
@@ -393,4 +394,18 @@ class Modules:
             )
             spans[(name, block)] = [number, following]
         for entry in report:
-            entry["py_lines"] = spans[(pysafe(entry["subprogram"]), entry["block"])]
+            key = (pysafe(entry["subprogram"]), entry["block"])
+            if key in spans:
+                entry["py_lines"] = spans[key]
+                continue
+            # A DATA block carries no marker -- the pipeline emits none and
+            # the emitted text is compared to it byte for byte -- so its
+            # lines are shifted by where its subprogram landed instead.
+            offset = starts.get(key[0])
+            if offset is None:
+                raise ConfigError(
+                    f"block {entry['block']} of {entry['subprogram']!r} has no place in the "
+                    "emitted file; the report and the text disagree"
+                )
+            low, high = entry["py_lines"]
+            entry["py_lines"] = [offset + low, offset + high - 1]
