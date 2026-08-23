@@ -656,7 +656,11 @@ class Expressions:
             return f"_ext.{name}({', '.join(arguments)})"
         if name in self.stubs:
             return self.stubs[name]
-        raise NoRule(f"structure constructor {name!r}")
+        # fparser reads an unknown `f(args)` as a constructor whenever the
+        # arguments look like components -- a character actual, a keyword.
+        # Nothing here defines a type of that name either, so it is a call,
+        # which is what the source spelling says.
+        return f"{self.names.symbol(name)}({', '.join(arguments)})"
 
 
 def _items(arglist: Any) -> list[Any]:
