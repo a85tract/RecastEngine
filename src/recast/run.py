@@ -632,7 +632,7 @@ def _selected_units(
 
     Frontends are independent of each other: each reads the tree on its own and
     the sets are unioned, which is what lets one project hold more than one
-    language. None of them sees another's Facts -- layering CESM conventions
+    language. None of them sees another's Facts -- layering a domain's conventions
     onto Fortran analysis, say, happens inside a Frontend, not between two of
     them, which is why ``analyze`` takes no upstream Facts.
 

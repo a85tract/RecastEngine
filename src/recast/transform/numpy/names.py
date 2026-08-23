@@ -183,7 +183,7 @@ def bind_use_statements(
     USE of a module that is not a companion gets an alias of its own,
     ``_<module>``, listed in ``stub_modules`` so the header can import it.
     A renamed item that a companion *does* cover is rebound to the module
-    the rename names -- ``r8 => shr_kind_r8`` must not resolve to another
+    the rename names -- ``r8 => wp_r8`` must not resolve to another
     companion's ``r8`` that happened to register first -- which is why
     ``companion_globals`` is updated in place. As the pipeline does it.
     """

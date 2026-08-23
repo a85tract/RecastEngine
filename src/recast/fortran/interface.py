@@ -1,6 +1,6 @@
 """Interface extraction: signatures, dtypes, dims, module state, call graph.
 
-Migrated from CESM-language-translator ``pipeline/extract_interface.py``. The
+Migrated from the source pipeline's ``pipeline/extract_interface.py``. The
 analysis is unchanged; what changed is that the kind table is an argument
 rather than a module global the command line reached in and mutated. A frontend
 that answers differently depending on which CLI ran last is not cacheable, and
@@ -8,7 +8,7 @@ the ``Frontend`` contract requires ``analyze`` to be deterministic.
 
 Nothing here writes. It reports what the source says, including where the
 source is silent -- an argument whose intent is undeclared comes back as
-``UNKNOWN`` rather than as a guess, because roughly a third of CAM's dummy
+``UNKNOWN`` rather than as a guess, because roughly a third of one corpus's dummy
 arguments have no usable declared intent and pretending otherwise is how a
 translation gets a plausible wrong answer.
 
@@ -47,20 +47,6 @@ class UnknownOverride(RecastError):
     operator believes is in force and is not.
     """
 
-
-SHR_KIND_DTYPES: dict[str, str] = {
-    "shr_kind_r8": "float64",
-    "shr_kind_r4": "float32",
-    "shr_kind_i8": "int64",
-    "shr_kind_i4": "int32",
-}
-"""CESM's shared kind module, the one cross-domain fact this frontend carries.
-
-It is here rather than in the domain extension because ``shr_kind_mod`` is how
-essentially every Fortran climate code spells its precision, and a frontend
-that cannot resolve ``r8`` is not useful on any of them. Anything narrower than
-that belongs in the domain extension.
-"""
 
 KIND_FN_RE = re.compile(r"selected_real_kind\s*\(\s*(\d+)", re.I)
 
@@ -111,7 +97,7 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
 
 
 def kind_aliases_from_use(ast: Any, kind_dtypes: dict[str, str]) -> dict[str, str]:
-    """Resolve use-renamed kind params (``use shr_kind_mod, only: r8 => shr_kind_r8``)."""
+    """Resolve use-renamed kind params (``use kinds_mod, only: r8 => wp_r8``)."""
     aliases: dict[str, str] = {}
     for use in walk(ast, f03.Use_Stmt):
         for rename in walk(use, f03.Rename):
@@ -609,9 +595,7 @@ def extract(
     """
     ast = parse(path)
     overrides = normalize_overrides(intent_overrides)
-    kind_dtypes = dict(SHR_KIND_DTYPES)
-    if kind_assumptions:
-        kind_dtypes.update({k.lower(): v for k, v in kind_assumptions.items()})
+    kind_dtypes = {k.lower(): v for k, v in (kind_assumptions or {}).items()}
 
     mod_name, mod_spec, sub_scope = _scope_of(ast, path)
 
@@ -641,7 +625,7 @@ def extract(
 
     state_names = {s["name"] for s in module_state}
 
-    # Accessibility. CAM's convention is a bare `private` up top and an
+    # Accessibility. A common convention is a bare `private` up top and an
     # explicit public list -- and a wrapper that `use`s a private symbol does
     # not compile, so who is public is a fact consumers genuinely need.
     public_names: list[str] = []

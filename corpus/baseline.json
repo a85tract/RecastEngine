@@ -72,21 +72,22 @@
      "deferred": 0,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/44 blocks disagree: dnrm2/B012, dnrm2/B013",
+       "detail": "44 blocks match",
        "metrics": {
         "blocks_checked": 44,
         "blocks_deferred": 0,
-        "blocks_matched": 42,
+        "blocks_matched": 44,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -101,11 +102,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "65/300 blocks disagree: defcmn/B003, defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031 (+60 more)",
+       "detail": "60/300 blocks disagree: defcmn/B003, defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031 (+55 more)",
        "metrics": {
         "blocks_checked": 300,
         "blocks_deferred": 28,
-        "blocks_matched": 235,
+        "blocks_matched": 240,
         "blocks_waived": 0
        },
        "passed": false
@@ -421,11 +422,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/10 blocks disagree: meshexp/B001, meshexp_der/B001, meshexp_der2/B001, meshgrid/B001, meshgrid/B002",
+       "detail": "2/10 blocks disagree: meshgrid/B001, meshgrid/B002",
        "metrics": {
         "blocks_checked": 10,
         "blocks_deferred": 0,
-        "blocks_matched": 5,
+        "blocks_matched": 8,
         "blocks_waived": 0
        },
        "passed": false
@@ -510,11 +511,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "21/81 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+16 more)",
+       "detail": "19/81 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+14 more)",
        "metrics": {
         "blocks_checked": 81,
         "blocks_deferred": 30,
-        "blocks_matched": 60,
+        "blocks_matched": 62,
         "blocks_waived": 0
        },
        "passed": false
@@ -532,11 +533,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/51 blocks disagree: spline3/B001, spline3ders/B001, iixexp/B001",
+       "detail": "2/51 blocks disagree: spline3/B001, spline3ders/B001",
        "metrics": {
         "blocks_checked": 51,
         "blocks_deferred": 3,
-        "blocks_matched": 48,
+        "blocks_matched": 49,
         "blocks_waived": 0
        },
        "passed": false
@@ -603,11 +604,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "16/91 blocks disagree: dogleg/B005, enorm/B008, fdjac1/B001, fdjac2/B001, hybrd1/B002 (+11 more)",
+       "detail": "6/91 blocks disagree: hybrd1/B002, hybrj1/B002, lmder1/B002, lmdif1/B002, lmpar/B009 (+1 more)",
        "metrics": {
         "blocks_checked": 91,
         "blocks_deferred": 13,
-        "blocks_matched": 75,
+        "blocks_matched": 85,
         "blocks_waived": 0
        },
        "passed": false
@@ -723,11 +724,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/67 blocks disagree: std/B002, save_array1d/B005, save_array1d/B021, save_array2d/B016",
+       "detail": "3/67 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016",
        "metrics": {
         "blocks_checked": 67,
         "blocks_deferred": 3,
-        "blocks_matched": 63,
+        "blocks_matched": 64,
         "blocks_waived": 0
        },
        "passed": false
@@ -792,21 +793,22 @@
      "deferred": 1,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/6 blocks disagree: rng_expon/B002, ran_expon_pdf_s/B002, ran_expon_pdf_v/B002",
+       "detail": "6 blocks match",
        "metrics": {
         "blocks_checked": 6,
         "blocks_deferred": 1,
-        "blocks_matched": 3,
+        "blocks_matched": 6,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -874,11 +876,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/14 blocks disagree: ran_ugaussian/B003, ran_gauss_pdf_s0/B001, ran_gauss_pdf_s1/B002, ran_gauss_pdf_s2/B002, ran_gauss_pdf_v0/B001 (+2 more)",
+       "detail": "6/14 blocks disagree: ran_gauss_pdf_s0/B001, ran_gauss_pdf_s1/B002, ran_gauss_pdf_s2/B002, ran_gauss_pdf_v0/B001, ran_gauss_pdf_v1/B001 (+1 more)",
        "metrics": {
         "blocks_checked": 14,
         "blocks_deferred": 2,
-        "blocks_matched": 7,
+        "blocks_matched": 8,
         "blocks_waived": 0
        },
        "passed": false
@@ -889,21 +891,22 @@
      "deferred": 2,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "6/41 blocks disagree: logspace/B004, geomspace/B005, geomspace/B006, loglinspace/B007, loglinspace/B008 (+1 more)",
+       "detail": "41 blocks match",
        "metrics": {
         "blocks_checked": 41,
         "blocks_deferred": 2,
-        "blocks_matched": 35,
+        "blocks_matched": 41,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -918,11 +921,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "8/34 blocks disagree: histogram/B005, get_bins/B001, get_bins/B008, width_sturges/B001, width_rice/B001 (+3 more)",
+       "detail": "5/34 blocks disagree: histogram/B005, get_bins/B001, get_bins/B008, width_doane/B005, width_doane/B006",
        "metrics": {
         "blocks_checked": 34,
         "blocks_deferred": 1,
-        "blocks_matched": 26,
+        "blocks_matched": 29,
         "blocks_waived": 0
        },
        "passed": false
@@ -1232,11 +1235,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/154 blocks disagree: dpchbs/B005, dpchsw/B001",
+       "detail": "1/154 blocks disagree: dpchbs/B005",
        "metrics": {
         "blocks_checked": 154,
         "blocks_deferred": 4,
-        "blocks_matched": 152,
+        "blocks_matched": 153,
         "blocks_waived": 0
        },
        "passed": false
@@ -1288,11 +1291,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "85/427 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+80 more)",
+       "detail": "56/427 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
        "metrics": {
         "blocks_checked": 427,
         "blocks_deferred": 11,
-        "blocks_matched": 342,
+        "blocks_matched": 371,
         "blocks_waived": 0
        },
        "passed": false
@@ -1336,7 +1339,7 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2442)",
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2441)",
        "metrics": {
         "blocks_checked": 0
        },
@@ -1389,11 +1392,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "9/230 blocks disagree: ridders/B007, bdqrf/B006, muller/B013, chandrupatla/B009, toms748/B007 (+4 more)",
+       "detail": "2/230 blocks disagree: toms748/B007, bracket/B004",
        "metrics": {
         "blocks_checked": 230,
         "blocks_deferred": 8,
-        "blocks_matched": 221,
+        "blocks_matched": 228,
         "blocks_waived": 0
        },
        "passed": false
@@ -1449,11 +1452,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "19/68 blocks disagree: bvls_wrapper/B003, bvls/B001, bvls/B002, bvls/B003, initialize/B019 (+14 more)",
+       "detail": "17/68 blocks disagree: bvls_wrapper/B003, bvls/B001, bvls/B002, bvls/B003, initialize/B019 (+12 more)",
        "metrics": {
         "blocks_checked": 68,
         "blocks_deferred": 0,
-        "blocks_matched": 49,
+        "blocks_matched": 51,
         "blocks_waived": 0
        },
        "passed": false
@@ -1471,11 +1474,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "18/95 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+13 more)",
+       "detail": "14/95 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+9 more)",
        "metrics": {
         "blocks_checked": 95,
         "blocks_deferred": 18,
-        "blocks_matched": 77,
+        "blocks_matched": 81,
         "blocks_waived": 0
        },
        "passed": false
@@ -1495,21 +1498,22 @@
      "deferred": 0,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/12 blocks disagree: dnrm2/B001",
+       "detail": "12 blocks match",
        "metrics": {
         "blocks_checked": 12,
         "blocks_deferred": 0,
-        "blocks_matched": 11,
+        "blocks_matched": 12,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     }
@@ -1566,11 +1570,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "271/1582 blocks disagree: cpdsa/B001, cpdsa/B003, cfs/B005, cfs/B007, lqmn/B005 (+266 more)",
+       "detail": "33/1582 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+28 more)",
        "metrics": {
         "blocks_checked": 1582,
         "blocks_deferred": 27,
-        "blocks_matched": 1311,
+        "blocks_matched": 1549,
         "blocks_waived": 0
        },
        "passed": false

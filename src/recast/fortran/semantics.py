@@ -1,6 +1,6 @@
 """What an expression means, without deciding how to write it down.
 
-Migrated from the type and shape reasoning inside CESM-language-translator's
+Migrated from the type and shape reasoning inside the source pipeline's
 ``Translator``, where it sat among the emitters and could only be reached by
 constructing one. It answers questions about Fortran -- what rank is this, is
 it integer-valued, is it a compile-time constant, which specific procedure does
@@ -141,7 +141,7 @@ class Semantics:
         # 16-element lookup table therefore answers "array" to `is_array` and
         # "scalar" to `rank`. Reproduced rather than resolved -- the
         # pipeline's answers are the ones a bit-exact gate has been run
-        # against, and every use of such a table in CAM is subscripted, so
+        # against, and every use of such a table in the corpus is subscripted, so
         # nothing in the corpus distinguishes the two.
         local_parameters = {p["name"] for p in self.subprogram["local_parameters"]}
         self._declared_for_rank = {
@@ -375,13 +375,13 @@ class Semantics:
     def dispatch(self, name: str, actuals: list[Any]) -> str:
         """Which specific procedure a generic call resolves to.
 
-        Matched on the two axes CAM's generics overload along: the rank of each
+        Matched on the two axes the corpus's generics overload along: the rank of each
         actual, and whether a scalar one is integer. Exactly one match is an
         answer; none or several raises.
 
         There were two implementations of this, and they disagreed -- this one
         refuses, and the read/write analysis scored the candidates and took the
-        best. They agreed on the thirty translated CAM modules only because all
+        best. They agreed on the thirty translated modules only because all
         three of their generic call sites match cleanly. Refusing is the right
         half of that disagreement to keep: an overload picked wrongly changes
         which arguments are written, and nothing downstream re-checks it.

@@ -86,6 +86,7 @@ class Subprograms:
     remotes: dict[str, Remote] = field(default_factory=dict)
     function_stubs: dict[str, str] = field(default_factory=dict)
     statement_stubs: dict[str, str] = field(default_factory=dict)
+    intrinsics: dict[str, Any] = field(default_factory=dict)
 
     patches: dict[str, dict[str, Any]] = field(default_factory=dict)
     """``"subprogram/block"`` -> an operator-audited replacement for a block
@@ -172,6 +173,7 @@ class Subprograms:
             externals=self.externals,
             remotes=self.remotes,
             stubs=dict(self.function_stubs),
+            intrinsics={k: v for k, v in self.intrinsics.items() if isinstance(v, dict)},
             elemental=_is_elemental(semantics.subprogram),
         )
         return Statements(

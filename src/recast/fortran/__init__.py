@@ -2,7 +2,7 @@
 
 Ships in-tree, but it is a plugin like any other -- it registers through the
 ``recast.frontends`` entry point and the engine reaches it only through the
-``Frontend`` contract. A CESM extension layers CESM conventions on top of this
+``Frontend`` contract. A domain extension layers its own conventions on top of this
 one rather than replacing it.
 
 Importing this package is free. fparser2 is an optional dependency

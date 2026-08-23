@@ -1,6 +1,6 @@
 """Per-block read and write sets.
 
-Migrated from CESM-language-translator ``pipeline/rwset.py``, Fortran half.
+Migrated from the source pipeline's ``pipeline/rwset.py``, Fortran half.
 The original held both halves -- this analysis and a walk of the generated
 Python -- in one file, together with the comparison between them. Only this
 half is analysis of the source, so only this half is a Frontend's job; the
@@ -36,7 +36,7 @@ KIND_ARG_FNS = frozenset({"real", "dble", "int", "nint", "aint", "anint", "floor
 """Conversions whose optional second argument is a kind name, not a value.
 
 ``real(x, r8)`` reads ``x`` and not ``r8``. Counting the kind as a read is the
-one over-approximation that would fire on nearly every line of CESM physics.
+one over-approximation that would fire on nearly every line of model physics.
 """
 
 
@@ -392,7 +392,7 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 # first: `do i = lo, hi` writes the counter and reads its
                 # bounds, `do while (c)` reads c and writes nothing, and a bare
                 # `do` does neither. Assuming the counted form crashed the
-                # analysis outright on four of CAM's thirty translated modules.
+                # analysis outright on four of the thirty translated modules.
                 condition, counter = control[0].children[0], control[0].children[1]
                 if counter is not None:
                     var, bounds = counter

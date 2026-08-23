@@ -24,6 +24,12 @@ pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 from recast.fortran import chunk, constants, expr, interface, use
 from recast.fortran._parse import f03, parse, walk
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 STATE = """\
 module state_mod
   implicit none
@@ -49,7 +55,7 @@ end module state_mod
 
 SHAPES = """\
 module shapes_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   integer, parameter :: rk = selected_real_kind(12)
   integer, parameter :: sk = selected_real_kind(6)
@@ -99,14 +105,14 @@ def test_deallocate_is_a_write_not_a_read(tmp_path: Path) -> None:
     translation spells ``table = None``. The pipeline this was migrated from
     counted it as a read, which put the one statement that destroys module
     state on the wrong side of every read/write gate."""
-    record = interface.extract(_write(tmp_path, "state.f90", STATE))
+    record = interface.extract(_write(tmp_path, "state.f90", STATE), kind_assumptions=KINDS)
     subs = {s["name"]: s for s in record["subprograms"]}
     assert subs["teardown"]["module_state_written"] == ["table"]
     assert subs["teardown"]["module_state_read"] == []
 
 
 def test_module_state_and_parameters_are_separated(tmp_path: Path) -> None:
-    record = interface.extract(_write(tmp_path, "state.f90", STATE))
+    record = interface.extract(_write(tmp_path, "state.f90", STATE), kind_assumptions=KINDS)
     assert {s["name"] for s in record["module_state"]} == {"table", "counter", "threshold"}
     assert record["module_parameters"] == []
 
@@ -115,7 +121,7 @@ def test_a_read_in_a_condition_counts(tmp_path: Path) -> None:
     """Reads outside assignments are still reads. A kernel whose behaviour
     depends on module state it never assigns still cannot be called in
     isolation."""
-    record = interface.extract(_write(tmp_path, "state.f90", STATE))
+    record = interface.extract(_write(tmp_path, "state.f90", STATE), kind_assumptions=KINDS)
     bump = {s["name"]: s for s in record["subprograms"]}["bump"]
     assert "threshold" in bump["module_state_read"]
     assert bump["module_state_written"] == ["counter"]
@@ -128,14 +134,14 @@ def test_explicit_and_assumed_bounds_are_distinguished(tmp_path: Path) -> None:
     """``ub`` of ``None`` means the bound has to be recovered at call time.
     Collapsing the two makes an assumed-shape dummy look allocatable-free and a
     generated wrapper allocate the wrong thing."""
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     args = {a["name"]: a for a in record["subprograms"][0]["args"]}
     assert args["a"]["dims"] == [{"lb": "1", "ub": "n"}]
     assert args["b"]["dims"] == [{"lb": "1", "ub": None}]
 
 
 def test_an_array_valued_function_reports_its_result_shape(tmp_path: Path) -> None:
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     profile = record["subprograms"][0]
     assert profile["result"] == "p"
     assert profile["result_dtype"] == "float64"
@@ -145,7 +151,7 @@ def test_an_array_valued_function_reports_its_result_shape(tmp_path: Path) -> No
 def test_derived_type_components_report_allocatable_and_pointer(tmp_path: Path) -> None:
     """Both change what a translation has to emit before first use, and neither
     is recoverable from the dtype."""
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     grid = record["types"]["grid_t"]
     assert (grid["lat"]["allocatable"], grid["lat"]["pointer"]) == (True, False)
     assert (grid["lon"]["allocatable"], grid["lon"]["pointer"]) == (False, True)
@@ -153,8 +159,8 @@ def test_derived_type_components_report_allocatable_and_pointer(tmp_path: Path) 
 
 
 def test_kinds_resolve_from_both_a_use_rename_and_selected_real_kind(tmp_path: Path) -> None:
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
-    assert record["kind_map"]["r8"] == "float64", "use shr_kind_mod, only: r8 => shr_kind_r8"
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
+    assert record["kind_map"]["r8"] == "float64", "use precision_mod, only: r8 => wp_r8"
     assert record["kind_map"]["rk"] == "float64", "selected_real_kind(12)"
     assert record["kind_map"]["sk"] == "float32", "selected_real_kind(6)"
 
@@ -163,7 +169,7 @@ def test_an_unresolvable_kind_is_named_not_defaulted(tmp_path: Path) -> None:
     """A silently wrong precision is the one error this stage can cause that no
     downstream type check catches -- it surfaces much later as a tolerance
     failure nobody can attribute."""
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     locals_ = {loc["name"]: loc for loc in record["subprograms"][0]["locals"]}
     assert locals_["scratch"]["dtype"] == "UNKNOWN_REAL_KIND(mystery)"
 
@@ -171,14 +177,14 @@ def test_an_unresolvable_kind_is_named_not_defaulted(tmp_path: Path) -> None:
 def test_kind_assumptions_supply_what_the_tree_does_not_contain(tmp_path: Path) -> None:
     """The same knob as intent overrides, for the same reason: the fact is real,
     the source does not state it, and the frontend must not invent it."""
-    src = _write(tmp_path, "shapes.f90", SHAPES.replace("r8 => shr_kind_r8", "r8 => other_r8"))
-    assert interface.extract(src)["kind_map"].get("r8") is None
+    src = _write(tmp_path, "shapes.f90", SHAPES.replace("r8 => wp_r8", "r8 => other_r8"))
+    assert interface.extract(src, kind_assumptions=KINDS)["kind_map"].get("r8") is None
     assumed = interface.extract(src, kind_assumptions={"other_r8": "float64"})
     assert assumed["kind_map"]["r8"] == "float64"
 
 
 def test_generic_interfaces_map_to_their_specific_procedures(tmp_path: Path) -> None:
-    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES))
+    record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     assert record["generics"] == {"swap": ["swap_int", "swap_real"]}
 
 
@@ -378,7 +384,7 @@ def test_local_parameters_are_found_in_both_declaration_forms(tmp_path: Path) ->
     """F77's separate ``parameter (beta = ...)`` statement is still in the
     sources being modernized, and a constant missed there reappears as a bare
     magic number in the translation."""
-    record = interface.extract(_write(tmp_path, "local.f90", LOCAL_PARAMS))
+    record = interface.extract(_write(tmp_path, "local.f90", LOCAL_PARAMS), kind_assumptions=KINDS)
     params = {p["name"]: p for p in record["subprograms"][0]["local_parameters"]}
     assert set(params) == {"alpha", "beta"}
     assert params["beta"]["init_expr"] == "9.80616"
@@ -402,14 +408,14 @@ def test_local_parameters_are_namespaced_by_subprogram(tmp_path: Path) -> None:
 
 def test_a_main_program_borrows_its_own_name(tmp_path: Path) -> None:
     src = "program driver\n  implicit none\n  call go()\nend program driver\n"
-    record = interface.extract(_write(tmp_path, "driver.f90", src))
+    record = interface.extract(_write(tmp_path, "driver.f90", src), kind_assumptions=KINDS)
     assert record["module"] == "driver"
 
 
 def test_a_file_of_bare_subprograms_borrows_the_file_stem(tmp_path: Path) -> None:
     """There is no module name to use, but a Unit still needs a stable uid."""
     src = "subroutine loose(x)\n  real :: x\n  x = x + 1.0\nend subroutine loose\n"
-    record = interface.extract(_write(tmp_path, "helpers.f90", src))
+    record = interface.extract(_write(tmp_path, "helpers.f90", src), kind_assumptions=KINDS)
     assert record["module"] == "helpers"
     assert [s["name"] for s in record["subprograms"]] == ["loose"]
 
@@ -453,7 +459,7 @@ def _blocks(tmp_path: Path, sub_name: str = "fill") -> dict[str, dict[str, Any]]
     from recast.fortran import rwset
 
     src = _write(tmp_path, "rw.f90", RW)
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     node = next(
         s
         for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
@@ -534,7 +540,7 @@ def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) 
     from recast.fortran import rwset
 
     src = _write(tmp_path, "derived.f90", DERIVED)
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     node = next(
         s
         for s in walk(parse(src), f03.Subroutine_Subprogram)
@@ -562,7 +568,7 @@ def test_a_local_shadows_an_intrinsic_of_the_same_name(tmp_path: Path) -> None:
         "  end subroutine go\n"
         "end module s_mod\n",
     )
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     node = walk(parse(src), f03.Subroutine_Subprogram)[0]
     blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
     assert blocks[1] == {"id": "B002", "reads": ["sum"], "writes": ["out"]}
@@ -632,7 +638,7 @@ def _construct_blocks(tmp_path: Path, **kw: Any) -> dict[str, dict[str, Any]]:
     from recast.fortran import rwset
 
     src = _write(tmp_path, "cons.f90", CONSTRUCTS)
-    record = interface.extract(src)
+    record = interface.extract(src, kind_assumptions=KINDS)
     node = next(
         s
         for s in walk(parse(src), f03.Subroutine_Subprogram)
@@ -693,7 +699,7 @@ def test_an_externals_entry_says_which_arguments_a_procedure_writes(tmp_path: Pa
 
 SHADOWED = """\
 module shadow_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
 contains
   subroutine interpolate(gamhat, n)
@@ -719,7 +725,7 @@ def test_a_declared_array_shadows_an_intrinsic_name(tmp_path: Path) -> None:
     difference, so the tidier answer wins on both halves."""
     from recast.fortran import rwset
 
-    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED))
+    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED), kind_assumptions=KINDS)
     scope = rwset.scope_for(record, "interpolate")
     blocks = {b["id"]: b for b in rwset.block_rwsets(_sub_node(tmp_path, "interpolate"), scope)}
     assert "gamma" in blocks["B001"]["reads"]
@@ -732,7 +738,7 @@ def test_companion_externals_carry_the_siblings_intents(tmp_path: Path) -> None:
     than a read -- the fact the pipeline's --companions flag carried."""
     from recast.fortran import rwset
 
-    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED))
+    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED), kind_assumptions=KINDS)
     node = _sub_node(tmp_path, "interpolate")
 
     blind = rwset.scope_for(record, "interpolate")
@@ -756,7 +762,7 @@ def test_companion_externals_carry_the_siblings_intents(tmp_path: Path) -> None:
 def test_companion_externals_derive_from_the_siblings_record(tmp_path: Path) -> None:
     sibling = """\
 module sib_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
 contains
   subroutine qsat_water(t, p, es, qs)
@@ -767,7 +773,7 @@ contains
   end subroutine qsat_water
 end module sib_mod
 """
-    record = interface.extract(_write(tmp_path, "sib.f90", sibling))
+    record = interface.extract(_write(tmp_path, "sib.f90", sibling), kind_assumptions=KINDS)
     table = interface.companion_externals(record)
     assert table["qsat_water"] == {"kind": "subroutine", "out_positions": [2, 3]}
 
@@ -842,7 +848,7 @@ def _internals(tmp_path: Path) -> dict:
 
     src = tmp_path / "host_mod.f90"
     src.write_text(INTERNALS)
-    return interface.extract(src)
+    return interface.extract(src, kind_assumptions=KINDS)
 
 
 def test_an_internal_procedure_records_its_host_and_the_host_variables_it_touches(
@@ -1021,7 +1027,7 @@ contains
   end subroutine rates
 end module f77ish
 """
-    record = interface.extract(_write(tmp_path, "f77ish.f90", source))
+    record = interface.extract(_write(tmp_path, "f77ish.f90", source), kind_assumptions=KINDS)
     intents = {a["name"]: a["intent"] for a in record["subprograms"][0]["args"]}
     assert intents["made"] == "OUT"  # assigned, never read
     assert intents["n"] == "OUT"

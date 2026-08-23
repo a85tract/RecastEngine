@@ -896,7 +896,7 @@ class Statements:
         """``associate (a => expr)``: the name is bound once, then read.
 
         A plain assignment is right for the reads and for writes through a
-        whole-array or component target, which is what CAM and CLOUDSC use it
+        whole-array or component target, which is what the physics corpora use it
         for -- the body sees the same object. It is *not* right for a scalar
         target written through the association, where Fortran writes back to
         the selector and Python would rebind the local; nothing in the corpus

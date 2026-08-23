@@ -25,7 +25,7 @@ from recast.transform.numpy.translate import NumpyTranslation
 
 SOURCE = """\
 module wave_mod
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   use physconst, only: cpair
   implicit none
   real(r8), parameter :: steepness = 3.7_r8
@@ -50,7 +50,7 @@ end module wave_mod
 
 PHYSCONST = """\
 module physconst
-  use shr_kind_mod, only: r8 => shr_kind_r8
+  use precision_mod, only: r8 => wp_r8
   implicit none
   real(r8), parameter :: shr_const_boltz = 1.38065e-23_r8
   real(r8), parameter :: cpair = 1.00464e3_r8 * shr_const_boltz

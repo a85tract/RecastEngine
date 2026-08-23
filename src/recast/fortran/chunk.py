@@ -1,6 +1,6 @@
 """Statement-block chunking.
 
-Migrated from CESM-language-translator ``pipeline/chunk.py``. Splits a
+Migrated from the source pipeline's ``pipeline/chunk.py``. Splits a
 subprogram's execution part into numbered blocks at one statement or one whole
 construct each, so that every later stage -- translation, instrumentation,
 read/write-set analysis -- addresses the same piece of code by the same id.

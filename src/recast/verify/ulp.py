@@ -1,6 +1,6 @@
 """ULP distance: how far apart two float64 values really are.
 
-Migrated from CESM-language-translator ``pipeline/highprec_verify.py``. The
+Migrated from the source pipeline's ``pipeline/highprec_verify.py``. The
 tolerance ladder's rungs are defined in these terms -- bit-exact is a ULP
 distance of zero, and a claimed ``max_ulp`` in a Verdict's metrics is what
 makes a near-miss reviewable instead of a shrug.

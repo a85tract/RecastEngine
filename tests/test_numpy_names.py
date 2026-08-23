@@ -20,6 +20,12 @@ from recast.fortran._parse import f03, parser
 from recast.transform.numpy import names
 from recast.transform.rules import NoRule
 
+KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
+"""What the fixtures' own precision module would have said, supplied the way
+the frontend documents: a kind the tree use-imports from a file it does not
+contain."""
+
+
 SOURCE = """\
 module phys_mod
   implicit none
@@ -45,7 +51,7 @@ def _records(tmp_path: Path):
     parser()
     src = tmp_path / "phys.f90"
     src.write_text(SOURCE)
-    return interface.extract(src), fortran_constants.extract(src)
+    return interface.extract(src, kind_assumptions=KINDS), fortran_constants.extract(src)
 
 
 @pytest.fixture
@@ -57,7 +63,7 @@ def table(tmp_path: Path) -> names.Names:
         consts,
         use_parameters={"gravit": "GRAVIT"},
         companion_globals={"premib": "_cf2.premib", "rhminl": "_cf2.rhminl"},
-        use_bindings={"shr_kind_r8": "_shr_kind_mod.shr_kind_r8"},
+        use_bindings={"wp_r8": "_precision_mod.wp_r8"},
     )
 
 
@@ -159,11 +165,11 @@ def test_host_module_state_shadows_a_companion_global_of_the_same_name(table) ->
 
 
 def test_a_use_binding_catches_what_no_table_covered(table) -> None:
-    assert table.symbol("shr_kind_r8") == "_shr_kind_mod.shr_kind_r8"
+    assert table.symbol("wp_r8") == "_precision_mod.wp_r8"
 
 
 def test_use_statements_bind_the_uncovered_and_rebind_a_rename() -> None:
-    """``r8 => shr_kind_r8`` from a module that is not a companion must not
+    """``r8 => wp_r8`` from a module that is not a companion must not
     resolve to another companion's ``r8`` that registered first; a plain
     uncovered name binds to the module's own alias; a USE of a module that is
     not a companion is reported so the header can import a stand-in."""
@@ -171,20 +177,20 @@ def test_use_statements_bind_the_uncovered_and_rebind_a_rename() -> None:
         "module_parameters": [{"name": "own"}],
         "module_state": [{"name": "cached"}],
         "use_statements": [
-            "USE shr_kind_mod, ONLY: r8 => shr_kind_r8, i8 => shr_kind_i8",
+            "USE precision_mod, ONLY: r8 => wp_r8, i8 => wp_i8",
             "USE wv_sat_methods, ONLY: qsat_water, own, cached",
             "USE ppgrid",
         ],
     }
     companion_globals = {"r8": "_wv.r8"}
     bindings, stubs = names.bind_use_statements(record, {"_wv"}, {"qsat_water"}, companion_globals)
-    assert companion_globals["r8"] == "_shr_kind_mod.shr_kind_r8"
-    assert bindings == {"i8": "_shr_kind_mod.shr_kind_i8"}
+    assert companion_globals["r8"] == "_precision_mod.wp_r8"
+    assert bindings == {"i8": "_precision_mod.wp_i8"}
     # A companion is recognised by its alias minus the underscore, as the
     # pipeline does it, so ``_wv`` is the companion "wv" and a USE of
     # wv_sat_methods by its full name still gets a stand-in alias.
     assert stubs == {
-        "shr_kind_mod": "_shr_kind_mod",
+        "precision_mod": "_precision_mod",
         "wv_sat_methods": "_wv_sat_methods",
         "ppgrid": "_ppgrid",
     }

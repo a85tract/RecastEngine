@@ -39,26 +39,15 @@ class Profile:
     has baked into it.
     """
 
-    intel_math: bool = False
-    """Transcendentals taken from Intel's libimf rather than the system libm.
-
-    ``ifx`` links libimf, and its ``exp``/``log``/``pow`` differ from glibc's
-    by an ULP on some arguments. A translation held to an Intel-built
-    reference has to call the same library, which the NumPy backend does
-    through ``intel_math`` (a ctypes binding, loaded when first called). The
-    output then *needs* a libimf to run: a library dependency by design, not
-    a path one, and ``gfortran`` is the profile for a machine without one.
-    """
-
 
 PROFILES: dict[str, Profile] = {
     "gfortran": Profile("gfortran", int_pow_expand=True, cfold_mpfr=True),
-    "ifx": Profile("ifx", int_pow_expand=False, cfold_mpfr=False, intel_math=True),
+    "ifx": Profile("ifx", int_pow_expand=False, cfold_mpfr=False),
     # Neither behaviour assumed. Preserves the source form, which is the only
     # choice that cannot be wrong in a way the operator did not ask for.
     "generic": Profile("generic", int_pow_expand=False, cfold_mpfr=False),
 }
 
 DEFAULT = "ifx"
-"""What CESM's reference builds use. An operator comparing against a gfortran
+"""What the reference builds this grew up on use. An operator comparing against a gfortran
 build has to say so; there is no way to detect it from the source."""

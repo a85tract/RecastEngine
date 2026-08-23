@@ -137,7 +137,7 @@ def _aliases(companions: list[dict[str, Any]]) -> dict[int, str]:
     """What the emitted module imports each companion as.
 
     The pipeline's rule -- ``_<module>``, shortened to ``_<first three>`` past
-    ten characters -- because a translation of a CAM module has to import its
+    ten characters -- because a translation has to import its
     siblings under the names the pipeline's output uses or the two files
     disagree on every reference. The shortening collides
     (``micro_mg_utils`` and ``micro_mg2_0`` are both ``_mic``), which the
@@ -237,7 +237,7 @@ class NumpyTranslation(Transform):
         source = self._verified_source(unit, facts, config)
         # The operator's list wins where there is one; otherwise the frontend
         # resolved the unit's own ``use`` statements against the tree. A tree
-        # nobody has mapped by hand is the common case outside CAM, and its
+        # nobody has mapped by hand is the common case, and its
         # translation refusing every sibling call was the corpus's largest
         # single finding.
         declared = config.get("companions")
@@ -263,6 +263,7 @@ class NumpyTranslation(Transform):
             remotes=remotes,
             function_stubs=config.get("function_stubs", {}),
             statement_stubs=config.get("statement_stubs", {}),
+            intrinsics=config.get("intrinsic_overrides", {}),
             patches=config.get("patches", {}),
             deferred_handler=self._handler(config),
         )

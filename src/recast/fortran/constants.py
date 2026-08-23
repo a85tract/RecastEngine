@@ -1,6 +1,6 @@
 """Parameters and inline literals, classified but not yet spelled.
 
-Migrated from CESM-language-translator ``pipeline/extract_constants.py``, and
+Migrated from the source pipeline's ``pipeline/extract_constants.py``, and
 split where the ``Frontend`` contract says it has to be. The original did two
 jobs: it worked out what every parameter and every inline numeric literal was,
 and it wrote a NumPy constants module. Only the first job is analysis.
@@ -343,8 +343,8 @@ def _array_literal(init: str, module_level: bool) -> str | None:
     allowed; a name or an implied do is not, and falls through to be skipped
     rather than approximated.
     """
-    # ``(/ ... /)`` is the same constructor in the older spelling, and CAM's
-    # sources use the brackets while most of the wider corpus does not.
+    # ``(/ ... /)`` is the same constructor in the older spelling; which one a
+    # source uses is a house style, not a difference in meaning.
     init = _ARRAY_OLD_FORM.sub(r"[\1]", init)
     txt = _KIND_SUFFIX_RE.sub("", init).replace("D", "E").replace("d", "e")
     pattern = _ARRAY_LOCAL_RE if module_level is False else _ARRAY_MODULE_RE

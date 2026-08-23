@@ -1,7 +1,7 @@
 """Core vocabulary shared by every RecastEngine workload.
 
 These types are deliberately small and language-neutral. Everything that is
-specific to Fortran, to CESM, or to a particular accelerator lives in a plugin.
+specific to Fortran, to a domain, or to a particular accelerator lives in a plugin.
 
 The spine every workload walks:
 
@@ -119,7 +119,7 @@ class Patch:
     """A unified-diff edit against an existing file.
 
     Refactoring workloads express most of their output this way rather than as
-    whole new files -- freeCAM's control-plane carve-out is 16 ordered patches
+    whole new files -- a control-plane carve-out is typically a dozen ordered patches
     into upstream Fortran.
     """
 
