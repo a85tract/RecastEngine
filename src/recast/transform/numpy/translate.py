@@ -300,7 +300,7 @@ class NumpyTranslation(Transform):
         for entry in report:
             if entry["status"] == "agent_queue":
                 continue
-            effects = facts.effects.get(f"{unit.uid}/{entry['subprogram']}", {})
+            effects = facts.effects.get(f"{unit.uid}/{entry.get('key', entry['subprogram'])}", {})
             sets = next((b for b in effects.get("blocks", []) if b["id"] == entry["block"]), None)
             if sets is None:
                 raise ConfigError(

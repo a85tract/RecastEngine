@@ -1,0 +1,36 @@
+[submodule "corpus/minpack"]
+	path = corpus/minpack
+	url = https://github.com/fortran-lang/minpack.git
+[submodule "corpus/quadpack"]
+	path = corpus/quadpack
+	url = https://github.com/jacobwilliams/quadpack.git
+[submodule "corpus/specfun"]
+	path = corpus/specfun
+	url = https://github.com/jacobwilliams/specfun.git
+[submodule "corpus/polyroots-fortran"]
+	path = corpus/polyroots-fortran
+	url = https://github.com/jacobwilliams/polyroots-fortran.git
+[submodule "corpus/pchip"]
+	path = corpus/pchip
+	url = https://github.com/jacobwilliams/pchip.git
+[submodule "corpus/slsqp"]
+	path = corpus/slsqp
+	url = https://github.com/jacobwilliams/slsqp.git
+[submodule "corpus/bspline-fortran"]
+	path = corpus/bspline-fortran
+	url = https://github.com/jacobwilliams/bspline-fortran.git
+[submodule "corpus/roots-fortran"]
+	path = corpus/roots-fortran
+	url = https://github.com/jacobwilliams/roots-fortran.git
+[submodule "corpus/fortran-utils"]
+	path = corpus/fortran-utils
+	url = https://github.com/certik/fortran-utils.git
+[submodule "corpus/fftpack"]
+	path = corpus/fftpack
+	url = https://github.com/fortran-lang/fftpack.git
+[submodule "corpus/numfor"]
+	path = corpus/numfor
+	url = https://github.com/numericfor/numfor.git
+[submodule "corpus/dwarf-p-cloudsc"]
+	path = corpus/dwarf-p-cloudsc
+	url = https://github.com/ecmwf-ifs/dwarf-p-cloudsc.git

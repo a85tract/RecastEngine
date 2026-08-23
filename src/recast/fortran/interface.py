@@ -237,7 +237,18 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
 
 
 def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
-    return [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
+    decls = [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
+    # A separate DIMENSION statement (F77 style: `complex a` then
+    # `dimension a(0:*)`) gives an already-declared entity its shape. Without
+    # this the entity reads as a scalar and every subscript of it refuses.
+    by_name = {e["name"]: e for d in decls for e in d["entities"]}
+    for stmt in walk(spec_part, f03.Dimension_Stmt):
+        for name, spec in stmt.children[0]:
+            entity = by_name.get(str(name).lower())
+            if entity is not None and entity["dims"] is None:
+                entity["dims"] = dims_of(spec)
+                entity["array_spec"] = str(spec)
+    return decls
 
 
 def sub_name_of(sub: Any) -> str:
@@ -646,6 +657,7 @@ def extract(
         extract_subprogram(s, kind_map, state_names, sub_names, overrides.get(sub_name_of(s)))
         for s in subs
     ]
+    _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
 
@@ -687,3 +699,78 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             ],
         }
     return table
+
+
+def subprogram_key(record: dict[str, Any]) -> str:
+    """The name a subprogram is looked up by: ``host/name`` for an internal
+    procedure, because two hosts may each contain a ``func``."""
+    host = record.get("host")
+    return f"{host}/{record['name']}" if host else record["name"]
+
+
+def emit_name(record: dict[str, Any]) -> str:
+    """The name the translation gives this subprogram.
+
+    The Fortran name, as the pipeline emits it -- an internal procedure comes
+    out flat, beside its host, with the host's variables it touches as
+    trailing arguments. Only when two internal procedures of different hosts
+    share a name is the second form used, ``host__name``, because one flat
+    file cannot define ``func`` twice; the pipeline has no rule for that case
+    and this is the smallest one that keeps every call resolvable.
+    """
+    return str(record.get("emit_name") or record["name"])
+
+
+def _host_associate(
+    subs: list[Any],
+    records: list[dict[str, Any]],
+    sub_names: set[str],
+    state_names: set[str],
+) -> None:
+    """Mark internal procedures with their host and the host variables they use.
+
+    An internal procedure -- one inside another subprogram's CONTAINS --
+    reads and writes its host's variables without declaring them (host
+    association). The translation passes those as extra trailing arguments,
+    so the record has to say which they are: names used in the internal
+    procedure's execution part that are not its own, but are declared by the
+    host. As the pipeline's ``extract_interface`` does it.
+    """
+    parents: dict[int, Any] = {}
+    for s in subs:
+        for inner in walk(s, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
+            if inner is not s:
+                parents[id(inner)] = s
+    for s, rec in zip(subs, records, strict=True):
+        parent = parents.get(id(s))
+        if parent is None:
+            continue
+        rec["host"] = sub_name_of(parent)
+        exec_part = next((c for c in s.children if isinstance(c, f03.Execution_Part)), None)
+        if exec_part is None:
+            continue
+        used = set(names_in(exec_part))
+        own = {a["name"] for a in rec["args"]}
+        own |= {loc["name"] for loc in rec["locals"]}
+        own |= {p["name"] for p in rec.get("local_parameters", [])}
+        host_names: set[str] = set()
+        parent_spec = next(
+            (c for c in parent.children if isinstance(c, f03.Specification_Part)), None
+        )
+        if parent_spec is not None:
+            for d in collect_decls(parent_spec):
+                host_names |= {e["name"] for e in d["entities"]}
+        parent_stmt = walk(parent, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
+        if len(parent_stmt.children) > 2 and parent_stmt.children[2] is not None:
+            host_names |= {str(n).lower() for n in walk(parent_stmt.children[2], f03.Name)}
+        host_vars = sorted((used & host_names) - own - sub_names - state_names)
+        if host_vars:
+            rec["host_vars"] = host_vars
+    # Two internal procedures of different hosts with one name cannot both
+    # be `def func` in one file.
+    seen: dict[str, int] = {}
+    for rec in records:
+        seen[rec["name"]] = seen.get(rec["name"], 0) + 1
+    for rec in records:
+        if rec.get("host") and seen[rec["name"]] > 1:
+            rec["emit_name"] = f"{rec['host']}__{rec['name']}"

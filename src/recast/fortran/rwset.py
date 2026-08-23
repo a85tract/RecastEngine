@@ -86,8 +86,14 @@ def scope_for(
     externals: dict[str, dict[str, Any]] | None = None,
 ) -> Scope:
     """Build a ``Scope`` for one subprogram out of an ``interface.extract`` record."""
-    subs = {s["name"]: s for s in record["subprograms"]}
-    sub = subs[sub_name]
+    from recast.fortran.interface import subprogram_key
+
+    subs = {subprogram_key(s): s for s in record["subprograms"]}
+    sub = (
+        subs[sub_name]
+        if sub_name in subs
+        else next(s for s in record["subprograms"] if s["name"] == sub_name)
+    )
 
     ranks: dict[str, int] = {}
     chars: set[str] = set()

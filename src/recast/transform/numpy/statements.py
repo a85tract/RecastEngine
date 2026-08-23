@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recast.fortran._parse import f03, walk
+from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.expressions import Expressions
 from recast.transform.numpy.names import Names
@@ -637,6 +638,8 @@ class Statements:
                 body.extend(self.render(child, indent + 1))
             lines.extend(body or [f"{pad}    pass"])
             return lines
+        if control[0].children[1] is None:
+            raise NoRule("do while / infinite do")
         variable, bounds = control[0].children[1]
         bounds = list(bounds)
         low = self.expressions.render(bounds[0])
@@ -695,7 +698,9 @@ class Statements:
             return [f"{pad}{stub}  # {name} (infra stub)"]
         if name in self.semantics.generics:
             name = self.semantics.dispatch(name, items)
-        record = next((s for s in self.semantics.module["subprograms"] if s["name"] == name), None)
+        record = self.semantics.procedures.get(name)
+        if record is not None and record not in self.semantics.module["subprograms"]:
+            record = None  # a companion's; resolved below through remotes
         prefix = ""
         if record is None and name in self.semantics.companion_generics:
             name = self.semantics.dispatch(name, items)
@@ -771,10 +776,15 @@ class Statements:
                         break
                 except REFUSED:
                     pass
+        # Host association: an internal callee takes the host variables it
+        # touches as extra trailing actuals.
+        for host_var in record.get("host_vars") or ():
+            inputs.append(self.names.symbol(host_var))
+        target = f"{prefix}{pysafe(emit_name(record))}"
         if broadcasts:
-            call = f"_f_ecall({prefix}{pysafe(name)}, {', '.join(inputs)})"
+            call = f"_f_ecall({target}, {', '.join(inputs)})"
         else:
-            call = f"{prefix}{pysafe(name)}({', '.join(inputs)})"
+            call = f"{target}({', '.join(inputs)})"
         if outputs:
             # A whole-array OUT actual is copied into the caller's buffer by
             # the runtime rather than assigned through ``[...]``: the callee

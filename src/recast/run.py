@@ -488,7 +488,15 @@ def _walk_stage(
 
     if stage.kind == "transform":
         transform = factory()
-        missing = [name for name in transform.requires if not getattr(facts, name, None)]
+        # A field the frontend produced may legitimately be empty: a module of
+        # parameters alone has no subprograms, so no effects and no call
+        # graph, and is still a translation (its constants module).
+        nothing_to_analyze = not facts.interface.get("subprograms")
+        missing = [
+            name
+            for name in transform.requires
+            if not getattr(facts, name, None) and not (nothing_to_analyze and name != "interface")
+        ]
         if missing:
             return StageOutcome(
                 stage.kind,

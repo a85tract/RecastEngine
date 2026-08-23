@@ -115,10 +115,22 @@ class Semantics:
 
     def __post_init__(self) -> None:
         self._declared: dict[str, dict[str, Any]] = {}
+        # Host association: an internal procedure sees its host's dummies
+        # and locals after its own, before the module's.
+        host = next(
+            (
+                s
+                for s in self.module["subprograms"]
+                if self.subprogram.get("host") and s["name"] == self.subprogram["host"]
+            ),
+            None,
+        )
+        host_declared = (*host["args"], *host["locals"]) if host else ()
         for entry in (
             *self.subprogram["args"],
             *self.subprogram["locals"],
             *self.subprogram["local_parameters"],
+            *host_declared,
             *self.module["module_state"],
             *self.module["module_parameters"],
         ):
@@ -466,11 +478,24 @@ def for_subprogram(
         types.update(other["types"])
         parameters |= {p["name"] for p in other["module_parameters"]}
 
-    subprogram = procedures[name] if name in procedures else None
-    if subprogram is None or subprogram not in record["subprograms"]:
-        subprogram = next((s for s in record["subprograms"] if s["name"] == name), None)
+    # ``name`` may be the key form ``host/name`` for an internal procedure.
+    host, _, plain = name.rpartition("/")
+    subprogram = next(
+        (s for s in record["subprograms"] if s["name"] == plain and (s.get("host") or "") == host),
+        None,
+    )
+    if subprogram is None and not host:
+        subprogram = procedures.get(plain)
+        if subprogram is not None and subprogram not in record["subprograms"]:
+            subprogram = None
     if subprogram is None:
         raise Unanalyzable(f"{name!r} is not a subprogram of {record['module']!r}")
+    # Host association: inside a host, and inside its other internal
+    # procedures, the host's internals shadow any same-named procedure.
+    scope_host = subprogram.get("host") or subprogram["name"]
+    for s in record["subprograms"]:
+        if s.get("host") == scope_host:
+            procedures[s["name"]] = s
     parameters |= {p["name"] for p in subprogram["local_parameters"]}
 
     return Semantics(

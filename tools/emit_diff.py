@@ -397,7 +397,7 @@ def main() -> int:
             counts["blocks"] += len(want_report)
             counts["deferred"] += sum(1 for e in want_report if e["status"] == "agent_queue")
             placements = [
-                [{k: v for k, v in entry.items() if k != "reason"} for entry in report]
+                [{k: v for k, v in entry.items() if k not in ("reason", "key")} for entry in report]
                 for report in (want_report, got_report)
             ]
             same_lines = list(map(normalized, want)) == list(map(normalized, got))

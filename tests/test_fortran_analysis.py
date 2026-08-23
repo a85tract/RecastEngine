@@ -777,3 +777,86 @@ def test_selected_int_kind_is_a_value_not_a_skip() -> None:
     assert classify_init("selected_int_kind(6)", set()) == ("int", 4)
     assert classify_init("selected_int_kind(18)", set()) == ("int", 8)
     assert classify_init("kind(1.0d0)", set())[0] == "skip"
+
+
+INTERNALS = """\
+module host_mod
+  implicit none
+  real :: shared(3)
+contains
+  subroutine outer(n, x)
+    integer, intent(in) :: n
+    real, intent(inout) :: x
+    real :: scale
+    integer :: k
+    scale = 2.0
+    call bump()
+    x = f(x)
+  contains
+    subroutine bump()
+      x = x * scale + n
+    end subroutine bump
+    function f(v) result(r)
+      real, intent(in) :: v
+      real :: r
+      r = v + scale
+    end function f
+  end subroutine outer
+
+  subroutine other(y)
+    real, intent(inout) :: y
+    y = f(y)
+  contains
+    function f(v) result(r)
+      real, intent(in) :: v
+      real :: r
+      r = -v
+    end function f
+  end subroutine other
+
+  subroutine legacy(a, n)
+    integer n
+    real a
+    dimension a(n)
+    a(1) = 0.0
+  end subroutine legacy
+end module host_mod
+"""
+
+
+def _internals(tmp_path: Path) -> dict:
+    from recast.fortran import interface
+
+    src = tmp_path / "host_mod.f90"
+    src.write_text(INTERNALS)
+    return interface.extract(src)
+
+
+def test_an_internal_procedure_records_its_host_and_the_host_variables_it_touches(
+    tmp_path: Path,
+) -> None:
+    from recast.fortran.interface import subprogram_key
+
+    record = _internals(tmp_path)
+    by_key = {subprogram_key(s): s for s in record["subprograms"]}
+    bump = by_key["outer/bump"]
+    assert bump["host"] == "outer"
+    assert bump["host_vars"] == ["n", "scale", "x"]  # the host's dummies and locals it uses
+    assert "host" not in by_key["outer"]
+
+
+def test_two_internal_procedures_of_one_name_get_distinct_emitted_names(tmp_path: Path) -> None:
+    from recast.fortran.interface import emit_name, subprogram_key
+
+    record = _internals(tmp_path)
+    by_key = {subprogram_key(s): s for s in record["subprograms"]}
+    assert emit_name(by_key["outer/f"]) == "outer__f"
+    assert emit_name(by_key["other/f"]) == "other__f"
+    assert emit_name(by_key["outer/bump"]) == "bump"  # unique, so the pipeline's flat name
+
+
+def test_a_separate_dimension_statement_gives_the_entity_its_shape(tmp_path: Path) -> None:
+    record = _internals(tmp_path)
+    legacy = next(s for s in record["subprograms"] if s["name"] == "legacy")
+    a = next(arg for arg in legacy["args"] if arg["name"] == "a")
+    assert a["dims"] == [{"lb": None, "ub": "n"}] or a["dims"][0]["ub"] == "n"
