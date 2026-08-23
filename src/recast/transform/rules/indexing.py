@@ -129,14 +129,12 @@ def _origin(dims: list[dict[str, Any]] | None, axis: int) -> str:
 
 
 def _range(triplet: Any, origin: str) -> Position:
+    # Counting down, the loop stops *below* its Fortran end, and the
+    # zero-based stop for reaching the first element is off the end of the
+    # axis -- there is no index that means "one before the start". So a
+    # descending section is not a slice literal; the emitter hands its edges
+    # and the axis origin to the runtime, either edge possibly implied.
     lower, upper, step = triplet.children
-    if step is not None and _is_negative(step):
-        # Counting down, the loop stops *below* its Fortran end, and the
-        # zero-based stop for reaching element 1 is off the end of the axis --
-        # there is no index that means "one before the start". Expressible
-        # only when both ends are written out and the axis starts at one.
-        if lower is None or upper is None or origin != UNIT_ORIGIN:
-            raise NoRule("negative stride with an implied or re-based bound")
     return Position(Kind.RANGE, origin, lower=lower, upper=upper, step=step)
 
 

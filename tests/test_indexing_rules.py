@@ -128,19 +128,20 @@ def test_only_an_index_folds() -> None:
 # --- what has no rule --------------------------------------------------------
 
 
-def test_a_negative_stride_off_a_declared_bound_refuses() -> None:
-    """Counting down, the stop for reaching element one is off the end of the
-    axis, and there is no index meaning "one before the start"."""
-    with pytest.raises(NoRule, match="negative stride"):
-        indexing.describe(_subs("n:1:-1"), _dims(("0", "n")), rank_of=_scalar)
+def test_a_negative_stride_is_a_range_whatever_its_bounds() -> None:
+    """Counting down, the stop for reaching the first element is off the end
+    of the axis, and there is no index meaning "one before the start" -- so
+    it is not a slice literal, and the emitter hands the edges and the axis
+    origin to the runtime instead. A re-based axis and an implied edge are
+    that same case, not a refusal."""
+    rebased = indexing.describe(_subs("n:1:-1"), _dims(("0", "n")), rank_of=_scalar)
+    assert rebased[0].kind is indexing.Kind.RANGE
+    assert rebased[0].origin == "0"
 
+    implied = indexing.describe(_subs(":1:-1"), None, rank_of=_scalar)
+    assert implied[0].kind is indexing.Kind.RANGE
+    assert implied[0].lower is None
 
-def test_a_negative_stride_with_an_implied_bound_refuses() -> None:
-    with pytest.raises(NoRule, match="negative stride"):
-        indexing.describe(_subs(":1:-1"), None, rank_of=_scalar)
-
-
-def test_a_negative_stride_with_both_bounds_written_out_is_allowed() -> None:
     positions = indexing.describe(_subs("n:1:-1"), None, rank_of=_scalar)
     assert positions[0].kind is indexing.Kind.RANGE
 

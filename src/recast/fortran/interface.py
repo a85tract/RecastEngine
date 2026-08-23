@@ -474,6 +474,20 @@ def extract_subprogram(
         # unallocated, and the translator maps that to ``X = None``
         for dealloc in walk(exec_part, f03.Deallocate_Stmt):
             state_written |= set(names_in(dealloc)) & module_state_names
+        # So is allocate(X): the name goes from unallocated to an array.
+        for allocate in walk(exec_part, f03.Allocate_Stmt):
+            for item in walk(allocate, f03.Allocation):
+                target = str(item.children[0]).lower()
+                if target in module_state_names:
+                    state_written.add(target)
+        # Module state passed as a call actual may be written through an
+        # intent(out) or intent(inout) dummy, and the callee's intents are
+        # not in view here. Counted as written, which costs a name on the
+        # ``global`` list if it turns out to be read-only and loses the
+        # write to a local if it is not.
+        for call in walk(exec_part, f03.Call_Stmt):
+            if call.children[1] is not None:
+                state_written |= set(names_in(call.children[1])) & module_state_names
         # reads in non-assignment contexts (if conditions, call arguments)
         state_read |= (used & module_state_names) - state_written
 
