@@ -115,6 +115,30 @@ def _f_ecall(fn: Any, *args: Any, **kw: Any) -> Any:
     return np.vectorize(fn)(*args, **kw)
 
 
+def _f_copy_out(dst: Any, src: Any) -> None:
+    """Copy a callee's returned OUT array into the caller's buffer.
+
+    ``dst[...] = src`` when the shapes agree; when they do not -- a
+    ``pcols``-wide buffer receiving an ``ncol``-wide result, or a rank-1
+    buffer receiving a section -- the overlap is copied and the rest left as
+    it was, which is what Fortran's by-reference OUT did. ``None`` is an
+    unsupplied optional, and nothing is written."""
+    if dst is None:
+        return
+    if not isinstance(src, np.ndarray):
+        dst[...] = src
+        return
+    if src.shape == dst.shape:
+        dst[...] = src
+        return
+    if src.ndim == dst.ndim and src.ndim > 1:
+        slices = tuple(slice(0, min(s, d)) for s, d in zip(src.shape, dst.shape, strict=True))
+        dst[slices] = src[slices]
+    else:
+        n = min(src.size, dst.size)
+        dst.ravel()[:n] = src.ravel()[:n]
+
+
 def _f_rstep(lo: Any, hi: Any, st: Any) -> Any:
     """Fortran lo:hi:st (st<0, inclusive, 1-based) -> python slice; the
     exclusive stop edge underflows at hi==1, which needs None."""
