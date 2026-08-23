@@ -429,20 +429,19 @@ repositories and nine that were tooling; the rest of what it found is the
 engine's, and none of it is a file to copy. Each is an item here until it is
 code.
 
-1. **Intel's libimf as a third libm.** `transform/numpy/runtime.py` models
-   two maths libraries -- glibc's scalar functions, which the strict path
-   uses, and NumPy's SIMD ones, which it avoids -- because the gfortran
-   oracle links the first. Two collection scripts
-   (`03_diff_test/run_mg2_intel_bitexact.py`, `run_mg2_ldpreload_verify.py`)
-   show the same question against an Intel-built CESM: `ifort` links
-   libimf, whose `exp`/`log`/`pow` differ from glibc's at the ULP, and the
-   scripts get bit-exact only by loading libimf over glibc -- through
-   `ctypes` in one, `LD_PRELOAD` in the other -- before the translated
-   module runs. Which libm the oracle was linked against is compiler
-   knowledge, the same kind `transform/profiles.py` already keeps for
-   `-fp-model`, and it belongs there as a profile field the strict runtime
-   reads. The scripts stay with the translator: they are bound to a CESM
-   dump. The manifest already said "P2 takes it from here"; it did not.
+1. **Intel's libimf as a third libm -- relayed 2026-08-22.** The translator
+   had already done it: under its ``ifx`` profile every transcendental is
+   spelled ``intel_math.*``, a ctypes binding to libimf kept beside the
+   output, because ``ifx`` links that library and its ``exp``/``log``/``pow``
+   are an ULP from glibc's on some arguments. ``Profile`` now carries
+   ``intel_math``, the vocabulary carries the override tables, and
+   ``transform/numpy/intel_math.py`` is the binding -- loaded at first call
+   rather than at import, which is the one departure, so an emitted module
+   can be read anywhere and refuses, naming ``RECAST_LIBIMF`` and the
+   ``gfortran`` profile, only when asked for a number. The ifx output needs
+   a libimf to run; that is a library dependency by design, and the
+   gfortran profile is for machines without one. The two dump-bound
+   scripts stay with the translator.
 
 2. **One test per lowering rule.** Seven tests migrated to the
    extension's `tests/port_jax/` exercise rules that live in

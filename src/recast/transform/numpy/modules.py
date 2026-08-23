@@ -132,6 +132,10 @@ class Modules:
             "",
         ]
         pieces.extend(runtime.REQUIRED_IMPORTS)
+        if self.subprograms.profile.intel_math:
+            # The pipeline writes ``import intel_math`` and keeps the module
+            # beside its output; this file names where the engine keeps it.
+            pieces.append("from recast.transform.numpy import intel_math")
         pieces.append("")
         pieces.append(f"from {self.constants_stem} import *  # noqa: F401,F403")
         if self.subprograms.use_parameters:

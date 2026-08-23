@@ -64,6 +64,22 @@ contains
     return
   end function total
 
+  function pick(n) result(t)
+    integer, intent(in) :: n
+    real(r8) :: t
+    if (n > 0) then
+      t = 1.0_r8
+      return
+    end if
+    t = 0.0_r8
+  end function pick
+
+  subroutine blend(x, y, z)
+    real(r8), intent(in) :: x, y
+    real(r8), intent(out) :: z
+    z = exp(x) + x**y
+  end subroutine blend
+
   subroutine escape(s)
     real(r8), intent(inout) :: s
     if (s > 1.0_r8) go to 50
@@ -82,11 +98,11 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-def build(source: Path, patches: dict[str, Any] | None = None) -> Subprograms:
+def build(source: Path, patches: dict[str, Any] | None = None, profile: str = "ifx") -> Subprograms:
     return Subprograms(
         record=interface.extract(source),
         constants=constants.extract(source),
-        profile=PROFILES["ifx"],
+        profile=PROFILES[profile],
         patches=patches or {},
     )
 
@@ -120,6 +136,35 @@ def test_an_explicit_trailing_return_is_not_doubled(source: Path) -> None:
     lines, _ = build(source).render(node_of(source, "total"), "total")
     returns = [line for line in lines if line.strip().startswith("return")]
     assert returns == ["    return t"]
+
+
+def test_a_return_nested_in_a_branch_does_not_stand_in_for_the_final_one(source: Path) -> None:
+    """Only a function-level return may. The branch that skips the nested one
+    otherwise falls off the end and returns None (the pipeline's T45)."""
+    lines, _ = build(source).render(node_of(source, "pick"), "pick")
+    returns = [line for line in lines if line.strip().startswith("return")]
+    assert returns == ["        return t", "    return t"]
+
+
+# --- the compiler profile ----------------------------------------------------
+
+
+def test_the_ifx_profile_takes_transcendentals_from_libimf(source: Path) -> None:
+    """ifx links libimf, whose exp and pow are an ULP from glibc's on some
+    arguments; the translation calls the same library."""
+    lines, _ = build(source, profile="ifx").render(node_of(source, "blend"), "blend")
+    body = "\n".join(lines)
+    assert "intel_math.exp(x)" in body
+    assert "intel_math.pow(x, y)" in body
+    assert "math.exp(" not in body.replace("intel_math.exp(", "")
+
+
+def test_the_gfortran_profile_uses_the_system_libm(source: Path) -> None:
+    lines, _ = build(source, profile="gfortran").render(node_of(source, "blend"), "blend")
+    body = "\n".join(lines)
+    assert "math.exp(x)" in body
+    assert "(x ** y)" in body
+    assert "intel_math" not in body
 
 
 # --- the prologue ------------------------------------------------------------
