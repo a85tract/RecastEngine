@@ -38,6 +38,7 @@ from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
 from recast.transform.numpy.expressions import Expressions, Remote
+from recast.transform.numpy.names import bind_use_statements
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import ALLOCATED_DTYPES, REFUSED, Statements
 from recast.transform.numpy.vocabulary import pysafe
@@ -89,6 +90,12 @@ class Subprograms:
     """``"subprogram/block"`` -> an operator-audited replacement for a block
     the mechanical rules refuse. Applied verbatim, and recorded as such."""
 
+    use_bindings: dict[str, str] = field(init=False, default_factory=dict)
+    stub_imports: tuple[str, ...] = field(init=False, default=())
+    """Derived in ``__post_init__`` from the module's USE statements; see
+    ``names.bind_use_statements``. ``stub_imports`` are the header lines for
+    USE'd modules that are not companions."""
+
     deferred_handler: DeferredHandler | None = None
     """Consulted at the moment a block is refused, with the refusal in hand.
 
@@ -137,6 +144,14 @@ class Subprograms:
             return None, "handler returned no 'python' list of source lines"
         return dict(filled), None
 
+    def __post_init__(self) -> None:
+        aliases = {remote.alias for remote in self.remotes.values()}
+        aliases |= {spelling.split(".")[0] for spelling in self.companion_globals.values()}
+        self.use_bindings, stubs = bind_use_statements(
+            self.record, aliases, set(self.remotes), self.companion_globals
+        )
+        self.stub_imports = tuple(f"import {mod}_numpy as {alias}" for mod, alias in stubs.items())
+
     # -- the per-subprogram stack ---------------------------------------------
 
     def floors(self, name: str) -> Statements:
@@ -147,6 +162,7 @@ class Subprograms:
             self.constants,
             use_parameters=self.use_parameters,
             companion_globals=self.companion_globals,
+            use_bindings=self.use_bindings,
         )
         expressions = Expressions(
             semantics,

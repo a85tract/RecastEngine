@@ -79,6 +79,7 @@ def companion_tables(
     and the globals, the module renderer wants the import lines -- and
     deriving all four here keeps them from drifting apart.
     """
+    from recast.transform.numpy.constants import defined_module_parameters
     from recast.transform.numpy.expressions import Remote
     from recast.transform.numpy.vocabulary import pysafe
 
@@ -98,10 +99,35 @@ def companion_tables(
                 remotes[local] = Remote(alias, remote)
         for subprogram in record["subprograms"]:
             remotes.setdefault(subprogram["name"], Remote(alias, subprogram["name"]))
+        # A parameter is spelled as the companion's constants file spells it:
+        # upper-case when that file defines it, lower-case when the file has
+        # only a SKIPPED line for it. Without the companion's constants record
+        # nothing is known to be defined, and every name is lower-case -- which
+        # is what the pipeline does with no constants.py beside the interface.
+        defined = (
+            defined_module_parameters(companion["constants"])
+            if companion.get("constants")
+            else set()
+        )
         for parameter in record["module_parameters"]:
-            globals_.setdefault(parameter["name"], f"{alias}.{pysafe(parameter['name'].upper())}")
+            name = parameter["name"]
+            attr = pysafe(name.upper()) if name.upper() in defined else pysafe(name)
+            globals_.setdefault(name, f"{alias}.{attr}")
         for state in record["module_state"]:
             globals_.setdefault(state["name"], f"{alias}.{pysafe(state['name'])}")
+        reverse = {v: k for k, v in renames.items()}
+        for parameter in record["module_parameters"]:
+            local = reverse.get(parameter["name"])
+            if local:
+                # A use-rename shadows a same-named global another companion
+                # registered first: assigned, never setdefault-guarded.
+                name = parameter["name"]
+                attr = pysafe(name.upper()) if name.upper() in defined else pysafe(name)
+                globals_[local] = f"{alias}.{attr}"
+        for state in record["module_state"]:
+            local = reverse.get(state["name"])
+            if local:
+                globals_[local] = f"{alias}.{pysafe(state['name'])}"
     return tuple(records), remotes, globals_, tuple(imports)
 
 

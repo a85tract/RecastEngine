@@ -26,6 +26,7 @@ module phys_mod
   real, parameter :: pi = 3.14159
   real, parameter :: tmin = 173.0
   real :: cached
+  real :: premib
 contains
   subroutine shadowing(tmin, n)
     real, intent(in) :: tmin
@@ -33,7 +34,7 @@ contains
     real, parameter :: local_p = 0.61
     real :: scratch
     integer :: lambda
-    scratch = tmin + pi + local_p + cached + n + lambda
+    scratch = tmin + pi + local_p + cached + n + lambda + premib
     if (scratch > 273.15) scratch = 6.371e6
   end subroutine shadowing
 end module phys_mod
@@ -51,7 +52,13 @@ def _records(tmp_path: Path):
 def table(tmp_path: Path) -> names.Names:
     iface, consts = _records(tmp_path)
     sem = semantics.for_subprogram(iface, "shadowing")
-    return names.for_subprogram(sem, consts, use_parameters={"gravit": "GRAVIT"})
+    return names.for_subprogram(
+        sem,
+        consts,
+        use_parameters={"gravit": "GRAVIT"},
+        companion_globals={"premib": "_cf2.premib", "rhminl": "_cf2.rhminl"},
+        use_bindings={"shr_kind_r8": "_shr_kind_mod.shr_kind_r8"},
+    )
 
 
 # --- scoping -----------------------------------------------------------------
@@ -139,3 +146,45 @@ def test_the_protocol_table_maps_emitted_constants_back(table) -> None:
     assert mapping["GRAVIT"] == "gravit"
     assert mapping["SHADOWING__LOCAL_P"] == "local_p"
     assert "lambda_" not in mapping
+
+
+# --- what USE brings in ------------------------------------------------------
+
+
+def test_host_module_state_shadows_a_companion_global_of_the_same_name(table) -> None:
+    """The module declares ``premib`` itself; a companion that also exports
+    one is not what the Fortran reads."""
+    assert table.symbol("premib") == "premib"
+    assert table.symbol("rhminl") == "_cf2.rhminl"
+
+
+def test_a_use_binding_catches_what_no_table_covered(table) -> None:
+    assert table.symbol("shr_kind_r8") == "_shr_kind_mod.shr_kind_r8"
+
+
+def test_use_statements_bind_the_uncovered_and_rebind_a_rename() -> None:
+    """``r8 => shr_kind_r8`` from a module that is not a companion must not
+    resolve to another companion's ``r8`` that registered first; a plain
+    uncovered name binds to the module's own alias; a USE of a module that is
+    not a companion is reported so the header can import a stand-in."""
+    record = {
+        "module_parameters": [{"name": "own"}],
+        "module_state": [{"name": "cached"}],
+        "use_statements": [
+            "USE shr_kind_mod, ONLY: r8 => shr_kind_r8, i8 => shr_kind_i8",
+            "USE wv_sat_methods, ONLY: qsat_water, own, cached",
+            "USE ppgrid",
+        ],
+    }
+    companion_globals = {"r8": "_wv.r8"}
+    bindings, stubs = names.bind_use_statements(record, {"_wv"}, {"qsat_water"}, companion_globals)
+    assert companion_globals["r8"] == "_shr_kind_mod.shr_kind_r8"
+    assert bindings == {"i8": "_shr_kind_mod.shr_kind_i8"}
+    # A companion is recognised by its alias minus the underscore, as the
+    # pipeline does it, so ``_wv`` is the companion "wv" and a USE of
+    # wv_sat_methods by its full name still gets a stand-in alias.
+    assert stubs == {
+        "shr_kind_mod": "_shr_kind_mod",
+        "wv_sat_methods": "_wv_sat_methods",
+        "ppgrid": "_ppgrid",
+    }

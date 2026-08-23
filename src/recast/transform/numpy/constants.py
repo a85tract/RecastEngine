@@ -25,7 +25,7 @@ from typing import Any
 
 from recast.fortran.expr import Expr, render
 
-__all__ = ["constants_module", "use_constants_module"]
+__all__ = ["constants_module", "defined_module_parameters", "use_constants_module"]
 
 LEADING_ZERO = re.compile(r"^0\d")
 
@@ -71,6 +71,22 @@ def constants_module(record: dict[str, Any], *, extern: tuple[tuple[str, int], .
         lines.append(_hoisted(name, entry))
     lines.append("")
     return "\n".join(lines)
+
+
+def defined_module_parameters(record: dict[str, Any]) -> set[str]:
+    """The upper-case names the module's constants file actually defines.
+
+    A sibling module referring to this module's parameter spells it as the
+    constants file does when the file has it, and lower-case when the
+    frontend could not classify it and the file carries a ``# SKIPPED``
+    line instead. Asked of the renderer so the answer cannot disagree with
+    the file.
+    """
+    return {
+        parameter["name"].upper()
+        for parameter in record["module_parameters"]
+        if not _module_parameter(parameter, "").startswith("# SKIPPED")
+    }
 
 
 def _module_parameter(parameter: dict[str, Any], source: str) -> str:

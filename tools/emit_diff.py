@@ -174,10 +174,18 @@ def companion_tables(
         stale = json.loads((root / companion["interface"]).read_text())
         source = COMPANION_SOURCES.get(companion["interface"], stale["source_file"])
         record = finterface.extract(root / source)
-        live = scratch / f"companion_{record['module']}.json"
+        constants = fconstants.extract(root / source)
+        # The pipeline spells a companion's parameter the way the constants.py
+        # beside its interface.json spells it, so each live interface gets a
+        # directory of its own with that file in it -- rendered by the engine,
+        # whose constants emission emit_diff holds to the pipeline's anyway.
+        live_dir = scratch / record["module"]
+        live_dir.mkdir(exist_ok=True)
+        live = live_dir / "interface.json"
         live.write_text(json.dumps(record))
+        (live_dir / "constants.py").write_text(constants_module(constants))
         fixed.append({**companion, "interface": str(live)})
-        entries.append({**companion, "record": record})
+        entries.append({**companion, "record": record, "constants": constants})
     records, remotes, globals_, _imports = companion_views(entries)
     return fixed, list(records), remotes, globals_
 
