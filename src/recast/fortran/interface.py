@@ -224,16 +224,6 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
 
 def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
     decls = [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
-    # A separate DIMENSION statement (F77 style: `complex a` then
-    # `dimension a(0:*)`) gives an already-declared entity its shape. Without
-    # this the entity reads as a scalar and every subscript of it refuses.
-    by_name = {e["name"]: e for d in decls for e in d["entities"]}
-    for stmt in walk(spec_part, f03.Dimension_Stmt):
-        for name, spec in stmt.children[0]:
-            entity = by_name.get(str(name).lower())
-            if entity is not None and entity["dims"] is None:
-                entity["dims"] = dims_of(spec)
-                entity["array_spec"] = str(spec)
     return decls
 
 

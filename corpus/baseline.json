@@ -1521,19 +1521,191 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1582,
-   "deferred": 27,
+   "blocks": 1352,
+   "deferred": 257,
    "refusals": [
     [
+     "unknown function or array reference 'X'",
+     62
+    ],
+    [
+     "multi-line action in single-line if",
+     15
+    ],
+    [
      "goto N is not a loop-exit pattern",
-     20
+     14
+    ],
+    [
+     "assignment to non-array ref bj",
+     10
+    ],
+    [
+     "assignment to non-array ref dj",
+     10
+    ],
+    [
+     "assignment to non-array ref rt0",
+     8
+    ],
+    [
+     "assignment to non-array ref dk",
+     6
+    ],
+    [
+     "assignment to non-array ref pd",
+     6
+    ],
+    [
+     "assignment to non-array ref cbi",
+     6
+    ],
+    [
+     "assignment to non-array ref cbk",
+     6
+    ],
+    [
+     "assignment to non-array ref by",
+     5
+    ],
+    [
+     "assignment to non-array ref dy",
+     5
+    ],
+    [
+     "assignment to non-array ref bi",
+     5
+    ],
+    [
+     "assignment to non-array ref bk",
+     5
+    ],
+    [
+     "assignment to non-array ref di",
+     5
+    ],
+    [
+     "assignment to non-array ref pl",
+     5
+    ],
+    [
+     "assignment to non-array ref cdi",
+     5
+    ],
+    [
+     "assignment to non-array ref cdk",
+     5
+    ],
+    [
+     "assignment to non-array ref pn",
+     4
+    ],
+    [
+     "assignment to non-array ref cpd",
+     3
+    ],
+    [
+     "assignment to non-array ref pm",
+     3
+    ],
+    [
+     "assignment to non-array ref si",
+     3
+    ],
+    [
+     "assignment to non-array ref ry",
+     3
+    ],
+    [
+     "assignment to non-array ref sj",
+     3
+    ],
+    [
+     "assignment to non-array ref df",
+     3
+    ],
+    [
+     "assignment to non-array ref en",
+     3
+    ],
+    [
+     "assignment to non-array ref cbj",
+     2
+    ],
+    [
+     "assignment to non-array ref cby",
+     2
+    ],
+    [
+     "assignment to non-array ref cdj",
+     2
+    ],
+    [
+     "assignment to non-array ref cdy",
+     2
+    ],
+    [
+     "assignment to non-array ref a",
+     2
+    ],
+    [
+     "assignment to non-array ref dl",
+     2
+    ],
+    [
+     "assignment to non-array ref cpn",
+     2
+    ],
+    [
+     "assignment to non-array ref qm",
+     2
+    ],
+    [
+     "assignment to non-array ref fc",
+     2
+    ],
+    [
+     "assignment to non-array ref d",
+     2
+    ],
+    [
+     "assignment to non-array ref dpl",
+     2
+    ],
+    [
+     "assignment to non-array ref rj",
+     2
+    ],
+    [
+     "assignment to non-array ref sk",
+     2
+    ],
+    [
+     "assignment to non-array ref cqd",
+     2
+    ],
+    [
+     "assignment to non-array ref sy",
+     2
     ],
     [
      "itika/D001: literal 'X' was never hoisted, so it has no name to emit",
      1
     ],
     [
+     "assignment to non-array ref dv",
+     1
+    ],
+    [
      "DATA value Name: gamma",
+     1
+    ],
+    [
+     "assignment to non-array ref bl",
+     1
+    ],
+    [
+     "assignment to non-array ref qd",
      1
     ],
     [
@@ -1545,11 +1717,47 @@
      1
     ],
     [
+     "assignment to non-array ref ck",
+     1
+    ],
+    [
      "cgama/D001: literal 'X' was never hoisted, so it has no name to emit",
      1
     ],
     [
      "lgama/D001: literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "assignment to non-array ref qn",
+     1
+    ],
+    [
+     "assignment to non-array ref cpb",
+     1
+    ],
+    [
+     "assignment to non-array ref h",
+     1
+    ],
+    [
+     "assignment to non-array ref fj",
+     1
+    ],
+    [
+     "assignment to non-array ref w",
+     1
+    ],
+    [
+     "assignment to non-array ref vv",
+     1
+    ],
+    [
+     "assignment to non-array ref cqm",
+     1
+    ],
+    [
+     "assignment to non-array ref f",
      1
     ],
     [
@@ -1560,7 +1768,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 27,
+     "deferred": 257,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1570,11 +1778,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "33/1582 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+28 more)",
+       "detail": "4/1352 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, chgm/B011",
        "metrics": {
-        "blocks_checked": 1582,
-        "blocks_deferred": 27,
-        "blocks_matched": 1549,
+        "blocks_checked": 1352,
+        "blocks_deferred": 257,
+        "blocks_matched": 1348,
         "blocks_waived": 0
        },
        "passed": false
