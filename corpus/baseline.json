@@ -295,7 +295,7 @@
     ],
     [
      "generic 'X': ambiguous between ['X', 'X']",
-     40
+     42
     ],
     [
      "no expression rule for Subscript_Triplet: i : i",
@@ -311,10 +311,6 @@
     ],
     [
      "no statement rule for Inquire_Stmt",
-     2
-    ],
-    [
-     "rank of unknown reference 'X'",
      2
     ],
     [
@@ -583,8 +579,8 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 761,
-   "deferred": 105,
+   "blocks": 766,
+   "deferred": 100,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -597,10 +593,6 @@
     [
      "formatted internal write",
      6
-    ],
-    [
-     "cannot rank the arguments of 'X'",
-     5
     ],
     [
      "do with a loop control that is neither a count nor a condition",
@@ -942,7 +934,7 @@
      }
     },
     "fortran:mt95": {
-     "deferred": 14,
+     "deferred": 9,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -952,11 +944,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/176 blocks disagree: genrand_encode/B002, genrand_decode/B002",
+       "detail": "2/181 blocks disagree: genrand_encode/B002, genrand_decode/B002",
        "metrics": {
-        "blocks_checked": 176,
-        "blocks_deferred": 14,
-        "blocks_matched": 174,
+        "blocks_checked": 181,
+        "blocks_deferred": 9,
+        "blocks_matched": 179,
         "blocks_waived": 0
        },
        "passed": false
@@ -1218,8 +1210,8 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 429,
-   "deferred": 9,
+   "blocks": 431,
+   "deferred": 7,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank work",
@@ -1227,10 +1219,6 @@
     ],
     [
      "call to external subroutine 'X'",
-     2
-    ],
-    [
-     "cannot rank the arguments of 'X'",
      2
     ],
     [
@@ -1245,7 +1233,7 @@
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 9,
+     "deferred": 7,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1255,11 +1243,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "56/429 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
+       "detail": "56/431 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
        "metrics": {
-        "blocks_checked": 429,
-        "blocks_deferred": 9,
-        "blocks_matched": 373,
+        "blocks_checked": 431,
+        "blocks_deferred": 7,
+        "blocks_matched": 375,
         "blocks_waived": 0
        },
        "passed": false
@@ -1465,16 +1453,12 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1578,
-   "deferred": 31,
+   "blocks": 1582,
+   "deferred": 27,
    "refusals": [
     [
      "goto N is not a loop-exit pattern",
-     19
-    ],
-    [
-     "cannot rank the arguments of 'X'",
-     5
+     20
     ],
     [
      "itika/D001: literal 'X' was never hoisted, so it has no name to emit",
@@ -1508,7 +1492,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 31,
+     "deferred": 27,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1518,11 +1502,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/1578 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
+       "detail": "14/1582 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
        "metrics": {
-        "blocks_checked": 1578,
-        "blocks_deferred": 31,
-        "blocks_matched": 1564,
+        "blocks_checked": 1582,
+        "blocks_deferred": 27,
+        "blocks_matched": 1568,
         "blocks_waived": 0
        },
        "passed": false

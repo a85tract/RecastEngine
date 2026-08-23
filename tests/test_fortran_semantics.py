@@ -154,12 +154,16 @@ def test_a_bare_derived_type_component_is_assumed_scalar(sem, body) -> None:
     assert sem.rank(_find(body, "g % dx")) == 0
 
 
-def test_an_unknown_reference_refuses(sem) -> None:
-    """Scalar is the answer that would produce working, wrong code."""
+def test_an_undeclared_reference_ranks_by_its_subscripts(sem) -> None:
+    """No declaration, no procedure, no intrinsic: a variable this file
+    use-imports without the dimensions, read as a subscript wherever it
+    appears. Its rank is then what the subscripts leave -- one per triplet,
+    none for a scalar index."""
     from fparser.two.Fortran2003 import Part_Ref
 
-    with pytest.raises(semantics.Unanalyzable, match="unknown reference"):
-        sem.rank(Part_Ref("mystery(1)"))
+    assert sem.rank(Part_Ref("mystery(1)")) == 0
+    assert sem.rank(Part_Ref("mystery(1, :)")) == 1
+    assert sem.rank(Part_Ref("mystery(:, :)")) == 2
 
 
 def test_an_elemental_function_broadcasts_its_actuals(tmp_path: Path) -> None:
@@ -175,22 +179,19 @@ def test_an_elemental_function_broadcasts_its_actuals(tmp_path: Path) -> None:
     assert sem.rank(Part_Ref("twice(pi)")) == 0
 
 
-def test_a_call_to_the_modules_own_generic_interface_refuses_a_rank(tmp_path: Path) -> None:
-    """A *companion* module's generic interfaces get an answer and the
-    module's own do not -- an asymmetry the pipeline this came from has, and
-    29 sites in five CAM modules where it declines an answer it knows.
-
-    Kept. Those sites went to the agent queue and were written by hand, so
-    answering here would translate mechanically what the gated artifact has
-    written another way.
-    """
+def test_a_call_to_the_modules_own_generic_interface_ranks_by_its_subscripts(
+    tmp_path: Path,
+) -> None:
+    """The module's own generic name is in no procedure table -- the overload
+    decides, and which overload is a separate question -- so it takes the
+    same answer any undeclared reference does. Which for a call written with
+    scalar actuals is 0, the answer the pipeline gives it."""
     src = tmp_path / "shapes.f90"
     src.write_text(SOURCE)
     sem = semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "drive")
     from fparser.two.Fortran2003 import Part_Ref
 
-    with pytest.raises(semantics.Unanalyzable):
-        sem.rank(Part_Ref("scale_it(v, pi)"))
+    assert sem.rank(Part_Ref("scale_it(v, pi)")) == 0
     assert sem.dispatch("scale_it", list(f03.Actual_Arg_Spec_List("v, pi").children)) == (
         "scale_vector"
     ), "dispatch is a separate question and still has an answer"

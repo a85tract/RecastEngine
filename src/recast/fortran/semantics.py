@@ -262,7 +262,11 @@ class Semantics:
             return 0
         if name in ELEMENTAL or name == "merge":
             return self._broadcast_rank(items)
-        raise Unanalyzable(f"rank of unknown reference {name!r}")
+        # No declaration, no procedure, no intrinsic: a variable this file
+        # use-imports without the dimensions, read as a subscript wherever it
+        # appears. Its rank is then what the subscripts leave -- one per
+        # triplet, none for a scalar index.
+        return sum(1 for s in items if isinstance(s, f03.Subscript_Triplet))
 
     def _call_rank(self, record: dict[str, Any], items: list[Any]) -> int:
         """An ELEMENTAL function broadcasts; anything else returns its result."""
