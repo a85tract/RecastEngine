@@ -145,6 +145,7 @@ class Modules:
             pieces.append(f"import {shims} as _ext")
         extra = sorted(
             set(self.companion_imports)
+            | set(self.subprograms.stub_imports)
             | {
                 imported
                 for patch in self.subprograms.patches.values()

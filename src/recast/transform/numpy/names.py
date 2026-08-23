@@ -17,6 +17,7 @@ back to the source name is the only record of it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,7 +29,7 @@ from recast.transform.numpy.vocabulary import (
 )
 from recast.transform.rules import NoRule
 
-__all__ = ["Names", "for_subprogram"]
+__all__ = ["Names", "bind_use_statements", "for_subprogram"]
 
 
 @dataclass
@@ -44,6 +45,14 @@ class Names:
 
     companion_globals: dict[str, str] = field(default_factory=dict)
     """Global reached through a sibling translated module's alias."""
+
+    state_names: frozenset[str] = frozenset()
+    """This module's own state. Declared here, so it shadows anything USE'd."""
+
+    use_bindings: dict[str, str] = field(default_factory=dict)
+    """USE-imported name -> ``alias.remote`` for what no other table covers,
+    so a USE'd entity never comes out as a bare name (a NameError at run
+    time). See ``bind_use_statements``."""
 
     literals: dict[str, str] = field(default_factory=dict)
     """Literal text -> the hoisted constant standing for it, in this subprogram."""
@@ -75,10 +84,15 @@ class Names:
             return pysafe(lowered)
         if lowered in self.module_parameters:
             return self.module_parameters[lowered]
+        # Host module declarations shadow USE-imported names.
+        if lowered in self.state_names:
+            return pysafe(lowered)
         if lowered in self.use_parameters:
             return self.use_parameters[lowered]
         if lowered in self.companion_globals:
             return self.companion_globals[lowered]
+        if lowered in self.use_bindings:
+            return self.use_bindings[lowered]
         return pysafe(lowered)
 
     def literal(self, node: Any) -> str:
@@ -123,6 +137,7 @@ def for_subprogram(
     *,
     use_parameters: dict[str, str] | None = None,
     companion_globals: dict[str, str] | None = None,
+    use_bindings: dict[str, str] | None = None,
 ) -> Names:
     """Build ``Names`` from the frontend's two records plus the operator's tables.
 
@@ -141,6 +156,8 @@ def for_subprogram(
         },
         use_parameters=dict(use_parameters or {}),
         companion_globals=dict(companion_globals or {}),
+        state_names=frozenset(s["name"] for s in semantics.module["module_state"]),
+        use_bindings=dict(use_bindings or {}),
         literals=dict(record.get("literal_map", {}).get(name, {})),
         local_constants={
             p["name"]: p["const"]
@@ -148,3 +165,59 @@ def for_subprogram(
             if p["subprogram"] == name
         },
     )
+
+
+USE_STATEMENT = re.compile(r"USE\s+(\w+)(?:\s*,\s*ONLY\s*:\s*(.+))?", re.I)
+
+
+def bind_use_statements(
+    record: dict[str, Any],
+    aliases: set[str],
+    procedures: set[str],
+    companion_globals: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """What the module's own USE statements bind that no table already does.
+
+    Returns ``(bindings, stub_modules)``: a USE'd name the companions,
+    parameters and state do not cover resolves to ``alias.remote``, and a
+    USE of a module that is not a companion gets an alias of its own,
+    ``_<module>``, listed in ``stub_modules`` so the header can import it.
+    A renamed item that a companion *does* cover is rebound to the module
+    the rename names -- ``r8 => shr_kind_r8`` must not resolve to another
+    companion's ``r8`` that happened to register first -- which is why
+    ``companion_globals`` is updated in place. As the pipeline does it.
+    """
+    module_of_alias = {alias.lstrip("_"): alias for alias in aliases}
+    parameters = {p["name"] for p in record["module_parameters"]}
+    state = {s["name"] for s in record["module_state"]}
+    bindings: dict[str, str] = {}
+    stub_modules: dict[str, str] = {}
+    for statement in record.get("use_statements", ()):
+        match = USE_STATEMENT.match(statement)
+        if not match:
+            continue
+        module = match.group(1).lower()
+        alias = module_of_alias.get(module)
+        if not alias:
+            alias = f"_{module}"
+            stub_modules[module] = alias
+        if not match.group(2):
+            continue
+        for item in match.group(2).split(","):
+            item = item.strip()
+            if "=>" in item:
+                local, remote = (x.strip().lower() for x in item.split("=>"))
+            else:
+                local = remote = item.lower()
+            if local in procedures or local in companion_globals:
+                if (
+                    local != remote
+                    and local in companion_globals
+                    and not companion_globals[local].startswith(alias + ".")
+                ):
+                    companion_globals[local] = f"{alias}.{pysafe(remote)}"
+                continue
+            if local in parameters or local in state:
+                continue
+            bindings[local] = f"{alias}.{pysafe(remote)}"
+    return bindings, stub_modules
