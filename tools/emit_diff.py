@@ -144,6 +144,18 @@ def load(root: Path, relative: str | None) -> dict[str, Any]:
     return {k.lower(): v for k, v in json.loads((root / relative).read_text()).items()}
 
 
+# A companion interface whose ``source_file`` no longer says what the companion
+# means. The translator's root ``extracted/interface.json`` was wv_sat_methods
+# when ``companions_mg2.json`` and ``companions_wvsat.json`` were written, and
+# a 2026-07-23 extraction overwrote it with dadadj without touching either
+# config -- their ``module_py`` still says ``wv_sat_methods_numpy``. The
+# companion's meaning is the config's, so the source is taken from here rather
+# than from the overwritten file. Upstream's to fix; listed for the author.
+COMPANION_SOURCES: dict[str, str] = {
+    "extracted/interface.json": "src_fortran/wv_sat_methods.F90",
+}
+
+
 def companion_tables(
     root: Path, config_path: str | None, scratch: Path
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Remote], dict[str, str]]:
@@ -160,7 +172,8 @@ def companion_tables(
     fixed, entries = [], []
     for companion in configured:
         stale = json.loads((root / companion["interface"]).read_text())
-        record = finterface.extract(root / stale["source_file"])
+        source = COMPANION_SOURCES.get(companion["interface"], stale["source_file"])
+        record = finterface.extract(root / source)
         live = scratch / f"companion_{record['module']}.json"
         live.write_text(json.dumps(record))
         fixed.append({**companion, "interface": str(live)})
