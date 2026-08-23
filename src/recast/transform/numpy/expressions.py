@@ -87,6 +87,18 @@ MAX_EXPANDED_POWER = 16
 and starts being a place for a transcription error. Refused instead."""
 
 
+class UnknownReference(NoRule):
+    """``name(...)`` that is no procedure here and no intrinsic.
+
+    Raised so the caller can fall back to reading it as a subscript, which
+    is what such a reference nearly always is -- a variable this file
+    use-imports from a module whose dimensions it never saw.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"unknown function or array reference {name!r}")
+
+
 @dataclass(frozen=True)
 class Remote:
     """A procedure that lives in a sibling translated module."""
@@ -319,7 +331,15 @@ class Expressions:
         call = self._call(name, items, arguments)
         if call is not None:
             return call
-        return self._intrinsic(name, items, arguments)
+        try:
+            return self._intrinsic(name, items, arguments)
+        except UnknownReference:
+            # Neither a procedure this file declares nor an intrinsic: what
+            # is left is a subscript of something it use-imports without the
+            # dimensions. Reading it as a call would emit a call to a name
+            # nothing defines; a subscript is what the source spelling says,
+            # and what the pipeline settled on.
+            return self.subscript(name, node.children[1])
 
     def subscript(self, name: str, arglist: Any) -> str:
         """An array element or slice, shifted to zero-based."""
@@ -528,7 +548,9 @@ class Expressions:
             if name in KIND_SECOND_ARGUMENT and len(arguments) == 2:
                 arguments = arguments[:1]
             return f"{self.array_table[name]}({', '.join(arguments)})"
-        raise NoRule(f"no elementwise rule for {name!r}")
+        if name in REDUCTIONS:
+            return self._reduction(name, arguments)
+        raise UnknownReference(name)
 
     def _over_scalars(self, name: str, arguments: list[str]) -> str:
         if name == "merge":
@@ -545,7 +567,7 @@ class Expressions:
                 # arrays: math.* would reject one and np.* is an ULP off libm.
                 return f"{self.array_table[name]}({', '.join(arguments)})"
             return f"{self.scalar_table[name]}({', '.join(arguments)})"
-        raise NoRule(f"unknown function or array reference {name!r}")
+        raise UnknownReference(name)
 
     def _array_transform(self, name: str, items: list[Any]) -> str:
         positional, keyword = [], {}

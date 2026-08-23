@@ -806,17 +806,19 @@ def test_a_case_value_range_slips_past_the_refusal(sources: dict[str, Path]) -> 
 
 
 def test_a_stub_answers_only_where_the_pipeline_answers(sources: dict[str, Path]) -> None:
-    """``hist_fld_active(name_out)`` parses as a plain reference, and refuses
-    even though the stub table has an answer -- the pipeline hands that shape
-    to a human, and a fabricated ``False`` here once turned the surrounding
-    construct into ``if False:``, emitted, dead, and silent about it. The
-    same call over a character literal parses as a structure constructor,
-    which is the one place the pipeline consults its table, so it stubs."""
+    """``hist_fld_active(name_out)`` parses as a plain reference, and the stub
+    table is not consulted for that shape -- the pipeline consults it only for
+    the structure-constructor parse, which the same call over a character
+    literal produces. The plain reference falls through to being read as a
+    subscript, which is the pipeline's answer for a name it has no
+    declaration for."""
     statements, nodes = build(
         sources["emit_mod"], "framework", function_stubs={"hist_fld_active": "False"}
     )
-    with pytest.raises(REFUSED):
-        statements.render(nodes[0], 1)
+    assert statements.render(nodes[0], 1) == [
+        "    if hist_fld_active[name_out - 1]:",
+        "        s = 0.0",
+    ]
     assert statements.render(nodes[1], 1) == ["    if False:", "        s = 0.0"]
 
 
