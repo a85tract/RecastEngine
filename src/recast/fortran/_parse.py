@@ -23,10 +23,11 @@ from fparser.common.readfortran import FortranFileReader
 # f03 is the alias every module in this package uses for the node classes;
 # the lowercase name is worth more at the ~200 call sites than the rule is.
 from fparser.two import Fortran2003 as f03  # noqa: N813
+from fparser.two import Fortran2008 as f08  # noqa: N813
 from fparser.two.parser import ParserFactory
 from fparser.two.utils import walk
 
-__all__ = ["STD", "digest", "f03", "parse", "parser", "walk"]
+__all__ = ["STD", "digest", "f03", "f08", "parse", "parser", "walk"]
 
 STD = "f2008"
 """Fortran standard the parser is built for. Recorded in ``Facts.provenance``."""

@@ -38,15 +38,16 @@ contains
   subroutine refused(x, y)
     real(r8), intent(in)  :: x
     real(r8), intent(out) :: y
-    ! No statement rule for ASSOCIATE: this block is what the hook is offered.
-    associate (scaled => 2.0_r8 * x)
-      y = scaled + 1.0_r8
-    end associate
+    character(len=32) :: buffer
+    ! A formatted internal write is refused on purpose -- an edit descriptor
+    ! is a rounding rule -- so this block is what the hook is offered.
+    y = 2.0_r8 * x
+    write(buffer, '(F8.2)') y
   end subroutine refused
 end module hook_demo
 """
 
-FILL = ["scaled = 2.0 * x", "y = scaled + 1.0"]
+FILL = ["buffer = '%8.2f' % y"]
 
 
 @pytest.fixture
@@ -67,7 +68,7 @@ def test_without_a_handler_the_site_is_deferred(subject: Any) -> None:
     still gets: refused means refused, and the run stays reproducible."""
     first = _apply(subject, NumpyTranslation())
     second = _apply(subject, NumpyTranslation())
-    assert first.deferred == ["refused/B001: no statement rule for Associate_Construct"]
+    assert first.deferred == ["refused/B002: formatted internal write"]
     assert first.digest() == second.digest()
 
 
@@ -89,7 +90,7 @@ def test_a_transform_that_declared_otherwise_may_fill_the_site(subject: Any) -> 
         seen.append(site)
         return {
             "python": FILL,
-            "reason": "associate unrolled",
+            "reason": "edit descriptor spelled out",
             "model": "a-model",
             "prompt_digest": "sha256:deadbeef",
         }
@@ -97,13 +98,13 @@ def test_a_transform_that_declared_otherwise_may_fill_the_site(subject: Any) -> 
     candidate = _apply(subject, NumpyTranslation(deterministic=False), deferred_handler=handler)
 
     assert candidate.deferred == [], "the site was filled, so nothing is left for the queue"
-    assert [s.block for s in seen] == ["B001"]
+    assert [s.block for s in seen] == ["B002"]
     assert seen[0].subprogram == "refused"
-    assert "ASSOCIATE" in seen[0].fortran, "the handler sees the source it was asked about"
-    assert seen[0].reason == "no statement rule for Associate_Construct"
+    assert "WRITE" in seen[0].fortran.upper(), "the handler sees the source it was asked about"
+    assert seen[0].reason == "formatted internal write"
 
     emitted = candidate.files[Path("hook_demo_numpy.py")].decode()
-    assert "scaled = 2.0 * x" in emitted
+    assert "buffer = '%8.2f' % y" in emitted
     assert "NotImplementedError" not in emitted, "a filled site does not also raise"
 
 
@@ -130,7 +131,7 @@ def test_a_handler_that_raises_leaves_the_site_deferred_and_says_so(subject: Any
         raise RuntimeError("model timed out")
 
     candidate = _apply(subject, NumpyTranslation(deterministic=False), deferred_handler=handler)
-    assert candidate.deferred == ["refused/B001: no statement rule for Associate_Construct"]
+    assert candidate.deferred == ["refused/B002: formatted internal write"]
     queued = [b for b in candidate.notes["blocks"] if b["status"] == "agent_queue"]
     assert queued[0]["handler_error"] == "handler raised RuntimeError: model timed out"
 
@@ -153,7 +154,7 @@ def test_a_handler_may_decline(subject: Any) -> None:
     )
     queued = [b for b in candidate.notes["blocks"] if b["status"] == "agent_queue"]
     assert "handler_error" not in queued[0]
-    assert candidate.deferred == ["refused/B001: no statement rule for Associate_Construct"]
+    assert candidate.deferred == ["refused/B002: formatted internal write"]
 
 
 def test_a_handler_from_a_config_file_is_rejected(subject: Any) -> None:
