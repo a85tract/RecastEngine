@@ -505,6 +505,29 @@ class Statements:
     def _allocate(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
         lines = []
+        # `allocate(x, source=e)` takes e's shape *and* its values;
+        # `mold=e` takes the shape alone.
+        template, copies = None, False
+        options = node.children[2] if len(node.children) > 2 else None
+        for option in self._items(options) if options is not None else []:
+            children = list(getattr(option, "children", ()) or ())
+            if len(children) == 2 and str(children[0]).upper() in ("SOURCE", "MOLD"):
+                template = self.expressions.render(children[1])
+                copies = str(children[0]).upper() == "SOURCE"
+        if template is not None:
+            for allocation in walk(node.children[1], (f03.Allocation, f03.Name)):
+                target = (
+                    allocation.children[0] if isinstance(allocation, f03.Allocation) else allocation
+                )
+                if not isinstance(target, f03.Name):
+                    continue
+                spelled = self.names.symbol(str(target).lower())
+                value = (
+                    f"np.array({template}, copy=True)" if copies else f"np.empty_like({template})"
+                )
+                lines.append(f"{pad}{spelled} = {value}")
+            if lines:
+                return lines
         for allocation in walk(node, f03.Allocation):
             target, shape = allocation.children[0], allocation.children[1]
             extents = []
