@@ -131,6 +131,27 @@ contains
     call consume(n, j, flat)
   end subroutine calls
 
+  subroutine backward(n, s)
+    integer, intent(in) :: n
+    real(r8), intent(inout) :: s
+    integer :: i
+    i = 0
+40  continue
+    i = i + 1
+    s = s + 1.0_r8
+    if (i < n) go to 40
+  end subroutine backward
+
+  subroutine cycling(n, a)
+    integer, intent(in) :: n
+    real(r8), intent(inout) :: a(:)
+    integer :: i
+    do 50 i = 1, n
+      if (a(i) < 0.0_r8) go to 50
+      a(i) = a(i) * 2.0_r8
+50  continue
+  end subroutine cycling
+
   subroutine constructs(a, n, s)
     real(r8), intent(inout) :: a(:)
     integer, intent(in) :: n
@@ -439,6 +460,29 @@ def test_a_forward_goto_becomes_a_labelled_exception_region(sources: dict[str, P
     assert lines[0] == "    try:  # forward-goto region (label 30)"
     assert "        raise _FGoto('30')  # goto 30" in lines
     assert "    except _FGoto as _g:" in lines
+
+
+def test_a_backward_goto_becomes_a_loop_that_restarts_at_its_label(
+    sources: dict[str, Path],
+) -> None:
+    """A label with a goto to it further down is a loop: everything from the
+    label to the last such goto runs again, and the exception carries the
+    jump out of whatever depth raised it."""
+    statements, nodes = build(sources["emit_mod"], "backward")
+    lines = statements.sequence(nodes, 1)
+    assert "    while True:  # backward-goto region (label 40)" in lines
+    assert "            break  # natural exit" in lines
+    assert "            pass  # 40 (loop restart)" in lines
+    assert any("raise _FGoto('40')" in line for line in lines)
+
+
+def test_a_goto_to_a_labeled_do_terminator_is_a_cycle(sources: dict[str, Path]) -> None:
+    """`do 50 ... / 50 continue`: a goto to the terminator from inside the
+    body skips the rest of the iteration, which is `continue`, not a break
+    and not a region."""
+    statements, nodes = build(sources["emit_mod"], "cycling")
+    lines = statements.render(pick(nodes, f03.Block_Label_Do_Construct, 0), 1)
+    assert any("continue  # goto 50 == cycle (labeled-DO terminator)" in line for line in lines)
 
 
 def test_a_goto_with_no_structuring_pattern_is_refused(sources: dict[str, Path]) -> None:

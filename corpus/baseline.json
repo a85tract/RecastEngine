@@ -1557,12 +1557,12 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1565,
-   "deferred": 38,
+   "blocks": 1573,
+   "deferred": 30,
    "refusals": [
     [
      "goto N is not a loop-exit pattern",
-     28
+     20
     ],
     [
      "no statement rule for Data_Stmt",
@@ -1572,7 +1572,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 38,
+     "deferred": 30,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1582,11 +1582,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "256/1565 blocks disagree: cpdsa/B001, cpdsa/B003, cfs/B005, cfs/B007, lqmn/B005 (+251 more)",
+       "detail": "262/1573 blocks disagree: cpdsa/B001, cpdsa/B003, cfs/B005, cfs/B007, lqmn/B005 (+257 more)",
        "metrics": {
-        "blocks_checked": 1565,
-        "blocks_deferred": 38,
-        "blocks_matched": 1309,
+        "blocks_checked": 1573,
+        "blocks_deferred": 30,
+        "blocks_matched": 1311,
         "blocks_waived": 0
        },
        "passed": false
