@@ -306,7 +306,11 @@ class Subprograms:
             (line for line in reversed(lines) if line.strip() and not line.strip().startswith("#")),
             "",
         )
-        if not last_code.strip().startswith("return"):
+        # Only a function-level return (indent exactly 4) may stand in for the
+        # final one. A return nested in a branch used to match via .strip(),
+        # and the path that skipped the branch fell off the end returning
+        # None (the translator's T45 rule, hetfrz_classnuc_calc).
+        if not last_code.startswith("    return"):
             lines.append(f"    return {tail}" if tail else "    return")
         lines.append("")
         return lines, report
