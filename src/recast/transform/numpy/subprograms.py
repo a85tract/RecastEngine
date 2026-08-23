@@ -252,7 +252,7 @@ class Subprograms:
                 lines.append("    except _FGoto as _g:")
                 lines.append(f"        if _g.args[0] != '{region_close[at]}':")
                 lines.append("            raise")
-                lines.append(f"        pass  # {region_close[at]} continue (region exit)")
+                lines.append(f"        pass  # {region_close[at]} (region exit)")
                 in_region = None
                 # The label block itself is consumed by the wrapper, but
                 # still emits its marker (re-scans of the output key on it).
