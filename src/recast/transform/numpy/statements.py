@@ -373,10 +373,12 @@ class Statements:
                 return f"{self.names.symbol(name)}[...]"
             return self.names.symbol(name)
         if isinstance(node, f03.Part_Ref):
+            # A subscripted name on the left is an array whatever this file
+            # knows about it: nothing else can be assigned through. The
+            # declaration is missing for a use-imported one, and refusing
+            # there refused the assignment rather than the import.
             name = str(node.children[0]).lower()
-            if self.semantics.is_array(name):
-                return self.expressions.subscript(name, node.children[1])
-            raise NoRule(f"assignment to non-array ref {name}")
+            return self.expressions.subscript(name, node.children[1])
         if isinstance(node, f03.Data_Ref):
             rendered = self.expressions.render(node)
             last = node.children[-1]

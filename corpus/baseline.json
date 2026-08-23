@@ -2,8 +2,8 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 654,
-   "deferred": 35,
+   "blocks": 656,
+   "deferred": 33,
    "refusals": [
     [
      "formatted internal write",
@@ -31,10 +31,6 @@
     ],
     [
      "size with a dim= or mask= keyword",
-     2
-    ],
-    [
-     "unknown function or array reference 'X'",
      2
     ],
     [
@@ -119,7 +115,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:bspline_sub_module": {
-     "deferred": 7,
+     "deferred": 5,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -129,11 +125,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "53/310 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+48 more)",
+       "detail": "53/312 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+48 more)",
        "metrics": {
-        "blocks_checked": 310,
-        "blocks_deferred": 7,
-        "blocks_matched": 257,
+        "blocks_checked": 312,
+        "blocks_deferred": 5,
+        "blocks_matched": 259,
         "blocks_waived": 0
        },
        "passed": false
@@ -290,8 +286,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 461,
-   "deferred": 133,
+   "blocks": 484,
+   "deferred": 110,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -302,20 +298,8 @@
      40
     ],
     [
-     "unknown function or array reference 'X'",
-     12
-    ],
-    [
      "no expression rule for Subscript_Triplet: i : i",
      5
-    ],
-    [
-     "no elementwise rule for 'X'",
-     4
-    ],
-    [
-     "assignment to non-array ref sj",
-     3
     ],
     [
      "goto N is not a loop-exit pattern",
@@ -334,10 +318,6 @@
      2
     ],
     [
-     "assignment to non-array ref sy",
-     2
-    ],
-    [
      "no statement rule for Rewind_Stmt",
      2
     ],
@@ -351,14 +331,6 @@
     ],
     [
      "generic 'X': ambiguous between ['X', 'X', 'X']",
-     1
-    ],
-    [
-     "assignment to non-array ref dj",
-     1
-    ],
-    [
-     "assignment to non-array ref dy",
      1
     ],
     [
@@ -382,7 +354,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:linalg": {
-     "deferred": 71,
+     "deferred": 67,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -392,10 +364,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "17/223 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+12 more)",
+       "detail": "21/227 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+16 more)",
        "metrics": {
-        "blocks_checked": 223,
-        "blocks_deferred": 71,
+        "blocks_checked": 227,
+        "blocks_deferred": 67,
         "blocks_matched": 206,
         "blocks_waived": 0
        },
@@ -426,7 +398,7 @@
      }
     },
     "fortran:optimize": {
-     "deferred": 6,
+     "deferred": 0,
      "stages": {
       "frontend/fortran": "ok",
       "oracle/f2py-golden": "failed",
@@ -437,11 +409,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "10 blocks match",
+       "detail": "16 blocks match",
        "metrics": {
-        "blocks_checked": 10,
-        "blocks_deferred": 6,
-        "blocks_matched": 10,
+        "blocks_checked": 16,
+        "blocks_deferred": 0,
+        "blocks_matched": 16,
         "blocks_waived": 0
        },
        "passed": true
@@ -493,7 +465,7 @@
      }
     },
     "fortran:special": {
-     "deferred": 29,
+     "deferred": 16,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -503,11 +475,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "20/82 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+15 more)",
+       "detail": "22/95 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1n_real/B001, hankel1v_real/B001, hankel1v_complex/B004 (+17 more)",
        "metrics": {
-        "blocks_checked": 82,
-        "blocks_deferred": 29,
-        "blocks_matched": 62,
+        "blocks_checked": 95,
+        "blocks_deferred": 16,
+        "blocks_matched": 73,
         "blocks_waived": 0
        },
        "passed": false
@@ -611,16 +583,12 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 721,
-   "deferred": 145,
+   "blocks": 761,
+   "deferred": 105,
    "refusals": [
     [
-     "unknown function or array reference 'X'",
-     46
-    ],
-    [
      "call to external subroutine 'X'",
-     43
+     46
     ],
     [
      "generic 'X': no match",
@@ -631,8 +599,8 @@
      6
     ],
     [
-     "no elementwise rule for 'X'",
-     4
+     "cannot rank the arguments of 'X'",
+     5
     ],
     [
      "do with a loop control that is neither a count nor a condition",
@@ -663,7 +631,7 @@
      2
     ],
     [
-     "assignment to non-array ref a",
+     "no expression rule for Subscript_Triplet: : n1",
      1
     ],
     [
@@ -675,11 +643,11 @@
      1
     ],
     [
-     "assignment to non-array ref chr",
+     "no expression rule for Subscript_Triplet: m : m",
      1
     ],
     [
-     "assignment to non-array ref sout",
+     "no expression rule for Subscript_Triplet: n - i + N : n - i + N",
      1
     ],
     [
@@ -695,7 +663,15 @@
      1
     ],
     [
+     "a keyword argument is not a subscript",
+     1
+    ],
+    [
      "no expression rule for Subscript_Triplet: : n",
+     1
+    ],
+    [
+     "no expression rule for Subscript_Triplet: N :",
      1
     ],
     [
@@ -706,7 +682,7 @@
    "status": "failed",
    "units": {
     "fortran:array_utils": {
-     "deferred": 3,
+     "deferred": 2,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -716,10 +692,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/67 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016",
+       "detail": "4/68 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016, save_array2d/B017",
        "metrics": {
-        "blocks_checked": 67,
-        "blocks_deferred": 3,
+        "blocks_checked": 68,
+        "blocks_deferred": 2,
         "blocks_matched": 64,
         "blocks_waived": 0
        },
@@ -760,7 +736,7 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 13,
+     "deferred": 11,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -770,10 +746,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "11/63 blocks disagree: csplder/B005, csplantider/B004, cspl_interp/B002, cspleps/B003, csplint/B006 (+6 more)",
+       "detail": "13/65 blocks disagree: csplder/B005, csplantider/B004, cspl_interp/B002, cspleps/B003, csplint/B006 (+8 more)",
        "metrics": {
-        "blocks_checked": 63,
-        "blocks_deferred": 13,
+        "blocks_checked": 65,
+        "blocks_deferred": 11,
         "blocks_matched": 52,
         "blocks_waived": 0
        },
@@ -805,7 +781,7 @@
      }
     },
     "fortran:fitpack": {
-     "deferred": 38,
+     "deferred": 36,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -815,10 +791,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/94 blocks disagree: splrep_msg/B002",
+       "detail": "3/96 blocks disagree: splrep_msg/B002, splprep/B003, splevp/B008",
        "metrics": {
-        "blocks_checked": 94,
-        "blocks_deferred": 38,
+        "blocks_checked": 96,
+        "blocks_deferred": 36,
         "blocks_matched": 93,
         "blocks_waived": 0
        },
@@ -827,7 +803,7 @@
      }
     },
     "fortran:fstring": {
-     "deferred": 4,
+     "deferred": 2,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -837,11 +813,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/27 blocks disagree: upper/B001, lower/B001, swapcase/B001, startswith/B001, endswith/B001 (+9 more)",
+       "detail": "14/29 blocks disagree: upper/B001, lower/B001, swapcase/B001, startswith/B001, endswith/B001 (+9 more)",
        "metrics": {
-        "blocks_checked": 27,
-        "blocks_deferred": 4,
-        "blocks_matched": 13,
+        "blocks_checked": 29,
+        "blocks_deferred": 2,
+        "blocks_matched": 15,
         "blocks_waived": 0
        },
        "passed": false
@@ -966,7 +942,7 @@
      }
     },
     "fortran:mt95": {
-     "deferred": 43,
+     "deferred": 14,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -976,11 +952,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/147 blocks disagree: genrand_encode/B002, genrand_decode/B002",
+       "detail": "2/176 blocks disagree: genrand_encode/B002, genrand_decode/B002",
        "metrics": {
-        "blocks_checked": 147,
-        "blocks_deferred": 43,
-        "blocks_matched": 145,
+        "blocks_checked": 176,
+        "blocks_deferred": 14,
+        "blocks_matched": 174,
         "blocks_waived": 0
        },
        "passed": false
@@ -1159,7 +1135,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 28,
+     "deferred": 24,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1169,11 +1145,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/53 blocks disagree: str2i/B001",
+       "detail": "1/57 blocks disagree: str2i/B001",
        "metrics": {
-        "blocks_checked": 53,
-        "blocks_deferred": 28,
-        "blocks_matched": 52,
+        "blocks_checked": 57,
+        "blocks_deferred": 24,
+        "blocks_matched": 56,
         "blocks_waived": 0
        },
        "passed": false
@@ -1242,19 +1218,19 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 428,
-   "deferred": 10,
+   "blocks": 429,
+   "deferred": 9,
    "refusals": [
-    [
-     "unknown function or array reference 'X'",
-     3
-    ],
     [
      "seq-assoc: formal rank > actual rank work",
      2
     ],
     [
      "call to external subroutine 'X'",
+     2
+    ],
+    [
+     "cannot rank the arguments of 'X'",
      2
     ],
     [
@@ -1269,7 +1245,7 @@
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 10,
+     "deferred": 9,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1279,11 +1255,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "56/428 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
+       "detail": "56/429 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
        "metrics": {
-        "blocks_checked": 428,
-        "blocks_deferred": 10,
-        "blocks_matched": 372,
+        "blocks_checked": 429,
+        "blocks_deferred": 9,
+        "blocks_matched": 373,
         "blocks_waived": 0
        },
        "passed": false
@@ -1295,12 +1271,8 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 0,
-   "deferred": 51,
+   "deferred": 2,
    "refusals": [
-    [
-     "unknown function or array reference 'X'",
-     49
-    ],
     [
      "seq-assoc: formal rank > actual rank work",
      1
@@ -1313,7 +1285,7 @@
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 51,
+     "deferred": 2,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1335,8 +1307,8 @@
   },
   "roots": {
    "bare_files": 0,
-   "blocks": 230,
-   "deferred": 8,
+   "blocks": 231,
+   "deferred": 7,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -1355,10 +1327,6 @@
      1
     ],
     [
-     "unknown function or array reference 'X'",
-     1
-    ],
-    [
      "no expression rule for Subscript_Triplet: i : i",
      1
     ]
@@ -1366,7 +1334,7 @@
    "status": "failed",
    "units": {
     "fortran:root_module": {
-     "deferred": 8,
+     "deferred": 7,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1376,11 +1344,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/230 blocks disagree: toms748/B007, bracket/B004",
+       "detail": "2/231 blocks disagree: toms748/B007, bracket/B004",
        "metrics": {
-        "blocks_checked": 230,
-        "blocks_deferred": 8,
-        "blocks_matched": 228,
+        "blocks_checked": 231,
+        "blocks_deferred": 7,
+        "blocks_matched": 229,
         "blocks_waived": 0
        },
        "passed": false
@@ -1391,16 +1359,12 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 175,
-   "deferred": 18,
+   "blocks": 180,
+   "deferred": 13,
    "refusals": [
     [
      "seq-assoc: rank mismatch w",
      7
-    ],
-    [
-     "unknown function or array reference 'X'",
-     4
     ],
     [
      "seq-assoc: formal rank > actual rank s",
@@ -1416,10 +1380,6 @@
     ],
     [
      "seq-assoc: formal rank > actual rank l",
-     1
-    ],
-    [
-     "no elementwise rule for 'X'",
      1
     ]
    ],
@@ -1448,7 +1408,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 18,
+     "deferred": 13,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1458,10 +1418,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/95 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+9 more)",
+       "detail": "19/100 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+14 more)",
        "metrics": {
-        "blocks_checked": 95,
-        "blocks_deferred": 18,
+        "blocks_checked": 100,
+        "blocks_deferred": 13,
         "blocks_matched": 81,
         "blocks_waived": 0
        },
@@ -1505,187 +1465,23 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1366,
-   "deferred": 243,
+   "blocks": 1578,
+   "deferred": 31,
    "refusals": [
     [
-     "unknown function or array reference 'X'",
-     62
-    ],
-    [
      "goto N is not a loop-exit pattern",
-     14
+     19
     ],
     [
-     "assignment to non-array ref bj",
-     10
-    ],
-    [
-     "assignment to non-array ref dj",
-     10
-    ],
-    [
-     "assignment to non-array ref rt0",
-     8
-    ],
-    [
-     "assignment to non-array ref dk",
-     6
-    ],
-    [
-     "assignment to non-array ref pd",
-     6
-    ],
-    [
-     "assignment to non-array ref cbi",
-     6
-    ],
-    [
-     "assignment to non-array ref cbk",
-     6
-    ],
-    [
-     "assignment to non-array ref by",
+     "cannot rank the arguments of 'X'",
      5
-    ],
-    [
-     "assignment to non-array ref dy",
-     5
-    ],
-    [
-     "assignment to non-array ref bi",
-     5
-    ],
-    [
-     "assignment to non-array ref bk",
-     5
-    ],
-    [
-     "assignment to non-array ref di",
-     5
-    ],
-    [
-     "assignment to non-array ref pl",
-     5
-    ],
-    [
-     "assignment to non-array ref cdi",
-     5
-    ],
-    [
-     "assignment to non-array ref cdk",
-     5
-    ],
-    [
-     "assignment to non-array ref pn",
-     4
-    ],
-    [
-     "assignment to non-array ref cby",
-     3
-    ],
-    [
-     "assignment to non-array ref cpd",
-     3
-    ],
-    [
-     "assignment to non-array ref pm",
-     3
-    ],
-    [
-     "assignment to non-array ref si",
-     3
-    ],
-    [
-     "assignment to non-array ref ry",
-     3
-    ],
-    [
-     "assignment to non-array ref sj",
-     3
-    ],
-    [
-     "assignment to non-array ref df",
-     3
-    ],
-    [
-     "assignment to non-array ref en",
-     3
-    ],
-    [
-     "assignment to non-array ref cbj",
-     2
-    ],
-    [
-     "assignment to non-array ref cdj",
-     2
-    ],
-    [
-     "assignment to non-array ref cdy",
-     2
-    ],
-    [
-     "assignment to non-array ref a",
-     2
-    ],
-    [
-     "assignment to non-array ref dl",
-     2
-    ],
-    [
-     "assignment to non-array ref cpn",
-     2
-    ],
-    [
-     "assignment to non-array ref qm",
-     2
-    ],
-    [
-     "assignment to non-array ref fc",
-     2
-    ],
-    [
-     "assignment to non-array ref d",
-     2
-    ],
-    [
-     "assignment to non-array ref dpl",
-     2
-    ],
-    [
-     "assignment to non-array ref rj",
-     2
-    ],
-    [
-     "assignment to non-array ref sk",
-     2
-    ],
-    [
-     "assignment to non-array ref cqd",
-     2
-    ],
-    [
-     "assignment to non-array ref sy",
-     2
     ],
     [
      "itika/D001: literal 'X' was never hoisted, so it has no name to emit",
      1
     ],
     [
-     "assignment to non-array ref dv",
-     1
-    ],
-    [
      "DATA value Name: gamma",
-     1
-    ],
-    [
-     "assignment to non-array ref bl",
-     1
-    ],
-    [
-     "assignment to non-array ref qd",
      1
     ],
     [
@@ -1697,47 +1493,11 @@
      1
     ],
     [
-     "assignment to non-array ref ck",
-     1
-    ],
-    [
      "cgama/D001: literal 'X' was never hoisted, so it has no name to emit",
      1
     ],
     [
      "lgama/D001: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "assignment to non-array ref qn",
-     1
-    ],
-    [
-     "assignment to non-array ref cpb",
-     1
-    ],
-    [
-     "assignment to non-array ref h",
-     1
-    ],
-    [
-     "assignment to non-array ref fj",
-     1
-    ],
-    [
-     "assignment to non-array ref w",
-     1
-    ],
-    [
-     "assignment to non-array ref vv",
-     1
-    ],
-    [
-     "assignment to non-array ref cqm",
-     1
-    ],
-    [
-     "assignment to non-array ref f",
      1
     ],
     [
@@ -1748,7 +1508,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 243,
+     "deferred": 31,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1758,11 +1518,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/1366 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, chgm/B011",
+       "detail": "14/1578 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
        "metrics": {
-        "blocks_checked": 1366,
-        "blocks_deferred": 243,
-        "blocks_matched": 1362,
+        "blocks_checked": 1578,
+        "blocks_deferred": 31,
+        "blocks_matched": 1564,
         "blocks_waived": 0
        },
        "passed": false
