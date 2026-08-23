@@ -135,8 +135,10 @@ class Modules:
             "",
         ]
         pieces.extend(runtime.REQUIRED_IMPORTS)
-        if self.subprograms.intrinsics.get("import"):
-            pieces.append(str(self.subprograms.intrinsics["import"]))
+        # Header lines the domain package's emitted code needs: the module
+        # its intrinsic spellings live in, the shims its call transforms
+        # emit calls to. The engine does not know what they are.
+        pieces.extend(self.subprograms.runtime_imports)
         pieces.append("")
         pieces.append(f"from {self.constants_stem} import *  # noqa: F401,F403")
         if self.subprograms.use_parameters:

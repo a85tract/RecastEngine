@@ -109,6 +109,9 @@ markers = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# corpus/ is twelve upstream Fortran libraries vendored as submodules, to be
+# translated, not styled. A few carry Python of their own; it is theirs.
+extend-exclude = ["corpus"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "S", "RUF"]

@@ -87,6 +87,10 @@ class Subprograms:
     function_stubs: dict[str, str] = field(default_factory=dict)
     statement_stubs: dict[str, str] = field(default_factory=dict)
     intrinsics: dict[str, Any] = field(default_factory=dict)
+    runtime_imports: tuple[str, ...] = ()
+    """Import lines the emitted module needs at its top, from the package
+    that supplies whatever its transforms and spellings call."""
+
     call_transforms: dict[str, Any] = field(default_factory=dict)
     function_transforms: dict[str, Any] = field(default_factory=dict)
     handle_producers: frozenset[str] = frozenset()
