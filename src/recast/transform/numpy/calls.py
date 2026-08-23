@@ -51,6 +51,16 @@ class CallSite:
     render: Callable[[Any], str]
     """A parsed node -> the expression this backend spells it as."""
 
+    holds_handle: Callable[[str], None]
+    """Say that an emitted name now holds an opaque handle.
+
+    A framework that hands out registrations gives Fortran an integer index,
+    and Fortran tests it with ``idx > 0`` for "is it registered". A
+    transform that assigns something other than an index -- a dictionary
+    key, a name -- says so here, and the test comes out as the presence
+    question it is rather than as arithmetic on a string.
+    """
+
     @property
     def pad(self) -> str:
         return "    " * self.indent

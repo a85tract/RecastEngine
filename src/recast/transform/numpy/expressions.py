@@ -124,6 +124,26 @@ class Expressions:
     remotes: dict[str, Remote] = field(default_factory=dict)
     """Local name -> where it actually lives, for companion modules."""
 
+    type_bound: frozenset[str] = frozenset()
+    """Component names that are type-bound procedures: ``obj%method(args)``
+    is a call, where every other subscripted component is an array."""
+
+    handles: set[str] = field(default_factory=set)
+    """Emitted names whose value is an opaque handle, not a number.
+
+    A framework that hands out registrations gives Fortran an integer index
+    and gets tested with ``idx > 0`` for "is it registered". A translation
+    that represents the registration as something else -- a dictionary key,
+    say -- has to answer that test as the presence question it is. Which
+    names those are is a fact about the framework, so a domain package's
+    call transform says so (``CallSite.holds_handle``) and a function it
+    names in ``handle_producers`` says so for what it returns.
+    """
+
+    handle_producers: frozenset[str] = frozenset()
+    """Functions whose result is a handle, so assigning from one makes the
+    target one too."""
+
     function_transforms: dict[str, Any] = field(default_factory=dict)
     """Function name -> a domain package's answer for it, given the rendered
     arguments.
@@ -304,6 +324,11 @@ class Expressions:
         return f"{scalar}({left}, {right})" if scalar else None
 
     def _comparison(self, spelling: str, left: Any, right: Any, rl: str, rr: str) -> str:
+        if rl in self.handles and ((RELATIONAL_OPS[spelling], rr) in ((">", "0"), (">=", "1"))):
+            # The Fortran asks whether the registration exists by comparing
+            # the index it was given; the translation holds something that is
+            # not an index, and the question is whether it is set.
+            return f"bool({rl})"
         if not (self.semantics.is_character(left) or self.semantics.is_character(right)):
             return f"({rl} {RELATIONAL_OPS[spelling]} {rr})"
         if RELATIONAL_OPS[spelling] not in ("==", "!="):
@@ -414,6 +439,13 @@ class Expressions:
             elif isinstance(component, f03.Part_Ref):
                 name = str(component.children[0]).lower()
                 head = self.names.symbol(name) if position == 0 else pysafe(name)
+                if position > 0 and name in self.type_bound:
+                    # `obj%method(args)` is a call; only the domain package
+                    # knows which components are procedures rather than
+                    # arrays, because the type is declared elsewhere.
+                    called = ", ".join(self.render(item) for item in _items(component.children[1]))
+                    parts.append(f"{head}({called})")
+                    continue
                 positions = indexing.describe(
                     component.children[1], None, rank_of=self.semantics.rank
                 )

@@ -200,6 +200,20 @@ contains
     end block
   end subroutine constructs
 
+  subroutine handles(s, n, g)
+    real(r8), intent(inout) :: s
+    integer, intent(in) :: n
+    type(grid_t), intent(inout) :: g
+    integer :: idx, other
+    call register(idx)
+    if (idx > 0) s = 0.0_r8
+    if (idx >= 1) s = 1.0_r8
+    if (idx > n) s = 2.0_r8
+    other = lookup('f')
+    if (other > 0) s = 3.0_r8
+    s = g % pack(s)
+  end subroutine handles
+
   subroutine io(s, a, ios)
     real(r8), intent(inout) :: s
     real(r8), intent(inout) :: a(10)
@@ -362,6 +376,8 @@ def build(
     function_stubs: dict[str, str] | None = None,
     call_transforms: dict[str, Any] | None = None,
     function_transforms: dict[str, Any] | None = None,
+    handle_producers: frozenset[str] = frozenset(),
+    type_bound: frozenset[str] = frozenset(),
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
     record = interface.extract(src, kind_assumptions=KINDS)
@@ -375,6 +391,8 @@ def build(
         remotes=remotes or {},
         stubs=function_stubs or {},
         function_transforms=function_transforms or {},
+        handle_producers=handle_producers,
+        type_bound=type_bound,
     )
     statements = Statements(
         semantics,
@@ -735,6 +753,46 @@ def test_a_function_transform_answers_a_reference_the_stub_table_cannot(
         function_transforms={"hist_fld_active": lambda args: f"_active({args[0]})"},
     )
     assert statements.render(nodes[1], 1) == ["    if _active('X'):", "        s = 0.0"]
+
+
+def test_a_handle_answers_a_numeric_test_as_a_presence_question(
+    sources: dict[str, Path],
+) -> None:
+    """A framework that hands out registrations gives Fortran an integer
+    index, tested with ``idx > 0``. A transform that assigns something else
+    -- a dictionary key -- says so, and the test comes out as the question
+    it is rather than as arithmetic on a string."""
+
+    def register(site: Any) -> list[str]:
+        site.holds_handle(site.value(0))
+        return [f"{site.pad}{site.value(0)} = 'field'"]
+
+    statements, nodes = build(
+        sources["emit_mod"], "handles", call_transforms={"register": register}
+    )
+    assert statements.render(nodes[0], 1) == ["    idx = 'field'"]
+    assert statements.render(nodes[1], 1) == ["    if bool(idx):", "        s = 0.0"]
+    assert statements.render(nodes[2], 1) == ["    if bool(idx):", "        s = 1.0"]
+    assert statements.render(nodes[3], 1) == ["    if (idx > n):", "        s = F_2P0"]
+
+
+def test_a_name_assigned_from_a_handle_producer_is_one_too(
+    sources: dict[str, Path],
+) -> None:
+    statements, nodes = build(
+        sources["emit_mod"], "handles", handle_producers=frozenset({"lookup"})
+    )
+    assert statements.render(nodes[4], 1) == ["    other = lookup('f')"]
+    assert statements.render(nodes[5], 1) == ["    if bool(other):", "        s = F_3P0"]
+
+
+def test_a_type_bound_procedure_is_a_call_not_a_subscript(
+    sources: dict[str, Path],
+) -> None:
+    """Only the domain package knows which components are procedures: the
+    type is declared somewhere this file never sees."""
+    statements, nodes = build(sources["emit_mod"], "handles", type_bound=frozenset({"pack"}))
+    assert statements.render(nodes[6], 1) == ["    s = g.pack(s)"]
 
 
 def test_a_stub_wins_over_a_registered_external_of_the_same_name(sources: dict[str, Path]) -> None:
