@@ -39,7 +39,7 @@ _ARRAY_MODULE_RE = re.compile(rf"[0-9eE.+\-*/\s]*\[{_ARRAY_ELEMENTS}\][0-9eE.+\-
 _ARRAY_LOCAL_RE = re.compile(rf"\[{_ARRAY_ELEMENTS}\]")
 _ARRAY_OLD_FORM = re.compile(r"\(/(.*)/\)", re.S)
 _KIND_SUFFIX_RE = re.compile(r"_\w+")
-_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\.?\d[\d.]*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
 
 
 def strip_kind(text: str) -> str:
