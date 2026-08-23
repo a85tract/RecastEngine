@@ -286,8 +286,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 484,
-   "deferred": 110,
+   "blocks": 486,
+   "deferred": 108,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -304,10 +304,6 @@
     [
      "goto N is not a loop-exit pattern",
      3
-    ],
-    [
-     "structure constructor 'X'",
-     2
     ],
     [
      "no statement rule for Inquire_Stmt",
@@ -350,7 +346,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:linalg": {
-     "deferred": 67,
+     "deferred": 65,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -360,10 +356,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "21/227 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+16 more)",
+       "detail": "23/229 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+18 more)",
        "metrics": {
-        "blocks_checked": 227,
-        "blocks_deferred": 67,
+        "blocks_checked": 229,
+        "blocks_deferred": 65,
         "blocks_matched": 206,
         "blocks_waived": 0
        },
