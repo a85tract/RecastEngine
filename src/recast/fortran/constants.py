@@ -34,10 +34,12 @@ These are structural -- loop bounds, indices, halves -- not physical. Hoisting
 them would bury the arithmetic in names without making anything checkable.
 """
 
-_ARRAY_MODULE_RE = re.compile(r"[0-9eE.+\-*/\s]*\[[0-9eE.,+\-\s]+\][0-9eE.+\-*/\s]*")
-_ARRAY_LOCAL_RE = re.compile(r"\[[0-9eE.,+\-\s]+\]")
+_ARRAY_ELEMENTS = r"(?:[0-9eE.,+\-\s]|'[^']*')+"
+_ARRAY_MODULE_RE = re.compile(rf"[0-9eE.+\-*/\s]*\[{_ARRAY_ELEMENTS}\][0-9eE.+\-*/\s]*")
+_ARRAY_LOCAL_RE = re.compile(rf"\[{_ARRAY_ELEMENTS}\]")
+_ARRAY_OLD_FORM = re.compile(r"\(/(.*)/\)", re.S)
 _KIND_SUFFIX_RE = re.compile(r"_\w+")
-_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/]")
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\.?\d[\d.]*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
 
 
 def strip_kind(text: str) -> str:
@@ -45,16 +47,33 @@ def strip_kind(text: str) -> str:
     return text.split("_")[0]
 
 
+def is_default_real(text: str) -> bool:
+    """Is this real literal written in Fortran's *default* real kind?
+
+    An unsuffixed literal with no ``d`` exponent is default REAL, which is
+    single precision in every build here -- and a compiler evaluates it at
+    that precision before promoting. ``real(real64) :: x`` then ``x = 0.1``
+    stores 0.10000000149011612, not 0.1, and a translation that writes
+    ``0.1`` has changed the number. Assigning the same literal ``0.1_r8``
+    stores 0.1. The two are different constants and get different names.
+    """
+    return "_" not in text and "d" not in text.lower()
+
+
 def canon_name(text: str, is_real: bool) -> str:
     """Deterministic constant name for a literal.
 
     Derived from the literal's own digits, so the same number hoisted from two
     different routines lands on one name and one definition. ``F_`` for reals,
-    ``I_`` for integers, ``P`` for the point, ``M`` for a minus.
+    ``F32_`` for reals written in the default kind (a different value; see
+    ``is_default_real``), ``I_`` for integers, ``P`` for the point, ``M`` for
+    a minus.
     """
     t = strip_kind(text).lower().replace("d", "e")
     t = t.replace(".", "P").replace("+", "").replace("-", "M").replace("e", "E")
-    return f"{'F' if is_real else 'I'}_{t}"
+    if not is_real:
+        return f"I_{t}"
+    return f"{'F32' if is_default_real(text) else 'F'}_{t}"
 
 
 def is_whitelisted(text: str, is_real: bool) -> bool:
@@ -87,10 +106,10 @@ def literals_with_lines(
     item = getattr(node, "item", None)
     if item is not None and getattr(item, "span", None):
         line = item.span[0]
-    if isinstance(node, f03.Real_Literal_Constant):
+    if isinstance(node, (f03.Real_Literal_Constant, f03.Signed_Real_Literal_Constant)):
         out.append((str(node), True, line))
         return out
-    if isinstance(node, f03.Int_Literal_Constant):
+    if isinstance(node, (f03.Int_Literal_Constant, f03.Signed_Int_Literal_Constant)):
         out.append((str(node), False, line))
         return out
     children = getattr(node, "children", None)
@@ -100,6 +119,125 @@ def literals_with_lines(
         if ch is not None and not isinstance(ch, str):
             literals_with_lines(ch, line, out)
     return out
+
+
+INTRINSICS = frozenset(
+    {
+        "abs",
+        "acos",
+        "asin",
+        "atan",
+        "atan2",
+        "cos",
+        "dble",
+        "epsilon",
+        "exp",
+        "float",
+        "huge",
+        "int",
+        "log",
+        "log10",
+        "max",
+        "min",
+        "mod",
+        "modulo",
+        "nint",
+        "real",
+        "sign",
+        "sin",
+        "sqrt",
+        "tan",
+        "tiny",
+    }
+)
+"""Intrinsics a constant expression may call, and this stage can carry across.
+
+The target evaluates the call; this stage only says which name it is. Folding
+here would fold at a different precision than the compiler did.
+"""
+
+_KIND_ARGUMENT = re.compile(
+    r"^(r4|r8|r16|i4|i8|dp|sp|wp|kind|real32|real64|int32|int64"
+    r"|selected_real_kind|selected_int_kind)$",
+    re.I,
+)
+
+
+def _split_arguments(tokens: list[str]) -> list[list[str]]:
+    """Argument token lists, split on the commas at depth zero."""
+    arguments: list[list[str]] = []
+    current: list[str] = []
+    depth = 0
+    for piece in tokens:
+        if piece in ("(", "(/", "["):
+            depth += 1
+        elif piece in (")", "/)", "]"):
+            depth -= 1
+        if piece == "," and depth == 0:
+            arguments.append(current)
+            current = []
+        else:
+            current.append(piece)
+    if current:
+        arguments.append(current)
+    return arguments
+
+
+def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str, str]] | None:
+    """One argument as tokens of the same vocabulary; ``None`` if it names
+    something no earlier constant defines."""
+    spelled: list[dict[str, str]] = []
+    for piece in tokens:
+        if re.match(r"[A-Za-z_]", piece):
+            if piece.lower() in known_names:
+                spelled.append({"t": "ref", "v": piece.lower()})
+            elif _KIND_ARGUMENT.match(piece):
+                continue
+            else:
+                return None
+        elif re.match(r"\d", piece):
+            base = _normalize_real(piece)
+            if "." in base or "e" in base:
+                spelled.append({"t": "real32" if is_default_real(piece) else "real", "v": base})
+            else:
+                spelled.append({"t": "int", "v": base})
+        else:
+            spelled.append({"t": "op", "v": piece})
+    return spelled
+
+
+def _intrinsic_call(
+    tokens: list[str], at: int, known_names: set[str]
+) -> tuple[dict[str, Any] | None, int]:
+    """The call starting at ``tokens[at]``, and the index just past it.
+
+    A trailing kind argument -- ``real(x, r8)`` -- is dropped: it says what
+    precision the compiler evaluated in, which the target's own float64 is,
+    and it is not a value to pass on.
+    """
+    name = tokens[at].lower()
+    depth = 0
+    end = at + 1
+    while end < len(tokens):
+        if tokens[end] == "(":
+            depth += 1
+        elif tokens[end] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    arguments = _split_arguments(tokens[at + 2 : end])
+    kept = []
+    for index, argument in enumerate(arguments):
+        stripped = [token for token in argument if token.strip()]
+        last = index == len(arguments) - 1
+        if last and len(stripped) == 1 and _KIND_ARGUMENT.match(stripped[0]):
+            continue
+        kept.append(argument)
+    spelled = [_argument_tokens(argument, known_names) for argument in kept]
+    if any(text is None for text in spelled):
+        return None, end + 1
+    return {"t": "call", "v": name, "args": spelled}, end + 1
 
 
 def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
@@ -136,6 +274,10 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     if m:  # BOZ literal: int(Z'...', i8)
         return "int64", int(m.group(1), 16)
 
+    m = re.fullmatch(r"z'([0-9a-f]+)'", e, re.I)
+    if m:  # a bare BOZ literal, without the int() wrapper
+        return "int", int(m.group(1), 16)
+
     compact = e.replace(" ", "")
     if compact.lower() in (".true.", ".false."):
         return "logical", compact.lower() == ".true."
@@ -143,9 +285,16 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
         return "int", int(compact)
     m = re.fullmatch(r"(-?)(\d+\.?\d*(?:[edED][+-]?\d+)?)(_\w+)?", compact)
     if m and ("." in compact or "e" in compact.lower() or "d" in compact.lower()):
-        return "real", m.group(1) + _normalize_real(m.group(2))
+        kind = "real32" if is_default_real(compact) else "real"
+        return kind, m.group(1) + _normalize_real(m.group(2))
     if compact.lower() in known_names:
         return "ref", compact.lower()
+
+    # An array constructor that ``_array_literal`` did not take is one holding
+    # more than literals -- a name, an implied do. The token walk below would
+    # spell its delimiters as arithmetic, so it stops here instead.
+    if "(/" in compact or "[" in compact:
+        return "skip", f"array constructor over more than literals: {e}"
 
     # A constant expression over earlier parameters. Re-emitted token-wise so
     # the target language evaluates the same arithmetic the compiler folded,
@@ -153,17 +302,32 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     toks = _TOKEN_RE.findall(e)
     if toks and "".join(toks).replace(" ", "") == compact:
         out: list[dict[str, str]] = []
-        for t in toks:
-            if re.match(r"[A-Za-z_]", t):
+        at = 0
+        while at < len(toks):
+            t = toks[at]
+            if re.match(r"[A-Za-z_]", t) and t.lower() in INTRINSICS:
+                if at + 1 < len(toks) and toks[at + 1] == "(":
+                    call, at = _intrinsic_call(toks, at, known_names)
+                    if call is None:
+                        return "skip", f"unresolved argument in expression: {e}"
+                    out.append(call)
+                    continue
+                if t.lower() not in known_names:
+                    return "skip", f"unknown name {t!r} in expression: {e}"
+                out.append({"t": "ref", "v": t.lower()})
+            elif re.match(r"[A-Za-z_]", t):
                 if t.lower() not in known_names:
                     return "skip", f"unknown name {t!r} in expression: {e}"
                 out.append({"t": "ref", "v": t.lower()})
             elif re.match(r"\d", t):
                 base = _normalize_real(t)
-                is_real = "." in base or "e" in base
-                out.append({"t": "real" if is_real else "int", "v": base})
+                if "." in base or "e" in base:
+                    out.append({"t": "real32" if is_default_real(t) else "real", "v": base})
+                else:
+                    out.append({"t": "int", "v": base})
             else:
                 out.append({"t": "op", "v": t})
+            at += 1
         return "expr", out
 
     return "skip", f"unevaluated expression: {e}"
@@ -172,10 +336,16 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
 def _array_literal(init: str, module_level: bool) -> str | None:
     """Kind-stripped text of a pure-literal array constructor, or ``None``.
 
-    Lookup tables are declared as ``dnu(16) = [ ... ]``. Stripping the kind
-    suffix textually is exact when the constructor holds nothing but literals,
-    which is what the pattern check enforces before the strip is trusted.
+    Lookup tables are declared as ``dnu(16) = [ ... ]`` or, in the older
+    spelling, ``(/ ... /)``. Stripping the kind suffix textually is exact when
+    the constructor holds nothing but literals, which is what the pattern
+    check enforces before the strip is trusted. Character elements are
+    allowed; a name or an implied do is not, and falls through to be skipped
+    rather than approximated.
     """
+    # ``(/ ... /)`` is the same constructor in the older spelling, and CAM's
+    # sources use the brackets while most of the wider corpus does not.
+    init = _ARRAY_OLD_FORM.sub(r"[\1]", init)
     txt = _KIND_SUFFIX_RE.sub("", init).replace("D", "E").replace("d", "e")
     pattern = _ARRAY_LOCAL_RE if module_level is False else _ARRAY_MODULE_RE
     return txt if pattern.fullmatch(txt) else None
@@ -226,7 +396,7 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
             }
             array_text = (
                 _array_literal(init, module_level=True)
-                if init and "[" in init and ent.children[1] is not None
+                if init and ("[" in init or "(/" in init) and ent.children[1] is not None
                 else None
             )
             if array_text is not None:
@@ -288,7 +458,9 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
                     const = f"{sname.upper()}__{pname.upper()}"
                     array_text = (
                         _array_literal(init, module_level=False)
-                        if init and init.strip().startswith("[") and ent.children[1] is not None
+                        if init
+                        and init.strip().startswith(("[", "(/"))
+                        and ent.children[1] is not None
                         else None
                     )
                     if array_text is not None:

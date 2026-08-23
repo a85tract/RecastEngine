@@ -506,7 +506,13 @@ class FortranFrontend(Frontend):
         Module parameters stay whatever the Unit is: a subprogram's translated
         constants module still has to define the module-level parameters it
         reads.
+
+        ``wanted`` holds host-qualified keys; the constants record keys on the
+        subprogram's own name, because two internal procedures of one name
+        hoist to the same constant anyway -- the name is derived from the
+        digits, not from where they were written.
         """
+        wanted = {key.rsplit("/", 1)[-1] for key in wanted}
         hoisted = {}
         for name, entry in consts["hoisted_literals"].items():
             locations = [loc for loc in entry["locations"] if loc.split(":", 1)[0] in wanted]

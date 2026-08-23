@@ -107,7 +107,7 @@ def test_a_whitelisted_literal_is_written_out(table) -> None:
 
 
 def test_a_hoisted_literal_resolves_to_its_constant(table) -> None:
-    assert table.literal(f03.Real_Literal_Constant("273.15")) == "F_273P15"
+    assert table.literal(f03.Real_Literal_Constant("273.15")) == "F32_273P15"
 
 
 def test_a_kind_suffix_does_not_hide_a_whitelisted_value(table) -> None:

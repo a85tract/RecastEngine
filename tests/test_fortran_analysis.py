@@ -197,6 +197,7 @@ contains
     do i = 1, n
       x(i) = x(i) * 2 + 0.5
       if (x(i) > 273.15) x(i) = 1.0e12
+      x(i) = x(i) + 273.15_r8
     end do
   end subroutine work
 end module lit_mod
@@ -215,9 +216,21 @@ def test_physical_literals_are_hoisted_to_deterministic_names(tmp_path: Path) ->
     """Deterministic because both sides of a differential check have to be able
     to point at the same constant by the same name."""
     got = constants.extract(_write(tmp_path, "lit.f90", LITERALS))
+    assert got["hoisted_literals"]["F32_273P15"]["value"] == "273.15"
+    assert got["hoisted_literals"]["F32_1P0E12"]["value"] == "1.0e12"
+    assert got["literal_map"]["work"]["273.15"] == "F32_273P15"
+
+
+def test_a_default_kind_literal_is_a_different_constant_from_a_suffixed_one(
+    tmp_path: Path,
+) -> None:
+    """``273.15`` is default REAL -- single precision -- and the value the
+    program sees is that single promoted, 273.1499938964844. ``273.15_r8``
+    is 273.15. Same digits, different numbers, so different names."""
+    got = constants.extract(_write(tmp_path, "lit.f90", LITERALS))
+    assert got["hoisted_literals"]["F32_273P15"]["value"] == "273.15"
     assert got["hoisted_literals"]["F_273P15"]["value"] == "273.15"
-    assert got["hoisted_literals"]["F_1P0E12"]["value"] == "1.0e12"
-    assert got["literal_map"]["work"]["273.15"] == "F_273P15"
+    assert got["literal_map"]["work"]["273.15_r8"] == "F_273P15"
 
 
 def test_declaration_bounds_are_hoisted_too(tmp_path: Path) -> None:
@@ -860,3 +873,129 @@ def test_a_separate_dimension_statement_gives_the_entity_its_shape(tmp_path: Pat
     legacy = next(s for s in record["subprograms"] if s["name"] == "legacy")
     a = next(arg for arg in legacy["args"] if arg["name"] == "a")
     assert a["dims"] == [{"lb": None, "ub": "n"}] or a["dims"][0]["ub"] == "n"
+
+
+# --- constant initializers the pipeline learned to read after P2 --------------
+
+CONSTANT_FORMS = """\
+module const_forms
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+  real(r8), parameter :: pi = 3.14159_r8
+  real(r8), parameter :: unset = huge(1.0_r8)
+  real(r8), parameter :: fuzz = epsilon(1.0_r8)
+  real(r8), parameter :: least = tiny(1.0_r8)
+  real(r8), parameter :: diag = sqrt(2.0_r8) * pi
+  real(r8), parameter :: promoted = real(2, r8)
+  integer, parameter :: mask = z'ff'
+  real(r8), parameter :: super(3) = (/0.02_r8, 0.05_r8, 0.1_r8/)
+  character(len=6), parameter :: names(2) = (/'SSLT01', 'SSLT02'/)
+  real(r8), parameter :: derived(2) = (/pi, pi/)
+contains
+  subroutine work(x)
+    real(r8), intent(inout) :: x
+    x = x + (-2.5_r8)
+  end subroutine work
+end module const_forms
+"""
+
+
+def _forms(tmp_path: Path) -> dict:
+    from recast.fortran import constants
+
+    return constants.extract(_write(tmp_path, "const_forms.f90", CONSTANT_FORMS))
+
+
+def _param(record: dict, name: str) -> dict:
+    return next(p for p in record["module_parameters"] if p["name"] == name)
+
+
+def test_an_intrinsic_call_in_a_constant_expression_is_carried_not_folded(
+    tmp_path: Path,
+) -> None:
+    """Folding here would fold at a different precision than the compiler
+    did. The record says which intrinsic it is; the target evaluates it."""
+    record = _forms(tmp_path)
+    kind, payload = _param(record, "diag")["kind"], _param(record, "diag")["payload"]
+    assert kind == "expr"
+    assert payload[0] == {"t": "call", "v": "sqrt", "args": [[{"t": "real", "v": "2.0"}]]}
+    assert payload[-1] == {"t": "ref", "v": "pi"}
+
+
+def test_a_type_inquiry_keeps_its_name(tmp_path: Path) -> None:
+    record = _forms(tmp_path)
+    for name, intrinsic in (("unset", "huge"), ("fuzz", "epsilon"), ("least", "tiny")):
+        payload = _param(record, name)["payload"]
+        assert payload == [{"t": "call", "v": intrinsic, "args": [[{"t": "real", "v": "1.0"}]]}]
+
+
+def test_a_trailing_kind_argument_is_not_a_value(tmp_path: Path) -> None:
+    """``real(2, r8)`` says what precision to evaluate in, which the target's
+    float64 already is; passing it on would be an argument too many."""
+    payload = _param(_forms(tmp_path), "promoted")["payload"]
+    assert payload == [{"t": "call", "v": "real", "args": [[{"t": "int", "v": "2"}]]}]
+
+
+def test_a_bare_boz_literal_has_a_value(tmp_path: Path) -> None:
+    assert _param(_forms(tmp_path), "mask")["payload"] == 255
+
+
+def test_an_array_constructor_in_either_spelling_is_read(tmp_path: Path) -> None:
+    record = _forms(tmp_path)
+    assert _param(record, "super")["kind"] == "array"
+    assert _param(record, "names")["kind"] == "array"
+    assert "SSLT01" in _param(record, "names")["payload"]
+
+
+def test_a_constructor_over_names_is_skipped_rather_than_approximated(
+    tmp_path: Path,
+) -> None:
+    """Its elements are not literals, so the kind-suffix strip that makes the
+    literal case exact does not apply."""
+    assert _param(_forms(tmp_path), "derived")["kind"] == "skip"
+
+
+def test_a_signed_literal_node_is_collected(tmp_path: Path) -> None:
+    """fparser reads a sign as part of the literal in some positions -- a DATA
+    value, a complex component -- and as a unary minus in others. A walk that
+    knew only the unsigned node left the first kind with no name to emit."""
+    from recast.fortran._parse import f03, parser
+    from recast.fortran.constants import literals_with_lines
+
+    parser()
+    found = literals_with_lines(f03.Signed_Real_Literal_Constant("-2.5_r8"))
+    assert [(text, is_real) for text, is_real, _ in found] == [("-2.5_r8", True)]
+
+
+def test_an_internal_procedure_keeps_its_hoisted_literals(tmp_path: Path) -> None:
+    """The unit's Facts name subprograms host-qualified; the constants record
+    keys on the plain name, because a hoisted constant is named from its
+    digits and two procedures writing 0.25 share it. Narrowing one against
+    the other left every literal inside an internal procedure with no name to
+    emit -- 79 refusals across the public corpus."""
+    from recast.fortran.frontend import FortranFrontend
+    from recast.model import Unit
+
+    source = """\
+module inner_lit
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine outer(x)
+    real(r8), intent(inout) :: x
+    call inner()
+  contains
+    subroutine inner()
+      x = x * 0.25_r8
+    end subroutine inner
+  end subroutine outer
+end module inner_lit
+"""
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "inner_lit.f90").write_text(source)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(root) if u.uid == "fortran:inner_lit")
+    facts = frontend.analyze(unit, root)
+    assert facts.constants["literal_map"]["inner"]["0.25_r8"] == "F_0P25"
+    assert isinstance(unit, Unit)
