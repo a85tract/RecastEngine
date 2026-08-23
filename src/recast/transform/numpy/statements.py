@@ -238,7 +238,7 @@ class Statements:
                 lines.append(f"{pad}except _FGoto as _g:")
                 lines.append(f"{pad}    if _g.args[0] != '{label}':")
                 lines.append(f"{pad}        raise")
-                lines.append(f"{pad}    pass  # {label} continue (region exit)")
+                lines.append(f"{pad}    pass  # {label} (region exit)")
                 lines.extend(self.sequence(nodes[at + 1 :], indent))
                 return lines
         lines = []
@@ -687,6 +687,12 @@ class Statements:
         pad = "    " * indent
         name = str(node.children[0]).lower()
         items = list(node.children[1].children) if node.children[1] is not None else []
+        # A framework call with a stub is the stub, before anything else is
+        # asked -- the pipeline consults its INFRA_STUBS ahead of generics,
+        # companions and externals alike.
+        stub = self.stubs.get(name)
+        if stub is not None:
+            return [f"{pad}{stub}  # {name} (infra stub)"]
         if name in self.semantics.generics:
             name = self.semantics.dispatch(name, items)
         record = next((s for s in self.semantics.module["subprograms"] if s["name"] == name), None)
@@ -703,9 +709,6 @@ class Statements:
             external = self.externals.get(name)
             if external and external.get("kind") == "subroutine":
                 return self._external_call(name, external, node, pad)
-            stub = self.stubs.get(name)
-            if stub is not None:
-                return [f"{pad}{stub}  # {name} (infra stub)"]
             raise NoRule(f"call to external subroutine {name!r}")
 
         # Bind actuals to formals BY NAME for keyword arguments: Fortran
@@ -816,7 +819,7 @@ class Statements:
             ):
                 rendered = self._sequence_association(actual, formal_dims, substitutions)
         keyword = formal["optional"] or any("=" in a for a in inputs)
-        return f"{formal['name']}={rendered}" if keyword else rendered
+        return f"{pysafe(formal['name'])}={rendered}" if keyword else rendered
 
     def _output_target(self, actual: Any) -> str:
         if isinstance(actual, f03.Name):

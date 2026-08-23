@@ -497,6 +497,20 @@ def test_a_stubbed_framework_call_emits_its_stub(sources: dict[str, Path]) -> No
     ]
 
 
+def test_a_stub_wins_over_a_registered_external_of_the_same_name(sources: dict[str, Path]) -> None:
+    """The pipeline asks its stub table before anything else, so a framework
+    call that is both stubbed and registered as an external is the stub."""
+    statements, nodes = build(
+        sources["emit_mod"],
+        "calls",
+        externals={"ext_sub": {"kind": "subroutine", "out_positions": [1]}},
+        stubs={"ext_sub": "pass"},
+    )
+    assert statements.render(pick(nodes, f03.Call_Stmt, 7), 1) == [
+        "    pass  # ext_sub (infra stub)"
+    ]
+
+
 def test_a_call_to_nothing_known_is_refused(sources: dict[str, Path]) -> None:
     statements, nodes = build(sources["emit_mod"], "calls")
     with pytest.raises(REFUSED):
