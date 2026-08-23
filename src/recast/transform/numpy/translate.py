@@ -87,11 +87,13 @@ def companion_tables(
     remotes: dict[str, Remote] = {}
     globals_: dict[str, str] = {}
     imports: list[str] = []
+    aliases = _aliases(companions)
     for companion in companions:
         record = companion["record"]
         records.append(record)
-        alias = companion["alias"]
-        imports.append(f"import {companion['module_py']} as {alias}")
+        alias = companion.get("alias") or aliases[id(companion)]
+        module_py = companion.get("module_py") or f"{_module_of(companion)}_numpy"
+        imports.append(f"import {module_py} as {alias}")
         subprograms = {s["name"]: s for s in record["subprograms"]}
         renames = {k.lower(): v.lower() for k, v in (companion.get("renames") or {}).items()}
         for local, remote in renames.items():
@@ -129,6 +131,39 @@ def companion_tables(
             if local:
                 globals_[local] = f"{alias}.{pysafe(state['name'])}"
     return tuple(records), remotes, globals_, tuple(imports)
+
+
+def _aliases(companions: list[dict[str, Any]]) -> dict[int, str]:
+    """What the emitted module imports each companion as.
+
+    The pipeline's rule -- ``_<module>``, shortened to ``_<first three>`` past
+    ten characters -- because a translation of a CAM module has to import its
+    siblings under the names the pipeline's output uses or the two files
+    disagree on every reference. The shortening collides
+    (``micro_mg_utils`` and ``micro_mg2_0`` are both ``_mic``), which the
+    pipeline does not notice because its companion lists are written by hand;
+    a resolver that derives them has to, so a collision lengthens the prefix
+    until it stops.
+    """
+    taken: dict[str, str] = {}
+    chosen: dict[int, str] = {}
+    for companion in companions:
+        if companion.get("alias"):
+            taken.setdefault(companion["alias"], "")
+            continue
+        module = _module_of(companion)
+        length = 3 if len(module) > 10 else len(module)
+        while length < len(module) and taken.get(f"_{module[:length]}", module) != module:
+            length += 1
+        alias = f"_{module[:length]}"
+        taken.setdefault(alias, module)
+        chosen[id(companion)] = alias
+    return chosen
+
+
+def _module_of(companion: dict[str, Any]) -> str:
+    """The Fortran module a companion entry is about."""
+    return str(companion.get("module") or companion["record"].get("module", "")).lower()
 
 
 def _scaffolding_names() -> set[str]:
@@ -193,15 +228,22 @@ class NumpyTranslation(Transform):
 
     def apply(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> Candidate:
         _require_backend()
+        from recast.fortran.interface import subprogram_key
         from recast.transform.numpy.constants import constants_module, use_constants_module
         from recast.transform.numpy.modules import Modules
         from recast.transform.numpy.subprograms import Subprograms
         from recast.transform.profiles import DEFAULT, PROFILES
 
         source = self._verified_source(unit, facts, config)
-        records, remotes, companion_globals, companion_imports = companion_tables(
-            config.get("companions", [])
-        )
+        # The operator's list wins where there is one; otherwise the frontend
+        # resolved the unit's own ``use`` statements against the tree. A tree
+        # nobody has mapped by hand is the common case outside CAM, and its
+        # translation refusing every sibling call was the corpus's largest
+        # single finding.
+        declared = config.get("companions")
+        if declared is None:
+            declared = facts.provenance.get("companions", [])
+        records, remotes, companion_globals, companion_imports = companion_tables(declared)
         use = config.get("use_constants")
         # The map the generated module resolves use-imported names through is
         # derived from what resolve() was actually asked for -- the pipeline
@@ -253,7 +295,9 @@ class NumpyTranslation(Transform):
         # Producing it is part of this Transform's obligation, not an
         # internal detail (see ``names.as_protocol_table``).
         renames = {
-            record["name"]: assembler.floors(record["name"]).names.as_protocol_table()
+            subprogram_key(record): assembler.floors(
+                subprogram_key(record)
+            ).names.as_protocol_table()
             for record in facts.interface["subprograms"]
         }
         return Candidate(
