@@ -131,6 +131,15 @@ contains
     call consume(n, j, flat)
   end subroutine calls
 
+  subroutine initialised(x)
+    real(r8), intent(out) :: x
+    real(r8) :: table(4)
+    integer :: counter
+    data counter /0/
+    data table /3*1.0_r8, 0.0_r8/
+    x = table(1) + counter
+  end subroutine initialised
+
   subroutine sections(a, b, n)
     real(r8), intent(inout) :: a(10), b(0:9)
     integer, intent(in) :: n
@@ -430,6 +439,31 @@ def test_a_masked_elsewhere_takes_from_what_is_left(sources: dict[str, Path]) ->
         "    _we0_1 = (_wn & (a < 0.0))",
         "    _wn = (_wn & (~(a < 0.0)))",
         "    c[...][_we0_1] = 0.0",
+    ]
+
+
+def test_data_becomes_assignments_with_its_repeats_written_out(
+    sources: dict[str, Path],
+) -> None:
+    """DATA is a static initialisation in the specification part, so its
+    assignments belong before any statement can read the names; ``3*1.5``
+    is three elements, not a multiplication."""
+    from recast.fortran._parse import parse as parse_source
+
+    statements, _ = build(sources["emit_mod"], "initialised")
+    subprogram = next(
+        sub
+        for sub in walk(
+            parse_source(sources["emit_mod"]),
+            (f03.Subroutine_Subprogram, f03.Function_Subprogram),
+        )
+        if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower()
+        == "initialised"
+    )
+    data = walk(subprogram, f03.Data_Stmt)
+    assert statements.data_statement(data[0], 1) == ["    counter = 0"]
+    assert statements.data_statement(data[1], 1) == [
+        "    table[:] = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float64)"
     ]
 
 

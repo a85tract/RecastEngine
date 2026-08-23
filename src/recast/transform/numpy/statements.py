@@ -214,6 +214,10 @@ class Statements:
             return [f"{pad}pass  # OPEN/CLOSE (I/O stub)"]
         if isinstance(node, (f03.Forall_Construct, f03.Forall_Stmt)):
             return self._forall(node, indent)
+        if isinstance(node, f03.Data_Stmt):
+            # A DATA among the executable statements: F77 allowed it there,
+            # and fparser leaves it where it found it.
+            return self.data_statement(node, indent)
         if isinstance(node, f03.Associate_Construct):
             return self._associate(node, indent)
         if isinstance(node, f08.Block_Construct):
@@ -651,6 +655,95 @@ class Statements:
             body.clear()
         elif lines and lines[-1].endswith(":"):
             lines.append(f"{pad}    pass")
+
+    # -- DATA ------------------------------------------------------------------
+
+    def data_statement(self, node: Any, indent: int) -> list[str]:
+        """``data a, b /1.0, 2.0/``: the initial values, as assignments.
+
+        DATA sits in the specification part and is a *static* initialisation,
+        so the assignments belong at the top of the body, before anything can
+        read the names. Only literal values and literal subscripts are taken:
+        a parameter name here would have to be resolved in an order this
+        stage does not track, and a computed subscript is not static.
+        """
+        pad = "    " * indent
+        lines: list[str] = []
+        for group in walk(node, f03.Data_Stmt_Set):
+            objects = [o for o in group.children[0].children if o is not None]
+            for target in objects:
+                if isinstance(target, f03.Name):
+                    continue
+                if not isinstance(target, f03.Part_Ref):
+                    raise NoRule(f"DATA object {type(target).__name__}: {target}")
+                for subscript in self._items(target.children[1]):
+                    if not isinstance(subscript, f03.Int_Literal_Constant):
+                        raise NoRule(f"DATA subscript {type(subscript).__name__}")
+            values = self._data_values(group.children[1])
+            at = 0
+            for target in objects:
+                indexed = isinstance(target, f03.Part_Ref)
+                raw = str(target.children[0] if indexed else target).lower()
+                name = self.names.symbol(raw)
+                if indexed:
+                    if at >= len(values):
+                        raise NoRule("DATA has fewer values than objects")
+                    where = ", ".join(
+                        f"{int(str(s).split('_')[0])} - 1" for s in self._items(target.children[1])
+                    )
+                    lines.append(f"{pad}{name}[{where}] = {values[at]}")
+                    at += 1
+                elif self.semantics.is_array(raw):
+                    if len(objects) > 1:
+                        raise NoRule("DATA list mixes an array with other objects")
+                    spelled = ", ".join(values[at:])
+                    at = len(values)
+                    lines.append(f"{pad}{name}[:] = np.array([{spelled}], dtype=np.float64)")
+                else:
+                    if at >= len(values):
+                        raise NoRule("DATA has fewer values than objects")
+                    lines.append(f"{pad}{name} = {values[at]}")
+                    at += 1
+        return lines or [f"{pad}pass  # DATA (empty)"]
+
+    @staticmethod
+    def _items(node: Any) -> list[Any]:
+        children = getattr(node, "children", None)
+        return [c for c in (children if children is not None else [node]) if c is not None]
+
+    def _data_values(self, node: Any) -> list[str]:
+        """The value list, flat, with each ``N*value`` repeat written out."""
+        values: list[str] = []
+        for item in self._items(node):
+            if isinstance(item, f03.Data_Stmt_Value):
+                repeat_node, value = item.children
+                try:
+                    repeat = int(str(repeat_node).split("_")[0])
+                except (TypeError, ValueError):
+                    # A named constant as the count: known to the compiler,
+                    # not to this stage, which does not evaluate parameters.
+                    raise NoRule(f"DATA repeat count {repeat_node}") from None
+                values.extend([self._data_value(value)] * repeat)
+            else:
+                values.append(self._data_value(item))
+        return values
+
+    def _data_value(self, node: Any) -> str:
+        """One DATA value. Literals only, signed or not."""
+        if isinstance(node, (f03.Real_Literal_Constant, f03.Int_Literal_Constant)):
+            return self.names.literal(node)
+        if isinstance(node, (f03.Signed_Real_Literal_Constant, f03.Signed_Int_Literal_Constant)):
+            text = str(node)
+            try:
+                return self.names.literal(node)
+            except NoRule:
+                # The hoisting saw the magnitude; fparser reads the sign as
+                # part of the literal only in some positions.
+                unsigned = self.names.literals.get(text.lstrip("-+"))
+                if unsigned is None:
+                    raise
+                return f"-{unsigned}" if text.startswith("-") else unsigned
+        raise NoRule(f"DATA value {type(node).__name__}: {node}")
 
     def _condition(self, node: Any) -> str:
         """An IF's condition. fparser reports it as ``None`` for a construct
