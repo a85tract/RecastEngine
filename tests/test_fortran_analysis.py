@@ -766,3 +766,14 @@ def _sub_node(tmp_path: Path, name: str):
         for sub in walk(tree, (f03.Subroutine_Subprogram, f03.Function_Subprogram))
         if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == name
     )
+
+
+def test_selected_int_kind_is_a_value_not_a_skip() -> None:
+    """The source can compare against a kind value, so it is evaluated the
+    way gfortran does: the smallest kind holding 10**N."""
+    from recast.fortran.constants import classify_init
+
+    assert classify_init("selected_int_kind(4)", set()) == ("int", 2)
+    assert classify_init("selected_int_kind(6)", set()) == ("int", 4)
+    assert classify_init("selected_int_kind(18)", set()) == ("int", 8)
+    assert classify_init("kind(1.0d0)", set())[0] == "skip"

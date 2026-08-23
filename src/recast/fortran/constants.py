@@ -123,7 +123,13 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
         # The kind value itself is referenceable at runtime (`if (kind /= r8)`).
         # gfortran: selected_real_kind(p >= 10) -> 8, otherwise 4.
         return "int", 8 if int(m.group(1)) >= 10 else 4
-    if re.search(r"selected_int_kind|kind\s*\(", e, re.I):
+    m = re.search(r"selected_int_kind\s*\(\s*(\d+)", e, re.I)
+    if m:
+        # The smallest kind holding 10**N. gfortran: N <= 4 -> 2, N <= 9 -> 4,
+        # otherwise 8; a value, because the source can compare against it.
+        n = int(m.group(1))
+        return "int", 2 if n <= 4 else (4 if n <= 9 else 8)
+    if re.search(r"kind\s*\(", e, re.I):
         return "skip", "kind parameter (compile-time only)"
 
     m = re.fullmatch(r"int\s*\(\s*z'([0-9a-f]+)'\s*,\s*\w+\s*\)", e, re.I)
