@@ -38,6 +38,7 @@ from typing import Any
 from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
+from recast.transform.numpy.calls import CallSite
 from recast.transform.numpy.expressions import Expressions
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
@@ -86,6 +87,9 @@ class Statements:
 
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Procedures with an audited shim in the externals module."""
+
+    call_transforms: dict[str, Any] = field(default_factory=dict)
+    """Callee -> a domain package's answer for it; see ``calls.CallSite``."""
 
     stubs: dict[str, str] = field(default_factory=dict)
     """Framework subroutine -> the statement that stands in for it.
@@ -575,6 +579,14 @@ class Statements:
             )
             lines.append(f"{pad}{rendered} = np.empty({shape_text}, dtype={dtype})")
         if not lines:
+            # `allocate(x)` with no shape: a scalar allocatable, which for a
+            # derived type is the object coming into existence.
+            for item in self._items(node.children[1]):
+                if isinstance(item, f03.Name):
+                    lines.append(f"{pad}{self.names.symbol(str(item))} = _new_derived()")
+                elif isinstance(item, f03.Data_Ref):
+                    lines.append(f"{pad}{self.expressions.render(item)} = _new_derived()")
+        if not lines:
             raise NoRule("allocate without shape specs")
         return lines
 
@@ -1007,6 +1019,31 @@ class Statements:
         pad = "    " * indent
         name = str(node.children[0]).lower()
         items = list(node.children[1].children) if node.children[1] is not None else []
+        transform = self.call_transforms.get(name)
+        if transform is not None:
+            # A call whose meaning is a framework's: answered by the package
+            # that knows the framework, before anything here is consulted.
+            return list(
+                transform(
+                    CallSite(
+                        name=name,
+                        indent=indent,
+                        actuals=tuple(items),
+                        keywords={
+                            str(a.children[0]).lower(): a.children[1]
+                            for a in items
+                            if isinstance(a, f03.Actual_Arg_Spec)
+                        },
+                        render=self.expressions.render,
+                    )
+                )
+            )
+        if name == "move_alloc":
+            # `move_alloc(from, to)`: the array changes hands and the source
+            # becomes unallocated, which is what `allocated()` mirrors.
+            moved = [self.expressions.render(CallSite.bare(item)) for item in items]
+            if len(moved) >= 2:
+                return [f"{pad}{moved[1]} = {moved[0]}  # move_alloc", f"{pad}{moved[0]} = None"]
         # A framework call with a stub is the stub, before anything else is
         # asked -- the pipeline consults its INFRA_STUBS ahead of generics,
         # companions and externals alike.

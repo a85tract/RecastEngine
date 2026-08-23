@@ -87,6 +87,7 @@ class Subprograms:
     function_stubs: dict[str, str] = field(default_factory=dict)
     statement_stubs: dict[str, str] = field(default_factory=dict)
     intrinsics: dict[str, Any] = field(default_factory=dict)
+    call_transforms: dict[str, Any] = field(default_factory=dict)
 
     patches: dict[str, dict[str, Any]] = field(default_factory=dict)
     """``"subprogram/block"`` -> an operator-audited replacement for a block
@@ -190,6 +191,7 @@ class Subprograms:
             expressions,
             externals=self.externals,
             stubs=dict(self.statement_stubs),
+            call_transforms=dict(self.call_transforms),
         )
 
     # -- assembly -------------------------------------------------------------
