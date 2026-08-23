@@ -768,12 +768,21 @@ def test_an_if_construct_keeps_its_branches(sources: dict[str, Path]) -> None:
     assert "    else:" in lines
 
 
-def test_a_single_line_if_refuses_a_multi_line_action(sources: dict[str, Path]) -> None:
+def test_a_single_line_if_indents_however_many_lines_its_action_takes(
+    sources: dict[str, Path],
+) -> None:
+    """``if (c) action``: the action may need several lines of its own -- a
+    masked assignment, a stubbed call -- and they all belong under the
+    branch."""
     statements, nodes = build(sources["emit_mod"], "switch")
-    single = pick(nodes, f03.If_Stmt)
-    assert statements.render(single, 1) == ["    if (s > 0.0):", "        s = 0.0"]
-    with pytest.raises(REFUSED):
-        statements.render(pick(nodes, f03.If_Stmt, 1), 1)
+    assert statements.render(pick(nodes, f03.If_Stmt), 1) == [
+        "    if (s > 0.0):",
+        "        s = 0.0",
+    ]
+    lines = statements.render(pick(nodes, f03.If_Stmt, 1), 1)
+    assert lines[0].startswith("    if ")
+    assert len(lines) > 2
+    assert all(line.startswith("        ") for line in lines[1:])
 
 
 def test_a_character_case_compares_with_blank_padding(sources: dict[str, Path]) -> None:

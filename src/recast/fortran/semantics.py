@@ -389,6 +389,12 @@ class Semantics:
         candidates = self.generics.get(name) or self.companion_generics.get(name)
         if not candidates:
             raise AmbiguousDispatch(f"{name!r} is not a generic interface here")
+        if len(candidates) == 1 and self.procedures.get(candidates[0]) is not None:
+            # One specific behind the interface: there is nothing to choose,
+            # and the argument matching below can only take it away -- an
+            # actual whose rank this stage cannot tell would refuse a call
+            # the compiler resolves without looking.
+            return candidates[0]
 
         positional = [
             a for a in actuals if not isinstance(a, (f03.Actual_Arg_Spec, f03.Component_Spec))

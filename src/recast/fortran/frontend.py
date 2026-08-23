@@ -379,7 +379,17 @@ class FortranFrontend(Frontend):
         own = str(record.get("module", "")).lower()
         found: dict[str, dict[str, Any]] = {}
         unresolved: list[dict[str, str]] = []
-        for statement in record.get("use_statements", ()):
+        # Use association is transitive through a bare ``use``: if this module
+        # bare-uses B and B bare-uses C, C's public entities are visible here
+        # too, and a call into one of them has to resolve. A ``use, only:``
+        # does not carry anything further, so the walk stops at those.
+        pending = list(record.get("use_statements", ()))
+        seen_statements: set[str] = set()
+        while pending:
+            statement = pending.pop(0)
+            if statement in seen_statements:
+                continue
+            seen_statements.add(statement)
             match = USE_STATEMENT.match(statement.strip())
             if not match:
                 continue
@@ -422,6 +432,8 @@ class FortranFrontend(Frontend):
                 "constants": constants_of,
                 "renames": renames,
             }
+            if match.group("only") is None:
+                pending.extend(record_of.get("use_statements", ()))
         return list(found.values()), unresolved
 
     def _extracted(self, source: Path, kind: str, extract: Any) -> dict[str, Any]:
