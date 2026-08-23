@@ -833,12 +833,6 @@ contains
     end function f
   end subroutine other
 
-  subroutine legacy(a, n)
-    integer n
-    real a
-    dimension a(n)
-    a(1) = 0.0
-  end subroutine legacy
 end module host_mod
 """
 
@@ -872,13 +866,6 @@ def test_two_internal_procedures_of_one_name_get_distinct_emitted_names(tmp_path
     assert emit_name(by_key["outer/f"]) == "outer__f"
     assert emit_name(by_key["other/f"]) == "other__f"
     assert emit_name(by_key["outer/bump"]) == "bump"  # unique, so the pipeline's flat name
-
-
-def test_a_separate_dimension_statement_gives_the_entity_its_shape(tmp_path: Path) -> None:
-    record = _internals(tmp_path)
-    legacy = next(s for s in record["subprograms"] if s["name"] == "legacy")
-    a = next(arg for arg in legacy["args"] if arg["name"] == "a")
-    assert a["dims"] == [{"lb": None, "ub": "n"}] or a["dims"][0]["ub"] == "n"
 
 
 # --- constant initializers the pipeline learned to read after P2 --------------

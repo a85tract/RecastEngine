@@ -207,7 +207,7 @@ class Subprograms:
             if written:
                 lines.append("    global " + ", ".join(written))
 
-        lines.extend(self._result_initializer(subprogram, semantics))
+        lines.extend(self._result_initializer(subprogram, semantics, statements))
 
         prologue = self._prologue(subprogram, semantics, statements)
         if prologue:
@@ -379,7 +379,9 @@ class Subprograms:
 
     # -- the determinizing prologue -------------------------------------------
 
-    def _result_initializer(self, subprogram: dict[str, Any], semantics: Semantics) -> list[str]:
+    def _result_initializer(
+        self, subprogram: dict[str, Any], semantics: Semantics, statements: Statements
+    ) -> list[str]:
         """A function result is undefined until assigned; a path that never
         assigns it -- a SELECT CASE with no matching branch -- is UB in
         Fortran. Pre-initializing is a documented UB-only deviation."""
@@ -387,12 +389,10 @@ class Subprograms:
             return []
         lines = []
         if subprogram.get("result_dims"):
-            dims = subprogram["result_dims"]
-            if all(d.get("ub") for d in dims):
-                shape = ", ".join(d["ub"] for d in dims)
-                lines.append(f"    {subprogram['result']} = np.zeros(({shape},), dtype=np.float64)")
-            # An assumed-shape or deferred result has no extent to allocate
-            # here; the body's own assignment sizes it.
+            shape = ", ".join(
+                statements.bound(d["ub"]) if d.get("ub") else "1" for d in subprogram["result_dims"]
+            )
+            lines.append(f"    {subprogram['result']} = np.zeros(({shape},), dtype=np.float64)")
         elif subprogram["result_dtype"] in ("float64", "float32"):
             lines.append(f"    {subprogram['result']} = 0.0")
         if subprogram["result_dtype"] in ("int32", "int64"):
