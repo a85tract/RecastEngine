@@ -127,6 +127,7 @@ def test_a_derived_type_gets_a_factory(source: Path, renderer: Modules) -> None:
 def test_the_header_carries_imports_runtime_and_signatures(renderer: Modules) -> None:
     header = renderer.header()
     assert "import numpy as np" in header
+    assert "from recast.transform.numpy import intel_math" in header  # the profile is ifx
     assert "from constants import *" in header
     assert "import sibling_numpy as _sib" in header
     assert "_RUNTIME = {'abort_msg': None}" in header

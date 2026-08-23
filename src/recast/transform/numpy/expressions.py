@@ -39,6 +39,8 @@ from recast.transform.numpy.vocabulary import (
     ARRAY_TRANSFORM,
     ELEMENTAL_ARRAY,
     ELEMENTAL_SCALAR,
+    INTEL_ARRAY,
+    INTEL_SCALAR,
     LOGICAL_OPS,
     REDUCTIONS,
     RELATIONAL_OPS,
@@ -182,6 +184,20 @@ class Expressions:
 
     # -- operators ------------------------------------------------------------
 
+    @property
+    def scalar_table(self) -> dict[str, str]:
+        """Intrinsic -> spelling on a scalar, under this profile."""
+        if self.profile.intel_math:
+            return {**ELEMENTAL_SCALAR, **INTEL_SCALAR}
+        return ELEMENTAL_SCALAR
+
+    @property
+    def array_table(self) -> dict[str, str]:
+        """Intrinsic -> spelling on an array, under this profile."""
+        if self.profile.intel_math:
+            return {**ELEMENTAL_ARRAY, **INTEL_ARRAY}
+        return ELEMENTAL_ARRAY
+
     def binary(self, left: Any, operator: str, right: Any) -> str:
         """A binary operation, with the three that are not what they look like."""
         spelling = operator.upper()
@@ -227,7 +243,11 @@ class Expressions:
         except Unanalyzable:
             over_arrays = False
         if over_arrays or self.elemental:
+            if self.profile.intel_math:
+                return f"intel_math.vpow({left}, {right})"
             return f"_f_vpow({left}, {right})"
+        if self.profile.intel_math:
+            return f"intel_math.pow({left}, {right})"
         return None
 
     def _comparison(self, spelling: str, left: Any, right: Any, rl: str, rr: str) -> str:
@@ -457,12 +477,12 @@ class Expressions:
             # the other way changes which NaN survives.
             folded = arguments[0]
             for argument in arguments[1:]:
-                folded = f"{ELEMENTAL_ARRAY[name]}({folded}, {argument})"
+                folded = f"{self.array_table[name]}({folded}, {argument})"
             return folded
         if name in ELEMENTAL_ARRAY:
             if name in KIND_SECOND_ARGUMENT and len(arguments) == 2:
                 arguments = arguments[:1]
-            return f"{ELEMENTAL_ARRAY[name]}({', '.join(arguments)})"
+            return f"{self.array_table[name]}({', '.join(arguments)})"
         raise NoRule(f"no elementwise rule for {name!r}")
 
     def _over_scalars(self, name: str, arguments: list[str]) -> str:
@@ -478,8 +498,8 @@ class Expressions:
             if self.elemental and name in ("exp", "log", "log10"):
                 # An elemental body is written at scalar rank and runs over
                 # arrays: math.* would reject one and np.* is an ULP off libm.
-                return f"{ELEMENTAL_ARRAY[name]}({', '.join(arguments)})"
-            return f"{ELEMENTAL_SCALAR[name]}({', '.join(arguments)})"
+                return f"{self.array_table[name]}({', '.join(arguments)})"
+            return f"{self.scalar_table[name]}({', '.join(arguments)})"
         raise NoRule(f"unknown function or array reference {name!r}")
 
     def _array_transform(self, name: str, items: list[Any]) -> str:
