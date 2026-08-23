@@ -49,7 +49,10 @@ def chunk_subprogram(sub: Any) -> list[tuple[str, Any, tuple[int | None, int | N
         return []
     blocks: list[tuple[str, Any, tuple[int | None, int | None]]] = []
     for stmt in exec_part.children:
-        blocks.append((f"B{len(blocks) + 1:03d}", stmt, node_span(stmt)))
+        at = len(blocks) + 1
+        # Three digits past 999 would repeat an id, and a block report keyed
+        # on a repeated id loses a block.
+        blocks.append((f"B{at:03d}" if at <= 999 else f"B{at}", stmt, node_span(stmt)))
     return blocks
 
 
