@@ -2,8 +2,8 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 649,
-   "deferred": 40,
+   "blocks": 654,
+   "deferred": 35,
    "refusals": [
     [
      "formatted internal write",
@@ -12,10 +12,6 @@
     [
      "seq-assoc: rank mismatch ws",
      7
-    ],
-    [
-     "multi-line action in single-line if",
-     5
     ],
     [
      "seq-assoc: rank mismatch x",
@@ -123,7 +119,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:bspline_sub_module": {
-     "deferred": 12,
+     "deferred": 7,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -133,10 +129,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "48/305 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+43 more)",
+       "detail": "53/310 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+48 more)",
        "metrics": {
-        "blocks_checked": 305,
-        "blocks_deferred": 12,
+        "blocks_checked": 310,
+        "blocks_deferred": 7,
         "blocks_matched": 257,
         "blocks_waived": 0
        },
@@ -294,8 +290,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 460,
-   "deferred": 134,
+   "blocks": 461,
+   "deferred": 133,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -359,10 +355,6 @@
     ],
     [
      "assignment to non-array ref dj",
-     1
-    ],
-    [
-     "multi-line action in single-line if",
      1
     ],
     [
@@ -501,7 +493,7 @@
      }
     },
     "fortran:special": {
-     "deferred": 30,
+     "deferred": 29,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -511,10 +503,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "19/81 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+14 more)",
+       "detail": "20/82 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1v_real/B001, hankel1v_complex/B004, hankel2v_real/B001 (+15 more)",
        "metrics": {
-        "blocks_checked": 81,
-        "blocks_deferred": 30,
+        "blocks_checked": 82,
+        "blocks_deferred": 29,
         "blocks_matched": 62,
         "blocks_waived": 0
        },
@@ -1250,8 +1242,8 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 427,
-   "deferred": 11,
+   "blocks": 428,
+   "deferred": 10,
    "refusals": [
     [
      "unknown function or array reference 'X'",
@@ -1270,10 +1262,6 @@
      2
     ],
     [
-     "multi-line action in single-line if",
-     1
-    ],
-    [
      "seq-assoc: formal rank > actual rank t",
      1
     ]
@@ -1281,7 +1269,7 @@
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 11,
+     "deferred": 10,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1291,11 +1279,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "56/427 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
+       "detail": "56/428 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
        "metrics": {
-        "blocks_checked": 427,
-        "blocks_deferred": 11,
-        "blocks_matched": 371,
+        "blocks_checked": 428,
+        "blocks_deferred": 10,
+        "blocks_matched": 372,
         "blocks_waived": 0
        },
        "passed": false
@@ -1307,15 +1295,11 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 0,
-   "deferred": 52,
+   "deferred": 51,
    "refusals": [
     [
      "unknown function or array reference 'X'",
      49
-    ],
-    [
-     "multi-line action in single-line if",
-     1
     ],
     [
      "seq-assoc: formal rank > actual rank work",
@@ -1329,7 +1313,7 @@
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 52,
+     "deferred": 51,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1339,7 +1323,7 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2441)",
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2458)",
        "metrics": {
         "blocks_checked": 0
        },
@@ -1521,16 +1505,12 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1352,
-   "deferred": 257,
+   "blocks": 1366,
+   "deferred": 243,
    "refusals": [
     [
      "unknown function or array reference 'X'",
      62
-    ],
-    [
-     "multi-line action in single-line if",
-     15
     ],
     [
      "goto N is not a loop-exit pattern",
@@ -1601,6 +1581,10 @@
      4
     ],
     [
+     "assignment to non-array ref cby",
+     3
+    ],
+    [
      "assignment to non-array ref cpd",
      3
     ],
@@ -1630,10 +1614,6 @@
     ],
     [
      "assignment to non-array ref cbj",
-     2
-    ],
-    [
-     "assignment to non-array ref cby",
      2
     ],
     [
@@ -1768,7 +1748,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 257,
+     "deferred": 243,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1778,11 +1758,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/1352 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, chgm/B011",
+       "detail": "4/1366 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, chgm/B011",
        "metrics": {
-        "blocks_checked": 1352,
-        "blocks_deferred": 257,
-        "blocks_matched": 1348,
+        "blocks_checked": 1366,
+        "blocks_deferred": 243,
+        "blocks_matched": 1362,
         "blocks_waived": 0
        },
        "passed": false

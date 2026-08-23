@@ -159,11 +159,15 @@ class Statements:
         if isinstance(node, f03.Assignment_Stmt):
             return self._assignment(node, indent)
         if isinstance(node, f03.If_Stmt):
+            # `if (c) action`: the action may be one that needs several lines
+            # of its own -- a masked assignment, a stubbed call -- and they
+            # all belong under the branch.
             condition, action = node.children
             inner = self.render(action, 0)
-            if len(inner) != 1:
-                raise NoRule("multi-line action in single-line if")
-            return [f"{pad}if {self.expressions.render(condition)}:", f"{pad}    {inner[0]}"]
+            return [
+                f"{pad}if {self.expressions.render(condition)}:",
+                *(f"{pad}    {line}" for line in inner),
+            ]
         if isinstance(node, f03.If_Construct):
             return self._if_construct(node, indent)
         if isinstance(node, f03.Case_Construct):
@@ -183,7 +187,16 @@ class Statements:
             return [f"{pad}pass  # continue"]
         if isinstance(node, f03.Call_Stmt):
             return self._call(node, indent)
-        if isinstance(node, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
+        if isinstance(
+            node,
+            (
+                f03.Block_Nonlabel_Do_Construct,
+                f03.Block_Label_Do_Construct,
+                f03.Action_Term_Do_Construct,
+            ),
+        ):
+            # The third is a labelled DO whose terminator is an action
+            # statement rather than a CONTINUE -- F77 wrote them that way.
             return self._do_construct(node, indent)
         if isinstance(node, f03.Where_Stmt):
             return self._where_statement(node, indent)
@@ -222,7 +235,12 @@ class Statements:
             return self._associate(node, indent)
         if isinstance(node, f08.Block_Construct):
             return self._block(node, indent)
-        raise NoRule(f"no statement rule for {type(node).__name__}")
+        kind = type(node).__name__
+        if kind.startswith("Cpp_"):
+            # A preprocessor directive that survived into the tree: it said
+            # something to the compiler, nothing to the program.
+            return [f"{pad}pass  # {kind} (preprocessor directive)"]
+        raise NoRule(f"no statement rule for {kind}")
 
     MAX_REGION_DEPTH = 20
     """How deep goto regions may nest before they stop being formed.
