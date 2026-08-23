@@ -220,32 +220,62 @@ class Statements:
         the outermost one belongs to the *last* matching label.
         """
         pad = "    " * indent
-        for at in range(len(nodes) - 1, -1, -1):
-            node = nodes[at]
-            if not isinstance(node, f03.Continue_Stmt):
+        labelled = {}
+        targets = {}
+        for at, node in enumerate(nodes):
+            found = self.label(node)
+            if found and found not in self.consumed_labels:
+                labelled[at] = found
+            reached = {str(goto.children[0]) for goto in walk(node, f03.Goto_Stmt)}
+            if reached:
+                targets[at] = reached
+
+        # A backward goto -- label at i, `goto` to it at j > i -- is a loop:
+        # everything from the label to the last such goto runs again. Taken
+        # before the forward case, as the pipeline takes it, because a region
+        # that is both is a loop with an early exit rather than the reverse.
+        for at in sorted(labelled):
+            label = labelled[at]
+            back = [j for j in range(at + 1, len(nodes)) if label in targets.get(j, ())]
+            if not back:
                 continue
-            label = self.label(node)
-            if (
-                label
-                and label not in self.consumed_labels
-                and any(
-                    str(goto.children[0]) == label
-                    for earlier in range(at)
-                    for goto in walk(nodes[earlier], f03.Goto_Stmt)
-                )
-            ):
-                lines = [f"{pad}try:  # forward-goto region (label {label})"]
-                self.active_labels.append(("region", label))
-                try:
-                    lines.extend(self.sequence(nodes[:at], indent + 1) or [f"{pad}    pass"])
-                finally:
-                    self.active_labels.pop()
-                lines.append(f"{pad}except _FGoto as _g:")
-                lines.append(f"{pad}    if _g.args[0] != '{label}':")
-                lines.append(f"{pad}        raise")
-                lines.append(f"{pad}    pass  # {label} (region exit)")
-                lines.extend(self.sequence(nodes[at + 1 :], indent))
-                return lines
+            lines = self.sequence(nodes[:at], indent) if at else []
+            lines.append(f"{pad}while True:  # backward-goto region (label {label})")
+            lines.append(f"{pad}    try:")
+            self.active_labels.append(("region", label))
+            self.consumed_labels.add(label)
+            try:
+                body = self.sequence(nodes[at : back[-1] + 1], indent + 2)
+            finally:
+                self.active_labels.pop()
+            lines.extend(body or [f"{pad}        pass"])
+            lines.append(f"{pad}        break  # natural exit")
+            lines.append(f"{pad}    except _FGoto as _g:")
+            lines.append(f"{pad}        if _g.args[0] != '{label}':")
+            lines.append(f"{pad}            raise")
+            lines.append(f"{pad}        pass  # {label} (loop restart)")
+            lines.extend(self.sequence(nodes[back[-1] + 1 :], indent))
+            return lines
+
+        # A forward goto -- `goto` at k, label at j > k -- is an early exit
+        # from everything between them. The outermost region belongs to the
+        # last matching label, so the scan runs from the end.
+        for at in sorted(labelled, reverse=True):
+            label = labelled[at]
+            if not any(label in targets.get(earlier, ()) for earlier in range(at)):
+                continue
+            lines = [f"{pad}try:  # forward-goto region (label {label})"]
+            self.active_labels.append(("region", label))
+            try:
+                lines.extend(self.sequence(nodes[:at], indent + 1) or [f"{pad}    pass"])
+            finally:
+                self.active_labels.pop()
+            lines.append(f"{pad}except _FGoto as _g:")
+            lines.append(f"{pad}    if _g.args[0] != '{label}':")
+            lines.append(f"{pad}        raise")
+            lines.append(f"{pad}    pass  # {label} (region exit)")
+            lines.extend(self.sequence(nodes[at + 1 :], indent))
+            return lines
         lines = []
         for node in nodes:
             if isinstance(node, f03.Cycle_Stmt):
@@ -542,6 +572,11 @@ class Statements:
         if self.active_labels and self.active_labels[-1] == label:
             return [f"{pad}break  # goto {label} == exit (label follows end do)"]
         if any(
+            isinstance(entry, tuple) and entry[0] == "cycle" and entry[1] == label
+            for entry in self.active_labels
+        ):
+            return [f"{pad}continue  # goto {label} == cycle (labeled-DO terminator)"]
+        if any(
             isinstance(entry, tuple) and entry[0] == "region" and entry[1] == label
             for entry in self.active_labels
         ):
@@ -676,7 +711,20 @@ class Statements:
     def _loop_body(self, node: Any, indent: int) -> list[str]:
         """The statements between the DO and its END DO, at one more indent."""
         pad = "    " * indent
+        # Every do pushes something, label or None: a goto from deeper than
+        # this loop's own body must not break the wrong loop, and a None on
+        # top is what stops it.
         self.active_labels.append(self.exit_labels.get(id(node)))
+        # `do 100 i = ...` / `100 continue`: a goto to that terminator from
+        # inside the body is a cycle, not an exit.
+        terminator = node.children[-1] if node.children else None
+        cycle_label = (
+            self.label(terminator)
+            if walk(node, f03.Label_Do_Stmt) and isinstance(terminator, f03.Continue_Stmt)
+            else None
+        )
+        if cycle_label:
+            self.active_labels.append(("cycle", cycle_label))
         inner = []
         started = False
         for child in node.children:
@@ -696,6 +744,8 @@ class Statements:
         try:
             body = self.sequence(inner, indent + 1)
         finally:
+            if cycle_label:
+                self.active_labels.pop()
             self.active_labels.pop()
         return body or [f"{pad}    pass"]
 
@@ -1101,5 +1151,12 @@ class Statements:
     @staticmethod
     def label(node: Any) -> str | None:
         item = getattr(node, "item", None)
+        found = getattr(item, "label", None) if item is not None else None
+        if found:
+            return str(found)
+        # A construct carries its label on its first statement, not on itself:
+        # `100 if (x) then` is an If_Construct whose If_Then_Stmt has the 100.
+        first = node.children[0] if getattr(node, "children", None) else None
+        item = getattr(first, "item", None) if first is not None else None
         found = getattr(item, "label", None) if item is not None else None
         return str(found) if found else None
