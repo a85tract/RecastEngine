@@ -161,6 +161,11 @@ class Expressions:
             return repr(str(node)[1:-1])
         if isinstance(node, f03.Logical_Literal_Constant):
             return "True" if ".TRUE." in str(node).upper() else "False"
+        if isinstance(node, f03.Complex_Literal_Constant):
+            # Not through the literal table: a complex literal's two halves are
+            # written where they are read, and the zero-literal rule hoists
+            # reals, not pairs of them.
+            return f"complex({_complex_half(node.children[0])}, {_complex_half(node.children[1])})"
         if isinstance(node, f03.Parenthesis):
             return f"({self.render(node.children[1])})"
         if isinstance(node, f03.Data_Ref):
@@ -625,3 +630,8 @@ def expand_power(base: str, exponent: int) -> str:
         if remaining:
             square = f"({square} * {square})"
     return f"(1.0 / {result})" if negative else str(result)
+
+
+def _complex_half(node: Any) -> str:
+    """One component of a complex literal, kind suffix and D exponent gone."""
+    return str(node).split("_")[0].replace("d", "e").replace("D", "E")

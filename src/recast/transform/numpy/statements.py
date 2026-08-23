@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from recast.fortran._parse import f03, walk
+from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.expressions import Expressions
@@ -206,6 +206,10 @@ class Statements:
             return [f"{pad}pass  # OPEN/CLOSE (I/O stub)"]
         if isinstance(node, (f03.Forall_Construct, f03.Forall_Stmt)):
             return self._forall(node, indent)
+        if isinstance(node, f03.Associate_Construct):
+            return self._associate(node, indent)
+        if isinstance(node, f08.Block_Construct):
+            return self._block(node, indent)
         raise NoRule(f"no statement rule for {type(node).__name__}")
 
     def sequence(self, nodes: list[Any], indent: int) -> list[str]:
@@ -625,6 +629,10 @@ class Statements:
     def _do_construct(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
         do_statement = walk(node, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))[0]
+        if not walk(do_statement, f03.Loop_Control):
+            # `do` with no control at all: an unbounded loop something inside
+            # leaves, which in Fortran is an EXIT or a goto past the END DO.
+            return [f"{pad}while True:", *self._loop_body(node, indent)]
         control = walk(do_statement, f03.Loop_Control)
         if not control:
             raise NoRule("do while / infinite do")
@@ -639,7 +647,7 @@ class Statements:
             lines.extend(body or [f"{pad}    pass"])
             return lines
         if control[0].children[1] is None:
-            raise NoRule("do while / infinite do")
+            raise NoRule("do with a loop control that is neither a count nor a condition")
         variable, bounds = control[0].children[1]
         bounds = list(bounds)
         low = self.expressions.render(bounds[0])
@@ -663,6 +671,11 @@ class Statements:
                     f"{pad}for {name} in range({low}, "
                     f"({high}) + (1 if ({step}) > 0 else -1), {step}):"
                 )
+        return [head, *self._loop_body(node, indent)]
+
+    def _loop_body(self, node: Any, indent: int) -> list[str]:
+        """The statements between the DO and its END DO, at one more indent."""
+        pad = "    " * indent
         self.active_labels.append(self.exit_labels.get(id(node)))
         inner = []
         started = False
@@ -680,9 +693,77 @@ class Statements:
                 continue  # a labeled do's own `NNN continue` terminator
             if started:
                 inner.append(child)
-        body = self.sequence(inner, indent + 1)
-        self.active_labels.pop()
-        return [head, *(body or [f"{pad}    pass"])]
+        try:
+            body = self.sequence(inner, indent + 1)
+        finally:
+            self.active_labels.pop()
+        return body or [f"{pad}    pass"]
+
+    def _associate(self, node: Any, indent: int) -> list[str]:
+        """``associate (a => expr)``: the name is bound once, then read.
+
+        A plain assignment is right for the reads and for writes through a
+        whole-array or component target, which is what CAM and CLOUDSC use it
+        for -- the body sees the same object. It is *not* right for a scalar
+        target written through the association, where Fortran writes back to
+        the selector and Python would rebind the local; nothing in the corpus
+        does that, and it is a refusal worth having when something does.
+        """
+        pad = "    " * indent
+        lines = []
+        for association in walk(node, f03.Association):
+            name = pysafe(str(association.children[0]).lower())
+            lines.append(f"{pad}{name} = {self.expressions.render(association.children[2])}")
+        body = [
+            line
+            for child in node.children
+            if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
+            for line in self.render(child, indent)
+        ]
+        return lines + (body or [f"{pad}pass"])
+
+    def _block(self, node: Any, indent: int) -> list[str]:
+        """``block ... end block``: its declarations, then its statements.
+
+        The declarations become zero-initialised locals at the enclosing
+        indent rather than a scope of their own. Python has no block scope, so
+        a name declared here and also declared outside would collide -- which
+        is a refusal the frontend's own local table would have to raise, and
+        no source in the corpus does it.
+        """
+        pad = "    " * indent
+        lines: list[str] = []
+        for child in node.children:
+            if isinstance(child, (f08.Block_Stmt, f08.End_Block_Stmt)):
+                continue
+            if isinstance(child, f03.Specification_Part):
+                for declaration in walk(child, f03.Type_Declaration_Stmt):
+                    lines.extend(self._block_declaration(declaration, pad))
+                continue
+            lines.extend(self.render(child, indent))
+        return lines or [f"{pad}pass"]
+
+    def _block_declaration(self, declaration: Any, pad: str) -> list[str]:
+        """One declaration inside a BLOCK, as a zero-initialised local."""
+        spelled = str(declaration.children[0]).upper()
+        initial = "0"
+        if "LOGICAL" in spelled:
+            initial = "False"
+        elif "CHARACTER" in spelled:
+            initial = "''"
+        elif "INTEGER" not in spelled:
+            initial = "0.0"
+        lines = []
+        for entity in walk(declaration, f03.Entity_Decl):
+            name = pysafe(str(entity.children[0]).lower())
+            value = initial
+            for child in entity.children:
+                if isinstance(child, f03.Initialization):
+                    value = self.expressions.render(child.children[1])
+            if walk(entity, f03.Explicit_Shape_Spec_List):
+                raise NoRule(f"array {name!r} declared inside a BLOCK")
+            lines.append(f"{pad}{name} = {value}")
+        return lines
 
     # -- calls ----------------------------------------------------------------
 

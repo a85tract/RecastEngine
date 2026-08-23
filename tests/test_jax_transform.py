@@ -113,11 +113,13 @@ def test_the_anchor_still_carries_its_own_deferrals(tmp_path: Path) -> None:
     """``deferred`` is the anchor's, so a site the NumPy backend refused is
     still visible as refused after the port."""
     refused = PORTABLE.replace(
+        "    integer :: i", "    integer :: i\n    character(len=32) :: tag"
+    ).replace(
         "      mass(i) = rho(i) * dz(i)",
-        "      associate (v => rho(i) * dz(i))\n        mass(i) = v\n      end associate",
+        "      mass(i) = rho(i) * dz(i)\n      write(tag, '(F8.2)') mass(i)",
     )
     candidate = port(tmp_path, refused, "port_demo")
-    assert any("Associate" in entry for entry in candidate.deferred)
+    assert any("formatted internal write" in entry for entry in candidate.deferred)
 
 
 def test_the_emitted_artifact_is_reproducible(tmp_path: Path) -> None:

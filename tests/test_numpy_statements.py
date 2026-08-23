@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 
 from recast.fortran import constants, interface
-from recast.fortran._parse import f03, parse, walk
+from recast.fortran._parse import f03, f08, parse, walk
 from recast.fortran.semantics import for_subprogram
 from recast.transform.numpy.expressions import Expressions, Remote
 from recast.transform.numpy.names import for_subprogram as names_for
@@ -130,6 +130,29 @@ contains
     call vec2(w(1, j))
     call consume(n, j, flat)
   end subroutine calls
+
+  subroutine constructs(a, n, s)
+    real(r8), intent(inout) :: a(:)
+    integer, intent(in) :: n
+    real(r8), intent(inout) :: s
+    complex(r8) :: z
+    integer :: i
+    z = (1.0_r8, -2.5_r8)
+    i = 0
+    do
+      i = i + 1
+      if (i >= n) exit
+    end do
+    associate (scaled => 2.0_r8 * s)
+      a(1) = scaled
+    end associate
+    block
+      integer :: k
+      real(r8) :: acc = 1.5_r8
+      k = 2
+      a(k) = acc
+    end block
+  end subroutine constructs
 
   subroutine io(s, a, ios)
     real(r8), intent(inout) :: s
@@ -456,6 +479,47 @@ def test_conflicting_allocate_lower_bounds_are_refused(sources: dict[str, Path])
 def test_deallocate_returns_the_names_to_none(sources: dict[str, Path]) -> None:
     statements, nodes = build(sources["emit_mod"], "alloc")
     assert statements.render(nodes[4], 1) == ["    buf = None", "    idx = None"]
+
+
+# --- constructs the pipeline had rules for and this backend did not ------------
+
+
+def test_a_complex_literal_is_written_as_a_python_complex(sources: dict[str, Path]) -> None:
+    """Not through the literal table: the zero-literal rule hoists reals, not
+    pairs of them, and a kind suffix is not part of the value."""
+    statements, nodes = build(sources["emit_mod"], "constructs")
+    assert statements.render(pick(nodes, f03.Assignment_Stmt, 0), 1) == [
+        "    z = complex(1.0, -2.5)"
+    ]
+
+
+def test_a_do_with_no_control_is_an_unbounded_loop(sources: dict[str, Path]) -> None:
+    statements, nodes = build(sources["emit_mod"], "constructs")
+    rendered = statements.render(pick(nodes, f03.Block_Nonlabel_Do_Construct, 0), 1)
+    assert rendered[0] == "    while True:"
+    assert "            break" in rendered
+
+
+def test_associate_binds_its_names_then_runs_the_body(sources: dict[str, Path]) -> None:
+    statements, nodes = build(sources["emit_mod"], "constructs")
+    assert statements.render(pick(nodes, f03.Associate_Construct, 0), 1) == [
+        "    scaled = (F_2P0 * s)",
+        "    a[0] = scaled",
+    ]
+
+
+def test_a_block_construct_declares_its_locals_and_runs_its_body(
+    sources: dict[str, Path],
+) -> None:
+    """Python has no block scope, so the declarations become locals at the
+    enclosing indent -- initialised, because Fortran leaves them undefined."""
+    statements, nodes = build(sources["emit_mod"], "constructs")
+    assert statements.render(pick(nodes, f08.Block_Construct, 0), 1) == [
+        "    k = 0",
+        "    acc = F_1P5",
+        "    k = 2",
+        "    a[k - 1] = acc",
+    ]
 
 
 # --- calls -------------------------------------------------------------------

@@ -384,12 +384,14 @@ contains
   subroutine refused(x, y)
     real(r8), intent(in)  :: x
     real(r8), intent(out) :: y
-    ! ASSOCIATE has no statement rule, so this block goes to the agent queue
-    ! while the one above still translates. The point of the case is the
-    ! mixture: a Candidate that is partial rather than absent.
-    associate (scaled => 2.0_r8 * x)
-      y = scaled + 1.0_r8
-    end associate
+    ! A formatted internal write is refused on purpose -- an edit descriptor
+    ! is a rounding rule, and guessing one writes different digits than the
+    ! Fortran did -- so this block goes to the agent queue while the one above
+    ! still translates. The point of the case is the mixture: a Candidate that
+    ! is partial rather than absent.
+    character(len=32) :: buffer
+    y = x
+    write(buffer, '(F8.2)') y
   end subroutine refused
 
 end module conformance_defers
