@@ -161,6 +161,10 @@ class Expressions:
             return repr(str(node)[1:-1])
         if isinstance(node, f03.Logical_Literal_Constant):
             return "True" if ".TRUE." in str(node).upper() else "False"
+        if isinstance(node, (f03.Hex_Constant, f03.Octal_Constant, f03.Binary_Constant)):
+            spelled = str(node).upper()
+            base = {"Z": "0x", "O": "0o"}.get(spelled[0], "0b")
+            return base + spelled.split("'")[1]
         if isinstance(node, f03.Ac_Implied_Do):
             return self._implied_do(node)
         if isinstance(node, f03.Complex_Literal_Constant):

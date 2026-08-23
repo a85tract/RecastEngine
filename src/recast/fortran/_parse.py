@@ -25,7 +25,6 @@ from fparser.common.readfortran import FortranFileReader
 from fparser.two import Fortran2003 as f03  # noqa: N813
 from fparser.two import Fortran2008 as f08  # noqa: N813
 from fparser.two.parser import ParserFactory
-from fparser.two.utils import walk
 
 __all__ = ["STD", "digest", "f03", "f08", "parse", "parser", "walk"]
 
@@ -34,6 +33,33 @@ STD = "f2008"
 
 _parsers: dict[str, Any] = {}
 _trees: dict[tuple[str, str], Any] = {}
+
+
+def walk(node: Any, types: Any = object) -> list[Any]:
+    """Every node of the given types under ``node``, in source order.
+
+    A stack rather than fparser's recursion: a CAM kernel nests forty deep in
+    places, and the recursive walk raises RecursionError on it before any
+    rule gets a chance to refuse. Accepts a node, or a list or tuple of them,
+    as fparser's does -- some nodes hold their children in bare containers.
+    """
+    if isinstance(types, type):
+        types = (types,)
+    found: list[Any] = []
+    stack: list[Any] = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (list, tuple)):
+            stack.extend(reversed(item))
+            continue
+        if item is None:
+            continue
+        if isinstance(item, types):
+            found.append(item)
+        children = getattr(item, "children", None)
+        if children and isinstance(children, (list, tuple)):
+            stack.extend(reversed(children))
+    return found
 
 
 def digest(path: Path) -> str:
