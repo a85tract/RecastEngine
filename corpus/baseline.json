@@ -653,7 +653,7 @@
    "units": {
     "fortran:minpack_module": {
      "deferred": 12,
-     "import_error": "NameError: name 'DPMPAR' is not defined",
+     "import_error": "ModuleNotFoundError: No module named 'iso_fortran_env_numpy'",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -729,8 +729,7 @@
    "units": {
     "fortran:array_utils": {
      "deferred": 2,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -755,8 +754,7 @@
     },
     "fortran:arrays": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -838,8 +836,7 @@
     },
     "fortran:csplines": {
      "deferred": 10,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -864,7 +861,7 @@
     },
     "fortran:exponential": {
      "deferred": 1,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -891,8 +888,7 @@
     },
     "fortran:fitpack": {
      "deferred": 8,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -917,8 +913,7 @@
     },
     "fortran:fstring": {
      "deferred": 2,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -969,7 +964,7 @@
     },
     "fortran:gauss": {
      "deferred": 2,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -1022,8 +1017,7 @@
     },
     "fortran:histograms": {
      "deferred": 1,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1048,8 +1042,7 @@
     },
     "fortran:integrate": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1075,8 +1068,7 @@
     },
     "fortran:interpolate": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1180,7 +1172,7 @@
     },
     "fortran:numfor": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1233,8 +1225,7 @@
     },
     "fortran:qadaptive": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1260,8 +1251,7 @@
     },
     "fortran:qsimpson": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1287,8 +1277,7 @@
     },
     "fortran:qtanhsinh": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1314,8 +1303,7 @@
     },
     "fortran:quadpack": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1341,7 +1329,7 @@
     },
     "fortran:randist": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1368,7 +1356,7 @@
     },
     "fortran:random": {
      "deferred": 3,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -1419,8 +1407,9 @@
     },
     "fortran:strings": {
      "deferred": 12,
+     "imports": true,
      "mechanical": false,
-     "parses": false,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1428,7 +1417,6 @@
       "verifier/static.rwset": "failed"
      },
      "stopped_by": "static.rwset",
-     "syntax_error": "<unknown>:9: invalid syntax",
      "verdicts": {
       "static.rwset": {
        "detail": "11/97 blocks disagree: upper/B002, lower/B002, swapcase/B002, count_sub/B008, find/B007 (+6 more)",
@@ -1444,7 +1432,7 @@
     },
     "fortran:uniform": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
+     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1471,8 +1459,7 @@
     },
     "fortran:utils": {
      "deferred": 0,
-     "import_error": "SyntaxError: invalid syntax",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1634,7 +1621,7 @@
    "units": {
     "fortran:root_module": {
      "deferred": 5,
-     "import_error": "NameError: name 'ROOT_MODULE_RK' is not defined",
+     "import_error": "ModuleNotFoundError: No module named 'iso_fortran_env_numpy'",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -1674,8 +1661,7 @@
    "units": {
     "fortran:bvls_module": {
      "deferred": 0,
-     "import_error": "NameError: name 'SLSQP_RK' is not defined",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1700,8 +1686,7 @@
     },
     "fortran:slsqp_core": {
      "deferred": 2,
-     "import_error": "NameError: name 'SLSQP_RK' is not defined",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1726,8 +1711,7 @@
     },
     "fortran:slsqp_kinds": {
      "deferred": 0,
-     "import_error": "NameError: name 'SLSQP_RK' is not defined",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1753,8 +1737,7 @@
     },
     "fortran:slsqp_support": {
      "deferred": 0,
-     "import_error": "NameError: name 'SLSQP_RK' is not defined",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
