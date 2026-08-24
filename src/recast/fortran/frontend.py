@@ -71,6 +71,39 @@ USE_STATEMENT = re.compile(
 )
 """Both spellings, including ``USE, INTRINSIC :: iso_fortran_env``."""
 
+ONLY_ITEM = re.compile(r"^\s*(?:[\w.]+\s*=>\s*)?(\w+)\s*$")
+"""One entry of an ``ONLY`` list, reduced to the name the *used* module knows
+it by -- the right-hand side of a rename. Entries that are not a plain
+identifier (``operator(+)``, ``assignment(=)``) do not match, and are not
+names a module can be asked whether it declares."""
+
+
+def only_names(clause: str | None) -> set[str]:
+    """The remote names an ``ONLY`` clause asks a module for."""
+    if not clause:
+        return set()
+    return {
+        match.group(1).lower() for item in clause.split(",") if (match := ONLY_ITEM.match(item))
+    }
+
+
+def declared_names(record: dict[str, Any]) -> set[str]:
+    """Every name a module's own interface record declares.
+
+    Not the same as everything the module makes visible: a module that
+    ``use``s another re-exports its public entities without declaring one of
+    them. That gap is the point -- it is how a re-export module is told apart
+    from one that answers for itself.
+    """
+    names = {s["name"] for s in record.get("subprograms", ())}
+    names |= set(record.get("generics", {}))
+    names |= set(record.get("types", {}))
+    names |= set(record.get("kind_map", {}))
+    for group in ("module_parameters", "module_state"):
+        names |= {entry["name"] for entry in record.get(group, ())}
+    return {n.lower() for n in names}
+
+
 SKIP_DIRS = frozenset(
     {".git", ".hg", ".svn", "__pycache__", ".venv", "build", "dist", WORKSPACE_DIRNAME}
 )
@@ -289,9 +322,17 @@ class FortranFrontend(Frontend):
                 f"{unit.uid}: {path} did not parse -- {unit.attrs['parse_error']}"
             )
 
+        # Kinds the tree states before kinds the operator assumes: a sibling
+        # file that defines ``wp`` is evidence, and the operator's table is
+        # for what no file in the tree says. The operator still wins where
+        # both speak, because an override nothing can outvote is not one.
+        tree_kinds = self._tree_kinds(path, Path(root))
         record = interface_mod.extract(
             path,
-            kind_assumptions=self.kind_assumptions,
+            kind_assumptions={
+                **{name: found["dtype"] for name, found in tree_kinds.items()},
+                **self.kind_assumptions,
+            },
             intent_overrides=self.intent_overrides,
         )
         consts = constants_mod.extract(path, extern_names=set(self.extern_constants))
@@ -338,6 +379,11 @@ class FortranFrontend(Frontend):
                 "source": str(unit.sources[0]) if unit.sources else str(path),
                 "digest": digest(path),
                 "kind_assumptions": dict(self.kind_assumptions),
+                # Kinds read out of a sibling file rather than assumed. Kept
+                # apart from the assumptions above so that provenance says
+                # which of the two a dtype rests on -- and names the file, so
+                # a wrong precision is one lookup rather than a bisection.
+                "kind_sources": tree_kinds,
                 "extern_constants": sorted(self.extern_constants),
                 "intent_overrides": dict(self.intent_overrides),
                 "externals": dict(self.externals),
@@ -353,6 +399,63 @@ class FortranFrontend(Frontend):
                 "companions_unresolved": unresolved,
             },
         )
+
+    def _tree_kinds(self, path: Path, root: Path) -> dict[str, dict[str, str]]:
+        """Kind parameters this file ``use``s that another file in the tree defines.
+
+        ``integer, parameter :: wp = real64`` in one file and ``real(wp)``
+        in the next is how nearly every library in the corpus spells its
+        working precision, and reading only the second file leaves ``wp``
+        unresolved. Unresolved is the right answer when nothing states it --
+        but here something does, one file over, and the tree is already
+        indexed by module name for the companion walk.
+
+        Returns ``{kind name: {"dtype", "module", "source"}}``, keyed by the
+        name the *defining* module gives it, which is what
+        ``interface.kind_aliases_from_use`` matches a local rename against.
+        Follows a ``use`` onward on the same rule as ``_companions``: always
+        through a bare one, and through an ``only`` list whose names the used
+        module does not itself declare, which is what a re-export module looks
+        like. First definition wins, in module-name order, so two files that
+        disagree give the same answer every run.
+        """
+        from recast.fortran import interface as interface_mod
+        from recast.fortran._parse import f03, parse, walk
+
+        resolved_root = root.resolve()
+        index = self._module_index(resolved_root)
+        found: dict[str, dict[str, str]] = {}
+        pending = [str(u) for u in walk(parse(path), f03.Use_Stmt)]
+        seen: set[str] = set()
+        while pending:
+            statement = pending.pop(0)
+            match = USE_STATEMENT.match(statement.strip())
+            if not match:
+                continue
+            module = match.group("module").lower()
+            if module in seen or module in INTRINSIC_MODULES or module in self.stub_modules:
+                continue
+            seen.add(module)
+            source = index.get(module)
+            if source is None or source.resolve() == path.resolve():
+                continue
+            # A sibling that does not parse costs the kinds it would have
+            # supplied and nothing else; ``_companions`` records the why.
+            record_of = self._readable(source, interface_mod.extract)
+            if record_of is None:
+                continue
+            for name, dtype in sorted(record_of.get("kind_map", {}).items()):
+                found.setdefault(
+                    name,
+                    {
+                        "dtype": dtype,
+                        "module": module,
+                        "source": str(source.relative_to(resolved_root)),
+                    },
+                )
+            if self._carries_on(match, record_of):
+                pending.extend(record_of.get("use_statements", ()))
+        return found
 
     def _companions(
         self, record: dict[str, Any], path: Path, root: Path
@@ -432,9 +535,40 @@ class FortranFrontend(Frontend):
                 "constants": constants_of,
                 "renames": renames,
             }
-            if match.group("only") is None:
+            if self._carries_on(match, record_of):
                 pending.extend(record_of.get("use_statements", ()))
         return list(found.values()), unresolved
+
+    @staticmethod
+    def _carries_on(match: re.Match[str], record: dict[str, Any]) -> bool:
+        """Whether to follow a resolved module's own ``use`` statements.
+
+        A bare ``use`` always carries: every public entity of that module is
+        visible here, including the ones it use-associated itself.
+
+        A ``use, only:`` carries nothing further *as a rule* -- but only when
+        the module can answer for the names asked of it. A module that is
+        nothing but ``use basic; use strings`` re-exports; the only-list then
+        names entities it does not declare, and stopping there leaves them
+        unresolved, as external calls and UNKNOWN kinds, with the file that
+        defines them sitting in the same tree. So the walk continues exactly
+        when something asked for is not there.
+        """
+        if match.group("only") is None:
+            return True
+        return bool(only_names(match.group("only")) - declared_names(record))
+
+    def _readable(self, source: Path, extract: Any) -> dict[str, Any] | None:
+        """``_extracted`` for a file this unit only consults, not one it is.
+
+        ``None`` where the extraction raised: fparser reports an unparsable
+        file with any of several unrelated exception types, and a sibling's
+        syntax is not a reason to fail the unit that merely ``use``s it.
+        """
+        try:
+            return self._extracted(source, "interface", extract)
+        except Exception:
+            return None
 
     def _extracted(self, source: Path, kind: str, extract: Any) -> dict[str, Any]:
         """One extraction per (file revision, kind), however many units want it.

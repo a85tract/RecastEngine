@@ -135,5 +135,30 @@ whether it is ``None``, and a gate that saw one and not the other would report
 a spurious mismatch on every optional argument.
 """
 
+SUBROUTINE = frozenset(
+    {
+        "cpu_time",
+        "date_and_time",
+        "execute_command_line",
+        "get_command",
+        "get_command_argument",
+        "get_environment_variable",
+        "move_alloc",
+        "mvbits",
+        "random_number",
+        "random_seed",
+        "system_clock",
+    }
+)
+"""Intrinsics invoked by ``call``, not in an expression.
+
+Kept apart because every one of them *writes* an argument, which is what
+makes them the wrong thing to stub away: the pipeline this was migrated from
+renders ``call random_number(x)`` as ``pass``, and ``x`` then keeps whatever
+it held while the read/write gate is told nothing happened. Naming them here
+lets a call to one refuse as the intrinsic it is rather than as somebody
+else's missing library.
+"""
+
 ALL = ELEMENTAL | TRANSFORMATIONAL | STATE_QUERY
 """Every name this frontend recognises as an intrinsic rather than a symbol."""
