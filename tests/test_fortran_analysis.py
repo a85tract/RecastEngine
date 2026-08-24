@@ -158,6 +158,36 @@ def test_derived_type_components_report_allocatable_and_pointer(tmp_path: Path) 
     assert (grid["dx"]["allocatable"], grid["dx"]["pointer"]) == (False, False)
 
 
+def test_a_component_carries_a_shape_spelled_on_the_dimension_attribute(tmp_path: Path) -> None:
+    """``real, dimension(4) :: edge`` says what ``real :: edge(4)`` says, and
+    reading only the second reported the component as a scalar -- not a
+    refusal but a wrong answer, which every reader of the record inherits.
+    Where an entity carries its own shape it wins, because Fortran lets
+    ``dimension(4) :: a, b(7)`` give the two different ones."""
+    src = _write(
+        tmp_path,
+        "comps.f90",
+        """\
+module comp_mod
+  implicit none
+  type box_t
+    real, dimension(4) :: viaattr
+    real :: viaentity(4)
+    real, dimension(4) :: shared, own(7)
+    real, dimension(:), allocatable :: dyn
+  end type box_t
+end module comp_mod
+""",
+    )
+    box = interface.extract(src)["types"]["box_t"]
+    four = [{"lb": "1", "ub": "4"}]
+    assert box["viaattr"]["dims"] == four
+    assert box["viaentity"]["dims"] == four
+    assert box["shared"]["dims"] == four
+    assert box["own"]["dims"] == [{"lb": "1", "ub": "7"}]
+    assert box["dyn"]["dims"] == [{"lb": "1", "ub": None}], "a deferred shape is still rank 1"
+
+
 def test_kinds_resolve_from_both_a_use_rename_and_selected_real_kind(tmp_path: Path) -> None:
     record = interface.extract(_write(tmp_path, "shapes.f90", SHAPES), kind_assumptions=KINDS)
     assert record["kind_map"]["r8"] == "float64", "use precision_mod, only: r8 => wp_r8"
@@ -181,6 +211,104 @@ def test_kind_assumptions_supply_what_the_tree_does_not_contain(tmp_path: Path) 
     assert interface.extract(src, kind_assumptions=KINDS)["kind_map"].get("r8") is None
     assumed = interface.extract(src, kind_assumptions={"other_r8": "float64"})
     assert assumed["kind_map"]["r8"] == "float64"
+
+
+SPELLINGS = """\
+module spellings_mod
+  use, intrinsic :: iso_fortran_env
+  implicit none
+  integer, parameter :: rk = real64
+  integer, parameter :: wp = rk
+  integer, parameter :: sp = real32
+  integer, parameter :: qp = real128
+  integer, parameter :: dp = kind(0.d0)
+  integer, parameter :: def = kind(1.0)
+  integer, parameter :: big = selected_int_kind(18)
+  integer, parameter :: small = selected_int_kind(9)
+contains
+  subroutine spelled(a, b, c, n, m)
+    real(wp), intent(in) :: a
+    real(dp), intent(in) :: b
+    real(qp), intent(in) :: c
+    integer(big), intent(in) :: n
+    integer(small), intent(in) :: m
+  end subroutine spelled
+end module spellings_mod
+"""
+
+
+def test_kinds_spelled_by_iso_fortran_env_resolve(tmp_path: Path) -> None:
+    """``real64`` is how Fortran written since 2008 spells a double, and a
+    frontend that only reads ``selected_real_kind`` leaves every argument of
+    such a module untyped -- which reaches the f2py oracle as a dummy it
+    cannot declare, and drops the subprogram out of the bit-exact gate."""
+    record = interface.extract(_write(tmp_path, "spellings.f90", SPELLINGS))
+    assert record["kind_map"]["rk"] == "float64"
+    assert record["kind_map"]["sp"] == "float32"
+    assert record["kind_map"]["dp"] == "float64", "kind(0.d0)"
+    assert record["kind_map"]["def"] == "float32", "kind(1.0) is default real"
+
+
+def test_a_kind_named_after_another_kind_resolves(tmp_path: Path) -> None:
+    """``wp = rk`` where ``rk = real64``. Both are module parameters, and the
+    alias is often declared before the thing it aliases, so one pass down the
+    declarations is not enough."""
+    record = interface.extract(_write(tmp_path, "spellings.f90", SPELLINGS))
+    assert record["kind_map"]["wp"] == "float64"
+    args = {a["name"]: a for a in record["subprograms"][0]["args"]}
+    assert args["a"]["dtype"] == "float64"
+
+
+def test_real128_stays_unresolved(tmp_path: Path) -> None:
+    """numpy has no portable 128-bit float. Reporting float64 for one would be
+    exactly the silent precision loss the UNKNOWN marker exists to prevent."""
+    record = interface.extract(_write(tmp_path, "spellings.f90", SPELLINGS))
+    assert "qp" not in record["kind_map"]
+    args = {a["name"]: a for a in record["subprograms"][0]["args"]}
+    assert args["c"]["dtype"] == "UNKNOWN_REAL_KIND(qp)"
+
+
+def test_integer_kinds_are_read_by_width_not_assumed_default(tmp_path: Path) -> None:
+    """``selected_int_kind(18)`` does not fit in 32 bits. An unresolvable
+    integer kind still reports the default -- that is where the pipeline
+    stood -- but a resolvable one is not thrown away."""
+    record = interface.extract(_write(tmp_path, "spellings.f90", SPELLINGS))
+    args = {a["name"]: a for a in record["subprograms"][0]["args"]}
+    assert args["n"]["dtype"] == "int64"
+    assert args["m"]["dtype"] == "int32"
+
+
+def test_a_real_does_not_take_its_kind_from_an_integer_kind_parameter(tmp_path: Path) -> None:
+    """One kind map holds both widths now. Reading it without the base type
+    would turn ``real(big)`` into an int64 argument."""
+    record = interface.extract(_write(tmp_path, "spellings.f90", SPELLINGS))
+    assert interface.dtype_of("REAL", "big", record["kind_map"]) == "UNKNOWN_REAL_KIND(big)"
+
+
+def test_an_assumed_size_dummy_has_the_rank_it_was_declared_with(tmp_path: Path) -> None:
+    """``dx(*)`` is one dimension. fparser hangs two ``None`` children off the
+    node, and a walk that descends into them reports rank 2 -- which the
+    read/write check then refuses as a sequence-association rank mismatch, and
+    the f2py wrapper declares as ``dx(None, None)``, which is not Fortran."""
+    src = _write(
+        tmp_path,
+        "blas.f90",
+        """\
+module blas_mod
+  implicit none
+contains
+  subroutine dscal(n, da, dx, work)
+    integer, intent(in) :: n
+    real, intent(in) :: da
+    real, intent(inout) :: dx(*)
+    real, intent(inout) :: work(3, *)
+  end subroutine dscal
+end module blas_mod
+""",
+    )
+    args = {a["name"]: a for a in interface.extract(src)["subprograms"][0]["args"]}
+    assert args["dx"]["dims"] == [{"lb": "1", "ub": None}]
+    assert args["work"]["dims"] == [{"lb": "1", "ub": "3"}, {"lb": "1", "ub": None}]
 
 
 def test_generic_interfaces_map_to_their_specific_procedures(tmp_path: Path) -> None:
@@ -1060,3 +1188,100 @@ end module allocs
     assert [d["lb"] for d in bounds["agree"]] == ["0"], "two allocates that agree are one answer"
     assert bounds["clash"] == CONFLICTING_BOUNDS, "0 and 2 cannot both be the shift"
     assert bounds["local_bound"] == CONFLICTING_BOUNDS, "a local of the allocating routine"
+
+
+DATA_CONSTS = """\
+module datac_mod
+  implicit none
+contains
+  subroutine seeded(out)
+    real, intent(out) :: out(3)
+    real :: table(3)
+    integer :: flag
+    data table /1.5, 2.5, 3.5/
+    data flag /7/
+    out = table * flag
+  end subroutine seeded
+end module datac_mod
+"""
+
+
+def test_a_data_statement_s_values_are_hoisted_like_any_other_literal(tmp_path: Path) -> None:
+    """DATA lives in the specification part, so the sweep over the execution
+    part never sees its values. Without a name here the translation of the
+    DATA statement has nothing to emit and refuses -- on statements the
+    pipeline translates."""
+    src = _write(tmp_path, "datac.f90", DATA_CONSTS)
+    record = constants.extract(src)
+    where = {
+        name: entry["locations"]
+        for name, entry in record["hoisted_literals"].items()
+        if any(loc.endswith(":data") for loc in entry["locations"])
+    }
+    assert where, "no literal was attributed to a DATA statement"
+    assert record["literal_map"]["seeded"]["1.5"] in where
+    assert record["literal_map"]["seeded"]["7"] in where
+
+
+def test_a_data_statement_writes_its_objects_and_reads_its_values(tmp_path: Path) -> None:
+    """The general statement rule sees names in expression positions, so it
+    reported a DATA object as a read and nothing as written -- the exact
+    inverse of what the emitted assignments do, and the read/write gate
+    compares against exactly this."""
+    from recast.fortran._parse import parse
+    from recast.fortran.rwset import block_rwsets, scope_for
+
+    src = _write(tmp_path, "datac.f90", DATA_CONSTS)
+    record = interface.extract(src)
+    subprogram = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "seeded"
+    )
+    blocks = {b["id"]: b for b in block_rwsets(subprogram, scope_for(record, "seeded"))}
+    assert blocks["D001"] == {"id": "D001", "reads": [], "writes": ["table"]}
+    assert blocks["D002"] == {"id": "D002", "reads": [], "writes": ["flag"]}
+
+
+ARRAY_PARAMS = """\
+module arrp_mod
+  implicit none
+contains
+  subroutine sides(n)
+    integer, intent(in) :: n
+    integer, dimension(4), parameter :: imin = (/1, 0, 1, 1/)
+    integer, dimension(4), parameter :: shift = (/-1, -1, 0, 1/)
+    integer, dimension(4), parameter :: imax = (/nc, nc, nc, nc + 1/)
+    real, dimension(2), parameter :: gains = (/1.5_r8, 2.5_r8/)
+  end subroutine sides
+end module arrp_mod
+"""
+
+
+def test_an_array_parameter_shaped_on_the_attribute_still_gets_a_value(tmp_path: Path) -> None:
+    """``integer, dimension(4), parameter :: imin = (/1,0,1,1/)`` carries its
+    shape on the attribute, so the declaration path -- which looks for a shape
+    on the entity -- passed it by, and it was then skipped as an "array
+    constructor over more than literals" when every element is one."""
+    record = constants.extract(_write(tmp_path, "arrp.f90", ARRAY_PARAMS))
+    by_name = {p["name"]: p for p in record["local_parameters"]}
+    assert by_name["imin"]["kind"] == "expr"
+    assert by_name["imin"]["payload"] == [{"t": "spelled", "v": "np.array([1, 0, 1, 1])"}]
+
+
+def test_a_negative_element_survives_fparser_s_spacing(tmp_path: Path) -> None:
+    """fparser writes ``-1`` as ``- 1``. The spacing is the parser's, not the
+    source's, and an element is a single literal or it is not one at all."""
+    record = constants.extract(_write(tmp_path, "arrp.f90", ARRAY_PARAMS))
+    by_name = {p["name"]: p for p in record["local_parameters"]}
+    assert by_name["shift"]["payload"] == [{"t": "spelled", "v": "np.array([-1, -1, 0, 1])"}]
+
+
+def test_a_constructor_over_names_says_which_name(tmp_path: Path) -> None:
+    """``(/nc, nc, nc, nc + 1/)`` cannot be evaluated here, and the reason has
+    to name ``nc`` the way every other unevaluable expression does -- "more
+    than literals" said only that something was wrong."""
+    record = constants.extract(_write(tmp_path, "arrp.f90", ARRAY_PARAMS))
+    by_name = {p["name"]: p for p in record["local_parameters"]}
+    assert by_name["imax"]["kind"] == "skip"
+    assert "unknown name 'nc'" in by_name["imax"]["payload"]

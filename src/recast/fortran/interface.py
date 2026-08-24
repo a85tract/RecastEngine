@@ -49,6 +49,28 @@ class UnknownOverride(RecastError):
 
 
 KIND_FN_RE = re.compile(r"selected_real_kind\s*\(\s*(\d+)", re.I)
+INT_KIND_FN_RE = re.compile(r"selected_int_kind\s*\(\s*(\d+)", re.I)
+KIND_OF_RE = re.compile(r"^kind\(([^)]*)\)$", re.I)
+INT_LITERAL_RE = re.compile(r"^[-+]?\d+$")
+REAL_LITERAL_RE = re.compile(r"^[-+]?(\d+\.\d*|\.\d+|\d+)([de][-+]?\d+)?$")
+
+ISO_FORTRAN_ENV_KINDS = {
+    "real32": "float32",
+    "real64": "float64",
+    "int8": "int8",
+    "int16": "int16",
+    "int32": "int32",
+    "int64": "int64",
+}
+"""The named constants of the intrinsic ``iso_fortran_env`` module, which is
+how most of the Fortran written since 2008 spells a kind. ``real128`` is
+deliberately absent: numpy has no portable 128-bit float, so a translation
+that took one for float64 would be the silent precision loss ``dtype_of``
+exists to refuse.
+
+A file that declares its own parameter of one of these names shadows the
+intrinsic, so this table is consulted only after the file's own parameters
+have been resolved."""
 
 
 def node_span(node: Any) -> tuple[int | None, int | None]:
@@ -80,6 +102,18 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
     if spec_node is None:
         return None
     dims: list[dict[str, str | None]] = []
+    if isinstance(spec_node, f03.Assumed_Size_Spec):
+        # ``x(*)`` and ``x(3,*)``. Taken here rather than in the loop below,
+        # because fparser gives this node children -- the leading explicit
+        # dimensions, and the last dimension's lower bound -- and descending
+        # into them reads the assumed-size dimension as a pair of ``None``s
+        # and reports a rank the declaration does not have. The ``*`` itself
+        # is not a child: it is the node.
+        leading, lower = spec_node.children
+        if leading is not None:
+            dims.extend(dims_of(leading) or [])
+        dims.append({"lb": str(lower) if lower is not None else "1", "ub": None})
+        return dims
     children = getattr(spec_node, "children", None)
     if children is None:
         children = [spec_node]
@@ -90,7 +124,7 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
         elif isinstance(d, f03.Assumed_Shape_Spec | f03.Deferred_Shape_Spec):
             dims.append({"lb": "1", "ub": None})
         elif isinstance(d, f03.Assumed_Size_Spec):
-            dims.append({"lb": "1", "ub": None})
+            dims.extend(dims_of(d) or [])
         else:
             dims.append({"lb": "1", "ub": str(d)})
     return dims
@@ -112,19 +146,71 @@ def kind_aliases_from_use(ast: Any, kind_dtypes: dict[str, str]) -> dict[str, st
     return aliases
 
 
+def _kind_dtype(init: str, resolved: dict[str, str]) -> str | None:
+    """One kind parameter's initializer -> a dtype, or ``None`` if it is not
+    one this reads. ``init`` is already lowercased and stripped of spaces.
+
+    Four spellings of the same fact, and the aliasing between them. Fortran
+    lets a kind be named (``selected_real_kind(12)``), imported from
+    ``iso_fortran_env`` (``real64``), taken from a literal (``kind(0.d0)``),
+    or written as the bare kind number -- and one kind parameter is often
+    just a shorter name for another, which is why ``resolved`` is consulted
+    first and why the caller iterates.
+    """
+    if init in resolved:  # wp = slsqp_rk
+        return resolved[init]
+    m = KIND_FN_RE.search(init)
+    if m:
+        return "float64" if int(m.group(1)) >= 10 else "float32"
+    m = INT_KIND_FN_RE.search(init)
+    if m:
+        # selected_int_kind(r) is decimal *range*; 9 is the most a 32-bit
+        # integer holds.
+        return "int64" if int(m.group(1)) > 9 else "int32"
+    if init in ISO_FORTRAN_ENV_KINDS:
+        return ISO_FORTRAN_ENV_KINDS[init]
+    m = KIND_OF_RE.match(init)
+    if m:
+        literal = m.group(1)
+        if INT_LITERAL_RE.match(literal):
+            return "int32"  # kind(1) -- default integer
+        if REAL_LITERAL_RE.match(literal):
+            # kind(0.d0) is double, kind(1.0) is default real.
+            return "float64" if "d" in literal else "float32"
+        return None
+    if init == "8":
+        return "float64"
+    if init == "4":
+        return "float32"
+    return None
+
+
 def resolve_kind_map(module_params: list[dict[str, Any]]) -> dict[str, str]:
-    """Map kind-parameter names (``r8``) to numpy dtype strings."""
-    kind_map: dict[str, str] = {}
-    for p in module_params:
-        init = (p.get("init_expr") or "").lower().replace(" ", "")
-        m = KIND_FN_RE.search(init)
-        if m:
-            kind_map[p["name"]] = "float64" if int(m.group(1)) >= 10 else "float32"
-        elif init in ("8", "kind(1.d0)", "kind(1.0d0)"):
-            kind_map[p["name"]] = "float64"
-        elif init == "4":
-            kind_map[p["name"]] = "float32"
-    return kind_map
+    """Map kind-parameter names (``r8``) to numpy dtype strings.
+
+    Passes over the parameters until one changes nothing, because a kind
+    parameter may be spelled in terms of another declared after it
+    (``slsqp_rk = real64`` then ``wp = slsqp_rk``) and a single pass would
+    leave the second unresolved -- which reaches the f2py wrapper as a dummy
+    argument whose type it cannot spell, and the whole subprogram drops out
+    of the bit-exact gate over a name.
+    """
+    resolved: dict[str, str] = {}
+    pending = {
+        p["name"]: (p.get("init_expr") or "").lower().replace(" ", "") for p in module_params
+    }
+    while pending:
+        progressed = False
+        for name, init in list(pending.items()):
+            dtype = _kind_dtype(init, resolved)
+            if dtype is None:
+                continue
+            resolved[name] = dtype
+            del pending[name]
+            progressed = True
+        if not progressed:
+            break
+    return resolved
 
 
 def dtype_of(base_type: str | None, kind: str | None, kind_map: dict[str, str]) -> str:
@@ -134,16 +220,29 @@ def dtype_of(base_type: str | None, kind: str | None, kind_map: dict[str, str]) 
     defaulting to float64. A silently wrong precision is the one failure this
     stage can cause that no downstream gate would catch as a *type* error --
     it shows up much later as a tolerance failure nobody can explain.
+
+    The kind map is read by base type: a name in it that resolved to an
+    integer width is not an answer for a ``real``, and vice versa. Mixing them
+    would let one bad parameter turn a float64 argument into an int64 one,
+    which is the same silent corruption in a different direction.
     """
     bt = (base_type or "").upper()
     k = (kind or "").lower()
     if bt == "REAL":
-        if k in kind_map:
+        if kind_map.get(k, "").startswith("float"):
             return kind_map[k]
         if k in ("8", ""):
             return "float64" if k == "8" else "float32"
         return f"UNKNOWN_REAL_KIND({k})"
     if bt == "INTEGER":
+        if kind_map.get(k, "").startswith("int"):
+            return kind_map[k]
+        if k == "8":
+            return "int64"
+        # An unresolved integer kind still reports the default rather than an
+        # UNKNOWN marker: this is where the pipeline stood, every integer in
+        # the corpus so far is a 32-bit one, and turning the default into a
+        # refusal is a change to make against evidence, not in passing.
         return "int32"  # gfortran default integer
     if bt == "LOGICAL":
         return "bool"
@@ -535,10 +634,20 @@ def _derived_types(mod_spec: Any, kind_map: dict[str, str]) -> dict[str, Any]:
                     break
             attr_list = decl.children[1]
             attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
+            # ``real, dimension(4) :: edge`` says the same as ``real :: edge(4)``,
+            # and a component that carries its shape on the attribute rather
+            # than on the entity was reported as a scalar -- not a refusal, a
+            # wrong answer, and one every reader of the record inherits.
+            attr_dims = None
+            for spec in walk(attr_list, f03.Dimension_Component_Attr_Spec):
+                attr_dims = dims_of(spec.children[1])
             for ent in walk(decl, f03.Component_Decl):
                 comps[str(ent.children[0]).lower()] = {
                     "dtype": dtype_of(base, kind, kind_map),
-                    "dims": dims_of(ent.children[1]),
+                    # The entity's own shape wins where it has one: Fortran
+                    # lets ``dimension(4) :: a, b(7)`` give ``b`` a different
+                    # one from the attribute's.
+                    "dims": dims_of(ent.children[1]) or attr_dims,
                     "allocatable": "ALLOCATABLE" in attrs,
                     "pointer": "POINTER" in attrs,
                 }
@@ -609,6 +718,12 @@ def extract(
 
     kind_map = resolve_kind_map(module_parameters)
     for k, v in kind_aliases_from_use(ast, kind_dtypes).items():
+        kind_map.setdefault(k, v)
+    # A bare ``use kinds_mod`` names nothing, so the alias pass above sees no
+    # local name to bind: every public entity of that module is visible here
+    # under its own name. Supplied kinds therefore also stand under their own
+    # names, behind anything this file declares itself.
+    for k, v in kind_dtypes.items():
         kind_map.setdefault(k, v)
     for rec in module_parameters + module_state:
         rec["dtype"] = dtype_of(rec["fortran_type"], rec["kind"], kind_map)

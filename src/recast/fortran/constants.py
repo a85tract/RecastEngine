@@ -39,6 +39,11 @@ _ARRAY_MODULE_RE = re.compile(rf"[0-9eE.+\-*/\s]*\[{_ARRAY_ELEMENTS}\][0-9eE.+\-
 _ARRAY_LOCAL_RE = re.compile(rf"\[{_ARRAY_ELEMENTS}\]")
 _ARRAY_OLD_FORM = re.compile(r"\(/(.*)/\)", re.S)
 _KIND_SUFFIX_RE = re.compile(r"_\w+")
+_ARRAY_CTOR_OLD = re.compile(r"\(/(.+)/\)", re.S)
+_ARRAY_CTOR_NEW = re.compile(r"\[(.+)\]", re.S)
+_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+_LEADING_DOT = re.compile(r"^(-?)\.")
+_NUMERIC = re.compile(r"-?\d+\.?\d*(?:e[+-]?\d+)?")
 _TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
 
 
@@ -290,10 +295,25 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     if compact.lower() in known_names:
         return "ref", compact.lower()
 
-    # An array constructor that ``_array_literal`` did not take is one holding
-    # more than literals -- a name, an implied do. The token walk below would
-    # spell its delimiters as arithmetic, so it stops here instead.
+    # An array constructor. ``_array_literal`` takes the ones whose *shape*
+    # is on the entity; this takes the rest, which is how a parameter written
+    # ``integer, dimension(4), parameter :: side = (/1,0,1,1/)`` gets a value
+    # at all -- it was being skipped as "more than literals" when every
+    # element is one.
+    spelled = _array_elements(e)
+    if spelled is not None:
+        return "expr", [{"t": "spelled", "v": spelled}]
+
+    # One that holds more than literals -- a name, an implied do. The token
+    # walk below would spell its delimiters as arithmetic, so it stops here.
+    # Naming the first unresolved name says which one, the way every other
+    # unevaluable expression here does; "more than literals" said only that
+    # something was wrong.
     if "(/" in compact or "[" in compact:
+        for name in _TOKEN_RE.findall(e):
+            if name[0].isalpha() or name[0] == "_":
+                if name.lower() not in known_names:
+                    return "skip", f"unknown name {name!r} in expression: {e}"
         return "skip", f"array constructor over more than literals: {e}"
 
     # A constant expression over earlier parameters. Re-emitted token-wise so
@@ -331,6 +351,68 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
         return "expr", out
 
     return "skip", f"unevaluated expression: {e}"
+
+
+def _array_elements(init: str) -> str | None:
+    """A constructor of literal elements, as ``np.array([...])``, or ``None``.
+
+    Both spellings, split at top-level commas so a nested call does not break
+    the scan. Character elements are allowed. An element that is not a literal
+    makes the whole thing not-an-array, which is the honest answer: this stage
+    cannot evaluate a name.
+    """
+    compact = init.strip()
+    inner = None
+    for pattern in (_ARRAY_CTOR_OLD, _ARRAY_CTOR_NEW):
+        match = pattern.fullmatch(compact)
+        if match:
+            inner = match.group(1)
+            break
+    if inner is None:
+        return None
+    elements, depth, current = [], 0, ""
+    for character in inner:
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth -= 1
+        elif character == "," and depth == 0:
+            elements.append(current.strip())
+            current = ""
+            continue
+        current += character
+    if current.strip():
+        elements.append(current.strip())
+
+    spelled = []
+    for element in elements:
+        quoted = _QUOTED.fullmatch(element)
+        if quoted:
+            spelled.append(
+                f"'{quoted.group(1) if quoted.group(1) is not None else quoted.group(2)}'"
+            )
+            continue
+        # fparser writes a negative literal as ``- 1``; the spacing is its
+        # own, not the source's, and an element is a single literal or it is
+        # not one at all.
+        cleaned = _LEADING_DOT.sub(
+            r"\g<1>0.",
+            _KIND_SUFFIX_RE.sub("", element).lower().replace("d", "e").replace(" ", ""),
+        )
+        if not _NUMERIC.fullmatch(cleaned):
+            return None
+        if "." in cleaned or "e" in cleaned:
+            spelled.append(
+                f"np.float64(np.float32('{cleaned}'))"
+                if is_default_real(element)
+                else f"np.float64('{cleaned}')"
+            )
+        else:
+            spelled.append(cleaned)
+    if not spelled:
+        return None
+    dtype = ", dtype=object" if any(s.startswith("'") for s in spelled) else ""
+    return f"np.array([{', '.join(spelled)}]{dtype})"
 
 
 def _array_literal(init: str, module_level: bool) -> str | None:
@@ -487,6 +569,21 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
                     if is_real or is_whitelisted(text, is_real):
                         continue
                     hoist(text, False, f"{sname}:decl", sname)
+
+            # A DATA statement's values are literals like any other, and they
+            # live in the specification part, so the sweep over the execution
+            # part below never sees them. Without a name here the translation
+            # of the DATA statement has nothing to emit and refuses -- which
+            # is what it was doing, on statements the pipeline translates.
+            for data in walk(spec, f03.Data_Stmt):
+                for group in data.children or ():
+                    children = getattr(group, "children", None)
+                    if not children or len(children) < 2:
+                        continue
+                    for text, is_real, _line in literals_with_lines(children[1]):
+                        if is_whitelisted(text, is_real):
+                            continue
+                        hoist(text, is_real, f"{sname}:data", sname)
 
         exec_part = next((c for c in sub.children if isinstance(c, f03.Execution_Part)), None)
         if exec_part is None:

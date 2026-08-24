@@ -419,9 +419,50 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
     return reads, writes
 
 
+def _data_rwset(statement: Any, scope: Scope) -> tuple[set[str], set[str]]:
+    """``(reads, writes)`` for one DATA statement.
+
+    Not the general statement rule: a DATA object list is written, not read,
+    and the general rule -- which sees names in expression positions --
+    reports the objects as reads and nothing as written, the exact inverse of
+    what the emitted assignments do. Subscripts on an object are reads, as
+    they are on any assignment target, and so is everything in the value list.
+    """
+    reads: set[str] = set()
+    writes: set[str] = set()
+    for group in statement.children or ():
+        children = getattr(group, "children", None)
+        if not children or len(children) < 2:
+            continue
+        objects, values = children[0], children[1]
+        for target in walk(objects, (f03.Name, f03.Part_Ref, f03.Data_Ref)):
+            if isinstance(target, f03.Name):
+                writes.add(str(target).lower())
+                continue
+            writes.add(str(target.children[0]).lower())
+            for child in target.children[1:]:
+                reads.update(expr_reads(child, scope))
+            break
+        reads.update(expr_reads(values, scope))
+    return reads - writes, writes
+
+
 def block_rwsets(sub: Any, scope: Scope) -> list[dict[str, Any]]:
-    """``[{id, reads, writes}, ...]`` for every block of one subprogram."""
+    """``[{id, reads, writes}, ...]`` for every block of one subprogram.
+
+    DATA statements first, under their own ``D``-numbered ids. They sit in
+    the specification part, so ``chunk_subprogram`` -- which walks the
+    execution part -- never sees them, and a translation that emits them as
+    assignments had no read/write set to be checked against. That was not
+    visible while every DATA statement in reach was being refused for want of
+    a hoisted literal.
+    """
     out = []
+    specification = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
+    if specification is not None:
+        for at, statement in enumerate(walk(specification, f03.Data_Stmt), start=1):
+            reads, writes = _data_rwset(statement, scope)
+            out.append({"id": f"D{at:03d}", "reads": sorted(reads), "writes": sorted(writes)})
     for block_id, node, _span in chunk_subprogram(sub):
         reads, writes = rwset(node, scope)
         out.append({"id": block_id, "reads": sorted(reads), "writes": sorted(writes)})
