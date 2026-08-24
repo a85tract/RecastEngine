@@ -56,6 +56,25 @@ INDEX_RE = re.compile(r"\[\d+\]")
 # Adding an entry here is a claim that the new answer is better than the old
 # one, and the reason is the whole content of that claim. Anything that cannot
 # be defended in a sentence should be a bug report, not an entry.
+CAM_KINDS = {
+    "r8": "float64",
+    "r4": "float32",
+    "i8": "int64",
+    "shr_kind_r8": "float64",
+    "shr_kind_r4": "float32",
+    "shr_kind_i8": "int64",
+    "shr_kind_i4": "int32",
+}
+"""What the extension supplies at run time, spelled out because this harness
+talks to the analysis directly with no plugin in the path.
+
+The pipeline hardcodes these in ``extract_interface.SHR_KIND_DTYPES``; this
+frontend takes them as configuration and, given none, reports every ``r8`` as
+``UNKNOWN_REAL_KIND(r8)`` -- which is the right answer to the wrong question
+and made 1,341 of the differences this harness reported.
+"""
+
+
 ACCEPTED: list[tuple[str, Any, Any, str]] = [
     (
         "subprograms[].args[].intent_override",
@@ -77,6 +96,14 @@ ACCEPTED: list[tuple[str, Any, Any, str]] = [
         [],
         ["estbl"],
         "the other half of the deallocate reclassification above",
+    ),
+    (
+        "module_parameters[].dtype",
+        "int32",
+        "int64",
+        "mg_utils limiter_off: integer(i8), parameter = INT(Z'7FF1111111111111', i8). "
+        "The pipeline types every INTEGER int32 whatever its kind, so a deliberately "
+        "64-bit NaN sentinel came back 32-bit -- the value does not fit",
     ),
 ]
 
@@ -206,6 +233,7 @@ def main() -> int:
         table = intents.get(case.name)
         got = new_interface.extract(
             src,
+            kind_assumptions=CAM_KINDS,
             intent_overrides=json.loads((root / table).read_text()) if table else None,
         )
         got.pop("source_file")
