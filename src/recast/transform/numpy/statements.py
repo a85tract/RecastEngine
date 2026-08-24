@@ -45,6 +45,8 @@ from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
 
+DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
+
 __all__ = ["REFUSED", "Statements"]
 
 REFUSED = (NoRule, Unanalyzable)
@@ -56,9 +58,25 @@ ALLOCATED_DTYPES = {
     "int32": "np.int32",
     "int64": "np.int64",
     "bool": "np.bool_",
+    "str": "object",
 }
 """Declared dtype -> the dtype an ``allocate`` requests. Anything else gets
-``np.float64``, which is what the declaration meant if it said nothing."""
+``np.float64``, which is what the declaration meant if it said nothing --
+except a derived type, which is not a dtype at all; see ``derived_array``."""
+
+
+def derived_array(type_name: str, extents: list[str], known: dict[str, Any]) -> str | None:
+    """An array of a derived type, as an object array already filled.
+
+    ``np.empty(dtype=object)`` would hold ``None``s, and the first
+    ``x(i)%c = ...`` against one is an AttributeError -- Fortran has the
+    elements existing the moment the array does. Returns ``None`` for a type
+    nothing here defines, which leaves the caller to say so its own way.
+    """
+    if type_name not in known:
+        return None
+    count = extents[0] if len(extents) == 1 else f"np.prod(({', '.join(extents)}))"
+    return f"np.array([_make_{type_name}() for _ in range({count})], dtype=object)"
 
 
 UNIT_NAME = re.compile(r"[a-z_]\w*")
@@ -602,6 +620,15 @@ class Statements:
                 else None
             )
             declaration = self.semantics.declaration(name) if name else None
+            derived = DERIVED_TYPE.match(str((declaration or {}).get("dtype", "")))
+            filled = (
+                derived_array(derived.group(1).lower(), extents, self.semantics.types)
+                if derived
+                else None
+            )
+            if filled is not None:
+                lines.append(f"{pad}{rendered} = {filled}")
+                continue
             dtype = (
                 ALLOCATED_DTYPES.get(declaration["dtype"], "np.float64")
                 if declaration
@@ -807,7 +834,10 @@ class Statements:
                 except (TypeError, ValueError):
                     # A named constant as the count: known to the compiler,
                     # not to this stage, which does not evaluate parameters.
-                    raise NoRule(f"DATA repeat count {repeat_node}") from None
+                    # Spelled as the pipeline spells it: the caller already
+                    # writes "DATA " in front of the reason, so a reason that
+                    # begins with the word again reads "DATA DATA".
+                    raise NoRule(f"data_repeat({repeat_node})") from None
                 values.extend([self._data_value(value)] * repeat)
             else:
                 values.append(self._data_value(item))

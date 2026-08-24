@@ -43,7 +43,12 @@ from recast.transform.numpy.vocabulary import pysafe
 
 __all__ = ["Modules"]
 
-STATE_DTYPES = {"float64": "np.float64", "int32": "np.int32", "bool": "np.bool_"}
+STATE_DTYPES = {
+    "float64": "np.float64",
+    "int32": "np.int32",
+    "bool": "np.bool_",
+    "str": "object",
+}
 """Module-array state dtypes. Narrower than the allocate map on purpose:
 this is what the pipeline recognized here, and a float32 module array in the
 corpus would have silently become float64 -- so it must keep doing so until
@@ -52,6 +57,8 @@ a gate says otherwise."""
 INTEGER_TEXT = re.compile(r"-?\s*\d+")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 CHARACTER_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+SAVE_ARRAY_REFUSAL = "save-init array module state translated as scalar"
 
 
 def _character_literal(fortran: str) -> str:
@@ -228,7 +235,15 @@ class Modules:
 
     def _state(self, state: dict[str, Any]) -> list[str]:
         parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
-        if state.get("dims") and not state["init_expr"]:
+        initializer = str(state.get("init_expr") or "").strip()
+        lowered = initializer.lower()
+        # An array's branch, whether or not it carries an initializer. Only
+        # this was reached before, when it did not -- so a saved array with a
+        # scalar init was emitted as that scalar: ``dim_theta = 0.0`` for a
+        # PDF_N_THETA-long buffer, and ``lq = False`` for an array of
+        # logicals. An array-constructor init and ``null()`` still take the
+        # scalar path below, which is where they belong.
+        if state.get("dims") and not lowered.startswith("(/") and lowered != "null()":
             if all(d["ub"] is not None for d in state["dims"]):
                 extents = []
                 renderable = True
@@ -241,22 +256,43 @@ class Modules:
                     else:
                         renderable = False
                 if renderable:
-                    # Module-level array state: a zero buffer, filled by the
-                    # module's init routine (Fortran SAVE semantics).
                     dtype = STATE_DTYPES.get(state["dtype"], "np.float64")
                     shape = ", ".join(extents)
-                    if dtype == "object":
-                        # A character array: np.zeros of dtype object is an
-                        # array of the integer 0, and the first thing done to
-                        # it is a string comparison.
+                    fill = self._broadcast_fill(lowered, parameters)
+                    if fill is not None:
+                        # Fortran broadcasts a scalar save-init across the
+                        # whole array; every element starts at it.
                         return [
-                            f"{state['name']} = np.full(({shape},), '', dtype=object)"
-                            "  # module array state"
+                            f"{state['name']} = np.full(({shape},), {fill}, "
+                            f"dtype={dtype})  # module array state (save-init)"
+                        ]
+                    if not initializer:
+                        # No init: a zero buffer, filled by the module's init
+                        # routine (Fortran SAVE semantics).
+                        if dtype == "object":
+                            # A character array: np.zeros of dtype object is
+                            # an array of the integer 0, and the first thing
+                            # done to it is a string comparison.
+                            return [
+                                f"{state['name']} = np.full(({shape},), '', dtype=object)"
+                                "  # module array state (str)"
+                            ]
+                        return [
+                            f"{state['name']} = np.zeros(({shape},), "
+                            f"dtype={dtype})  # module array state"
                         ]
                     return [
-                        f"{state['name']} = np.zeros(({shape},), "
-                        f"dtype={dtype})  # module array state"
+                        f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
+                        f"{SAVE_ARRAY_REFUSAL} (init {initializer!r})"
                     ]
+            if initializer:
+                # A bound no module-scope name resolves, and an initializer to
+                # broadcast across it: the shape is not knowable here, and
+                # guessing one would be a silently wrong buffer.
+                return [
+                    f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
+                    f"{SAVE_ARRAY_REFUSAL} (dims not static)"
+                ]
             return [
                 f"{pysafe(state['name'])} = None  # allocatable/assumed module array, set by init"
             ]
@@ -275,6 +311,27 @@ class Modules:
                 f"({state['dtype']}), set by init"
             ]
         return [f"{pysafe(state['name'])} = None  # module state ({state['dtype']}), set by init"]
+
+    def _broadcast_fill(self, expression: str, parameters: set[str]) -> str | None:
+        """A scalar initializer simple enough to broadcast, or ``None``.
+
+        Deliberately fewer forms than ``_state_value``: what goes into every
+        element of a saved array has to be a value this stage is certain of,
+        and anything else is a site for a human rather than a guess.
+        """
+        if not expression:
+            return None
+        if expression in (".true.", ".false."):
+            return "True" if expression == ".true." else "False"
+        if expression in parameters:
+            return expression.upper()
+        if expression in self.subprograms.companion_globals:
+            return self.subprograms.companion_globals[expression]
+        if INTEGER_TEXT.fullmatch(expression):
+            return expression.replace(" ", "")
+        if REAL_TEXT.fullmatch(expression):
+            return f"np.float64('{expression.replace(' ', '').split('_')[0].replace('d', 'e')}')"
+        return None
 
     def _state_value(self, state: dict[str, Any], parameters: set[str]) -> str:
         """A saved variable's compile-time initializer, rendered from text.

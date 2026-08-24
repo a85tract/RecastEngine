@@ -41,7 +41,12 @@ from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
 from recast.transform.numpy.expressions import Expressions, Remote
 from recast.transform.numpy.names import bind_use_statements
 from recast.transform.numpy.names import for_subprogram as names_for
-from recast.transform.numpy.statements import ALLOCATED_DTYPES, REFUSED, Statements
+from recast.transform.numpy.statements import (
+    ALLOCATED_DTYPES,
+    REFUSED,
+    Statements,
+    derived_array,
+)
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.profiles import Profile
 from recast.transform.rules import NoRule
@@ -599,6 +604,18 @@ class Subprograms:
                     f"    # {local['name']}: array prologue skipped"
                     f" ({refusal}) — first use will AgentQueue"
                 ]
+            derived = DERIVED.match(str(local["dtype"]))
+            if derived is not None:
+                # An array of a derived type: the elements exist the moment
+                # the array does, so they are constructed here rather than
+                # left as the ``None``s an object ``np.empty`` would hold.
+                filled = derived_array(
+                    derived.group(1).lower(),
+                    [self._extent(d, statements) for d in dims],
+                    semantics.types,
+                )
+                if filled is not None:
+                    return [f"    {name} = {filled}"]
             dtype = ALLOCATED_DTYPES.get(local["dtype"], "np.float64")
             return [f"    {name} = np.empty(({shape},), dtype={dtype})"]
         if local.get("array_spec"):
