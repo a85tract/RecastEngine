@@ -222,6 +222,7 @@ class FortranFrontend(Frontend):
         intent_overrides: dict[str, Any] | None = None,
         externals: dict[str, dict[str, Any]] | None = None,
         stub_modules: Iterable[str] = (),
+        exclude: Iterable[str] = (),
     ) -> None:
         """
         ``kind_assumptions`` maps kind parameters this tree use-imports from
@@ -250,6 +251,7 @@ class FortranFrontend(Frontend):
         self.intent_overrides = dict(intent_overrides or {})
         self.externals = dict(externals or {})
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
+        self.exclude = tuple(Path(d) for d in exclude)
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._analyzed: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -263,9 +265,12 @@ class FortranFrontend(Frontend):
         for path in sorted(root.rglob("*")):
             if path.suffix.lower() not in SUFFIXES or not path.is_file():
                 continue
-            if SKIP_DIRS & set(path.relative_to(root).parts[:-1]):
+            relative = path.relative_to(root)
+            if SKIP_DIRS & set(relative.parts[:-1]):
                 continue
-            yield from self._units_in(path, path.relative_to(root))
+            if any(relative.is_relative_to(directory) for directory in self.exclude):
+                continue
+            yield from self._units_in(path, relative)
 
     def _units_in(self, path: Path, rel: Path) -> Iterator[Unit]:
         from recast.fortran._parse import STD, digest, f03, walk
@@ -677,6 +682,7 @@ class FortranFrontend(Frontend):
 def factory(**config: Any) -> FortranFrontend:
     return FortranFrontend(
         kind_assumptions=config.get("kind_assumptions"),
+        exclude=config.get("exclude") or (),
         extern_constants=config.get("extern_constants", ()),
         intent_overrides=config.get("intent_overrides"),
         externals=config.get("externals"),

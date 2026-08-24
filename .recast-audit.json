@@ -1,0 +1,7 @@
+{
+  "stages": {
+    "fortran": {
+      "exclude": ["corpus"]
+    }
+  }
+}
