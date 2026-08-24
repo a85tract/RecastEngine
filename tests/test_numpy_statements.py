@@ -313,6 +313,13 @@ contains
     v(1-lo:n) = 0.0_r8
   end subroutine based
 
+  subroutine seeded()
+    integer :: tab(4), grid(2,3), i, j
+    data (tab(i), i=1,4) /10, 20, 30, 40/
+    data ((grid(i,j), i=1,2), j=1,3) /1,2,3,4,5,6/
+    j = tab(1)
+  end subroutine seeded
+
   subroutine io_edges(u, ok)
     integer, intent(in) :: u
     logical, intent(out) :: ok
@@ -995,3 +1002,62 @@ def test_inquire_is_refused_because_its_specifiers_are_writes(sources: dict[str,
     statements, nodes = build(sources["emit_mod"], "io_edges")
     with pytest.raises(REFUSED, match="OPENED="):
         statements.render(pick(nodes, f03.Inquire_Stmt), 1)
+
+
+def test_a_data_implied_do_is_expanded_in_definition_order(sources: dict[str, Path]) -> None:
+    """DATA pairs objects with values positionally, and an implied-do stands
+    for as many objects as it has iterations -- so the list has to be
+    flattened before anything can be paired with it. A run that is contiguous
+    in the last dimension collapses to one slice, which is what a lookup table
+    of four hundred elements needs to stay readable."""
+    statements, _ = build(sources["emit_mod"], "seeded")
+    node = next(
+        d
+        for d in walk(_specification_of(sources["emit_mod"], "seeded"), f03.Data_Stmt)
+        if "tab" in str(d)
+    )
+    assert statements.data_statement(node, 1) == [
+        "    tab[0:4] = np.array([I_10, I_20, I_30, I_40], dtype=np.int32)"
+    ]
+
+
+def test_a_nested_implied_do_varies_the_inner_index_fastest(sources: dict[str, Path]) -> None:
+    """``((grid(i,j), i=1,2), j=1,3)`` is Fortran's column-major order, and
+    getting it backwards would fill the table transposed -- silently."""
+    statements, _ = build(sources["emit_mod"], "seeded")
+    node = next(
+        d
+        for d in walk(_specification_of(sources["emit_mod"], "seeded"), f03.Data_Stmt)
+        if "grid" in str(d)
+    )
+    assert statements.data_statement(node, 1) == [
+        "    grid[0, 0] = 1",
+        "    grid[1, 0] = 2",
+        "    grid[0, 1] = I_3",
+        "    grid[1, 1] = I_4",
+        "    grid[0, 2] = I_5",
+        "    grid[1, 2] = I_6",
+    ]
+
+
+def test_a_legacy_entry_statement_does_nothing_where_it_stands(sources: dict[str, Path]) -> None:
+    """A second entry point into a subprogram, deleted in F2018. The callers
+    this translates reach the primary entry."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    del nodes
+    from recast.fortran._parse import parse as parse_file
+
+    entry = walk(parse_file(sources["emit_mod"]), f03.Entry_Stmt)
+    if entry:
+        assert statements.render(entry[0], 1) == ["    pass  # ENTRY (legacy)"]
+
+
+def _specification_of(source: Path, name: str) -> Any:
+    from recast.fortran._parse import parse as parse_file
+
+    subprogram = next(
+        sub
+        for sub in walk(parse_file(source), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == name
+    )
+    return next(c for c in subprogram.children if isinstance(c, f03.Specification_Part))
