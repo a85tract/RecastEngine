@@ -2,55 +2,19 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 656,
-   "deferred": 33,
+   "blocks": 676,
+   "deferred": 13,
    "refusals": [
     [
      "formatted internal write",
      9
     ],
     [
-     "seq-assoc: rank mismatch ws",
-     7
-    ],
-    [
-     "seq-assoc: rank mismatch x",
-     3
-    ],
-    [
-     "seq-assoc: rank mismatch w",
-     2
-    ],
-    [
-     "no statement rule for Error_Stop_Stmt",
-     2
-    ],
-    [
-     "seq-assoc: rank mismatch prgopt",
-     2
-    ],
-    [
      "size with a dim= or mask= keyword",
      2
     ],
     [
-     "seq-assoc: rank mismatch c",
-     1
-    ],
-    [
-     "seq-assoc: rank mismatch scale",
-     1
-    ],
-    [
-     "seq-assoc: rank mismatch iwork",
-     1
-    ],
-    [
-     "seq-assoc: formal rank > actual rank v",
-     1
-    ],
-    [
-     "seq-assoc: rank mismatch work",
+     "seq-assoc: formal rank > actual rank work",
      1
     ],
     [
@@ -68,13 +32,19 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "candidate does not import: No module named 'bspline_kinds_module_numpy'",
+       "metrics": {},
+       "passed": false
+      },
       "static.rwset": {
        "detail": "44 blocks match",
        "metrics": {
@@ -88,8 +58,8 @@
      }
     },
     "fortran:bspline_defc_module": {
-     "deferred": 28,
-     "import_error": "ModuleNotFoundError: No module named 'bspline_kinds_module_numpy'",
+     "deferred": 9,
+     "import_error": "SyntaxError: 'break' outside loop",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -102,11 +72,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "60/300 blocks disagree: defcmn/B003, defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031 (+55 more)",
+       "detail": "54/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+49 more)",
        "metrics": {
-        "blocks_checked": 300,
-        "blocks_deferred": 28,
-        "blocks_matched": 240,
+        "blocks_checked": 319,
+        "blocks_deferred": 9,
+        "blocks_matched": 265,
         "blocks_waived": 0
        },
        "passed": false
@@ -124,7 +94,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:bspline_sub_module": {
-     "deferred": 5,
+     "deferred": 4,
      "import_error": "ModuleNotFoundError: No module named 'bspline_kinds_module_numpy'",
      "imports": false,
      "mechanical": false,
@@ -138,11 +108,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "53/312 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+48 more)",
+       "detail": "53/313 blocks disagree: db1ink_default/B002, db1ink_alt/B001, db1ink_alt_2/B001, db1val_default/B004, db1val_alt/B004 (+48 more)",
        "metrics": {
-        "blocks_checked": 312,
-        "blocks_deferred": 5,
-        "blocks_matched": 259,
+        "blocks_checked": 313,
+        "blocks_deferred": 4,
+        "blocks_matched": 260,
         "blocks_waived": 0
        },
        "passed": false
@@ -310,8 +280,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 486,
-   "deferred": 108,
+   "blocks": 495,
+   "deferred": 99,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -322,24 +292,16 @@
      42
     ],
     [
-     "no expression rule for Subscript_Triplet: i : i",
-     5
-    ],
-    [
      "goto N is not a loop-exit pattern",
      3
     ],
     [
-     "no statement rule for Inquire_Stmt",
-     2
-    ],
-    [
-     "no statement rule for Rewind_Stmt",
-     2
-    ],
-    [
      "formatted internal write",
      2
+    ],
+    [
+     "inquire writes POS=",
+     1
     ],
     [
      "write with ADVANCE= control",
@@ -350,11 +312,7 @@
      1
     ],
     [
-     "no expression rule for Subscript_Triplet: is - N : is - N",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: i1 : i2",
+     "inquire writes OPENED=",
      1
     ]
    ],
@@ -564,7 +522,7 @@
      "stopped_by": "static.rwset"
     },
     "fortran:utils": {
-     "deferred": 12,
+     "deferred": 3,
      "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
      "imports": false,
      "mechanical": false,
@@ -578,11 +536,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "8/36 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B004, loadtxt/B007, loadtxt/B010 (+3 more)",
+       "detail": "12/45 blocks disagree: upcase/B003, lowcase/B003, stop_error/B001, loadtxt/B001, loadtxt/B004 (+7 more)",
        "metrics": {
-        "blocks_checked": 36,
-        "blocks_deferred": 12,
-        "blocks_matched": 28,
+        "blocks_checked": 45,
+        "blocks_deferred": 3,
+        "blocks_matched": 33,
         "blocks_waived": 0
        },
        "passed": false
@@ -593,22 +551,18 @@
   },
   "minpack": {
    "bare_files": 0,
-   "blocks": 91,
-   "deferred": 13,
+   "blocks": 92,
+   "deferred": 12,
    "refusals": [
     [
      "call to external subroutine 'X'",
      12
-    ],
-    [
-     "no statement rule for Error_Stop_Stmt",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:minpack_module": {
-     "deferred": 13,
+     "deferred": 12,
      "import_error": "NameError: name 'DPMPAR' is not defined",
      "imports": false,
      "mechanical": false,
@@ -622,11 +576,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "6/91 blocks disagree: hybrd1/B002, hybrj1/B002, lmder1/B002, lmdif1/B002, lmpar/B009 (+1 more)",
+       "detail": "6/92 blocks disagree: hybrd1/B002, hybrj1/B002, lmder1/B002, lmdif1/B002, lmpar/B009 (+1 more)",
        "metrics": {
-        "blocks_checked": 91,
-        "blocks_deferred": 13,
-        "blocks_matched": 85,
+        "blocks_checked": 92,
+        "blocks_deferred": 12,
+        "blocks_matched": 86,
         "blocks_waived": 0
        },
        "passed": false
@@ -637,16 +591,24 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 769,
-   "deferred": 97,
+   "blocks": 893,
+   "deferred": 52,
    "refusals": [
-    [
-     "call to external subroutine 'X'",
-     46
-    ],
     [
      "generic 'X': no match",
      11
+    ],
+    [
+     "call to external subroutine 'X'",
+     9
+    ],
+    [
+     "intrinsic subroutine 'X' has no rule",
+     8
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
+     8
     ],
     [
      "formatted internal write",
@@ -657,28 +619,8 @@
      4
     ],
     [
-     "no expression rule for Subscript_Triplet: i : i",
-     4
-    ],
-    [
-     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
-     4
-    ],
-    [
-     "no expression rule for Subscript_Triplet: : LEN(Sout) - N",
-     4
-    ],
-    [
      "generic 'X': ambiguous between ['X', 'X']",
      3
-    ],
-    [
-     "no expression rule for Subscript_Triplet: start_ : end_",
-     2
-    ],
-    [
-     "no expression rule for Subscript_Triplet: : n1",
-     1
     ],
     [
      "no statement rule for Select_Type_Construct",
@@ -689,43 +631,7 @@
      1
     ],
     [
-     "no expression rule for Subscript_Triplet: m : m",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: : j - N",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: n - i + N : n - i + N",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: LEN(S) - LEN(suffix) :",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: : LEN(prefix)",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: n :",
-     1
-    ],
-    [
      "a keyword argument is not a subscript",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: : n",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: N :",
-     1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: b :",
      1
     ]
    ],
@@ -774,13 +680,36 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": null,
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "10 points across 1 subprogram(s), all bit-exact",
+       "metrics": {
+        "bit_exact": 10,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 10,
+        "subprograms": {
+         "is_inf": {
+          "bit_exact": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
       "static.rwset": {
        "detail": "55 blocks match",
        "metrics": {
@@ -790,12 +719,19 @@
         "blocks_waived": 0
        },
        "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     },
     "fortran:csplines": {
-     "deferred": 11,
-     "import_error": "ModuleNotFoundError: No module named 'utils_numpy'",
+     "deferred": 10,
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -808,10 +744,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "13/65 blocks disagree: csplder/B005, csplantider/B004, cspl_interp/B002, cspleps/B003, csplint/B006 (+8 more)",
+       "detail": "14/66 blocks disagree: csplder/B005, csplantider/B004, cspl_interp/B002, spline_coeff/B004, cspleps/B003 (+9 more)",
        "metrics": {
-        "blocks_checked": 65,
-        "blocks_deferred": 11,
+        "blocks_checked": 66,
+        "blocks_deferred": 10,
         "blocks_matched": 52,
         "blocks_waived": 0
        },
@@ -821,7 +757,7 @@
     },
     "fortran:exponential": {
      "deferred": 1,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -847,8 +783,8 @@
      }
     },
     "fortran:fitpack": {
-     "deferred": 36,
-     "import_error": "ModuleNotFoundError: No module named 'utils_numpy'",
+     "deferred": 8,
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -861,11 +797,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/96 blocks disagree: splrep_msg/B002, splprep/B003, splevp/B008",
+       "detail": "20/124 blocks disagree: splrep_msg/B002, splprep/B003, splprep/B014, splprep/B016, splprep/B019 (+15 more)",
        "metrics": {
-        "blocks_checked": 96,
-        "blocks_deferred": 36,
-        "blocks_matched": 93,
+        "blocks_checked": 124,
+        "blocks_deferred": 8,
+        "blocks_matched": 104,
         "blocks_waived": 0
        },
        "passed": false
@@ -910,27 +846,28 @@
     },
     "fortran:gauss": {
      "deferred": 2,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "6/14 blocks disagree: ran_gauss_pdf_s0/B001, ran_gauss_pdf_s1/B002, ran_gauss_pdf_s2/B002, ran_gauss_pdf_v0/B001, ran_gauss_pdf_v1/B001 (+1 more)",
+       "detail": "14 blocks match",
        "metrics": {
         "blocks_checked": 14,
         "blocks_deferred": 2,
-        "blocks_matched": 8,
+        "blocks_matched": 14,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1034,7 +971,7 @@
      }
     },
     "fortran:mt95": {
-     "deferred": 6,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1047,10 +984,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/184 blocks disagree: genrand_encode/B002, genrand_decode/B002, genrand_load_state/B004, genrand_dump_state/B003, genrand_dump_state/B004",
+       "detail": "8/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_decode/B004, genrand_load_state/B003 (+3 more)",
        "metrics": {
-        "blocks_checked": 184,
-        "blocks_deferred": 6,
+        "blocks_checked": 187,
+        "blocks_deferred": 3,
         "blocks_matched": 179,
         "blocks_waived": 0
        },
@@ -1132,7 +1069,7 @@
     },
     "fortran:qsimpson": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'func_integ_numpy'",
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1169,7 +1106,7 @@
     },
     "fortran:quadpack": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'func_integ_numpy'",
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1205,7 +1142,7 @@
     },
     "fortran:random": {
      "deferred": 3,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
+     "import_error": "SyntaxError: invalid syntax",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -1230,33 +1167,32 @@
      }
     },
     "fortran:sorting": {
-     "deferred": 1,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "10 blocks match",
+       "detail": "1/62 blocks disagree: quicksort/B002",
        "metrics": {
-        "blocks_checked": 10,
-        "blocks_deferred": 1,
-        "blocks_matched": 10,
+        "blocks_checked": 62,
+        "blocks_deferred": 0,
+        "blocks_matched": 61,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
     "fortran:strings": {
-     "deferred": 24,
+     "deferred": 12,
      "mechanical": false,
      "parses": false,
      "stages": {
@@ -1269,11 +1205,11 @@
      "syntax_error": "<unknown>:9: invalid syntax",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/57 blocks disagree: str2i/B001",
+       "detail": "11/97 blocks disagree: upper/B002, lower/B002, swapcase/B002, count_sub/B008, find/B007 (+6 more)",
        "metrics": {
-        "blocks_checked": 57,
-        "blocks_deferred": 24,
-        "blocks_matched": 56,
+        "blocks_checked": 97,
+        "blocks_deferred": 12,
+        "blocks_matched": 86,
         "blocks_waived": 0
        },
        "passed": false
@@ -1304,24 +1240,15 @@
   },
   "pchip": {
    "bare_files": 0,
-   "blocks": 154,
-   "deferred": 4,
-   "refusals": [
-    [
-     "seq-assoc: rank mismatch xe",
-     2
-    ],
-    [
-     "seq-assoc: formal rank > actual rank wk",
-     2
-    ]
-   ],
+   "blocks": 158,
+   "deferred": 0,
+   "refusals": [],
    "status": "failed",
    "units": {
     "fortran:pchip_module": {
-     "deferred": 4,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
@@ -1332,10 +1259,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/154 blocks disagree: dpchbs/B005",
+       "detail": "5/158 blocks disagree: dpchbs/B005, dpchfd/B007, dpchfe/B007, dpchic/B013, dpchic/B014",
        "metrics": {
-        "blocks_checked": 154,
-        "blocks_deferred": 4,
+        "blocks_checked": 158,
+        "blocks_deferred": 0,
         "blocks_matched": 153,
         "blocks_waived": 0
        },
@@ -1347,8 +1274,8 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 431,
-   "deferred": 7,
+   "blocks": 434,
+   "deferred": 4,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank work",
@@ -1357,20 +1284,12 @@
     [
      "call to external subroutine 'X'",
      2
-    ],
-    [
-     "no statement rule for Error_Stop_Stmt",
-     2
-    ],
-    [
-     "seq-assoc: formal rank > actual rank t",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 7,
+     "deferred": 4,
      "import_error": "SyntaxError: 'break' outside loop",
      "imports": false,
      "mechanical": false,
@@ -1384,11 +1303,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "56/431 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
+       "detail": "56/434 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
        "metrics": {
-        "blocks_checked": 431,
-        "blocks_deferred": 7,
-        "blocks_matched": 375,
+        "blocks_checked": 434,
+        "blocks_deferred": 4,
+        "blocks_matched": 378,
         "blocks_waived": 0
        },
        "passed": false
@@ -1400,21 +1319,17 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 0,
-   "deferred": 2,
+   "deferred": 1,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank work",
-     1
-    ],
-    [
-     "no statement rule for Error_Stop_Stmt",
      1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 2,
+     "deferred": 1,
      "mechanical": false,
      "parses": false,
      "stages": {
@@ -1439,8 +1354,8 @@
   },
   "roots": {
    "bare_files": 0,
-   "blocks": 232,
-   "deferred": 6,
+   "blocks": 233,
+   "deferred": 5,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -1453,16 +1368,12 @@
     [
      "generic 'X': ambiguous between ['X', 'X']",
      1
-    ],
-    [
-     "no expression rule for Subscript_Triplet: i : i",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:root_module": {
-     "deferred": 6,
+     "deferred": 5,
      "import_error": "NameError: name 'ROOT_MODULE_RK' is not defined",
      "imports": false,
      "mechanical": false,
@@ -1476,10 +1387,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/232 blocks disagree: root_scalar_by_type/B001, toms748/B007, bracket/B004",
+       "detail": "4/233 blocks disagree: root_scalar_by_type/B001, toms748/B007, bracket/B004, lowercase/B002",
        "metrics": {
-        "blocks_checked": 232,
-        "blocks_deferred": 6,
+        "blocks_checked": 233,
+        "blocks_deferred": 5,
         "blocks_matched": 229,
         "blocks_waived": 0
        },
@@ -1491,28 +1402,12 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 180,
-   "deferred": 13,
+   "blocks": 191,
+   "deferred": 2,
    "refusals": [
     [
-     "seq-assoc: rank mismatch w",
-     7
-    ],
-    [
-     "seq-assoc: formal rank > actual rank s",
-     2
-    ],
-    [
-     "seq-assoc: formal rank > actual rank b",
-     2
-    ],
-    [
      "seq-assoc: formal rank > actual rank w",
-     1
-    ],
-    [
-     "seq-assoc: formal rank > actual rank l",
-     1
+     2
     ]
    ],
    "status": "failed",
@@ -1544,7 +1439,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 13,
+     "deferred": 2,
      "import_error": "ModuleNotFoundError: No module named 'slsqp_kinds_numpy'",
      "imports": false,
      "mechanical": false,
@@ -1558,11 +1453,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "19/100 blocks disagree: slsqpb/B006, inexact_linesearch/B003, inexact_linesearch/B004, inexact_linesearch/B005, inexact_linesearch/B006 (+14 more)",
+       "detail": "25/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+20 more)",
        "metrics": {
-        "blocks_checked": 100,
-        "blocks_deferred": 13,
-        "blocks_matched": 81,
+        "blocks_checked": 111,
+        "blocks_deferred": 2,
+        "blocks_matched": 86,
         "blocks_waived": 0
        },
        "passed": false
@@ -1587,13 +1482,19 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "candidate does not import: No module named 'slsqp_kinds_numpy'",
+       "metrics": {},
+       "passed": false
+      },
       "static.rwset": {
        "detail": "12 blocks match",
        "metrics": {
@@ -1610,46 +1511,22 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1582,
-   "deferred": 27,
+   "blocks": 1588,
+   "deferred": 21,
    "refusals": [
     [
      "goto N is not a loop-exit pattern",
      20
     ],
     [
-     "itika/D001: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
      "DATA value Name: gamma",
-     1
-    ],
-    [
-     "elit3/D001: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "elit3/D002: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "cgama/D001: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "lgama/D001: literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "cpsi/D001: literal 'X' was never hoisted, so it has no name to emit",
      1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 27,
+     "deferred": 21,
      "import_error": "SyntaxError: duplicate argument 'i' in function definition",
      "imports": false,
      "mechanical": false,
@@ -1663,11 +1540,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/1582 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
+       "detail": "14/1588 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
        "metrics": {
-        "blocks_checked": 1582,
-        "blocks_deferred": 27,
-        "blocks_matched": 1568,
+        "blocks_checked": 1588,
+        "blocks_deferred": 21,
+        "blocks_matched": 1574,
         "blocks_waived": 0
        },
        "passed": false
