@@ -305,6 +305,22 @@ contains
     real(r8), intent(in) :: f
     x = x * f
   end subroutine scale_vector
+
+  subroutine based(v, n)
+    use grid_mod, only: lo
+    real(r8), intent(inout) :: v(1-lo:n)
+    integer, intent(in) :: n
+    v(1-lo:n) = 0.0_r8
+  end subroutine based
+
+  subroutine io_edges(u, ok)
+    integer, intent(in) :: u
+    logical, intent(out) :: ok
+    rewind(u)
+    backspace(u)
+    inquire(unit=u, opened=ok)
+    error stop 'nothing to do'
+  end subroutine io_edges
 end module emit_mod
 """
 
@@ -944,3 +960,38 @@ def test_a_statement_function_defines_and_then_applies(sources: dict[str, Path])
         "        return (u * 0.5)",
     ]
     assert statements.render(nodes[1], 1) == ["    s = half(t)"]
+
+
+# --- I/O edges ---------------------------------------------------------------
+
+
+def test_error_stop_ends_the_program_the_way_stop_does(sources: dict[str, Path]) -> None:
+    """ERROR STOP differs from STOP only in the exit status a compiler is
+    asked to produce, and nothing downstream of a SystemExit compares
+    anything."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    node = pick(nodes, f08.Error_Stop_Stmt)
+    # The stop code keeps its Fortran quotes inside the Python string, which
+    # is what the STOP rule has always done and what the pipeline does.
+    assert statements.render(node, 1) == ["    raise SystemExit(\"'nothing to do'\")  # ERROR STOP"]
+
+
+def test_file_positioning_carries_no_dataflow(sources: dict[str, Path]) -> None:
+    """REWIND and BACKSPACE move a file pointer and write no variable, so
+    there is nothing for a read/write gate to compare and nothing lost by
+    dropping them -- the same reading OPEN and CLOSE already get."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    assert statements.render(pick(nodes, f03.Rewind_Stmt), 1) == ["    pass  # REWIND (I/O stub)"]
+    assert statements.render(pick(nodes, f03.Backspace_Stmt), 1) == [
+        "    pass  # BACKSPACE (I/O stub)"
+    ]
+
+
+def test_inquire_is_refused_because_its_specifiers_are_writes(sources: dict[str, Path]) -> None:
+    """The one I/O statement in this group that is not a stub, and where the
+    pipeline this was migrated from differs: it renders INQUIRE as ``pass``.
+    ``opened=ok`` writes ``ok``, and a ``pass`` leaves it at whatever it held
+    while the read/write gate is told nothing happened."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    with pytest.raises(REFUSED, match="OPENED="):
+        statements.render(pick(nodes, f03.Inquire_Stmt), 1)

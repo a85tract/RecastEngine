@@ -53,6 +53,8 @@ D_EXPONENT = re.compile(r"(\d\.?\d*)D([+-]?\d+)", re.I)
 ARRAY_CONSTRUCTOR = re.compile(r"\(/\s*(.*?)\s*/\)", re.S)
 DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 INTEGER_TEXT = re.compile(r"-?\s*\d+")
+BOZ_TEXT = re.compile(r"[zboZBO]'([0-9a-fA-F]+)'")
+IDENTIFIER = re.compile(r"[a-zA-Z_]\w*")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 
 
@@ -323,12 +325,17 @@ class Subprograms:
                 "src_span": list(span),
             }
             start = len(lines)
+            # Inside a goto region every line of the block is one level
+            # deeper, its marker comment included. The refusing path below
+            # worked this out and the accepting one did not, so a region's
+            # blocks carried their markers at the outer indent.
+            pad = "    " * (2 if in_region else 1)
             patch = self.patches.get(f"{subprogram['name']}/{block}")
             if patch is not None:
                 lines.append(
-                    f"    # {block} <- L{span[0]}-L{span[1]} AGENT-PATCHED ({patch['reason']})"
+                    f"{pad}# {block} <- L{span[0]}-L{span[1]} AGENT-PATCHED ({patch['reason']})"
                 )
-                lines.extend("    " + patched for patched in patch["python"])
+                lines.extend(pad + patched for patched in patch["python"])
                 entry["status"] = "agent_patched"
                 entry["reason"] = patch["reason"]
                 entry["py_lines"] = [start + 1, len(lines)]
@@ -336,11 +343,10 @@ class Subprograms:
                 continue
             try:
                 body = statements.render(statement, 2 if in_region else 1)
-                lines.append(f"    # {block} <- L{span[0]}-L{span[1]}")
+                lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]}")
                 lines.extend(body)
                 entry["status"] = "mechanical"
             except REFUSED as refusal:
-                pad = "    " * (2 if in_region else 1)
                 filled, why_not = self._fill(
                     emit_name(subprogram), block, statement, span, refusal, statements
                 )
@@ -440,14 +446,16 @@ class Subprograms:
         for argument in subprogram["args"]:
             if argument["intent"] != "OUT":
                 continue
-            lines.extend(self._out_argument(argument, subprogram, statements))
+            lines.extend(self._out_argument(argument, subprogram, semantics, statements))
         # Local PARAMETERs, as local assignments (matches Fortran scope).
+        own_parameters = frozenset(p["name"].lower() for p in subprogram["local_parameters"])
         for parameter in subprogram["local_parameters"]:
             initializer = parameter.get("init_expr", "0")
             if initializer is None:
                 continue
             lines.append(
-                f"    {pysafe(parameter['name'])} = {self._parameter_value(initializer.strip())}"
+                f"    {pysafe(parameter['name'])} = "
+                f"{self._parameter_value(initializer.strip(), own_parameters)}"
             )
         parameter_names = {p["name"] for p in subprogram["local_parameters"]}
         for local in subprogram["locals"]:
@@ -456,8 +464,42 @@ class Subprograms:
             lines.extend(self._local(local, semantics, statements))
         return lines
 
+    def component_shape(self, component: dict[str, Any]) -> str | None:
+        """A derived-type component's allocation shape, or None.
+
+        Module scope, so no subprogram-local name applies: an extent is a
+        digit or a constant reachable here -- a module parameter, a
+        use-imported one, a companion's global. Anything else leaves the
+        component None in the factory rather than a guessed size.
+        """
+        extents = []
+        for dim in component.get("dims") or []:
+            if dim.get("lb") not in (None, "1") or not dim.get("ub"):
+                return None
+            text = dim["ub"].strip().lower()
+            if re.fullmatch(r"\d+", text):
+                extents.append(text)
+                continue
+            if not re.fullmatch(r"[a-z_]\w*", text):
+                return None
+            for table in (
+                {p["name"]: p["name"].upper() for p in self.record["module_parameters"]},
+                self.use_parameters,
+                self.companion_globals,
+            ):
+                if text in table:
+                    extents.append(table[text])
+                    break
+            else:
+                return None
+        return ", ".join(extents) or None
+
     def _out_argument(
-        self, argument: dict[str, Any], subprogram: dict[str, Any], statements: Statements
+        self,
+        argument: dict[str, Any],
+        subprogram: dict[str, Any],
+        semantics: Semantics,
+        statements: Statements,
     ) -> list[str]:
         name = pysafe(argument["name"])
         if argument.get("optional"):
@@ -504,6 +546,41 @@ class Subprograms:
             return [f"    {name} = 0"]
         if not dims and argument["dtype"] == "bool":
             return [f"    {name} = False"]
+        derived = DERIVED.match(str(argument["dtype"]))
+        if not dims and derived is not None:
+            # An INTENT(OUT) derived-type dummy is a fresh object at entry:
+            # Fortran says the callee sees it undefined, and the return
+            # convention makes the callee its owner. It was falling through
+            # to nothing, so the body's first ``cart2%x = ...`` ran against
+            # whatever the caller passed -- or against a name never bound.
+            type_name = derived.group(1).lower()
+            components = semantics.types.get(type_name) or {}
+            unresolved = next(
+                (
+                    component_name
+                    for component_name, component in components.items()
+                    if component.get("dims")
+                    and not component.get("allocatable")
+                    and not component.get("pointer")
+                    and self.component_shape(component) is None
+                ),
+                None,
+            )
+            if unresolved is not None:
+                # A fixed-shape component whose extent no module-scope name
+                # resolves would materialize as None and read as absent.
+                # Queue it; never guess a size.
+                reason = "INTENT(OUT) derived-type dummy not materialized at function entry"
+                return [
+                    f"    # out-arg {argument['name']}: type({type_name})%"
+                    f"{unresolved} dims not statically resolvable",
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
+            constructor = (
+                f"_make_{type_name}()" if type_name in semantics.types else "_new_derived()"
+            )
+            return [f"    {name} = {constructor}"]
         return []
 
     def _local(
@@ -544,14 +621,21 @@ class Subprograms:
         return []
 
     @staticmethod
-    def _parameter_value(text: str) -> str:
+    def _parameter_value(text: str, local_parameters: frozenset[str] = frozenset()) -> str:
         """A local parameter's initializer, rendered from its source text.
 
         Text-level, not node-level: declarations were extracted as text, and
         the pipeline this reproduces rendered them the same way.
+
+        ``local_parameters`` are the names of this subprogram's own
+        parameters, which decides the casing of an expression that names one
+        -- see the token pass at the end.
         """
         if text.lower() in (".true.", ".false."):
             return "True" if "true" in text.lower() else "False"
+        boz = BOZ_TEXT.fullmatch(text)
+        if boz:
+            return str(int(boz.group(1), {"Z": 16, "B": 2, "O": 8}[text[0].upper()]))
         if INTEGER_TEXT.fullmatch(text):
             return str(int(text.replace(" ", "")))
         if REAL_TEXT.fullmatch(text):
@@ -564,7 +648,18 @@ class Subprograms:
             if all(re.fullmatch(r"-?\d+", item.strip()) for item in items):
                 return f"np.array([{', '.join(items)}], dtype=np.int32)"
             return f"np.array([{', '.join(items)}])"
-        return strip_kind(text).upper()
+
+        # A module constant is spelled upper case in the emitted source, and a
+        # reference to one of this subprogram's own parameters is not -- that
+        # one was emitted as a local assignment just above, under its own
+        # name. Uppercasing the whole text bound it to a module constant that
+        # does not exist: ``1._r8/hplanck`` came out ``1./HPLANCK`` beside the
+        # ``hplanck`` it meant.
+        def case_of(match: re.Match[str]) -> str:
+            token = match.group()
+            return pysafe(token.lower()) if token.lower() in local_parameters else token.upper()
+
+        return IDENTIFIER.sub(case_of, strip_kind(text))
 
     # -- declared extents -----------------------------------------------------
 
