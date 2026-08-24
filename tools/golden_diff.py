@@ -179,6 +179,50 @@ def locate(case: str, recorded: str, root: Path, mapped: dict[str, str]) -> Path
     )
 
 
+def live_interface(root: Path, source: Path, table: str | None) -> dict[str, Any]:
+    """The reference, extracted by the pipeline's own code rather than read.
+
+    The stored ``extracted/`` JSON is a snapshot, and the pipeline has moved a
+    few hundred commits past the oldest of them: ``mg2``'s is from the initial
+    commit and still reports every ``r8`` argument as
+    ``UNKNOWN_REAL_KIND(r8)``. Diffing against that measures the age of a file,
+    not the fidelity of a migration -- which is the mistake ``emit_diff``'s
+    docstring warns about, and which this tool was making in 322 of its 332
+    differences.
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch) / "interface.json"
+        command = [
+            sys.executable,
+            str(root / "pipeline" / "extract_interface.py"),
+            str(source),
+            "-o",
+            str(out),
+        ]
+        if table:
+            command += ["--intent-overrides", str(root / table)]
+        # The same kinds the engine is given. Their tool takes them as
+        # ``--assume-kind`` into the table it otherwise hardcodes; without
+        # them the two sides are asked different questions and every ``r8``
+        # reads as a difference.
+        for kind, dtype in CAM_KINDS.items():
+            command += ["--assume-kind", f"{kind}={dtype}"]
+        finished = subprocess.run(  # noqa: S603 -- our own interpreter, their script
+            command, capture_output=True, text=True, check=False
+        )
+        if finished.returncode != 0:
+            raise SystemExit(
+                f"{source.name}: the pipeline's extract_interface failed: "
+                f"{finished.stderr.strip()[-400:]}"
+            )
+        extracted = json.loads(out.read_text())
+    extracted.pop("source_file", None)
+    return extracted
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
@@ -205,6 +249,12 @@ def main() -> int:
         help="intent override table the pipeline used for one case",
     )
     ap.add_argument(
+        "--live",
+        action="store_true",
+        help="extract the reference with the pipeline's own extract_interface.py "
+        "instead of reading its stored JSON -- see the note on staleness above",
+    )
+    ap.add_argument(
         "-v", "--verbose", action="store_true", help="list added keys and excused diffs"
     )
     args = ap.parse_args()
@@ -228,7 +278,11 @@ def main() -> int:
 
     unexplained = 0
     for case in cases:
-        gold = golds[case]
+        gold = (
+            live_interface(root, sources[case], intents.get(case.name))
+            if args.live
+            else golds[case]
+        )
         src = sources[case]
         table = intents.get(case.name)
         got = new_interface.extract(
