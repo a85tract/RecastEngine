@@ -225,6 +225,11 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
             spelled.append(_real(token["v"], token["t"] == "real32"))
         elif token["t"] == "call":
             spelled.append(_call(token))
+        elif token["t"] == "spelled":
+            # Already target text -- an array constructor the classifier
+            # rendered whole, because its elements are not an expression this
+            # walk could re-spell one token at a time.
+            spelled.append(token["v"])
         else:  # int literals and operators pass through
             spelled.append(token["v"])
     return " ".join(spelled)

@@ -35,6 +35,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from recast.fortran import intrinsics
 from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
@@ -59,14 +60,6 @@ ALLOCATED_DTYPES = {
 """Declared dtype -> the dtype an ``allocate`` requests. Anything else gets
 ``np.float64``, which is what the declaration meant if it said nothing."""
 
-EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*)?\)", re.I)
-"""``size(a)``, ``size(a, 2)``, ``ubound(a, dim=2)`` inside a declared bound."""
-
-DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
-
-BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*|\d+|[()+\-*/ ]")
-"""What a declared bound is allowed to be made of. Bound texts are simple by
-construction; anything richer refuses the statement that needed the bound."""
 
 UNIT_NAME = re.compile(r"[a-z_]\w*")
 
@@ -220,15 +213,44 @@ class Statements:
             return [f"{pad}pass  # FORMAT statement (declarative)"]
         if isinstance(node, f03.Print_Stmt):
             return [f"{pad}pass  # PRINT (diagnostic only, no dataflow)"]
-        if isinstance(node, f03.Stop_Stmt):
+        if isinstance(node, (f03.Stop_Stmt, f08.Error_Stop_Stmt)):
+            # ERROR STOP differs from STOP only in the exit status a compiler
+            # is asked to produce; both end the program with the same message,
+            # and nothing downstream of a SystemExit compares anything.
             message = ""
             if node.children and node.children[1]:
                 message = str(node.children[1]).strip()
-            return [f"{pad}raise SystemExit({message!r})  # STOP"]
+            keyword = "ERROR STOP" if isinstance(node, f08.Error_Stop_Stmt) else "STOP"
+            return [f"{pad}raise SystemExit({message!r})  # {keyword}"]
         if isinstance(node, f03.Read_Stmt):
             return [f"{pad}pass  # READ (I/O stub)"]
         if isinstance(node, (f03.Open_Stmt, f03.Close_Stmt)):
             return [f"{pad}pass  # OPEN/CLOSE (I/O stub)"]
+        if isinstance(
+            node,
+            (f03.Rewind_Stmt, f03.Backspace_Stmt, f03.Endfile_Stmt, f03.Flush_Stmt),
+        ):
+            # File positioning. Unlike INQUIRE below, none of these writes a
+            # variable, so there is nothing for a read/write gate to compare
+            # and nothing to lose by dropping them.
+            return [f"{pad}pass  # {type(node).__name__[:-5].upper()} (I/O stub)"]
+        if isinstance(node, f03.Inquire_Stmt):
+            # Not a stub, on purpose, and this is where the pipeline this was
+            # migrated from differs: it stubs INQUIRE to ``pass``. Every
+            # output specifier -- ``opened=``, ``pos=``, ``iostat=`` -- is a
+            # write, and a ``pass`` drops it silently, leaving the variable at
+            # whatever it held.
+            written = sorted(
+                str(spec.children[0]).upper()
+                for spec in walk(node, f03.Connect_Spec | f03.Inquire_Spec)
+                if spec.children[0] is not None
+                and str(spec.children[0]).upper() not in ("UNIT", "FILE")
+            )
+            raise NoRule(
+                "inquire writes " + ", ".join(f"{k}=" for k in written)
+                if written
+                else "inquire with no output specifier"
+            )
         if isinstance(node, (f03.Forall_Construct, f03.Forall_Stmt)):
             return self._forall(node, indent)
         if isinstance(node, f03.Data_Stmt):
@@ -1077,6 +1099,13 @@ class Statements:
             external = self.externals.get(name)
             if external and external.get("kind") == "subroutine":
                 return self._external_call(name, external, node, pad)
+            if name in intrinsics.SUBROUTINE:
+                # Not an external -- the standard defines it, and every one of
+                # them writes an argument, so the ``pass`` the pipeline emits
+                # would drop a write. Refused under its own name so the work
+                # list says "the engine does not know this intrinsic" rather
+                # than "this tree is missing a library".
+                raise NoRule(f"intrinsic subroutine {name!r} has no rule")
             raise NoRule(f"call to external subroutine {name!r}")
 
         # Bind actuals to formals BY NAME for keyword arguments: Fortran
@@ -1356,44 +1385,9 @@ class Statements:
         return f"{self.expressions.render(node)} - 1"
 
     def bound(self, text: str) -> str:
-        """Declared bound text -> Python. Bound texts are simple -- names,
-        integers, ``+ - * /``, parentheses, ``size(a, n)`` -- by construction;
-        anything else refuses the statement that needed the bound."""
-
-        # An automatic array sized off another argument. UBOUND is the same
-        # question with unit lower bounds, which every translated array has,
-        # and the dimension may be written with or without ``dim=``.
-        def extent(match: re.Match[str]) -> str:
-            name = self.names.symbol(match.group(1).lower())
-            dimension = match.group(2)
-            if dimension is None:
-                return f"np.size({name})"
-            axis = int(DIM_KEYWORD.sub("", dimension)) - 1
-            return f"np.size({name}, {axis})"
-
-        if EXTENT.fullmatch(text):
-            return EXTENT.sub(extent, text)
-        substituted = EXTENT.sub(extent, text)
-        if substituted != text:
-            text = substituted
-        rendered, position = [], 0
-        for match in BOUND_TOKENS.finditer(text):
-            if match.start() != position:
-                raise NoRule(f"dim expr {text!r}")
-            position = match.end()
-            token = match.group(0)
-            if re.match(r"[A-Za-z_]", token):
-                rendered.append(self.names.symbol(token))
-            elif token.isdigit() and token not in ("0", "1", "2"):
-                hoisted = self.names.literals.get(token)
-                if hoisted is None:
-                    raise NoRule(f"declared dim literal {token}")
-                rendered.append(hoisted)
-            else:
-                rendered.append(token)
-        if position != len(text):
-            raise NoRule(f"dim expr {text!r}")
-        return "".join(rendered)
+        """Declared bound text -> Python. Lives on the expression layer, which
+        is where a bound's *origin* also has to go through it."""
+        return self.expressions.bound(text)
 
     @staticmethod
     def label(node: Any) -> str | None:

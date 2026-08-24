@@ -37,7 +37,21 @@ module asm_mod
     real(r8) :: v
   end type pack_t
 
+  type wide_t
+    real(r8) :: rows(nowhere)
+  end type wide_t
+
 contains
+
+  subroutine fill_box(box)
+    type(pack_t), intent(out) :: box
+    box%v = 1.0_r8
+  end subroutine fill_box
+
+  subroutine fill_wide(w)
+    type(wide_t), intent(out) :: w
+    w%rows = 0.0_r8
+  end subroutine fill_wide
 
   subroutine work(n, a, b, opt, flags, out1)
     integer, intent(in) :: n
@@ -50,6 +64,8 @@ contains
     real(r8), parameter :: gains(2) = (/ 1.0_r8, 2.0_r8 /)
     character(len=2), parameter :: tags(2) = (/ 'ab', 'cd' /)
     integer, parameter :: three = 3
+    real(r8), parameter :: twice_half = 1._r8/half
+    integer, parameter :: mask = z'FF'
     logical, parameter :: yes = .true.
     real(r8) :: scr(n)
     real(r8), allocatable :: dyn(:)
@@ -258,3 +274,56 @@ def test_a_top_level_forward_goto_becomes_a_region(source: Path) -> None:
     assert "    except _FGoto as _g:" in lines
     assert "    pass  # label block consumed by region" in lines
     assert all(entry["status"] == "mechanical" for entry in report)
+
+
+def test_a_block_inside_a_region_carries_its_marker_at_the_region_indent(source: Path) -> None:
+    """Every line of a block inside a goto region is one level deeper, its
+    marker comment included. The refusing path worked this out and the
+    accepting one did not, so a region's blocks sat under markers at the
+    outer indent -- the emitted Python was right and the map to it was not."""
+    lines, _ = build(source).render(node_of(source, "escape"), "escape")
+    opened = lines.index("    try:  # forward-goto region (label 50)")
+    closed = lines.index("    except _FGoto as _g:")
+    inside = [line for line in lines[opened + 1 : closed] if line.lstrip().startswith("# B")]
+    assert inside, "no block marker inside the region"
+    assert all(line.startswith("        # B") for line in inside), inside
+
+
+def test_an_intent_out_derived_dummy_is_a_fresh_object_at_entry(source: Path) -> None:
+    """Fortran says the callee sees an INTENT(OUT) argument undefined, and
+    the return convention makes the callee its owner. Emitting nothing left
+    the body's first ``box%v = ...`` running against whatever the caller
+    passed -- or against a name never bound."""
+    lines, _ = build(source).render(node_of(source, "fill_box"), "fill_box")
+    assert "    box = _make_pack_t()" in lines
+
+
+def test_a_derived_dummy_whose_component_extent_is_unresolvable_is_queued(
+    source: Path,
+) -> None:
+    """``rows(nowhere)`` names nothing reachable at module scope, so the
+    factory would leave the component None and every read of it would see an
+    absent array. Queue it rather than guess a size -- the rule the pipeline
+    settled on."""
+    lines, _ = build(source).render(node_of(source, "fill_wide"), "fill_wide")
+    body = "\n".join(lines)
+    assert "dims not statically resolvable" in body
+    assert "raise NotImplementedError(" in body
+    assert "_make_wide_t()" not in body
+
+
+def test_a_local_parameter_reference_keeps_its_case(source: Path) -> None:
+    """A module constant is spelled upper case in the emitted source; a
+    reference to one of this subprogram's own parameters is not, because that
+    one was emitted as a local assignment under its own name. Uppercasing the
+    whole initializer text bound it to a module constant that does not exist:
+    ``1._r8/half`` came out ``1./HALF`` beside the ``half`` it meant."""
+    lines, _ = build(source).render(node_of(source, "work"), "work")
+    assert "    twice_half = 1. / half" in lines
+
+
+def test_a_boz_local_parameter_is_its_integer_value(source: Path) -> None:
+    """The pipeline takes a BOZ here and this did not, so ``mask`` fell to the
+    token pass and came out as the bare text upper-cased."""
+    lines, _ = build(source).render(node_of(source, "work"), "work")
+    assert "    mask = 255" in lines

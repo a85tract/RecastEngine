@@ -28,6 +28,7 @@ consumes next.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,15 @@ from recast.transform.numpy.vocabulary import (
 from recast.transform.profiles import Profile
 from recast.transform.rules import NoRule, indexing
 from recast.transform.rules.indexing import Kind
+
+EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*)?\)", re.I)
+"""``size(a)``, ``size(a, 2)``, ``ubound(a, dim=2)`` inside a declared bound."""
+
+DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
+
+BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*|\d+|[()+\-*/ ]")
+"""What a declared bound is allowed to be made of. Bound texts are simple by
+construction; anything richer refuses the statement that needed the bound."""
 
 __all__ = ["Expressions", "Remote"]
 
@@ -221,6 +231,8 @@ class Expressions:
             return base + spelled.split("'")[1]
         if isinstance(node, f03.Ac_Implied_Do):
             return self._implied_do(node)
+        if isinstance(node, f03.Subscript_Triplet):
+            return self._triplet(node)
         if isinstance(node, f03.Complex_Literal_Constant):
             # Not through the literal table: a complex literal's two halves are
             # written where they are read, and the zero-literal rule hoists
@@ -369,12 +381,81 @@ class Expressions:
         try:
             return self._intrinsic(name, items, arguments)
         except UnknownReference:
-            # Neither a procedure this file declares nor an intrinsic: what
-            # is left is a subscript of something it use-imports without the
-            # dimensions. Reading it as a call would emit a call to a name
-            # nothing defines; a subscript is what the source spelling says,
-            # and what the pipeline settled on.
+            bound = self.names.use_bindings.get(name)
+            if bound is not None:
+                # A USE-imported function, called through its module's alias.
+                # This has to come before the subscript below, and did not:
+                # ``parallelmin(min_area, hybrid)`` was emitted as
+                # ``_reduction_mod.parallelmin[min_area - 1, hybrid - 1]``,
+                # which is not a refusal but runnable, wrong code -- with the
+                # zero-based shift applied to what are arguments.
+                return f"{bound}({', '.join(arguments)})"
+            # Neither a procedure this file declares, nor an intrinsic, nor
+            # a name a USE statement bound: what is left is a subscript of
+            # something it use-imports without the dimensions. Reading it as
+            # a call would emit a call to a name nothing defines; a subscript
+            # is what the source spelling says, and what the pipeline settled
+            # on.
             return self.subscript(name, node.children[1])
+
+    def bound(self, text: str) -> str:
+        """Declared bound text -> Python. Bound texts are simple -- names,
+        integers, ``+ - * /``, parentheses, ``size(a, n)`` -- by construction;
+        anything else refuses the statement that needed the bound."""
+
+        # An automatic array sized off another argument. UBOUND is the same
+        # question with unit lower bounds, which every translated array has,
+        # and the dimension may be written with or without ``dim=``.
+        def extent(match: re.Match[str]) -> str:
+            name = self.names.symbol(match.group(1).lower())
+            dimension = match.group(2)
+            if dimension is None:
+                return f"np.size({name})"
+            axis = int(DIM_KEYWORD.sub("", dimension)) - 1
+            return f"np.size({name}, {axis})"
+
+        if EXTENT.fullmatch(text):
+            return EXTENT.sub(extent, text)
+        substituted = EXTENT.sub(extent, text)
+        if substituted != text:
+            text = substituted
+        rendered, position = [], 0
+        for match in BOUND_TOKENS.finditer(text):
+            if match.start() != position:
+                raise NoRule(f"dim expr {text!r}")
+            position = match.end()
+            token = match.group(0)
+            if re.match(r"[A-Za-z_]", token):
+                rendered.append(self.names.symbol(token))
+            elif token.isdigit() and token not in ("0", "1", "2"):
+                hoisted = self.names.literals.get(token)
+                if hoisted is None:
+                    raise NoRule(f"declared dim literal {token}")
+                rendered.append(hoisted)
+            else:
+                rendered.append(token)
+        if position != len(text):
+            raise NoRule(f"dim expr {text!r}")
+        return "".join(rendered)
+
+    def _triplet(self, node: Any) -> str:
+        """A range in a value position, as a Python ``slice`` object.
+
+        Not the subscript path: that one knows which array it is indexing and
+        can shift by the declared lower bound. A triplet reaching here has no
+        array behind it -- it is an actual argument, and all that is known is
+        Fortran's inclusive upper edge and one-based start. The pipeline's
+        spelling, parentheses included, because a translation that differs
+        here differs in text a differential compares.
+        """
+        lower, upper, step = node.children
+        lower_text = self.render(lower) if lower is not None else ""
+        upper_text = self.render(upper) if upper is not None else ""
+        step_text = self.render(step) if step is not None else ""
+        if lower_text:
+            lower_text = f"({lower_text}) - 1"
+        tail = f", {step_text}" if step_text else ""
+        return f"slice({lower_text or 'None'}, {upper_text or 'None'}{tail})"
 
     def subscript(self, name: str, arglist: Any) -> str:
         """An array element or slice, shifted to zero-based."""
@@ -408,7 +489,7 @@ class Expressions:
             # element. The declared lower bound goes with them.
             lower = self.render(position.lower) if position.lower is not None else "None"
             upper = self.render(position.upper) if position.upper is not None else "None"
-            return f"_f_rstep_lb({lower}, {upper}, {step}, {position.origin})"
+            return f"_f_rstep_lb({lower}, {upper}, {step}, {self._origin(position.origin)})"
         start = ""
         if position.lower is not None:
             folded = indexing.fold_index(position.lower, position.origin, WHITELIST_INT)
@@ -420,14 +501,31 @@ class Expressions:
         stop = ""
         if position.upper is not None:
             rendered = self.render(position.upper)
-            stop = rendered if position.shifts_by_one else f"({rendered}) - ({position.origin}) + 1"
+            stop = (
+                rendered
+                if position.shifts_by_one
+                else f"({rendered}) - ({self._origin(position.origin)}) + 1"
+            )
         return f"{start}:{stop}" + (f":{step}" if step is not None else "")
 
-    @staticmethod
-    def _shift(rendered: str, origin: str) -> str:
+    def _origin(self, origin: str) -> str:
+        """A declared lower bound, as Python.
+
+        Through ``bound`` like every other declared bound. The origin is
+        Fortran source text, and a name in it means whatever this module's USE
+        statements bound it to -- emitting it raw put a bare ``nhe`` beside the
+        ``_dimensions_mod.nhe`` that the same subscript already spelled
+        correctly, which is a NameError rather than a matter of style.
+
+        Constant folding upstream still works on the raw text: it is doing
+        arithmetic on the Fortran, not naming anything.
+        """
+        return self.bound(origin)
+
+    def _shift(self, rendered: str, origin: str) -> str:
         if origin == indexing.UNIT_ORIGIN:
             return f"{rendered} - 1"
-        return f"({rendered}) - ({origin})"
+        return f"({rendered}) - ({self._origin(origin)})"
 
     def _data_ref(self, node: Any) -> str:
         """``a % b % c(i, k)`` -> ``a.b.c[i - 1, k - 1]``."""
@@ -554,7 +652,13 @@ class Expressions:
                 default=0,
             )
         except Unanalyzable:
-            raise NoRule(f"cannot rank the arguments of {name!r}") from None
+            # Scalar, as the pipeline reads it. An argument this cannot rank
+            # is usually not an intrinsic's at all -- the two paths below
+            # both end in ``UnknownReference`` for a name the table does not
+            # hold, which ``reference`` then resolves as a USE-bound call or
+            # a subscript. Refusing here instead pre-empted both, and a name
+            # with source one module over never got the chance to resolve.
+            rank = 0
 
         if rank > 0:
             return self._over_arrays(name, arguments)
