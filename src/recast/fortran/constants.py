@@ -44,10 +44,7 @@ _ARRAY_CTOR_NEW = re.compile(r"\[(.+)\]", re.S)
 _QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 _LEADING_DOT = re.compile(r"^(-?)\.")
 _NUMERIC = re.compile(r"-?\d+\.?\d*(?:e[+-]?\d+)?")
-_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|//|[()+\-*/,]")
-"""``//`` before the single-character class, or Fortran's concatenation
-tokenises as two divisions and ``a // b`` is emitted ``a / / b``, which is not
-Python. ``**`` is there for the same reason."""
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
 
 
 def strip_kind(text: str) -> str:
