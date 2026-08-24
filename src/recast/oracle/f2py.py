@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -152,6 +153,46 @@ def wrappers_for(
     return "\n".join(pieces) + "\n", names
 
 
+def companion_sources(facts: Facts, root: Path) -> list[Path]:
+    """The sibling files this unit ``use``s, dependencies first.
+
+    A module that takes its working precision from a kinds module one file
+    over does not compile alone: gfortran wants the ``.mod``, and the file
+    that would produce it was never handed to the build. The frontend already
+    resolved those siblings -- ``Facts.provenance['companions']`` names them
+    -- so the reference build asks the facts rather than the operator.
+
+    ``config['extra_sources']`` stays what it always was: files from outside
+    the tree, which nothing in the tree can name. Ordering is a topological
+    sort over the companions' own ``use`` statements, because a Fortran
+    compiler cannot read a module it has not compiled yet, and the ones that
+    depend on nothing here come first.
+    """
+    companions = facts.provenance.get("companions") or []
+    by_module = {str(c.get("module", "")).lower(): c for c in companions}
+    ordered: list[Path] = []
+    placed: set[str] = set()
+
+    def place(name: str, stack: frozenset[str]) -> None:
+        companion = by_module.get(name)
+        if companion is None or name in placed or name in stack:
+            # A cycle is not this build's to resolve -- Fortran allows mutual
+            # use only through submodules, and stopping keeps the order total.
+            return
+        for statement in companion.get("record", {}).get("use_statements", ()):
+            match = re.match(r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)", statement.strip(), re.I)
+            if match:
+                place(match.group(1).lower(), stack | {name})
+        if name in placed:
+            return
+        placed.add(name)
+        ordered.append((root / companion["source"]).resolve())
+
+    for name in sorted(by_module):
+        place(name, frozenset())
+    return ordered
+
+
 def _compiler_version(compiler: str) -> str:
     """The compiler's own version line. A metadata query, not a build --
     which is why it does not go through the executor: the *key* has to fold
@@ -180,7 +221,10 @@ class F2pyGoldenOracle(Oracle):
         compiler = config.get("fc", "gfortran")
         digest = hashlib.sha256()
         digest.update(str(facts.provenance.get("digest")).encode())
-        for extra in sorted(str(s) for s in config.get("extra_sources", [])):
+        root = Path(config.get("root", "."))
+        extras = [str(s) for s in config.get("extra_sources", [])]
+        extras += [str(s) for s in companion_sources(facts, root)]
+        for extra in sorted(extras):
             path = Path(extra)
             digest.update(extra.encode())
             if path.is_file():
@@ -212,11 +256,24 @@ class F2pyGoldenOracle(Oracle):
 
         compiler = config.get("fc", "gfortran")
         module_name = f"ref_{facts.interface['module']}"
+        # Companions first, then whatever the operator added, then the unit's
+        # own source: gfortran compiles in argument order and a ``use`` of a
+        # module later in the list is a fatal "cannot open module file".
         sources = [
+            *[str(s) for s in companion_sources(facts, Path(config.get("root", ".")))],
             *[str(Path(s).resolve()) for s in config.get("extra_sources", [])],
             str(source),
             "wrappers.f90",
         ]
+        # A Fortran ``include`` is resolved against the compiler's search path,
+        # not against the file that wrote it, and this build runs in its own
+        # directory -- so every directory a source came from goes on the path
+        # or a library that keeps its constants in a ``.inc`` beside the code
+        # cannot be compiled at all.
+        includes = " ".join(
+            f"-I{d}" for d in dict.fromkeys(str(Path(s).resolve().parent) for s in sources[:-1])
+        )
+        flags = f"{config.get('fflags', DEFAULT_FLAGS)} {includes}".strip()
         job = Job(
             argv=[
                 sys.executable,
@@ -229,7 +286,8 @@ class F2pyGoldenOracle(Oracle):
                 "only:",
                 *wrapper_names,
                 ":",
-                f"--f90flags={config.get('fflags', DEFAULT_FLAGS)}",
+                f"--f90flags={flags}",
+                f"--f77flags={flags}",
                 "--backend",
                 "meson",
             ],
