@@ -1308,22 +1308,21 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/static.rwset": "failed"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "9 blocks match",
+       "detail": "4/9 blocks disagree: d_init/B001, d_init/B002, c_init/B001, c_init/B002",
        "metrics": {
         "blocks_checked": 9,
         "blocks_deferred": 0,
-        "blocks_matched": 9,
+        "blocks_matched": 5,
         "blocks_waived": 0
        },
-       "passed": true
+       "passed": false
       }
      }
     },
@@ -1586,10 +1585,10 @@
       "verifier/static.rwset": "failed"
      },
      "stopped_by": "static.rwset",
-     "syntax_error": "<unknown>:2453: invalid syntax. Maybe you meant '==' or ':=' instead of '='?",
+     "syntax_error": "<unknown>:2461: invalid syntax. Maybe you meant '==' or ':=' instead of '='?",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2453)",
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2461)",
        "metrics": {
         "blocks_checked": 0
        },

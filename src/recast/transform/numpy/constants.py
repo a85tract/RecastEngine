@@ -230,10 +230,6 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
             # rendered whole, because its elements are not an expression this
             # walk could re-spell one token at a time.
             spelled.append(token["v"])
-        elif token["v"] == "//":
-            # Fortran concatenation. Every operand that reaches here is a
-            # character parameter, and Python spells joining two of them ``+``.
-            spelled.append("+")
         else:  # int literals and operators pass through
             spelled.append(token["v"])
     return " ".join(spelled)
