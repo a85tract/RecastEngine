@@ -481,3 +481,77 @@ def test_a_refused_build_fails_this_stage_and_not_the_run(tmp_path: Path) -> Non
             RefusingExecutor(),
             {"root": str(tmp_path)},
         )
+
+
+KINDS_SOURCE = """\
+module toy_kinds
+  use, intrinsic :: iso_fortran_env
+  implicit none
+  integer, parameter :: wp = real64
+end module toy_kinds
+"""
+
+SPLIT_SOURCE = """\
+module toy_split
+  use toy_kinds, only: wp
+  implicit none
+contains
+  subroutine scale_all(n, a, x)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: a
+    real(wp), intent(inout) :: x(*)
+    integer :: i
+    do i = 1, n
+      x(i) = a * x(i)
+    end do
+  end subroutine scale_all
+end module toy_split
+"""
+
+
+def _split_tree(tmp_path: Path) -> tuple[Unit, object]:
+    (tmp_path / "toy_kinds.f90").write_text(KINDS_SOURCE)
+    (tmp_path / "toy_split.f90").write_text(SPLIT_SOURCE)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:toy_split")
+    return unit, frontend.analyze(unit, tmp_path)
+
+
+def test_the_reference_names_the_siblings_the_unit_uses(tmp_path: Path) -> None:
+    """A module that takes its precision from a kinds module one file over
+    does not compile alone -- gfortran wants a ``.mod`` nobody built. The
+    frontend already resolved the sibling, so the build asks the facts rather
+    than making the operator list it by hand."""
+    from recast.oracle.f2py import companion_sources
+
+    _unit, facts = _split_tree(tmp_path)
+    assert companion_sources(facts, tmp_path) == [(tmp_path / "toy_kinds.f90").resolve()]
+
+
+def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
+    """The reference is only a reference if everything that can change what it
+    computes is in its key. A kinds module edited from real64 to real32 is a
+    different reference, not the same one."""
+    unit, facts = _split_tree(tmp_path)
+    oracle = F2pyGoldenOracle()
+    config = {"root": tmp_path, "fc": GFORTRAN or "gfortran"}
+    before = oracle.key(unit, facts, config)
+    (tmp_path / "toy_kinds.f90").write_text(KINDS_SOURCE.replace("real64", "real32"))
+    assert oracle.key(unit, facts, config) != before
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_the_reference_builds_across_two_files(tmp_path: Path) -> None:
+    """The same case, actually compiled. Every library in the public corpus
+    that keeps its working precision in its own module failed here, on a
+    ``Cannot open module file`` that named a file sitting beside the source."""
+    unit, facts = _split_tree(tmp_path)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    ref = F2pyGoldenOracle().materialize(
+        unit, facts, workspace, LocalExecutor(), {"root": tmp_path, "fc": GFORTRAN}
+    )
+    assert ref.handle["wrappers"]["scale_all"] == "w_scale_all"

@@ -120,7 +120,8 @@
       "license": "none stated upstream",
       "about": "Integration, FITPACK-style goto interpolation, random numbers, strings",
       "files": [
-        "src/**/*.f90"
+        "src/**/*.f90",
+        "src/**/*.inc"
       ],
       "exclude": [
         "src/tests/**"
