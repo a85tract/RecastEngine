@@ -322,8 +322,21 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
 
 
 def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
-    decls = [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
-    return decls
+    """Every type declaration in a specification part, interfaces excluded.
+
+    A declaration inside an ``interface`` block declares a *dummy argument of
+    somebody else's procedure*, not a variable of this scope. Reading them as
+    module state gave a module of nothing but abstract interfaces twenty-four
+    entries called ``x`` and ``f`` -- names that are not there, several of
+    them the same name twice. The pipeline this was migrated from reads them
+    the same way and has been told.
+    """
+    inside = {id(d) for block in walk(spec_part, f03.Interface_Block) for d in walk(block)}
+    return [
+        parse_decl_stmt(d)
+        for d in walk(spec_part, f03.Type_Declaration_Stmt)
+        if id(d) not in inside
+    ]
 
 
 def sub_name_of(sub: Any) -> str:

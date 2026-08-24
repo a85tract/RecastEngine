@@ -26,8 +26,7 @@
    "units": {
     "fortran:bspline_blas_module": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'bspline_kinds_module_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -84,19 +83,34 @@
      }
     },
     "fortran:bspline_kinds_module": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:bspline_sub_module": {
      "deferred": 4,
-     "import_error": "ModuleNotFoundError: No module named 'bspline_kinds_module_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -134,14 +148,30 @@
    "status": "failed",
    "units": {
     "fortran:parkind1": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:yoecldp": {
      "deferred": 124,
@@ -248,14 +278,30 @@
      }
     },
     "fortran:yomphyder": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     }
    }
   },
@@ -267,14 +313,31 @@
    "status": "failed",
    "units": {
     "fortran:fftpack": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "ModuleNotFoundError: No module named 'fftpack_kind_numpy'",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     }
    }
   },
@@ -319,18 +382,34 @@
    "status": "failed",
    "units": {
     "fortran:constants": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:linalg": {
      "deferred": 65,
-     "import_error": "ModuleNotFoundError: No module named 'constants_numpy'",
+     "import_error": "ModuleNotFoundError: No module named 'lapack_numpy'",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -356,8 +435,7 @@
     },
     "fortran:mesh": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -382,8 +460,7 @@
     },
     "fortran:optimize": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -409,8 +486,7 @@
     },
     "fortran:ppm": {
      "deferred": 2,
-     "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -435,8 +511,7 @@
     },
     "fortran:sorting": {
      "deferred": 10,
-     "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -512,19 +587,34 @@
      }
     },
     "fortran:types": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:utils": {
      "deferred": 3,
-     "import_error": "ModuleNotFoundError: No module named 'types_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -664,14 +754,31 @@
      }
     },
     "fortran:arrays": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:basic": {
      "deferred": 5,
@@ -835,14 +942,30 @@
      }
     },
     "fortran:func_integ": {
-     "artifact": "none",
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:gauss": {
      "deferred": 2,
@@ -924,24 +1047,58 @@
      }
     },
     "fortran:integrate": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:interpolate": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:mt19937_64": {
      "deferred": 0,
@@ -1022,14 +1179,31 @@
      }
     },
     "fortran:numfor": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:polynomial": {
      "deferred": 0,
@@ -1058,14 +1232,31 @@
      }
     },
     "fortran:qadaptive": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:qsimpson": {
      "deferred": 0,
@@ -1095,14 +1286,31 @@
      }
     },
     "fortran:qtanhsinh": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:quadpack": {
      "deferred": 0,
@@ -1112,33 +1320,51 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/9 blocks disagree: d_init/B001, d_init/B002, c_init/B001, c_init/B002",
+       "detail": "9 blocks match",
        "metrics": {
         "blocks_checked": 9,
         "blocks_deferred": 0,
-        "blocks_matched": 5,
+        "blocks_matched": 9,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
     "fortran:randist": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:random": {
      "deferred": 3,
@@ -1217,24 +1443,58 @@
      }
     },
     "fortran:uniform": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:utils": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "SyntaxError: invalid syntax",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     }
    }
   },
@@ -1339,10 +1599,10 @@
       "verifier/static.rwset": "failed"
      },
      "stopped_by": "static.rwset",
-     "syntax_error": "<unknown>:2461: invalid syntax. Maybe you meant '==' or ':=' instead of '='?",
+     "syntax_error": "<unknown>:2453: invalid syntax. Maybe you meant '==' or ':=' instead of '='?",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2461)",
+       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2453)",
        "metrics": {
         "blocks_checked": 0
        },
@@ -1414,7 +1674,7 @@
    "units": {
     "fortran:bvls_module": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'slsqp_kinds_numpy'",
+     "import_error": "NameError: name 'SLSQP_RK' is not defined",
      "imports": false,
      "mechanical": true,
      "parses": true,
@@ -1440,7 +1700,7 @@
     },
     "fortran:slsqp_core": {
      "deferred": 2,
-     "import_error": "ModuleNotFoundError: No module named 'slsqp_kinds_numpy'",
+     "import_error": "NameError: name 'SLSQP_RK' is not defined",
      "imports": false,
      "mechanical": false,
      "parses": true,
@@ -1465,18 +1725,35 @@
      }
     },
     "fortran:slsqp_kinds": {
-     "artifact": "none",
+     "deferred": 0,
+     "import_error": "NameError: name 'SLSQP_RK' is not defined",
+     "imports": false,
+     "mechanical": true,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
-      "transform/translate.numpy": "skipped",
-      "verifier/static.rwset": "failed"
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset"
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
     },
     "fortran:slsqp_support": {
      "deferred": 0,
-     "import_error": "ModuleNotFoundError: No module named 'slsqp_kinds_numpy'",
+     "import_error": "NameError: name 'SLSQP_RK' is not defined",
      "imports": false,
      "mechanical": true,
      "parses": true,
