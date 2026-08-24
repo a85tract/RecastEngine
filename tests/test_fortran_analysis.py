@@ -1011,6 +1011,7 @@ module const_forms
   integer, parameter :: mask = z'ff'
   real(r8), parameter :: super(3) = (/0.02_r8, 0.05_r8, 0.1_r8/)
   character(len=6), parameter :: names(2) = (/'SSLT01', 'SSLT02'/)
+  real(r8), parameter :: modern(3) = [1.0_r8, 2.0_r8, 3.0_r8]
   real(r8), parameter :: derived(2) = (/pi, pi/)
 contains
   subroutine work(x)
@@ -1062,10 +1063,31 @@ def test_a_bare_boz_literal_has_a_value(tmp_path: Path) -> None:
 
 
 def test_an_array_constructor_in_either_spelling_is_read(tmp_path: Path) -> None:
+    """Both spellings carry their values through, by two different routes,
+    and which route a parameter takes is the pipeline's rule rather than a
+    choice: the declaration path takes ``[...]`` and spells the elements as
+    kind-stripped source text, and ``(/.../)`` goes to the classifier, which
+    spells each element ``np.float64('...')``. Emitting one where the other
+    is expected is a difference a byte-for-byte differential reports."""
     record = _forms(tmp_path)
-    assert _param(record, "super")["kind"] == "array"
-    assert _param(record, "names")["kind"] == "array"
-    assert "SSLT01" in _param(record, "names")["payload"]
+
+    modern = _param(record, "modern")
+    assert modern["kind"] == "array", "[...] takes the declaration route"
+    assert "1.0" in modern["payload"]
+
+    older = _param(record, "super")
+    assert older["kind"] == "expr", "(/.../) takes the classifier route"
+    assert older["payload"] == [
+        {
+            "t": "spelled",
+            "v": "np.array([np.float64('0.02'), np.float64('0.05'), np.float64('0.1')])",
+        }
+    ]
+
+    names = _param(record, "names")
+    assert names["kind"] == "expr"
+    assert "SSLT01" in names["payload"][0]["v"]
+    assert "dtype=object" in names["payload"][0]["v"], "character elements"
 
 
 def test_a_constructor_over_names_is_skipped_rather_than_approximated(

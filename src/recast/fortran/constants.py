@@ -476,9 +476,14 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
                 "init_expr": init,
                 "line": line,
             }
+            # ``[...]`` only, as the pipeline has it. A ``(/.../)`` parameter
+            # goes to the classifier instead, which spells its elements
+            # ``np.float64('...')`` rather than as kind-stripped source text
+            # -- two routes with two spellings, and this is the one that
+            # decides which a parameter takes.
             array_text = (
                 _array_literal(init, module_level=True)
-                if init and ("[" in init or "(/" in init) and ent.children[1] is not None
+                if init and "[" in init and ent.children[1] is not None
                 else None
             )
             if array_text is not None:
@@ -540,9 +545,7 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
                     const = f"{sname.upper()}__{pname.upper()}"
                     array_text = (
                         _array_literal(init, module_level=False)
-                        if init
-                        and init.strip().startswith(("[", "(/"))
-                        and ent.children[1] is not None
+                        if init and init.strip().startswith("[") and ent.children[1] is not None
                         else None
                     )
                     if array_text is not None:
