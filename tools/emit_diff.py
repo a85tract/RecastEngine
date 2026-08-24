@@ -12,8 +12,10 @@ indistinguishable from a wrong number until run time.
 The pipeline's ``ifx`` profile spells its transcendentals through a maths
 library that is not the system one, and the table saying which lives with the
 package that knows the build. Point ``RECAST_INTRINSICS`` at it
-(``module`` or ``module:NAME``) or every such call reads as a difference --
-without it this harness reports 169 where with it it reports 90.
+(``module`` or ``module:NAME``) or every such call reads as a difference, and
+many subprograms fail to emit at all -- so the run reports *more* differences
+over *fewer* subprograms, and the count is not comparable to one taken with
+the variable set. A count from a run without it means nothing on its own.
 
 Live against the pipeline's code, not against its stored output: comparing
 against a golden file older than the code that wrote it is how this
@@ -238,10 +240,9 @@ def pipeline_module(
     use_p: str | None,
     ext_p: str | None,
     fixed: list[dict[str, Any]],
-) -> tuple[str, str, int, list[dict[str, Any]]]:
-    """Run the pipeline's main() patch-free; -> (body, sigs line, header
-    height, final report). The body is everything after the _SIGNATURES
-    paragraph; the height re-bases py_lines so the two headers can differ."""
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Run the pipeline's main() patch-free; -> (body, sigs line, final
+    report). The body is everything after the _SIGNATURES paragraph."""
     (scratch / f"{name}_interface.json").write_text(json.dumps(interface))
     (scratch / f"{name}_literal_map.json").write_text(json.dumps(literal_map))
     out = scratch / f"{name}_numpy.py"
@@ -278,8 +279,7 @@ def pipeline_module(
     sig_start = text.index("_SIGNATURES = ")
     sig_end = text.index("\n", sig_start)
     body = text[sig_end + 2 :]
-    height = text[: sig_end + 2].count("\n")
-    return body, text[sig_start:sig_end], height, json.loads(report.read_text())
+    return body, text[sig_start:sig_end], json.loads(report.read_text())
 
 
 def pipeline_constants(root: Path, scratch: Path, name: str, source: Path) -> str:
@@ -302,14 +302,34 @@ def pipeline_constants(root: Path, scratch: Path, name: str, source: Path) -> st
     return out.read_text()
 
 
-def rebased(report: list[dict[str, Any]], height: int) -> list[dict[str, Any]]:
-    """Report entries with reasons dropped and py_lines made header-relative."""
-    normal = []
-    for entry in report:
-        kept = {k: v for k, v in entry.items() if k != "reason"}
-        kept["py_lines"] = [n - height for n in entry["py_lines"]]
-        normal.append(kept)
-    return normal
+def comparable(report: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The part of a block report that means the same thing on both sides.
+
+    Dropped, and why:
+
+    ``reason`` -- refusal wording, which the two spell differently for the
+    same refusal and which nothing consumes by value.
+
+    ``key`` -- the ``host/name`` form the engine records so an internal
+    procedure can be addressed; the pipeline has no equivalent. A difference
+    in what the record *can say*, not in the translation. The per-subprogram
+    comparison in this file already dropped it; this path did not, and that
+    alone marked thirteen modules different.
+
+    ``py_lines`` -- each emitter's bookkeeping about its *own* file. They are
+    not the same measurement: the engine's are absolute and land exactly on
+    the block's ``# Bnnn <- ...`` marker, while the pipeline's first block
+    reports line 6 of a file whose line 6 is the closing ``\"\"\"`` of the
+    module docstring, and the gap between the two grows with each subprogram
+    rather than staying at the header's height. So no single origin
+    reconciles them and there is nothing here to compare. What both sides
+    mean identically -- the block ids, their order, their status, and the
+    Fortran ``src_span`` they came from -- is still compared.
+    """
+    return [
+        {k: v for k, v in entry.items() if k not in ("reason", "key", "py_lines")}
+        for entry in report
+    ]
 
 
 def main() -> int:
@@ -482,7 +502,7 @@ def main() -> int:
                 companion_imports=tuple(f"import {c['module_py']} as {c['alias']}" for c in fixed),
             )
             try:
-                want_body, want_sigs, want_height, want_report = pipeline_module(
+                want_body, want_sigs, want_report = pipeline_module(
                     root,
                     scratch,
                     name,
@@ -497,7 +517,6 @@ def main() -> int:
                 compile(got_text, f"{name}_numpy.py", "exec")
                 got_body = "\n".join(renderer.body(nodes)[0])
                 got_sigs = f"_SIGNATURES = {renderer._signatures()!r}"
-                got_height = renderer.header().count("\n")
             except Exception as error:
                 print(f"MODULE ERROR {name}: {type(error).__name__}: {error}")
                 counts["error"] += 1
@@ -505,7 +524,7 @@ def main() -> int:
                 same_body = [normalized(l_) for l_ in want_body.splitlines()] == [
                     normalized(l_) for l_ in got_body.splitlines()
                 ]
-                same_report = rebased(want_report, want_height) == rebased(got_report, got_height)
+                same_report = comparable(want_report) == comparable(got_report)
                 if same_body and want_sigs == got_sigs and same_report:
                     counts["modules"] += 1
                 else:
@@ -524,6 +543,29 @@ def main() -> int:
                                 print(f"  pipeline |{a}")
                                 print(f"  engine   |{b}")
                                 break
+                    if ns.verbose and same_body and not same_report:
+                        # The emitted Python agrees line for line and only the
+                        # block bookkeeping does not. Printing nothing here --
+                        # which is what this did -- makes a whole class of
+                        # difference unreadable, and it is the largest class.
+                        want_entries = comparable(want_report)
+                        got_entries = comparable(got_report)
+                        shown = 0
+                        for a, b in zip(want_entries, got_entries, strict=False):
+                            if a != b and shown < 3:
+                                keys = sorted(set(a) | set(b))
+                                where = ", ".join(
+                                    f"{k}: {a.get(k)!r} != {b.get(k)!r}"
+                                    for k in keys
+                                    if a.get(k) != b.get(k)
+                                )
+                                site = f"{a.get('subprogram')}/{a.get('block')}"
+                                print(f"  report   |{site}: {where}")
+                                shown += 1
+                        if len(want_entries) != len(got_entries):
+                            print(
+                                f"  report   |block count {len(want_entries)} != {len(got_entries)}"
+                            )
         print(f"{name:<10} " + "  ".join(f"{k}={v}" for k, v in counts.items() if v))
         for key, value in counts.items():
             totals[key] += value
