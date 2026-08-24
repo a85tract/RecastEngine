@@ -44,7 +44,10 @@ _ARRAY_CTOR_NEW = re.compile(r"\[(.+)\]", re.S)
 _QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 _LEADING_DOT = re.compile(r"^(-?)\.")
 _NUMERIC = re.compile(r"-?\d+\.?\d*(?:e[+-]?\d+)?")
-_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|[()+\-*/,]")
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\d+\.?\d*(?:[edED][+-]?\d+)?(?:_\w+)?|\*\*|//|[()+\-*/,]")
+"""``//`` before the single-character class, or Fortran's concatenation
+tokenises as two divisions and ``a // b`` is emitted ``a / / b``, which is not
+Python. ``**`` is there for the same reason."""
 
 
 def strip_kind(text: str) -> str:
@@ -491,7 +494,15 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
             else:
                 rec["kind"], rec["payload"] = classify_init(init or "", known)
             module_parameters.append(rec)
-            known.add(name)
+            if rec["kind"] != "skip":
+                # Only a parameter that got a value is a name later ones may
+                # be written in terms of. Adding every declared name meant an
+                # expression over a *skipped* parameter was emitted anyway,
+                # referring to something the constants module never defines --
+                # a NameError at import, which is how twenty units of the
+                # corpus failed to load. The pipeline adds the name inside the
+                # branches that emit, and so does this now.
+                known.add(name)
 
     local_parameters: list[dict[str, Any]] = []
     literal_map: dict[str, dict[str, str]] = {}
