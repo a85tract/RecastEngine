@@ -445,3 +445,22 @@ def test_the_engines_own_workspace_is_not_source(tree, fe) -> None:
     (build / "wrappers.f90").write_text(SOURCE)
 
     assert {u.uid for u in fe.discover(tree)} == before
+
+
+def test_a_vendored_tree_can_be_left_out_of_discovery(tmp_path: Path) -> None:
+    """Two libraries a repository vendors may each define a module of the same
+    name; that is their business, not a collision this run has to resolve.
+    Without a way to say so, discovery over such a tree yields one uid twice
+    and the run refuses -- which is right, but leaves nothing to do about it."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "own.f90").write_text("module own\nend module own\n")
+    for vendor in ("a", "b"):
+        directory = tmp_path / "vendor" / vendor
+        directory.mkdir(parents=True)
+        (directory / "shared.f90").write_text("module shared\nend module shared\n")
+
+    everything = [u.uid for u in factory().discover(tmp_path)]
+    assert everything.count("fortran:shared") == 2, "the collision is real"
+
+    narrowed = [u.uid for u in factory(exclude=["vendor"]).discover(tmp_path)]
+    assert narrowed == ["fortran:own"]
