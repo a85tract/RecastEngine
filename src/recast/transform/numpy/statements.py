@@ -45,6 +45,10 @@ from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
 
+DATA_DTYPES = {"float64": "np.float64", "int32": "np.int32", "bool": "np.bool_"}
+"""What a DATA fill is built as. Narrower than the allocate map, as the
+pipeline has it here."""
+
 DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 __all__ = ["REFUSED", "Statements"]
@@ -240,6 +244,11 @@ class Statements:
                 message = str(node.children[1]).strip()
             keyword = "ERROR STOP" if isinstance(node, f08.Error_Stop_Stmt) else "STOP"
             return [f"{pad}raise SystemExit({message!r})  # {keyword}"]
+        if isinstance(node, f03.Entry_Stmt):
+            # A second entry point into a subprogram: F77's, deleted in F2018,
+            # and the callers this translates reach the primary entry. The
+            # statement itself does nothing where it stands.
+            return [f"{pad}pass  # ENTRY (legacy)"]
         if isinstance(node, f03.Read_Stmt):
             return [f"{pad}pass  # READ (I/O stub)"]
         if isinstance(node, (f03.Open_Stmt, f03.Close_Stmt)):
@@ -783,14 +792,27 @@ class Statements:
         lines: list[str] = []
         for group in walk(node, f03.Data_Stmt_Set):
             objects = [o for o in group.children[0].children if o is not None]
+            # Plain names and integer-literal subscripts pair one-for-one with
+            # the values and are emitted below. An implied-do or a section
+            # target does not: it stands for a run of elements, so the list has
+            # to be flattened before anything can be paired with it.
+            direct = True
             for target in objects:
                 if isinstance(target, f03.Name):
                     continue
-                if not isinstance(target, f03.Part_Ref):
-                    raise NoRule(f"DATA object {type(target).__name__}: {target}")
-                for subscript in self._items(target.children[1]):
-                    if not isinstance(subscript, f03.Int_Literal_Constant):
-                        raise NoRule(f"DATA subscript {type(subscript).__name__}")
+                if isinstance(target, f03.Part_Ref):
+                    if any(
+                        not isinstance(s, f03.Int_Literal_Constant)
+                        for s in self._items(target.children[1])
+                    ):
+                        direct = False
+                    continue
+                direct = False
+            if not direct:
+                lines.extend(
+                    self._data_expanded(pad, objects, self._data_values(group.children[1]))
+                )
+                continue
             values = self._data_values(group.children[1])
             at = 0
             for target in objects:
@@ -817,6 +839,121 @@ class Statements:
                     lines.append(f"{pad}{name} = {values[at]}")
                     at += 1
         return lines or [f"{pad}pass  # DATA (empty)"]
+
+    def _data_literal_int(self, node: Any, env: dict[str, int], default: int | None = None) -> int:
+        """A DATA bound or subscript, as an integer. Literals and the enclosing
+        implied-do's variable only -- anything else is not a static bound."""
+        if node is None:
+            if default is None:
+                raise NoRule("DATA bound missing")
+            return default
+        if isinstance(node, f03.Int_Literal_Constant):
+            return int(str(node).split("_")[0])
+        if isinstance(node, f03.Name) and str(node).lower() in env:
+            return env[str(node).lower()]
+        raise NoRule(f"DATA non-literal bound {node}")
+
+    def _data_targets(
+        self, objects: list[Any], env: dict[str, int] | None = None
+    ) -> list[tuple[str, tuple[int, ...] | None]]:
+        """A DATA object list flattened to ``(name, one-based index or None)``
+        in definition order, expanding implied-dos and literal-bound sections.
+
+        The order is the whole point: DATA pairs its objects with its values
+        positionally, and an implied-do stands for as many objects as it has
+        iterations.
+        """
+        env = env or {}
+        out: list[tuple[str, tuple[int, ...] | None]] = []
+        for target in objects:
+            if target is None:
+                continue
+            if isinstance(target, f03.Name):
+                out.append((str(target).lower(), None))
+            elif isinstance(target, f03.Part_Ref):
+                name = str(target.children[0]).lower()
+                expanded: list[list[int]] = [[]]
+                for subscript in self._items(target.children[1]):
+                    if isinstance(subscript, f03.Subscript_Triplet):
+                        lower, upper, step = subscript.children
+                        low = self._data_literal_int(lower, env)
+                        high = self._data_literal_int(upper, env)
+                        by = self._data_literal_int(step, env, 1)
+                        values = list(range(low, high + (1 if by > 0 else -1), by))
+                    else:
+                        values = [self._data_literal_int(subscript, env)]
+                    expanded = [[*e, v] for e in expanded for v in values]
+                out.extend((name, tuple(e)) for e in expanded)
+            elif isinstance(target, f03.Data_Implied_Do):
+                inner, variable, lower, upper, step = target.children
+                low = self._data_literal_int(lower, env)
+                high = self._data_literal_int(upper, env)
+                by = self._data_literal_int(step, env, 1)
+                name = str(variable).lower()
+                for iteration in range(low, high + (1 if by > 0 else -1), by):
+                    out.extend(self._data_targets(self._items(inner), {**env, name: iteration}))
+            else:
+                raise NoRule(f"DATA object {type(target).__name__}: {target}")
+        return out
+
+    def _data_expanded(self, pad: str, objects: list[Any], values: list[str]) -> list[str]:
+        """Flattened DATA targets, emitted as fills.
+
+        A run that is contiguous in the last dimension becomes one slice
+        assignment rather than one statement per element -- which is what a
+        400-element lookup table needs to stay readable.
+        """
+        targets = self._data_targets(objects)
+        if len(targets) != len(values):
+            raise NoRule(
+                f"DATA value count mismatch ({len(targets)} targets, {len(values)} values)"
+            )
+
+        def origins(name: str, rank: int) -> list[int]:
+            dims = (self.semantics.declaration(name) or {}).get("dims")
+            if dims is None or len(dims) != rank:
+                raise NoRule(f"DATA dims unknown for {name!r}")
+            found = []
+            for dim in dims:
+                text = str(dim.get("lb") or "1")
+                if not re.fullmatch(r"-?\d+", text):
+                    raise NoRule(f"DATA non-literal lower bound for {name!r}")
+                found.append(int(text))
+            return found
+
+        lines: list[str] = []
+        at = 0
+        while at < len(targets):
+            name, index = targets[at]
+            if index is None:
+                raise NoRule("DATA whole-array mixed with indexed")
+            end = at + 1
+            while end < len(targets):
+                following, next_index = targets[end]
+                previous = targets[end - 1][1]
+                if following != name or next_index is None or previous is None:
+                    break
+                if next_index[:-1] != index[:-1] or next_index[-1] != previous[-1] + 1:
+                    break
+                end += 1
+            lower = origins(name, len(index))
+            leading = ", ".join(str(v - lb) for v, lb in zip(index[:-1], lower[:-1], strict=True))
+            start = index[-1] - lower[-1]
+            spelled = self.names.symbol(name)
+            if end - at == 1:
+                where = (leading + ", " if leading else "") + str(start)
+                lines.append(f"{pad}{spelled}[{where}] = {values[at]}")
+            else:
+                where = (leading + ", " if leading else "") + f"{start}:{start + (end - at)}"
+                dtype = DATA_DTYPES.get(
+                    (self.semantics.declaration(name) or {}).get("dtype", ""), "np.float64"
+                )
+                lines.append(
+                    f"{pad}{spelled}[{where}] = "
+                    f"np.array([{', '.join(values[at:end])}], dtype={dtype})"
+                )
+            at = end
+        return lines
 
     @staticmethod
     def _items(node: Any) -> list[Any]:

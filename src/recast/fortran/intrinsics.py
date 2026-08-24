@@ -72,6 +72,7 @@ ELEMENTAL = frozenset(
         "ishft",
         "isign",
         "isnan",
+        "is_nan",
         "kind",
         "lbound",
         "len",
