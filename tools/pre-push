@@ -48,7 +48,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   echo "recast pre-push: checking $local_ref -> $remote_ref ($range)"
-  "$RECAST" run audit "$REPO" --range "$range"
+  "$RECAST" run audit "$REPO" --range "$range" --config "$REPO/.recast-audit.json"
   rc=$?
   [ "$rc" -eq 0 ] || exit "$rc"
 done

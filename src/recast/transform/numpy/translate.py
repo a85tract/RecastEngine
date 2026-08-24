@@ -220,10 +220,20 @@ class NumpyTranslation(Transform):
             self.deterministic = deterministic
 
     def applicable(self, unit: Unit, facts: Facts) -> bool:
+        """A module or program this frontend could parse.
+
+        Deliberately not "and it has procedures". A module of nothing but
+        kind parameters is what half the libraries in the corpus put their
+        working precision in, and skipping it emitted no file -- so every
+        sibling that ``use``s it failed to import, which took whole cases
+        down. The pipeline has no such condition: pointed at such a file it
+        writes the module out, empty of subprograms and importable, and its
+        parameters ride in the constants module beside it.
+        """
         return (
             unit.kind in ("module", "program")
             and "parse_error" not in unit.attrs
-            and bool(facts.interface.get("subprograms"))
+            and bool(facts.interface)
         )
 
     def apply(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> Candidate:

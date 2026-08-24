@@ -249,6 +249,15 @@ class F2pyGoldenOracle(Oracle):
 
         source = (Path(config.get("root", ".")) / facts.provenance["source"]).resolve()
         subprograms = self._subprograms(facts, config)
+        if not subprograms:
+            # Nothing callable to wrap -- a module of kind parameters, or of
+            # abstract interfaces. f2py is happy to build an extension with an
+            # empty ``only:`` list, and importing the result segfaults the
+            # interpreter, which no ``except`` can catch and which takes the
+            # whole run with it. A reference to nothing is not a reference.
+            raise OracleUnavailable(
+                f"{unit.uid}: no public subprogram to wrap; there is no reference to build"
+            )
         wrapper_text, wrapper_names = wrappers_for(
             facts.interface, subprograms, parameters=config.get("wrapper_parameters")
         )
