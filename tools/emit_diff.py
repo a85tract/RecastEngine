@@ -408,6 +408,13 @@ def main() -> int:
         tree = parse(source)
         parsed = walk(tree, f03.Module)
         scope = parsed[0] if parsed else tree
+        # The pipeline's ``main()`` runs this before translating anything, and
+        # without it every reference to a module allocatable falls back to the
+        # declared bounds -- so ``mam_idx(m, 0)``, allocated ``0:nspec_max``,
+        # compares as ``[m - 1, 0 - 1]`` against a real run's ``[m - 1, 0]``.
+        # Comparing against a state the pipeline is never in measures this
+        # harness, not the emitters.
+        translator.prescan_module_allocates(scope)
         nodes = {}
         for subprogram in walk(scope, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
             heading = walk(subprogram, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
