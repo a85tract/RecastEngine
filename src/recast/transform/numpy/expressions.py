@@ -410,9 +410,9 @@ class Expressions:
             name = self.names.symbol(match.group(1).lower())
             dimension = match.group(2)
             if dimension is None:
-                return f"np.size({name})"
+                return self.extent_of(name)
             axis = int(DIM_KEYWORD.sub("", dimension)) - 1
-            return f"np.size({name}, {axis})"
+            return self.extent_along(name, axis)
 
         if EXTENT.fullmatch(text):
             return EXTENT.sub(extent, text)
@@ -437,6 +437,21 @@ class Expressions:
         if position != len(text):
             raise NoRule(f"dim expr {text!r}")
         return "".join(rendered)
+
+    def extent_of(self, name: str) -> str:
+        """How many elements an array has, as this target spells it."""
+        return f"np.size({name})"
+
+    def extent_along(self, name: str, axis: int) -> str:
+        """The same along one zero-based axis.
+
+        Named rather than written inline because it is a *spelling*, and the
+        Numba backend's differs: ``np.size`` compiles under ``@njit`` but its
+        axis argument does not, so a kernel asks the shape tuple instead. Two
+        methods and not one because an unqualified extent has no axis to pass
+        and the two targets agree on it.
+        """
+        return f"np.size({name}, {axis})"
 
     def _triplet(self, node: Any) -> str:
         """A range in a value position, as a Python ``slice`` object.
@@ -686,8 +701,12 @@ class Expressions:
         collapses_an_axis = len(arguments) == 2 and name not in ("dot_product", "matmul")
         if collapses_an_axis:
             # Fortran's DIM is 1-based and names a dimension; an axis is 0-based.
-            return f"{REDUCTIONS[name]}({arguments[0]}, axis=({arguments[1]}) - 1)"
+            return self.axis_reduction(REDUCTIONS[name], arguments[0], arguments[1])
         return f"{REDUCTIONS[name]}({', '.join(arguments)})"
+
+    def axis_reduction(self, spelling: str, array: str, dimension: str) -> str:
+        """A reduction that collapses the axis Fortran's DIM names."""
+        return f"{spelling}({array}, axis=({dimension}) - 1)"
 
     def _over_arrays(self, name: str, arguments: list[str]) -> str:
         if name == "merge":
