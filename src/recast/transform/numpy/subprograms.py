@@ -76,7 +76,19 @@ class Subprograms:
     operator's tables, the compiler profile -- and builds the per-subprogram
     stack (semantics, names, expressions, statements) fresh for each
     ``render``, because everything in that stack is scoped to one subprogram.
+
+    The two floors below are named here rather than constructed inline so a
+    second backend can replace them. A backend that re-emits the same Fortran
+    with different spellings -- Numba's, whose kernels take the module state
+    they read as explicit parameters -- differs from this one in perhaps a
+    dozen rules spread across the expression and statement layers, and in
+    nothing about the assembly around them. Subclassing the floors and
+    naming the subclasses here is how it says that, instead of copying the
+    assembly to change twelve lines inside it.
     """
+
+    expressions_class = Expressions
+    statements_class = Statements
 
     record: dict[str, Any]
     """The ``interface.extract`` record for the module being translated."""
@@ -188,7 +200,7 @@ class Subprograms:
             for name, bounds in self.record.get("module_allocate_bounds", {}).items()
             if name not in shadowed
         }
-        expressions = Expressions(
+        expressions = self.expressions_class(
             semantics,
             names,
             self.profile,
@@ -202,7 +214,7 @@ class Subprograms:
             elemental=_is_elemental(semantics.subprogram),
             allocated_bounds=allocated,
         )
-        return Statements(
+        return self.statements_class(
             semantics,
             names,
             expressions,
