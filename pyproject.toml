@@ -72,6 +72,7 @@ numpy-anchor = "recast.oracle.numpy_anchor:factory"
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
+"translate.numba" = "recast.transform.numba.translate:factory"
 
 [project.entry-points."recast.scanners"]
 secret = "recast.scan.secret:factory"
@@ -143,8 +144,18 @@ ignore_missing_imports = true
 # mpmath for a higher-precision fold, scipy for erf/erfc. Both fall back to a
 # pure-Python path, so neither is a dependency of anything.
 [[tool.mypy.overrides]]
-module = ["mpmath.*", "scipy.*", "sympy.*", "jax.*"]
+module = ["mpmath.*", "scipy.*", "sympy.*", "jax.*", "numba.*"]
 ignore_missing_imports = true
+
+# The Numba runtime's shims are annotated -- unlike the JAX backend below, this
+# one is fourteen functions and there was no reason not to. What is exempt is
+# narrower: numba ships no stubs, so ``@njit`` is an untyped decorator and mypy
+# calls everything it wraps untyped no matter how the function is written. The
+# rule is off for that one module and nothing else; if numba ever ships stubs,
+# delete these three lines and nothing will break.
+[[tool.mypy.overrides]]
+module = ["recast.transform.numba.runtime"]
+disallow_untyped_decorators = false
 
 # The JAX backend carries no annotations, and that is a decision rather than a
 # postponement. It is a faithful port, and what holds it is tools/jax_diff.py:
