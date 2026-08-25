@@ -104,6 +104,11 @@ class Emission:
     error_args: set[str] = field(default_factory=set)
     """This subprogram's CHARACTER ``intent(out)`` arguments."""
 
+    variant: str | None = None
+    """Which compile-time specialization is being emitted, for a backend that
+    has them. ``None`` for Numba, which does not; ``"p"``/``"a"`` for CUDA,
+    where ``present()`` folds to a literal rather than being tested."""
+
     per_subprogram_extra: dict[str, set[str]] = field(default_factory=dict)
     """``extra`` for each subprogram already emitted, because the wrapper pass
     runs after every kernel and would otherwise see only the last one's."""

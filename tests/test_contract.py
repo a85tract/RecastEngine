@@ -84,6 +84,8 @@ def test_core_imports_no_domain_packages() -> None:
         # neither -- the emitter reads the runtime's text off disk, so
         # translating to Numba does not require numba.
         "recast.transform.numba": {"numba", "numpy"},
+        # The CUDA backend, by the same rule as the two above it.
+        "recast.transform.cuda": {"numba", "numpy"},
     }
     root = Path(recast.__file__).parent
     offenders = []

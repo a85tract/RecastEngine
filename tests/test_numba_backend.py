@@ -378,3 +378,51 @@ def test_apply_is_reproducible(source: Path, record: dict[str, Any]) -> None:
     first = NumbaTranslation().apply(unit, facts, config)
     second = NumbaTranslation().apply(unit, facts, config)
     assert first.files == second.files
+
+
+# --- the CUDA backend --------------------------------------------------------
+
+
+def test_an_optional_argument_produces_two_specializations(
+    source: Path, record: dict[str, Any]
+) -> None:
+    """A GPU kernel cannot test ``present()``: there is nothing to test at run
+    time. So the choice is made at compile time, twice."""
+    from recast.transform.cuda.emitter import CudaSubprograms, optionals_of
+    from recast.transform.numba.backend import Kernels
+    from recast.transform.numba.emitter import Emission
+
+    kernels = Kernels(record=record)
+    emission = Emission(kernels=kernels)
+    assembler = CudaSubprograms(
+        record=record,
+        constants=constants.extract(source),
+        profile=PROFILES["ifx"],
+        emission=emission,
+    )
+    assert optionals_of(subprogram(record, "twice_scaled")) == []
+    assert assembler.variants(subprogram(record, "twice_scaled")) == [None]
+
+    lines, _ = assembler.render(node_of(source, "twice_scaled"), "twice_scaled")
+    assert lines[0] == "@cuda.jit(device=True, inline=True)"
+    # the closure is sorted, not expanded: no derived object reaches a device
+    assert lines[1] == "def _twice_scaled_k(x, omeps, tmelt):"
+
+
+def test_a_device_function_is_scalar_rank_even_when_elemental(
+    source: Path, record: dict[str, Any]
+) -> None:
+    """One thread, one element -- the launcher above does the mapping, so the
+    ELEMENTAL widening the NumPy backend applies would be wrong here."""
+    from recast.transform.cuda.emitter import CudaSubprograms
+    from recast.transform.numba.backend import Kernels
+    from recast.transform.numba.emitter import Emission
+
+    kernels = Kernels(record=record)
+    assembler = CudaSubprograms(
+        record=record,
+        constants=constants.extract(source),
+        profile=PROFILES["ifx"],
+        emission=Emission(kernels=kernels),
+    )
+    assert assembler.floors("plain").expressions.elemental is False
