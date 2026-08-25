@@ -33,10 +33,11 @@ so translating to Numba never requires numba to be installed. That is the same
 rule the JAX runtime follows and for the same reason.
 """
 
-import math  # noqa: F401  (emitted kernels call math.gamma)
+import math
+from typing import Any
 
 import numpy as np
-from numba import njit, vectorize  # noqa: F401  (vectorize is for emitted code)
+from numba import njit, vectorize
 
 # A star-import from the generated module must see the underscore names.
 __all__ = [
@@ -62,76 +63,76 @@ __all__ = [
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_min(a, b):
+def _f_min(a: Any, b: Any) -> Any:
     """gfortran MIN NaN semantics (left operand's NaN absorbed)."""
     return b if (a != a) else (a if a < b else b)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_max(a, b):
+def _f_max(a: Any, b: Any) -> Any:
     return b if (a != a) else (a if a > b else b)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vmin(a, b):
+def _f_vmin(a: Any, b: Any) -> Any:
     return np.where(np.isnan(a), b, np.where(a < b, a, b))
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vmax(a, b):
+def _f_vmax(a: Any, b: Any) -> Any:
     return np.where(np.isnan(a), b, np.where(a > b, a, b))
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_sign(a, b):
+def _f_sign(a: Any, b: Any) -> Any:
     return abs(a) if b >= 0 else -abs(a)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_mod(a, p):
+def _f_mod(a: Any, p: Any) -> Any:
     """Fortran MOD truncates toward zero where Python's ``%`` floors."""
     return a - int(a / p) * p
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_int_div(a, b):
+def _f_int_div(a: Any, b: Any) -> Any:
     """Fortran integer division truncates where Python's ``//`` floors."""
     return int(a / b)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _fstr_eq(a, b):
+def _fstr_eq(a: Any, b: Any) -> Any:
     """Fortran compares CHARACTER blank-padded to the longer operand."""
     return a.rstrip(" ") == b.rstrip(" ")
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_trim(s):
+def _f_trim(s: Any) -> Any:
     return s.rstrip(" ")
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vexp(x):
+def _f_vexp(x: Any) -> Any:
     return np.exp(x)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vlog(x):
+def _f_vlog(x: Any) -> Any:
     return np.log(x)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vlog10(x):
+def _f_vlog10(x: Any) -> Any:
     return np.log10(x)
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vpow(a, b):
+def _f_vpow(a: Any, b: Any) -> Any:
     return a ** b
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")
-def _f_vdot(a, b):
+def _f_vdot(a: Any, b: Any) -> Any:
     # Fortran DOT_PRODUCT accumulates in order (matches the strict-libm numpy
     # shim); numba's np.dot dispatches to BLAS and rounds differently.
     af, bf = np.ravel(a), np.ravel(b)

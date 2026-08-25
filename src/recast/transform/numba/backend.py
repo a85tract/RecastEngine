@@ -314,6 +314,13 @@ class Kernels:
             add(entry)
         return out
 
+    def companion_state(self, alias: str) -> dict[str, Any]:
+        """``{state name: dtype}`` for one companion's module state."""
+        return self._companion_state.get(alias, {})
+
+    def aliases(self) -> tuple[str, ...]:
+        return tuple(self._companion_subprograms)
+
     def companion_kernels(self, alias: str) -> set[str]:
         return self._companion_kernels.get(alias, set())
 
