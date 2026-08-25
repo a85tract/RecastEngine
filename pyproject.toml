@@ -73,6 +73,7 @@ numpy-anchor = "recast.oracle.numpy_anchor:factory"
 "translate.numpy" = "recast.transform.numpy.translate:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
 "translate.numba" = "recast.transform.numba.translate:factory"
+"translate.cuda" = "recast.transform.cuda.translate:factory"
 
 [project.entry-points."recast.scanners"]
 secret = "recast.scan.secret:factory"
