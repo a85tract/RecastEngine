@@ -68,6 +68,7 @@ fortran = "recast.fortran.frontend:factory"
 [project.entry-points."recast.oracles"]
 f2py-golden = "recast.oracle.f2py:factory"
 numpy-anchor = "recast.oracle.numpy_anchor:factory"
+dump-replay = "recast.oracle.dump_replay:factory"
 
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"

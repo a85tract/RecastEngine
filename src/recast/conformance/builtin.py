@@ -473,6 +473,38 @@ PLUGIN_SET = PluginSet(
             requires=("numpy", "fparser"),
         ),
         OracleCase(
+            # The only oracle that computes nothing. It reads a recording and
+            # supplies both the inputs and the expected outputs, so it is also
+            # the only one that makes the differential gate run backwards --
+            # which is why it is checked here rather than left to its own
+            # tests: the contract rules about keys and refusals apply to it
+            # exactly as they do to the two that build.
+            #
+            # Its material is synthetic and says so in every file. No
+            # production dump is committed in either repository, so a case
+            # that waited for one would never run.
+            name="dump-replay",
+            unit=Unit(uid=F2PY_UNIT, kind="module"),
+            facts=_toy_physics_facts,
+            config={"root": str(TOY_PHYSICS), "dumps": str(TOY_PHYSICS / "dumps")},
+            moves_the_key={
+                # Which machine the recording is attributed to is part of what
+                # the reference *is*: the same numbers recorded on another
+                # device are another device's numbers.
+                "the recording's attributed device": {"reference_device": "gpu:0"},
+            },
+            # The recording does not depend on the source, and the key folds
+            # the source digest anyway -- see ``DumpReplayOracle.key``. A
+            # recording of code that has since changed is the stale reference
+            # this rule exists to catch.
+            move_the_source=_different_source,
+            materializes=True,
+            # It reads files in this process: nothing compiled, nothing handed
+            # to the executor, so there is no refusal for one to honour.
+            submits_jobs=False,
+            requires=("numpy", "fparser"),
+        ),
+        OracleCase(
             name="f2py-golden",
             unit=Unit(uid=F2PY_UNIT, kind="module"),
             facts=_toy_physics_facts,

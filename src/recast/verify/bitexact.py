@@ -140,7 +140,21 @@ class BitexactVerifier(Verifier):
         handle = oracle.handle if isinstance(oracle.handle, dict) else {}
         truth = handle.get("module")
         wrappers = handle.get("wrappers", {})
-        if truth is None:
+        # Which direction this comparison runs. Every reference that *computes*
+        # answers inputs the harness chose, so the harness generates them. A
+        # reference that only *replays* cannot be asked anything it was not
+        # already asked -- the inputs are whatever the recorded run used -- so
+        # it supplies them, and says so here rather than being detected.
+        recorded = handle.get("input_source") == "recorded"
+        samples = list(handle.get("samples") or []) if recorded else []
+        if recorded and not samples:
+            return self._verdict(
+                candidate,
+                Confidence.FAILED,
+                {},
+                f"oracle {oracle.oracle!r} supplies the inputs and handed over no samples",
+            )
+        if truth is None and not recorded:
             return self._verdict(
                 candidate,
                 Confidence.FAILED,
@@ -182,12 +196,28 @@ class BitexactVerifier(Verifier):
                 if a["intent"] != "OUT"
             )
 
-        wanted = config.get("subprograms") or [
-            name
-            for name in wrappers
-            if name in table and name not in deferred_subprograms and generable(name)
-        ]
-        skipped = sorted(set(wrappers) - set(wanted))
+        if recorded:
+            # A recording names what it is a recording of, so the set to
+            # compare is the set that was captured -- not every subprogram the
+            # module exports. ``generable`` does not apply: nothing is
+            # generated, and a character argument that was recorded can be
+            # replayed.
+            by_subprogram: dict[str, list[dict[str, Any]]] = {}
+            for sample in samples:
+                by_subprogram.setdefault(str(sample.get("subprogram", "")), []).append(sample)
+            offered = sorted(by_subprogram)
+            wanted = config.get("subprograms") or [
+                name for name in offered if name in table and name not in deferred_subprograms
+            ]
+            skipped = sorted(set(offered) - set(wanted))
+        else:
+            by_subprogram = {}
+            wanted = config.get("subprograms") or [
+                name
+                for name in wrappers
+                if name in table and name not in deferred_subprograms and generable(name)
+            ]
+            skipped = sorted(set(wrappers) - set(wanted))
 
         trials = int(config.get("trials", 10))
         dims = dict(config.get("dims", {}))
@@ -215,8 +245,8 @@ class BitexactVerifier(Verifier):
         for name in wanted:
             sub = table[name]
             translated_fn = getattr(translated, name, None)
-            truth_fn = getattr(truth, wrappers.get(name, f"w_{name}"), None)
-            if translated_fn is None or truth_fn is None:
+            truth_fn = None if recorded else getattr(truth, wrappers.get(name, f"w_{name}"), None)
+            if translated_fn is None or (truth_fn is None and not recorded):
                 side = "candidate" if translated_fn is None else "oracle"
                 failures.append(f"{name}: missing on the {side} side")
                 continue
@@ -233,6 +263,7 @@ class BitexactVerifier(Verifier):
                 dominant_at=config.get("dominant_at", self.dominant_at),
                 arg_naming=str(handle.get("arg_naming", "lower")),
                 convention=str(handle.get("return_convention", "f2py")),
+                samples=by_subprogram.get(name) if recorded else None,
             )
             per_subprogram[name] = outcome
             if "error" in outcome:
@@ -337,6 +368,16 @@ class BitexactVerifier(Verifier):
             name = call["subprogram"]
             inputs = call.get("inputs", {})
             getattr(translated, pysafe(name))(**{pysafe(k): v for k, v in inputs.items()})
+            if truth is None:
+                # A replayed reference has no state to set: whatever the
+                # production run's module state was is already folded into the
+                # numbers it recorded. The candidate still needs the call, and
+                # an operator whose ``setup`` does not match the run's own
+                # initialization gets a difference rather than a silent pass --
+                # which is the correct outcome and worth naming, because it is
+                # the one thing about a replay that cannot be checked from
+                # here.
+                continue
             getattr(truth, wrappers.get(name, f"w_{name}"))(
                 **{spell(k): v for k, v in inputs.items()}
             )
@@ -357,6 +398,7 @@ class BitexactVerifier(Verifier):
         dominant_at: float | None = None,
         arg_naming: str = "lower",
         convention: str = "f2py",
+        samples: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from recast.transform.numpy.vocabulary import pysafe
 
@@ -379,20 +421,36 @@ class BitexactVerifier(Verifier):
         max_ulp_dominant = 0
         dominant_points = 0
         max_rel = 0.0
-        for trial in range(trials):
+        # Replayed samples are the trials, and there are as many as were
+        # recorded. ``trials`` is a sampling parameter and does not apply: a
+        # recording cannot be asked for more points than it holds, and
+        # truncating it to a count chosen here would silently narrow the
+        # evidence.
+        rounds: list[Any] = list(samples) if samples is not None else list(range(trials))
+        for round_index, round_item in enumerate(rounds):
             # hash() is salted per process; a seed must not be.
-            rng = np.random.default_rng(int.from_bytes(f"{name}:{trial}".encode(), "big") % 2**32)
-            inputs = {}
-            for argument in required:
-                if argument["intent"] == "OUT":
-                    continue
-                lowered = argument["name"].lower()
-                if not argument.get("dims") and (lowered in dimension_names or lowered in dims):
-                    inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
-                else:
-                    inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
+            rng = np.random.default_rng(
+                int.from_bytes(f"{name}:{round_index}".encode(), "big") % 2**32
+            )
+            if samples is not None:
+                bound = self._recorded_inputs(np, required, round_item)
+                if isinstance(bound, str):
+                    return {"error": bound}
+                inputs = bound
+            else:
+                inputs = {}
+                for argument in required:
+                    if argument["intent"] == "OUT":
+                        continue
+                    lowered = argument["name"].lower()
+                    if not argument.get("dims") and (
+                        lowered in dimension_names or lowered in dims
+                    ):
+                        inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
+                    else:
+                        inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
 
-            if prepare is not None:
+            if prepare is not None and samples is None:
                 # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
                 # rng)`` hook, the way it carries ``_SIGNATURES``: per-name
                 # ranges cannot express structure -- a pressure column must
@@ -401,6 +459,14 @@ class BitexactVerifier(Verifier):
                 # the production model aborts out of. The hook shapes inputs
                 # into the defined domain; it cannot bias the verdict,
                 # because both sides receive the same shaped inputs.
+                #
+                # It is skipped for a replay, and that is the important half:
+                # the hook exists to drag *generated* inputs into the physical
+                # domain, and recorded inputs are already there by
+                # construction. Running it would let the candidate edit the
+                # production run's own numbers before being judged on them,
+                # which is the one thing a hook supplied by the artifact under
+                # test must never be able to do.
                 prepare(name, inputs, rng)
 
             # Keyword calls on both sides: f2py reorders inferred-dimension
@@ -430,10 +496,15 @@ class BitexactVerifier(Verifier):
                 translated_out = translated_fn(**translated_kwargs)
             except Exception as error:
                 return {"error": f"candidate raised: {type(error).__name__}: {error}"}
-            try:
-                truth_out = truth_fn(**truth_kwargs)
-            except Exception as error:
-                return {"error": f"oracle raised: {type(error).__name__}: {error}"}
+            if samples is not None:
+                # Nothing to call: the reference already ran, in production,
+                # and what it produced is the recording.
+                truth_out = round_item.get("outputs", {})
+            else:
+                try:
+                    truth_out = truth_fn(**truth_kwargs)
+                except Exception as error:
+                    return {"error": f"oracle raised: {type(error).__name__}: {error}"}
 
             pairs = self._paired_outputs(
                 sub,
@@ -523,6 +594,41 @@ class BitexactVerifier(Verifier):
         return mask
 
     @staticmethod
+    def _recorded_inputs(
+        np: Any, required: list[dict[str, Any]], sample: dict[str, Any]
+    ) -> dict[str, Any] | str:
+        """Bind one recorded sample's INPUT sections to the declared arguments.
+
+        By exact name, lowercased, and nothing else. The script this oracle
+        came from matched fuzzily -- exact, then with ``in``/``out`` stripped,
+        then any substring either way -- and filled whatever was left with
+        zeros. That is defensible in a one-shot investigation and not in a
+        gate: a substring match binds ``t`` to ``theta``, a zero fill invents
+        an input the run never had, and either one produces numbers that can
+        be compared and mean nothing. So a required argument the recording does
+        not name is a refusal, which is what a verifier that fails closed owes
+        its reader.
+        """
+        recorded = sample.get("inputs", {})
+        inputs: dict[str, Any] = {}
+        missing = []
+        for argument in required:
+            if argument["intent"] == "OUT":
+                continue
+            key = argument["name"].lower()
+            if key not in recorded:
+                missing.append(argument["name"])
+                continue
+            value = recorded[key]
+            inputs[argument["name"]] = np.copy(value) if isinstance(value, np.ndarray) else value
+        if missing:
+            return (
+                f"{sample.get('source', 'sample')} records no value for "
+                f"{', '.join(missing)}; a replay does not invent one"
+            )
+        return inputs
+
+    @staticmethod
     def _paired_outputs(
         sub: dict[str, Any],
         outs_all: list[dict[str, Any]],
@@ -546,6 +652,39 @@ class BitexactVerifier(Verifier):
         backend produced -- a NumPy anchor for a port -- and returns exactly
         what the candidate does, because the same emitter wrote both.
         """
+        if convention == "recorded":
+            # ``truth_out`` is not a return value here -- it is the recorded
+            # OUTPUT section, keyed by the name the probe wrote. So the match
+            # is by name on both sides, and an out-intent argument the
+            # recording does not carry is a gap in the evidence rather than a
+            # difference: it is reported, and the rest of the sample still
+            # counts. A sample carrying *nothing* this subprogram declares is
+            # the error, because comparing zero values is not a pass.
+            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+            names = (
+                [sub.get("result") or "result"]
+                if sub["kind"] == "function"
+                else [a["name"] for a in outs_all]
+            )
+            if len(mine) != len(names):
+                return (
+                    f"candidate returned {len(mine)} value(s) for {len(names)} "
+                    "out-intent argument(s)"
+                )
+            ours_by_name = dict(zip(names, mine, strict=True))
+            wanted = names if sub["kind"] == "function" else [a["name"] for a in outs_required]
+            pairs = [
+                (n, ours_by_name[n], truth_out[n.lower()])
+                for n in wanted
+                if n.lower() in truth_out
+            ]
+            if not pairs:
+                return (
+                    "the recorded sample carries none of "
+                    f"{wanted} in its OUTPUT sections, so there is nothing to compare"
+                )
+            return pairs
+
         if sub["kind"] == "function":
             # Both sides return the result, whatever kind of reference this is.
             return [(sub.get("result") or "result", translated_out, truth_out)]
