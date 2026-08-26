@@ -161,3 +161,50 @@ jobs:
       # arm64, so the committed port-verification.json is a record for a reader
       # without JAX, not a regression signal. What this job gates on is the
       # verdict -- the run exits non-zero unless every unit passes its gate.
+
+  # The migration differential for the replay oracle's parser: both parsers over
+  # the same probe dumps, every name, shape, dtype and value bit for bit.
+  #
+  # It is the first of the four differentials to run here, and the reason the
+  # other three do not is structural rather than an oversight. All four compare
+  # against CESM-language-translator, which is **private**, while this
+  # repository is public -- so any of them running here means a private
+  # checkout inside a public repository's CI, and that is a disclosure decision
+  # rather than a plumbing one (`docs/disclosure-ledger.md`, row 9).
+  #
+  # This one is the safe member of the set: its output is counts and the case
+  # labels written in `tools/dump_diff.py`, and its cases are constructed in
+  # this repository. No upstream source reaches the log even on a difference.
+  # `emit_diff`, `numba_diff` and `cuda_diff` print emitted upstream lines when
+  # they disagree, which is the property that keeps them out of a public log
+  # and out of this file.
+  #
+  # Needs a read-only token with access to the private repository, in the
+  # `TRANSLATOR_TOKEN` secret. Without it the checkout step fails and the job
+  # is red -- deliberately, because a job that goes green when it could not
+  # reach what it compares against is worse than no job. Repository secrets are
+  # not given to workflows triggered from forks, so a pull request from outside
+  # cannot read it.
+  #
+  # `TRANSLATOR` is set for the runner's layout and read with a fallback, so
+  # `tools/ci_local.sh` -- which extracts the `run:` steps and not the
+  # `uses:` ones -- finds a sibling checkout instead.
+  dump-diff:
+    runs-on: ubuntu-latest
+    env:
+      TRANSLATOR: upstream/CESM-language-translator
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: a85tract/CESM-language-translator
+          path: upstream/CESM-language-translator
+          token: ${{ secrets.TRANSLATOR_TOKEN }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      # Exit 2 -- "could not reach the translator" -- fails the job here. On a
+      # runner that is the right answer; the checkout above should have
+      # provided it, so its absence is a broken job rather than a missing
+      # local convenience.
+      - run: uv run --extra translate python tools/dump_diff.py --translator "${TRANSLATOR:-../cesm/CESM-language-translator}"
