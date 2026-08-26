@@ -208,6 +208,85 @@ the reason this section exists.
 [i13]: https://github.com/a85tract/CESM-language-translator/issues/13
 [i14]: https://github.com/a85tract/CESM-language-translator/issues/14
 
+### The replay oracle, and the direction it made the gate run
+
+`dump-replay` was the last declared slot the translator had source for.
+`recast plan port --config '{"oracle":"dump-replay","dumps":...}'` answered
+`[MISS]`; it answers `[ok]` now, and `recast run port` reaches a bit-exact
+verdict over the material shipped in `examples/toy_physics/dumps/`.
+
+Less of `dump_verify.py` came across than its 385 lines suggest, and the
+measurement is worth keeping because it is the shape of every one of these:
+
+| Lines | What | Where it went |
+|---:|---|---|
+| 83 | `parse_dump_file` -- the probe format | **here**, `recast.oracle.dump_replay` |
+| 187 | `verify_from_dumps` -- load, init, call, compare | already here, `differential.bitexact` |
+| 36 | `_try_init_module` -- call `*_init` by name-matching | domain extension |
+| 22 | `CAM_INIT_CONSTANTS` -- gravit, rair, cpair, MG2 defaults | domain extension |
+| 23 | `main` | the recipe runner |
+
+**The migration hit a real contract question rather than a porting one.** Every
+oracle the engine had answers a question the harness asks: `differential.
+bitexact` generates inputs from `_SIGNATURES` and calls both sides. A replay
+cannot be asked anything it was not already asked -- the inputs are whatever
+the recorded run used, and the reference's outputs are recorded rather than
+computed, so there is nothing to call. So the reference supplies the inputs,
+and the gate had to learn to let it.
+
+It learned it the way it learned the three f2py conventions before it: as a
+declaration on the handle, `input_source: "recorded"`, rather than as a
+detection. The generated path is untouched and the translate spine is
+byte-identical. Three consequences are worth naming because none is obvious:
+
+* **`trials` does not apply.** A recording holds the points it holds; asking
+  for ten against a three-sample recording would be seven invented ones or
+  seven copies.
+* **`_PREPARE_INPUTS` is skipped.** The hook exists to drag *generated* inputs
+  into the physical domain, and recorded ones are already there. It also ships
+  inside the artifact under test, so running it on a replay would let the
+  candidate edit the production run's own numbers before being judged on them.
+* **Reference-side `setup` is skipped.** A replayed reference has no state to
+  set: whatever the run's module state was is folded into what it recorded.
+  An operator whose `setup` does not match the run's own initialization gets a
+  difference rather than a silent pass, and that is the one thing about a
+  replay this repository cannot check from here.
+
+**One place the migration deliberately does not relay, and it is the binding.**
+`dump_verify.py` matched dump names to arguments fuzzily -- exact, then with
+`in`/`out` stripped, then any substring either way -- and filled whatever was
+left with zeros. In a one-shot investigation that is a reasonable convenience;
+in a gate it is a way to produce numbers that compare cleanly and mean nothing,
+because a substring match binds `t` to `theta` and a zero fill invents an input
+the run never had. The engine binds by exact name and refuses a required
+argument the recording does not carry, which is what a verifier that fails
+closed owes its reader.
+
+It can refuse instead of guessing because it reads a line upstream's parser
+drops. The probes write `# PROBE <module>.<sub>: call=N` first; neither of
+`parse_dump_file`'s two regexes matches it, so the subprogram's identity is
+lost and the script that consumes the dump has to try every subprogram in the
+module. Reading it is additive in `golden_diff`'s sense -- the inputs and
+outputs parse identically either way -- and it retires the guessing rather than
+relaying it.
+
+**The evidence here is the weakest of the four differentials, and the reason is
+not fixable from this side.** `tools/dump_diff.py` runs both parsers over the
+same dumps and compares every name, shape, dtype and value bit for bit: 12
+cases, 0 differences. But the cases are *constructed*, because *no production
+dump is committed in either repository* -- the recordings `dump_verify.py` was
+written against were written by probes inside a CESM run and live on scratch
+storage. So a green run says the two parsers agree on everything that file
+knows to ask about, and nothing about a real recording. The cases are listed
+rather than generated, so the count means what it says; a random-case
+generator would raise the number without raising the confidence.
+
+`examples/toy_physics/dumps/` is synthetic for the same reason and says so in
+every file. Its values are `settle` evaluated in float64, which makes it a
+fixture a correct candidate reproduces to the bit rather than something merely
+plausible -- 3 samples, 18 points, 0 ULP, pinned by a test and checked by the
+conformance suite's third `OracleCase`.
+
 ### The history that was not carried
 
 Found 2026-08-21, while looking at what `gitleaks` had scanned: **the

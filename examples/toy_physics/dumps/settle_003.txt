@@ -1,0 +1,23 @@
+# SYNTHETIC probe capture, written by hand for the conformance suite and
+# the port example. NOT a production recording: no CESM run produced it,
+# and it carries no build identity because the format has nowhere to put
+# one. The values are toy_physics.settle evaluated in float64, so a
+# correct candidate reproduces them to the bit -- which is what makes it
+# usable as a fixture rather than merely plausible-looking.
+# PROBE toy_physics.settle: call=       3
+# n =       2
+# INPUT: rho(n)
+1.29
+1.05
+# INPUT: dz(n)
+50.0
+75.0
+# INPUT: w(n)
+1.0
+-1.0
+# OUTPUT: w(n)
+1.0
+-37.58536585365854
+# OUTPUT: p(n)
+632.4973200000001
+1404.7324200000003
