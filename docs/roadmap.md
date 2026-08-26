@@ -119,8 +119,11 @@ Candidate without Evidence is a draft regardless of how good it looks.
 `recast run translate examples/toy_physics --config .../recast.json` is the
 public form, runs in CI's spine job, and ends with three manifests on disk:
 sampled, bit_exact, symbolic. P2's remaining obligation is the standing one
-the two differential tools carry: the translator keeps being developed, and
-`golden_diff` and `emit_diff` re-run against whatever it looks like next.
+the differential tools carry: the translator keeps being developed, and
+`golden_diff`, `emit_diff`, `numba_diff` and `cuda_diff` re-run against
+whatever it looks like next. There are four of them rather than the two this
+paragraph named until the Numba and CUDA targets landed, and the fourth one's
+denominator is itself a finding -- see "The other two translate targets" below.
 
 Two checks, because "no site paths" and "same answers" are different claims.
 `tools/golden_diff.py` runs a migrated stage over the sources the original
@@ -134,6 +137,76 @@ so migrating from it is a standing job rather than a finished one, and the
 check has to be re-runnable against whatever the sources look like next.
 Accepted divergences pin the exact values they excuse, so a change upstream
 brings them back for re-confirmation instead of staying quietly excused.
+
+### The other two translate targets, and how far their evidence reaches
+
+`translate.numba` and `translate.cuda` were the two slots the `translate`
+recipe declared and nothing filled -- `recast plan translate --config
+'{"target":"numba"}'` answered `[MISS]`. Both answer `[ok]` now, and both are
+relays rather than rewrites: the backend is upstream's, and the check is a
+third and fourth emission differential beside `emit_diff.py`.
+
+They landed the same way and their evidence is not comparable, which is the
+part worth writing down rather than leaving in two commit messages.
+
+| | compared | result |
+|---|---|---|
+| `tools/numba_diff.py` | 27 modules, 176 kernels, 10,182 lines | `different=0 error=0` |
+| `tools/cuda_diff.py` | 27 modules, 43 device functions, 1,504 lines | `different=3 crashed=146` |
+
+**Numba is what a finished relay looks like.** Every kernel and host wrapper
+the pipeline emits over the corpus, byte for byte, with headers carved out for
+the reason `transform.numpy.modules` already gives.
+
+**CUDA's denominator is a quarter of the surface it emits, and that is not a
+detail of the count.** `cudaize.py` raises on 146 of the corpus's subprograms
+before emitting an expression, so for those there is no upstream answer to
+compare against. The engine emits 127 of them anyway -- **5,725 lines that
+nothing has checked, against 1,504 that something has, or 79% of the target's
+output resting on no evidence at all.** It is not that those lines are known
+wrong; it is that the relay standard is "the same bytes as upstream", and where
+upstream produces nothing that standard is vacuous rather than satisfied.
+
+Two things make the gap easy to under-read, and both were under-read here
+first:
+
+* `cuda_diff` counts a crash apart from a difference, correctly -- saying the
+  engine disagrees with a traceback would be false. But `crashed=146` reads as
+  a fact about upstream when it is also a fact about this repository's
+  coverage, and the harness never renders the engine's side on that path, so
+  the 5,725 lines do not appear in its output at all. They were measured with a
+  probe copy, not by the harness.
+* Nothing else covers the backend. `tests/test_numba_backend.py` carries two
+  CUDA unit tests over a toy fixture -- the decorator line and the signature
+  line -- and `differential.bitexact` needs a GPU, so CI's `gpu` marker skips
+  it. Outside the differential the target is close to bare.
+
+The commit that landed it said the crash fires "on any module with an
+`allocate`". **That is wrong and the correction matters for the size of the
+gap**: `alloc_lb` is read at the top of `array_ref`, which is the general
+subscript emitter reached from seven call sites, so the trigger is any array
+subscript at all. `mo_airmas.F90` and `mo_util.F90` contain no `allocate` and
+both crash; 26 of the 27 modules are affected rather than the subset with
+allocatables.
+
+Both defects are upstream's and are filed there rather than fixed here --
+[a85tract/CESM-language-translator#13][i13] for the crash,
+[#14][i14] for the three differences, which are one defect at three sites: a
+generic call inside a device function emits the resolved specific under
+`Translator`'s naming scheme, so `rising_factorial_r8` is called where only
+`_rising_factorial_r8_k` is defined. Patching upstream to widen the comparison
+is not available to this repository and would not be wanted if it were: the
+baseline the differentials compare against is upstream *as the bit-exact CESM
+gates ran it*, and editing it to make more of it comparable destroys the thing
+being compared to.
+
+So the denominator moves when #13 does, not before. Until then `translate.cuda`
+is honestly described as *planning clean and relayed, on evidence covering 21%
+of what it emits* -- which is a different claim from the one `[ok]` makes, and
+the reason this section exists.
+
+[i13]: https://github.com/a85tract/CESM-language-translator/issues/13
+[i14]: https://github.com/a85tract/CESM-language-translator/issues/14
 
 ### The history that was not carried
 
