@@ -264,8 +264,9 @@ def main() -> int:
         # three exits for the same reason.
         print(
             f"not run: {root} has no pipeline/dump_verify.py to compare against.\n"
-            "CESM-language-translator is a private repository; pass --translator, "
-            "or set TRANSLATOR, pointing at a checkout of it.",
+            "Point --translator at a checkout of CESM-language-translator. It is a\n"
+            "private repository, which is why this runs from a local checkout and\n"
+            "not from CI -- see docs/disclosure-ledger.md, row 10.",
             file=sys.stderr,
         )
         return 2
