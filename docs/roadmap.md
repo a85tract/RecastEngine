@@ -21,8 +21,11 @@ guess. The cases arrive with the work — P3 moves 662 scripts out of a private
 collection, P6 flips two private repositories — and each is ruled on as it turns
 up. What that costs is a real record: `docs/disclosure-ledger.md` carries the
 case, the reason, and *which* mechanism holds it, and P6 does not flip while a
-case in it is still open. Eight cases are already settled there, five of them
-enforced by `tools/check_hygiene.py`.
+case in it is still open. Ten cases are already settled there, five of them
+enforced by `tools/check_hygiene.py`. (This sentence said "eight" while the
+ledger held nine, which is what a hand-kept count does; it is corrected rather
+than made automatic, because the number is prose here and the ledger is the
+record.)
 
 ## P1 — scaffold (this commit)
 

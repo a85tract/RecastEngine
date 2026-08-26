@@ -256,6 +256,19 @@ def main() -> int:
     ns = ap.parse_args()
 
     root = ns.translator.resolve()
+    if not (root / "pipeline" / "dump_verify.py").is_file():
+        # Exit 2, not 1, and the distinction is the point: nothing disagreed,
+        # but the comparison did not happen. A differential that reports
+        # success when it could not reach the thing it compares against is the
+        # failure it exists to prevent. ``tools/ci_local.sh`` uses the same
+        # three exits for the same reason.
+        print(
+            f"not run: {root} has no pipeline/dump_verify.py to compare against.\n"
+            "CESM-language-translator is a private repository; pass --translator, "
+            "or set TRANSLATOR, pointing at a checkout of it.",
+            file=sys.stderr,
+        )
+        return 2
     sys.path.insert(0, str(root / "pipeline"))
     try:
         from dump_verify import parse_dump_file
