@@ -253,8 +253,14 @@ class UnavailableScanner(Scanner):
     def scan(
         self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
     ) -> Iterable[Finding]:
+        # ``yield from ()`` before the raise, not a bare ``yield`` after it.
+        # Both make this a generator -- which is the point, a real scanner is
+        # one, so the failure has to arrive when the runner iterates rather
+        # than when it calls. Only this order has no unreachable statement in
+        # it, and the checker is right that a statement after ``raise`` is a
+        # claim nobody should have to read twice.
+        yield from ()
         raise ScannerUnavailable("conformance: the tool this scanner wraps is not installed")
-        yield  # pragma: no cover - makes this a generator, as a real scanner is
 
 
 class ScanIncompleteRecipe(Recipe):

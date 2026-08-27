@@ -34,6 +34,7 @@ import importlib.util
 import operator
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -65,13 +66,19 @@ def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
         return int(dims.get("default_dim", DEFAULT_DIMENSION))
 
 
-_OPERATORS = {
+# Split by arity rather than kept in one table. A single dict of both is a
+# dict whose value type is the join of a two-argument and a one-argument
+# callable, which is a type nothing can call -- the checker says so, and the
+# result was an ``Any`` leaking out of a function declared to return ``float``.
+_BINARY: dict[type[ast.operator], Callable[[float, float], float]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.FloorDiv: operator.floordiv,
     ast.Div: operator.truediv,
     ast.Pow: operator.pow,
+}
+_UNARY: dict[type[ast.unaryop], Callable[[float], float]] = {
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
 }
@@ -93,11 +100,11 @@ def _arithmetic(text: str) -> float:
         if isinstance(node, ast.Expression):
             return walk(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
-        if isinstance(node, ast.BinOp) and type(node.op) in _OPERATORS:
-            return _OPERATORS[type(node.op)](walk(node.left), walk(node.right))
-        if isinstance(node, ast.UnaryOp) and type(node.op) in _OPERATORS:
-            return _OPERATORS[type(node.op)](walk(node.operand))
+            return float(node.value)
+        if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
+            return _BINARY[type(node.op)](walk(node.left), walk(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY:
+            return _UNARY[type(node.op)](walk(node.operand))
         raise ValueError(f"not arithmetic: {ast.dump(node)}")
 
     return walk(ast.parse(text, mode="eval"))
@@ -443,9 +450,7 @@ class BitexactVerifier(Verifier):
                     if argument["intent"] == "OUT":
                         continue
                     lowered = argument["name"].lower()
-                    if not argument.get("dims") and (
-                        lowered in dimension_names or lowered in dims
-                    ):
+                    if not argument.get("dims") and (lowered in dimension_names or lowered in dims):
                         inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
                     else:
                         inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
@@ -674,9 +679,7 @@ class BitexactVerifier(Verifier):
             ours_by_name = dict(zip(names, mine, strict=True))
             wanted = names if sub["kind"] == "function" else [a["name"] for a in outs_required]
             pairs = [
-                (n, ours_by_name[n], truth_out[n.lower()])
-                for n in wanted
-                if n.lower() in truth_out
+                (n, ours_by_name[n], truth_out[n.lower()]) for n in wanted if n.lower() in truth_out
             ]
             if not pairs:
                 return (
