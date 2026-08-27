@@ -30,7 +30,7 @@ random-case generator would raise the count without raising the confidence, and
 would make the two numbers look alike when they are not.
 
 Usage:
-    python tools/dump_diff.py --translator ../cesm/CESM-language-translator
+    python tools/dump_diff.py --translator ../cesm/<translator-checkout>
     python tools/dump_diff.py --translator <dir> -v
 """
 
@@ -264,7 +264,7 @@ def main() -> int:
         # three exits for the same reason.
         print(
             f"not run: {root} has no pipeline/dump_verify.py to compare against.\n"
-            "Point --translator at a checkout of CESM-language-translator. It is a\n"
+            "Point --translator at a checkout of the translator. It is a\n"
             "private repository, which is why this runs from a local checkout and\n"
             "not from CI -- see docs/disclosure-ledger.md, row 10.",
             file=sys.stderr,

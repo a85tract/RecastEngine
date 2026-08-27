@@ -2,7 +2,7 @@
 """Refuse to commit anything that ties this repository to one site.
 
 RecastEngine's two source repositories carry a lot of NCAR: 408 files in
-CESM-language-translator alone hardcode ``/glade`` paths, a username, an
+the translator alone hardcode ``/glade`` paths, a username, an
 allocation account, and a scheduler hostname. Those are fine in a private case
 repository and fatal in a public engine -- and unlike a bad commit, a leaked
 path cannot be taken back once the repository is public and indexed.
@@ -42,6 +42,20 @@ RULES: list[tuple[str, re.Pattern[str], str]] = [
     # is public, and that "the domain extension" is the more accurate phrase
     # anyway. Retire this pattern when the extension goes public.
     ("private-repo", re.compile(r"recast[-_]cesm", re.I), "unpublished name"),  # hygiene: allow
+    # The upstream translator, on the same ground as the row above and with
+    # the same expiry: it is private, so every mention here is a link nobody
+    # outside can follow, and "the translator" or "the pipeline" is what the
+    # sentence meant anyway -- nothing in this repository is specific to that
+    # one checkout, which is why the differentials take a path rather than
+    # knowing one. ``NOTICE`` is the deliberate exception and carries the
+    # marker: an Apache-2.0 attribution names where the work came from, and a
+    # dead link is a smaller cost than an incomplete record of whose work it
+    # is.
+    (
+        "private-repo",
+        re.compile(r"CESM[-_]language[-_]translator", re.I),  # hygiene: allow
+        "unpublished name",
+    ),
 ]
 
 SKIP_DIRS = {
@@ -59,6 +73,16 @@ SKIP_DIRS = {
 
 # This file necessarily contains the patterns it forbids.
 SELF = Path(__file__).resolve()
+
+EXEMPT = {"NOTICE"}
+"""Files a rule does not reach, by name and for a stated reason.
+
+``NOTICE`` is an Apache-2.0 attribution record. Naming where a relayed body of
+work came from is the whole function of the file, and a link an outside reader
+cannot follow is a smaller cost than a record that does not say whose work it
+is. Exempted by path rather than by an inline marker: a comment syntax
+borrowed from source code does not belong in a legal notice.
+"""
 
 
 def iter_files(paths: list[Path]) -> list[Path]:
@@ -78,7 +102,7 @@ def main(argv: list[str]) -> int:
     violations: list[str] = []
 
     for file in iter_files(roots):
-        if file.resolve() == SELF:
+        if file.resolve() == SELF or file.name in EXEMPT:
             continue
         try:
             text = file.read_text(encoding="utf-8")

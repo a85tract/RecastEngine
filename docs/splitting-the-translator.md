@@ -1,6 +1,6 @@
 # Splitting the translator
 
-`CESM-language-translator/pipeline/translate.py` is 2,883 lines that are parser,
+The translator's `pipeline/translate.py` was 2,883 lines that are parser,
 rule library, and emitter at once. That is why nothing else can reuse any part
 of it, and why `rwset.py` had to import from it to ask a question about Fortran.
 

@@ -2,6 +2,20 @@
 
 Phases, not dates. Each one has a check that says whether it is done.
 
+## Where it stands
+
+**Pre-alpha.** The plugin contract, the CLI, and the whole `translate` recipe
+exist and run end to end — Fortran in, verified NumPy and evidence manifests
+out, gated bit-exact against the compiled original.
+
+The other three are not one story. `port` and `audit` plan clean on the
+plugins shipped here. `refactor` declares four slots nothing fills —
+`refactor.carve`, `static.no-numerics-moved`, `pinned-run`,
+`fullmodel.bitwise` — and is what P3–P4 are for. Planning clean is a weaker
+claim than the one `translate` can make, for the reason *The other two
+translate targets* below sets out: it says a plugin is registered, not that a
+run reaches a verdict.
+
 ## P0 — decisions (settled)
 
 | Decision | Options | Status |
@@ -37,7 +51,7 @@ optional dependencies installed, and `test_contract.py` passes.
 
 ## P2 — migrate the translator (done)
 
-Move CESM-language-translator's `pipeline/` (22 modules, ~10k lines) in,
+Move the translator's `pipeline/` (22 modules, ~10k lines) in,
 refactoring as it lands. The plan said "with history, via a `git filter-repo`
 path rewrite", and that is **not what happened** — see "The history that was
 not carried" at the end of this phase:
@@ -128,6 +142,17 @@ whatever it looks like next. There are four of them rather than the two this
 paragraph named until the Numba and CUDA targets landed, and the fourth one's
 denominator is itself a finding -- see "The other two translate targets" below.
 
+**Every one of them now prints the revision it compared against.** The line
+was added after a re-run reported three tools drifting at once — `emit_diff`
+5 → 110, `numba_diff` 0 → 62, `cuda_diff` 3 → 18 — which turned out to be
+neither repository moving but `RECAST_INTRINSICS` being unset, so every
+transcendental the `ifx` profile respells counted as a difference. Chasing
+that exposed the gap this line closes: the numbers below were recorded with no
+note of *which* upstream they were measured against, and upstream had in the
+meantime replaced a squashed single commit with 249 real ones. A count from a
+differential is a claim about two trees, and only one of them is in this
+repository.
+
 Two checks, because "no site paths" and "same answers" are different claims.
 `tools/golden_diff.py` runs a migrated stage over the sources the original
 pipeline ran over and diffs it against the JSON that pipeline left behind,
@@ -151,6 +176,11 @@ third and fourth emission differential beside `emit_diff.py`.
 
 They landed the same way and their evidence is not comparable, which is the
 part worth writing down rather than leaving in two commit messages.
+
+Both re-confirmed 2026-08-26 against the translator at `3c9411d4f`,
+with `RECAST_INTRINSICS` pointing at the domain extension's intrinsics table.
+So were `emit_diff` (`different=5`) and `golden_diff --live` (no unexplained
+differences).
 
 | | compared | result |
 |---|---|---|
@@ -193,8 +223,7 @@ both crash; 26 of the 27 modules are affected rather than the subset with
 allocatables.
 
 Both defects are upstream's and are filed there rather than fixed here --
-[a85tract/CESM-language-translator#13][i13] for the crash,
-[#14][i14] for the three differences, which are one defect at three sites: a
+upstream issue #13 for the crash and #14 for the three differences, which are one defect at three sites: a
 generic call inside a device function emits the resolved specific under
 `Translator`'s naming scheme, so `rising_factorial_r8` is called where only
 `_rising_factorial_r8_k` is defined. Patching upstream to widen the comparison
@@ -208,8 +237,16 @@ is honestly described as *planning clean and relayed, on evidence covering 21%
 of what it emits* -- which is a different claim from the one `[ok]` makes, and
 the reason this section exists.
 
-[i13]: https://github.com/a85tract/CESM-language-translator/issues/13
-[i14]: https://github.com/a85tract/CESM-language-translator/issues/14
+**And `[ok]` at plan time is a weaker claim than it reads for both of them, in
+a way that has nothing to do with the differentials.** `recast plan` tests
+`stage.plugin in REGISTRY.names(stage.kind)` and nothing else: it is a
+registration check, so a backend whose Python dependency is not installed
+still reads `[ok]`. Only `translate.numpy` records the rwset protocol in
+`Candidate.notes`, and `static.rwset` fails closed on a transform that records
+none -- so a `translate` run retargeted to `numba` or `cuda` stops at stage 4,
+the recipe's first gate, whatever `plan` said about stage 3. Whether a relayed
+backend should record spans upstream never produces is open, and is why the
+evidence for these two is an emission differential rather than the recipe.
 
 ### The replay oracle, and the direction it made the gate run
 
@@ -299,13 +336,24 @@ no file under `src/recast/` has a commit older than the day it was written
 here. "Migrated with history" was written into this document and into
 `CONTRIBUTING.md` before anyone checked whether the history existed.
 
-It did not, in any useful sense. CESM-language-translator is **one commit** —
-`4743491`, "Initial commit: Deterministic Fortran-to-Python translation
-pipeline", 2026-07-06, by Qinrun Dai (as second5t). A path rewrite would
-have carried that
-single commit and nothing else. And the material was decomposed into the plugin
-contract as it landed — one `main()` became a Frontend, a Transform and three
-Verifiers — so no module crossed intact for a commit to be about.
+It did not, in any useful sense. The translator was **one commit** at the time
+— `4743491`, "Initial commit: Deterministic Fortran-to-Python translation
+pipeline", 2026-07-06, by Qinrun Dai (as second5t) — so a path rewrite would
+have carried that single commit and nothing else. And the material was
+decomposed into the plugin contract as it landed — one `main()` became a
+Frontend, a Transform and three Verifiers — so no module crossed intact for a
+commit to be about.
+
+**That premise expired on 2026-08-21, and the conclusion survives it.** The
+translator has since published its real history: 249 commits reaching back to
+2026-07-06, `pipeline/translate.py` grown from 2,883 lines to 4,669. A rewrite
+today would carry something. It still would not carry anything useful *here*,
+because the second half of the argument never depended on the first: the
+decomposition is what stops a commit from being about a file in this
+repository, and no amount of upstream history changes that. What the published
+history did change is the relay, and that is tracked where it belongs — the
+differentials re-run against whatever the translator looks like next, and now
+print the revision they compared against.
 
 So the plan was wrong rather than skipped, and what replaces it is the rule
 `CONTRIBUTING.md` already gives for that case: name the source in the file, and
@@ -320,8 +368,8 @@ Nothing about the code is in question — `emit_diff` holds the emitter to the
 pipeline byte for byte across 27 modules, which is a stronger claim than any
 commit graph. What was wrong was the record of whose work it is.
 
-This also surfaced that CESM-language-translator carries **no licence file** —
-nor does CESM-Agent-Produced-Scripts. Settled the same day rather than left to
+This also surfaced that the translator carries **no licence file** —
+nor does CESM-Agent-Produced-Scripts. (Both still true, re-checked 2026-08-26.) Settled the same day rather than left to
 P6: both are the maintainer's to license and all of it is Apache-2.0, the same
 as here. Writing the `LICENSE` file into each goes with the archiving; the
 reasoning is under P6.
@@ -336,7 +384,7 @@ buckets; executing it needed eight, and the extra four are the findings.
 | `PRODUCT` | 177 | port outputs and their unit tests → Product Layer repos |
 | `HPC-EXEC` | 170 | interface here, implementation in an executor plugin |
 | `ARCHIVE` | 141 | one-shot: bound to a run, a bug, or a date that will not recur |
-| `P2` | 69 | already in CESM-language-translator — P2 migrates it from there |
+| `P2` | 69 | already in the translator — P2 migrates it from there |
 | `EXCLUDE` | 50 | stays behind: disclosure-ledger rows 6 and 7 |
 | `PROMOTED` | 28 | landed in the domain extension, de-site-ified, tested |
 | `POOL` | 22 | re-runnable tooling with no current need; promoted when one names it |
@@ -401,7 +449,7 @@ escape above — the triage said 49 and the ledger said 50.
 
 Tagging the collection read-only: **deferred to P6**, with the rest of the
 archiving, and **coordinated with its author rather than done unilaterally** —
-CESM-Agent-Produced-Scripts and CESM-language-translator are a student's
+CESM-Agent-Produced-Scripts and the translator are a student's
 repositories, not this project's. Safe to defer because the filtering happened
 file by file at migration time rather than as a cleanup pass at the end, and
 cheaper because P4 still has three files to take out of the collection.
@@ -957,7 +1005,7 @@ which that same contract puts in the exit class of a missing tool.
 
 **Standing rule, set by the maintainer 2026-08-21: where migrated code disagrees
 with a source repository, the source is right.** Stated first in 2026-08 about
-`CESM-language-translator`, and now general — it covers
+the translator, and now general — it covers
 `CESM-Agent-Produced-Scripts` and `CC-Test` too, and so anything built from
 their designs. Their answers have been run against real gates: bit-exact CESM
 cases for the pipeline, production use on Derecho for the security gate. Nothing
