@@ -36,11 +36,25 @@ python tools/corpus.py run minpack    # one case
 python tools/corpus.py report         # the table, from the recorded baseline
 ```
 
-Each case is staged under `corpus/.build/<case>/` and walked by the
-`translate` recipe with every module unit selected. The record per unit is
-how many blocks the rules refused and why (normalised, so one missing rule
-counts once however often it fires), whether the static read/write check
-agreed with the translation, and which stage stopped the unit.
+Each case is staged under `output/<case>/staged/` and walked by the
+`translate` recipe with every module unit selected. One directory holds
+everything a case produces:
+
+| | |
+|---|---|
+| `output/<case>/staged/` | the flattened Fortran the engine reads, and a `recast.json` pinning the rest here |
+| `output/<case>/translate/` | the run's per-unit workspace: candidates, and the f2py build of the same source |
+| `output/<case>/translated/` | every unit's emitted Python in one flat directory, which is what the import probe below needs |
+| `output/<case>/evidence/` | one manifest per verdict |
+
+All four are the same thing -- generated, disposable, one place to delete --
+and none of them is inside `corpus/`, whose only other contents are
+submodules this tool must never write to.
+
+The record per unit is how many blocks the rules refused and why
+(normalised, so one missing rule counts once however often it fires),
+whether the static read/write check agreed with the translation, and which
+stage stopped the unit.
 
 ## One case, end to end
 
@@ -51,15 +65,19 @@ the shipped example runs, on code nobody here wrote:
 ```bash
 git submodule update --init --depth 1 corpus/numfor
 python tools/corpus.py stage numfor
-recast run translate corpus/.build/numfor --unit fortran:basic
+recast run translate output/numfor/staged \
+    --config output/numfor/staged/recast.json --unit fortran:basic
 ```
 
 `stage` reads `cases.json` for what belongs to the case and lays it out
 somewhere the engine is free to write. For `numfor` that is the 133 `.f90`
 and `.inc` files under `src/`, its test tree left out, flattened into a fresh
-`corpus/.build/numfor/` -- flat because an `#include "qtrs1d.inc"` names no
+`output/numfor/staged/` -- flat because an `#include "qtrs1d.inc"` names no
 directory. A case carrying `.F90` sources goes through `gfortran -E -P -cpp`
-on the way. The submodule is only ever read.
+on the way. The submodule is only ever read. The `recast.json` it leaves
+behind pins the run's output to `output/numfor/`: the engine names that
+directory after the source tree's basename, and every case's staged tree is
+called `staged`. `stage` prints the command with the flag already on it.
 
 ```console
 fortran:basic
@@ -92,9 +110,10 @@ else in the module is translated, and checked.
 section is the general picture: of the 59 units the twelve cases hold, it is
 the only one that currently reaches the bit-exact gate.
 
-[`docs/example-numfor.md`](../docs/example-numfor.md) stays with this same
-unit at length -- the translated block beside its Fortran, the refusals, the
-evidence manifest, and what the passing run does not establish.
+[`docs/corpus-numfor-example.md`](../docs/corpus-numfor-example.md) stays
+with this same unit at length -- the refusals, the evidence manifest, a unit
+of the same case that fails beside it, and what the passing run does not
+establish.
 
 ## What the record is for
 

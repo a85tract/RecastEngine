@@ -13,7 +13,7 @@ the list of what to build next; a rule relayed from the translator either
 moves a number here or was not needed. Reasons are normalised (names and
 numbers elided) so the same refusal counts once however many times it fires.
 
-    python tools/corpus.py stage minpack          # into corpus/.build/minpack
+    python tools/corpus.py stage minpack          # into output/minpack/staged
     python tools/corpus.py run                    # every case, rewrite baseline.json
     python tools/corpus.py run minpack fftpack
     python tools/corpus.py report                 # print the table from baseline.json
@@ -37,9 +37,28 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CORPUS = ROOT / "corpus"
-BUILD = CORPUS / ".build"
 CASES = json.loads((CORPUS / "cases.json").read_text())["cases"]
 BASELINE = CORPUS / "baseline.json"
+
+
+def case_output(name: str) -> Path:
+    """Everything one case produces: ``output/<case>/``.
+
+    A staged tree is generated, disposable, and read back by the engine on the
+    next command -- the same three things the candidates and the evidence are,
+    and the reason ``output/`` exists. So the case gets one directory holding
+    all three, ``staged/`` beside ``translate/`` and ``evidence/``: one place
+    to look, one to delete, and nothing generated inside ``corpus/``, whose
+    only other contents are submodules this tool must never write to.
+
+    The base rule mirrors ``recast.run.output_root`` rather than importing it,
+    so this module stays usable without the package installed. It has to
+    mirror: ``RECAST_OUTPUT_HOME`` moving one half and not the other would
+    stage a case somewhere the run reading it does not look.
+    """
+    home = os.environ.get("RECAST_OUTPUT_HOME")
+    base = Path(home).expanduser() if home else Path.cwd() / "output"
+    return (base / name).resolve()
 
 
 def stage(name: str) -> Path:
@@ -48,7 +67,7 @@ def stage(name: str) -> Path:
     source_root = CORPUS / case["submodule"]
     if not any(source_root.iterdir()):
         sys.exit(f"{name}: submodule {case['submodule']} is empty -- git submodule update --init")
-    out = BUILD / name
+    out = case_output(name) / "staged"
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -78,6 +97,15 @@ def stage(name: str) -> Path:
             target.write_text(text)
         else:
             shutil.copy2(path, target)
+    # The engine names a run's output directory after the source tree's own
+    # basename, and every case's staged tree is called ``staged``. So the
+    # case's directory is pinned here instead, and left in the tree as a
+    # config a hand-run can pass -- otherwise ``recast run translate
+    # output/numfor/staged`` writes to ``output/staged/`` and every case
+    # collides there.
+    (out / "recast.json").write_text(
+        json.dumps({"output": str(case_output(name))}, indent=2) + "\n"
+    )
     return out
 
 
@@ -111,10 +139,12 @@ def run_case(name: str) -> dict[str, Any]:
     root = stage(name)
     units = _units(root)
     recipe = _recipe("translate")
-    # No ``workspace``: the default is ``output/<case>/``, outside the staged
-    # tree, so a re-stage does not delete the last run's candidates and a
-    # second run does not discover the first one's generated Python.
-    run = run_recipe(recipe, root, {"units": units})
+    # ``output`` pins the case's directory; ``staged/`` sits inside it beside
+    # the ``translate/`` and ``evidence/`` the run writes. A re-stage removes
+    # only ``staged/``, so it does not delete the last run's candidates, and
+    # the frontend walks only ``staged/``, so a second run does not discover
+    # the first one's generated Python.
+    run = run_recipe(recipe, root, {"units": units, "output": str(case_output(name))})
     record: dict[str, Any] = {
         "units": {},
         "status": run.status.value if hasattr(run.status, "value") else str(run.status),
@@ -138,7 +168,7 @@ def run_case(name: str) -> dict[str, Any]:
         record["units"][unit_run.unit.uid] = entry
     record["refusals"] = reasons.most_common()
     record["bare_files"] = _bare_files(root)
-    _translated(name, root, run, record)
+    _translated(case_output(name), run, record)
     record["blocks"] = sum(
         (e.get("verdicts", {}).get("static.rwset", {}).get("metrics", {}).get("blocks_checked", 0))
         for e in record["units"].values()
@@ -147,8 +177,13 @@ def run_case(name: str) -> dict[str, Any]:
     return record
 
 
-def _translated(name: str, root: Path, run: Any, record: dict[str, Any]) -> None:
+def _translated(case_root: Path, run: Any, record: dict[str, Any]) -> None:
     """Write what was emitted, and say how far each unit's artifact got.
+
+    Into ``output/<case>/translated/``, beside ``staged/`` rather than inside
+    it: the import probe below needs every unit's modules in one flat
+    directory, and that directory is generated Python, which has no business
+    sitting in the tree the frontend reads.
 
     Three bars, each stricter than the last and none of them the real one:
 
@@ -163,7 +198,7 @@ def _translated(name: str, root: Path, run: Any, record: dict[str, Any]) -> None
     The real bar is the differential against a build of the same Fortran,
     and it is further on than any of these.
     """
-    emitted = root / "translated"
+    emitted = case_root / "translated"
     if emitted.exists():
         shutil.rmtree(emitted)
     emitted.mkdir()
@@ -249,7 +284,13 @@ def main(argv: list[str]) -> int:
         sys.exit(f"unknown case(s): {unknown}; known: {list(CASES)}")
     if args.command == "stage":
         for name in names:
-            print(f"{name}: staged at {stage(name).relative_to(ROOT)}")
+            path = stage(name)
+            try:
+                path = path.relative_to(Path.cwd())
+            except ValueError:
+                pass
+            print(f"{name}: staged at {path}")
+            print(f"  recast run translate {path} --config {path}/recast.json")
         return 0
     if args.command == "report":
         report(json.loads(BASELINE.read_text()))
