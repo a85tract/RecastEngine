@@ -190,3 +190,28 @@ def test_the_digest_does_not_depend_on_where_the_source_lives(
     assert here.digest() == there.digest()
     for path, content in here.files.items():
         assert str(root) not in content.decode(), f"{path} carries the source's directory"
+
+
+def test_the_emitters_own_temporaries_are_scaffolding() -> None:
+    """A name the emitter invents is machinery, and the verifier has to know.
+
+    ``_out`` holds a multi-output call's tuple for exactly one statement and
+    is unpacked on the next lines; the dataflow is to the names it is
+    unpacked *into*. ``_g``, ``_be``, ``_lc`` and ``_le`` are the
+    ``except ... as`` bindings of the goto, block-exit and named-loop
+    catchers. The exception *classes* are already scaffolding because the
+    runtime defines them and this list is read out of the runtime -- the
+    names they are caught under are defined nowhere a reader could find, so
+    the read/write check counted them as data the Fortran never mentions.
+    """
+    from recast.transform.numpy.translate import _scaffolding_names
+
+    names = _scaffolding_names()
+    assert {"_out", "_g", "_be", "_lc", "_le"} <= names
+    # Read out of the runtime rather than restated, which is what keeps the
+    # catchers' classes in step with the names above.
+    assert {"_FGoto", "_FBlockExit", "_FLoopExit", "_FLoopCycle"} <= names
+    # And it is still a list of machinery, not a licence to skip data: a
+    # Fortran variable that happens to look like one is not in it.
+    assert "out" not in names
+    assert "result" not in names

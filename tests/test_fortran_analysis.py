@@ -1307,3 +1307,50 @@ def test_a_constructor_over_names_says_which_name(tmp_path: Path) -> None:
     by_name = {p["name"]: p for p in record["local_parameters"]}
     assert by_name["imax"]["kind"] == "skip"
     assert "unknown name 'nc'" in by_name["imax"]["payload"]
+
+
+def test_a_call_to_a_host_associated_procedure_is_a_call_not_a_read(tmp_path: Path) -> None:
+    """An internal procedure is filed under ``host/name``; a call site spells
+    the bare name.
+
+    ``scope_for`` keyed its subprogram table by ``subprogram_key``, which is
+    right for choosing which subprogram to analyse and wrong for the only
+    question the table is asked afterwards -- "is this name a call, or an
+    array being indexed". ``norm(n, a)`` therefore looked like an array
+    element read, and the translation counts it as a call, so the two sides
+    disagreed on every block that calls a host-associated procedure. Keyed by
+    the bare name, as the pipeline this was migrated from does.
+    """
+    source = """\
+module hosted
+implicit none
+contains
+subroutine outer(n, a, out)
+  integer, intent(in) :: n
+  real, intent(in) :: a(n)
+  real, intent(out) :: out
+  out = norm(n, a)
+contains
+  function norm(m, v) result(r)
+    integer, intent(in) :: m
+    real, intent(in) :: v(m)
+    real :: r
+    r = sum(v(1:m))
+  end function norm
+end subroutine outer
+end module hosted
+"""
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "hosted.f90", source)
+    record = interface.extract(src)
+    scope = rwset.scope_for(record, "outer")
+    assert "norm" in scope.subprograms, "the bare name is the spelling a call site uses"
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram,))
+        if str(walk(s, (f03.Subroutine_Stmt,))[0].children[1]).lower() == "outer"
+    )
+    reads = set().union(*(set(b["reads"]) for b in rwset.block_rwsets(node, scope)))
+    assert "norm" not in reads, "a call is not a read of its own name"
+    assert {"n", "a"} <= reads
