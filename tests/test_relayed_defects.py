@@ -6,6 +6,12 @@ present here too -- the same *finding*, reached by different code, which is
 what the relay in ``NOTICE`` records. The sixth, an assumed-size ``x(*)``
 read as rank 2, this repository had already got right.
 
+A seventh, from the same upstream and the same weeks, is here as well: generic
+dispatch had only the rank and integer-ness axes, and could not separate two
+overloads that differ by declared type. That one is not like the others -- it
+was found on CAM, so it is the one defect in this file the emission
+differentials *can* see, and they do.
+
 Every test below carries its own positive control: the assertion is written
 against the symptom, so reverting the fix it guards makes it fail with that
 symptom rather than with a message about a refactor. Four of the five are
@@ -18,7 +24,9 @@ None of them fires on the CAM corpus, so ``emit_diff``, ``numba_diff`` and
 is not evidence about that change. The gate that *can* is ``corpus/``, whose
 twelve libraries include the six the defects were found against: the relay
 takes it from 37 of 59 units importing to 51, and from 58 parsing to 59,
-with every other column unchanged. These tests are the fast, local statement
+with every other column unchanged. The dispatch axis moves both: `emit_diff`
+5 to 2, `numba_diff` 1 to 0, and the corpus's deferred-block total 377 to 366.
+These tests are the fast, local statement
 of the same thing -- a corpus run is minutes and needs submodules, and a unit
 that stops importing does not say which of five reasons it stopped for.
 """
@@ -441,3 +449,155 @@ end module
     assert "raise _FBlockExit('blk')" in body
     assert "except _FBlockExit as _be:" in body
     assert "break" not in body
+
+
+# --- #4: the declared-dtype axis of generic dispatch --------------------------
+
+BY_DERIVED_TYPE = """\
+module coords
+implicit none
+integer, parameter :: r8 = selected_real_kind(12)
+type :: cartesian2d_t
+  real(r8) :: x, y
+end type
+type :: cartesian3d_t
+  real(r8) :: x, y, z
+end type
+interface distance
+  module procedure distance_cart2d
+  module procedure distance_cart3d
+end interface
+contains
+function distance_cart2d(a, b) result(d)
+  type(cartesian2d_t), intent(in) :: a, b
+  real(r8) :: d
+  d = a%x - b%x
+end function
+function distance_cart3d(a, b) result(d)
+  type(cartesian3d_t), intent(in) :: a, b
+  real(r8) :: d
+  d = a%x - b%x
+end function
+subroutine drive(p, q, out)
+  type(cartesian2d_t), intent(in) :: p, q
+  real(r8), intent(out) :: out
+  out = distance(p, q)
+end subroutine
+end module
+"""
+
+
+def _semantics_for(tmp_path: Path, name: str, text: str, subprogram: str) -> Any:
+    from recast.fortran import semantics
+
+    return semantics.for_subprogram(interface.extract(_write(tmp_path, name, text)), subprogram)
+
+
+def test_a_generic_resolves_on_the_declared_type_alone(tmp_path: Path) -> None:
+    """Two overloads of the same rank and neither integer.
+
+    Rank and integer-ness are the two axes this had, and they cannot tell
+    ``distance_cart2d`` from ``distance_cart3d`` -- both take two scalars of
+    a derived type. Fortran resolves it on the type, which is the axis being
+    relayed; without it every call to a type-overloaded generic is ambiguous
+    and the block is deferred.
+    """
+    from fparser.two.Fortran2003 import Actual_Arg_Spec_List
+
+    sem = _semantics_for(tmp_path, "coords", BY_DERIVED_TYPE, "drive")
+    actuals = list(Actual_Arg_Spec_List("p, q").children)
+    # The positive control is the shape of the question: both candidates are
+    # present, same rank, same integer-ness.
+    assert sorted(sem.generics["distance"]) == ["distance_cart2d", "distance_cart3d"]
+    assert sem.dispatch("distance", actuals) == "distance_cart2d"
+
+
+BY_REAL_KIND = """\
+module kinds_overload
+implicit none
+integer, parameter :: r4 = selected_real_kind(6)
+integer, parameter :: r8 = selected_real_kind(12)
+interface widen
+  module procedure widen_r4
+  module procedure widen_r8
+end interface
+contains
+subroutine widen_r4(x)
+  real(r4), intent(inout) :: x
+  x = x + 1.0
+end subroutine
+subroutine widen_r8(x)
+  real(r8), intent(inout) :: x
+  x = x + 1.0
+end subroutine
+subroutine drive(a, b)
+  real(r4), intent(inout) :: a
+  real(r8), intent(inout) :: b
+  call widen(a)
+  call widen(b)
+end subroutine
+end module
+"""
+
+
+def test_a_generic_resolves_on_real_kind(tmp_path: Path) -> None:
+    """``real(r4)`` and ``real(r8)`` are different types to Fortran's TKR rule."""
+    from fparser.two.Fortran2003 import Actual_Arg_Spec_List
+
+    sem = _semantics_for(tmp_path, "kinds_overload", BY_REAL_KIND, "drive")
+    assert sem.dispatch("widen", list(Actual_Arg_Spec_List("a").children)) == "widen_r4"
+    assert sem.dispatch("widen", list(Actual_Arg_Spec_List("b").children)) == "widen_r8"
+
+
+def test_an_unresolved_kind_rejects_nothing(tmp_path: Path) -> None:
+    """``UNKNOWN_REAL_KIND(wp)`` is a real whose kind this stage could not settle.
+
+    Letting it reject a candidate is how a new axis flips a resolution that
+    was already unique, so it constrains nothing and the call stays exactly
+    as ambiguous as it was.
+    """
+    from fparser.two.Fortran2003 import Actual_Arg_Spec_List
+
+    from recast.fortran import semantics
+
+    source = BY_REAL_KIND.replace(
+        "  real(r4), intent(inout) :: a\n", "  real(wp), intent(inout) :: a\n"
+    )
+    sem = _semantics_for(tmp_path, "unknown_kind", source, "drive")
+    assert sem.declaration("a")["dtype"].startswith("UNKNOWN_REAL_KIND")
+    with pytest.raises(semantics.AmbiguousDispatch, match="ambiguous"):
+        sem.dispatch("widen", list(Actual_Arg_Spec_List("a").children))
+
+
+def test_a_computed_actual_constrains_nothing(tmp_path: Path) -> None:
+    """The axis reads declarations; it does not infer a type for an expression.
+
+    An inferred dtype that is wrong does not refuse a call -- it picks a
+    different overload, and nothing downstream re-checks which one.
+    """
+    from fparser.two.Fortran2003 import Expr, Name, Part_Ref
+
+    sem = _semantics_for(tmp_path, "coords2", BY_DERIVED_TYPE, "drive")
+    # ``dtype_of`` upper-cases the base type, so the two sides of a derived-type
+    # comparison are spelled the same however the source wrote them.
+    assert sem.declared_dtype(Name("p")) == "UNKNOWN(TYPE(CARTESIAN2D_T))"
+    assert sem.declared_dtype(Expr("p % x - q % x")) is None
+    # A reference that is not a declared array is a call, and a result dtype
+    # is not a declared one.
+    assert sem.declared_dtype(Part_Ref("distance_cart2d(p, q)")) is None
+
+
+def test_the_axis_only_narrows(tmp_path: Path) -> None:
+    """A call that already resolved on rank still resolves the same way.
+
+    The monotonicity claim, which is what makes this safe to add to a
+    blessed corpus: the axis can take candidates away from an ambiguous set
+    and can never add one or change a single match into a different one.
+    """
+    from fparser.two.Fortran2003 import Actual_Arg_Spec_List
+
+    sem = _semantics_for(tmp_path, "coords3", BY_DERIVED_TYPE, "drive")
+    # Both overloads take two arguments of a derived type; asking with one
+    # argument matches neither, and the dtype axis does not invent a match.
+    with pytest.raises(Exception, match="no match"):
+        sem.dispatch("distance", list(Actual_Arg_Spec_List("p").children))

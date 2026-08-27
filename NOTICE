@@ -66,6 +66,23 @@ and both are needed. See CONTRIBUTING.md.
      that a harness needs a positive control on itself, out-of-tree, because
      substituting a thing for itself in place exercises nothing.
 
+  fortran/semantics.py's declared-dtype axis of generic dispatch -- from
+     issue #4 against CESM-language-translator and the fix in its
+     pipeline/translate.py. Found and reported by Qinrun Dai, who commits as
+     second5t <mouseisnotalwaysmouse@outlook.com>. What is theirs is the
+     finding: that rank and integer-ness are not enough to separate overloads
+     that differ by declared type -- a derived type, a real kind, an array's
+     element type -- and that the axis has to be built so it can only narrow,
+     never flip, or adding it changes resolutions that were already unique.
+     Both halves are relayed. The second half is the load-bearing one and is
+     why only a *declared* dtype answers here: a dtype inferred for an
+     expression that is wrong does not refuse a call, it silently picks a
+     different overload. The other half of that issue -- a resolution failure
+     swallowed at the call site and falling through to array indexing, which
+     emitted an unbound name with a spurious 0-based shift and still scored
+     mechanical -- did not apply: all four dispatch sites here already let
+     the refusal reach the block.
+
   Five translation defects -- transform/numpy/{statements,subprograms,
      expressions,constants,names}.py, transform/numpy/runtime.py's intrinsic
      namespaces and loop-exit exceptions, and fortran/interface.py's

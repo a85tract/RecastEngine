@@ -31,6 +31,15 @@ from recast.fortran.intrinsics import ELEMENTAL, STATE_QUERY, TRANSFORMATIONAL
 
 INTEGER_DTYPES = frozenset({"int32", "int64"})
 
+CONCRETE_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool", "str"})
+"""Dtypes settled enough to rule an overload out.
+
+A derived type counts too -- ``DERIVED_TYPE_MARKER`` matches it -- because
+``type(cartesian2D_t)`` is exactly as decided as ``float64``. What is *not*
+here is the point: ``UNKNOWN_REAL_KIND(k)`` names a real whose kind this stage
+could not resolve, and an unresolved kind must not be allowed to reject a
+candidate it might have matched."""
+
 ARITHMETIC = frozenset({"+", "-", "*", "/", "**"})
 
 INTEGER_RESULT_INTRINSICS = frozenset({"int", "nint", "mod"})
@@ -420,18 +429,51 @@ class Semantics:
             f"generic {name!r}: " + (f"ambiguous between {matches}" if matches else "no match")
         )
 
-    def _signature(self, node: Any) -> tuple[int | None, bool | None]:
-        """``(rank, integer-ness)``, with ``None`` where it cannot be told.
+    def declared_dtype(self, node: Any) -> str | None:
+        """The dtype an actual argument was *declared* with, or ``None``.
+
+        Deliberately not an inference. Only an entity that has a declaration
+        answers -- a dummy, a local, module state, a parameter, or an element
+        of a declared array. Every computed expression returns ``None`` and
+        so constrains nothing, because a wrong dtype here does not refuse a
+        call, it picks a different overload.
+        """
+        if isinstance(node, (f03.Actual_Arg_Spec, f03.Component_Spec)):
+            return self.declared_dtype(node.children[1])
+        if isinstance(node, f03.Parenthesis):
+            return self.declared_dtype(node.children[1])
+        if isinstance(node, f03.Name):
+            declared = self.declaration(str(node))
+            return declared.get("dtype") if declared else None
+        if isinstance(node, f03.Part_Ref):
+            # An element or section of an array has the array's dtype. If the
+            # name is not an array this is a call, and a result dtype is not
+            # a declared one.
+            root = str(node.children[0]).lower()
+            if not self.is_array(root):
+                return None
+            declared = self.declaration(root)
+            return declared.get("dtype") if declared else None
+        return None
+
+    def _signature(self, node: Any) -> tuple[int | None, bool | None, str | None]:
+        """``(rank, integer-ness, declared dtype)``, ``None`` where untold.
 
         An unanalyzable actual makes that argument a wildcard rather than
         making the whole call unanalyzable -- the other arguments usually
         discriminate, and refusing on the first hard one would refuse almost
         every call.
+
+        The dtype is read even when rank and integer-ness could not be, and
+        that is not tidiness: an actual whose *shape* is undecidable often
+        still has a declaration, and the type axis alone is enough to
+        separate two overloads that differ only by derived type.
         """
+        dtype = self.declared_dtype(node)
         try:
-            return self.rank(node), self.is_integer(node)
+            return self.rank(node), self.is_integer(node), dtype
         except Unanalyzable:
-            return None, None
+            return None, None, dtype
 
     def _matches(
         self, record: dict[str, Any], positional: list[Any], keyword: dict[str, Any]
@@ -449,7 +491,7 @@ class Semantics:
         pairs = [(formals[names.index(k)], v) for k, v in keyword.items()]
         pairs += list(zip(formals, positional, strict=False))
         for formal, actual in pairs:
-            rank, integral = self._signature(actual)
+            rank, integral, dtype = self._signature(actual)
             formal_rank = len(formal["dims"]) if formal.get("dims") else 0
             # An elemental procedure's scalar formal legally takes any rank.
             if not elemental and rank is not None and rank != formal_rank:
@@ -462,7 +504,29 @@ class Semantics:
                 and formal["dtype"] != "str"
             ):
                 return False
+            if not _dtype_match(dtype, formal.get("dtype")):
+                return False
         return True
+
+
+def _concrete_dtype(dtype: str) -> bool:
+    return dtype in CONCRETE_DTYPES or bool(DERIVED_TYPE_MARKER.match(dtype))
+
+
+def _dtype_match(actual: str | None, formal: str | None) -> bool:
+    """Whether a declared actual dtype can reach a formal of this dtype.
+
+    Fortran's TKR matching is exact on type and kind, so two concrete dtypes
+    that differ cannot be the same call. Anything less than concrete on either
+    side matches: this axis exists to *narrow* an already-ambiguous set, and a
+    rule that could reject on an unresolved kind would flip resolutions that
+    were unique before it was added.
+    """
+    if actual is None or formal is None:
+        return True
+    if _concrete_dtype(actual) and _concrete_dtype(formal):
+        return actual == formal
+    return True
 
 
 def for_subprogram(
