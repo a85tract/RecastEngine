@@ -88,12 +88,22 @@ def scope_for(
     """Build a ``Scope`` for one subprogram out of an ``interface.extract`` record."""
     from recast.fortran.interface import subprogram_key
 
-    subs = {subprogram_key(s): s for s in record["subprograms"]}
+    by_key = {subprogram_key(s): s for s in record["subprograms"]}
     sub = (
-        subs[sub_name]
-        if sub_name in subs
+        by_key[sub_name]
+        if sub_name in by_key
         else next(s for s in record["subprograms"] if s["name"] == sub_name)
     )
+    # Keyed by the *bare* name, because that is the spelling a call site uses
+    # and every question this scope answers about ``subprograms`` is "is this
+    # name a call rather than an array". ``subprogram_key`` qualifies an
+    # internal procedure with its host -- right for selecting one to analyse,
+    # and wrong here: ``frobenius_norm_companion`` is filed under
+    # ``qr_algeq_solver/frobenius_norm_companion``, so the bare lookup missed
+    # it and the call was scored as an array-element *read*. The translation
+    # counts it as a call on the other side, so the two sides disagreed on
+    # every block that calls a host-associated procedure.
+    subs = {s["name"]: s for s in record["subprograms"]}
 
     ranks: dict[str, int] = {}
     chars: set[str] = set()

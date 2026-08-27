@@ -183,6 +183,16 @@ def _scaffolding_names() -> set[str]:
     )
 
     names = {"np", "math", "os", "_ext", "_RUNTIME", "_SIGNATURES", "range", "SystemExit"}
+    # The emitter's own temporaries. ``_out`` holds a multi-output call's
+    # tuple for one statement and is immediately unpacked -- the dataflow is
+    # to the names it is unpacked *into*, and counting it made every such
+    # block read and write a variable the Fortran has no counterpart for.
+    # ``_g``/``_be``/``_lc``/``_le`` are the ``except ... as`` bindings of the
+    # goto, block-exit and named-loop catchers; the exception classes are
+    # already scaffolding because they are defined in the runtime, but the
+    # names they are caught under are not defined anywhere a reader could
+    # find them.
+    names |= {"_out", "_g", "_be", "_lc", "_le"}
     # The backend spells some intrinsics as bare Python builtins -- abs, int,
     # max, len. They are its vocabulary, so it declares them; a verifier that
     # skipped builtin-looking names on its own would drop real dataflow on a

@@ -753,6 +753,22 @@ anything needed it.
 | `fftpack` | `fftpack_kind` | its source is in the tree and does not parse: `rk.f90:3` is `implicit none(type, external)`, which is Fortran 2018, and `_parse.STD` is `f2008`. The companion walk recorded exactly that in `unresolved` |
 | `fortran-utils:linalg` | `lapack` | nothing is wrong with it: `_lapack.ilaenv(...)` is a real call into LAPACK, which is a library and not a translation |
 
+**The read/write check was also wrong about two things, and both were the
+verifier rather than the translation.** `scope_for` keyed its subprogram
+table by `subprogram_key`, which qualifies an internal procedure with its
+host, so a call spelled with the bare name looked like an array element being
+read -- the pipeline this was migrated from keys the same table by the bare
+name, and the divergence came in with the port. And the emitter's own
+temporaries were being counted as data: `_out`, which holds a multi-output
+call's tuple for one statement before it is unpacked, and the `except ... as`
+bindings `_g`/`_be`/`_lc`/`_le`. Together those were 29 of the 450 disagreeing
+blocks, and they were enough to take `numfor`'s `sorting` from stopped to
+passing every stage -- 80 points, all bit-exact. The corpus now has two units
+that reach the differential rather than one. Nothing about the emitted bytes
+changed; `emit_diff` is unmoved at 2. What changed is that the check is no
+longer wrong about a translation that was already right, which is the failure
+mode a fail-closed verifier has to be watched for.
+
 Only the last is a dependency in any meaningful sense. The unconditional
 import is shared with the reference pipeline -- `translate.py` emits one for
 every `auto_stub_modules` entry with no test of whether the alias is used --
