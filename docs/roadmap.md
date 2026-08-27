@@ -177,15 +177,28 @@ third and fourth emission differential beside `emit_diff.py`.
 They landed the same way and their evidence is not comparable, which is the
 part worth writing down rather than leaving in two commit messages.
 
-Both re-confirmed 2026-08-26 against the translator at `3c9411d4f`,
+Both re-confirmed 2026-08-27 against the translator at `6486e104d`,
 with `RECAST_INTRINSICS` pointing at the domain extension's intrinsics table.
 So were `emit_diff` (`different=5`) and `golden_diff --live` (no unexplained
 differences).
 
 | | compared | result |
 |---|---|---|
-| `tools/numba_diff.py` | 27 modules, 176 kernels, 10,182 lines | `different=0 error=0` |
-| `tools/cuda_diff.py` | 27 modules, 43 device functions, 1,504 lines | `different=3 crashed=146` |
+| `tools/numba_diff.py` | 27 modules, 176 kernels, 10,182 lines | `different=1 error=0` |
+| `tools/cuda_diff.py` | 27 modules, 43 device functions, 1,504 lines | `different=4 crashed=145` |
+
+**Two of those three moved because upstream did, which is the case the
+revision line was added for.** At `3c9411d4f` they were `different=0` and
+`different=3 crashed=146`. The translator has since given generic dispatch a
+declared-dtype axis, so it resolves `distance` between `distance_cart2d` and
+`distance_cart3d` on the argument's derived type and emits a kernel where
+this engine still reports the overloads ambiguous and delegates. One finding,
+counted once by each of the two differentials that reach it -- and the whole
+of the remaining drift: `emit_diff` is unmoved, and the five defects relayed
+in `NOTICE` moved none of the three, because none of them fires on the CAM
+corpus. It is the next thing to relay, and it is tracked as such rather than
+excused: an accepted divergence pins a value, and this one has no argument
+behind it except that the work has not been done yet.
 
 **Numba is what a finished relay looks like.** Every kernel and host wrapper
 the pipeline emits over the corpus, byte for byte, with headers carved out for
@@ -688,6 +701,22 @@ companions only from config where the translator's `auto_translate`
 derives them from USE; and files of bare subprograms are not units at all,
 which is fifty-eight of fftpack's fifty-nine files and CLOUDSC's kernel
 itself. Neither is a CAM question, so neither was ever asked.
+
+**And it did what it was written to do the first time a relay was measured
+against it.** The five translation defects relayed from the translator move
+`imports` from 37 of the 59 units to 51, and `parses` from 58 to 59, with
+`mechanical`, `rwset`, `oracle`, `bitexact` and the deferred-block total all
+unchanged: fourteen units that could not be loaded now load, and nothing that
+worked stopped working. That is the whole of the evidence for those five,
+because the three emission differentials cannot see them -- the defects fire
+on the corpus libraries and not on CAM, which is exactly the case the corpus
+was pinned for. It also caught the one thing the relay got wrong on the way
+in, and caught it as a *drop*: binding `use, intrinsic :: iso_fortran_env`
+correctly changed `stdout` from a bare name the module never defined into
+`_iso_fortran_env.output_unit`, and the read/write check reported numfor's
+`basic` as disagreeing until the alias was declared to it. A verifier that
+does not know about a new binding reports the translation wrong rather than
+saying it cannot tell, which is the right direction to fail in.
 
 **Done when:** the engine passes its tests with the CESM extension
 uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own

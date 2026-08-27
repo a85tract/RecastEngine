@@ -66,6 +66,38 @@ and both are needed. See CONTRIBUTING.md.
      that a harness needs a positive control on itself, out-of-tree, because
      substituting a thing for itself in place exercises nothing.
 
+  Five translation defects -- transform/numpy/{statements,subprograms,
+     expressions,constants,names}.py, transform/numpy/runtime.py's intrinsic
+     namespaces and loop-exit exceptions, and fortran/interface.py's
+     dimension_stmt_shapes -- from issues #8, #9, #10, #11 and #12 against
+     CESM-language-translator, and the fixes in its pipeline/translate.py,
+     extract_interface.py, extract_constants.py and fortran_shims.py. Found
+     and reported by Qinrun Dai, who commits as second5t
+     <mouseisnotalwaysmouse@outlook.com>, against BSD Fortran libraries this
+     repository does not carry. Not a port: no file was taken and every
+     mechanism differs -- theirs binds an intrinsic module to a shim module
+     the generated file imports where this puts the namespaces in the runtime
+     it already inlines and imports nothing -- which cost a relay defect of its
+     own, since a namespace no import line announces is invisible to the
+     read/write check downstream until it is told; theirs keys a named EXIT
+     off a
+     stack the emitter threads through its own recursion where this reads the
+     construct name off fparser's reader line and emits a catcher only where
+     something crosses a loop; theirs re-parses a refused initializer inside
+     the token pass where this checks at the pass's boundary, so no branch of
+     it can return a value nothing can evaluate. What is theirs is the
+     finding in each case: that a scalar carrying subscripts is
+     indistinguishable from a statement function unless the standalone
+     DIMENSION form is read; that an integer constant's width has to come
+     from its value or the module raises before it runs; that an initializer
+     the token pass cannot classify is silently emitted as Fortran; that a
+     module the standard provides has no companion to import; and -- the one
+     no gate would have found -- that EXIT and CYCLE naming an enclosing
+     construct compile to a bare break and continue that leave the wrong
+     loop, which is a running program with the wrong answer rather than a
+     failure. The sixth of the set, an assumed-size ``x(*)`` read as rank 2,
+     was already right here.
+
   recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
      cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
      (hpc-devsecops). Written by Chien-Wei Huang, who commits under that name

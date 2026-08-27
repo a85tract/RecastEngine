@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from recast.fortran.frontend import INTRINSIC_MODULES
 from recast.fortran.semantics import Semantics
 from recast.transform.numpy.vocabulary import (
     WHITELIST_INT,
@@ -167,7 +168,15 @@ def for_subprogram(
     )
 
 
-USE_STATEMENT = re.compile(r"USE\s+(\w+)(?:\s*,\s*ONLY\s*:\s*(.+))?", re.I)
+USE_STATEMENT = re.compile(
+    r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)(?:\s*,\s*ONLY\s*:\s*(.+))?", re.I
+)
+"""Both spellings. ``USE, INTRINSIC :: ISO_FORTRAN_ENV`` is the one the
+standard modules are usually written with, and a pattern that only matched
+``USE <name>`` did not see them at all -- so the statement was skipped, and
+every name it brought in resolved as something else or not at all. The
+frontend's own copy of this pattern already took both forms; this one is what
+decides the *binding*, and the two had drifted."""
 
 
 def bind_use_statements(
@@ -175,13 +184,21 @@ def bind_use_statements(
     aliases: set[str],
     procedures: set[str],
     companion_globals: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], set[str]]:
     """What the module's own USE statements bind that no table already does.
 
     Returns ``(bindings, stub_modules)``: a USE'd name the companions,
     parameters and state do not cover resolves to ``alias.remote``, and a
     USE of a module that is not a companion gets an alias of its own,
     ``_<module>``, listed in ``stub_modules`` so the header can import it.
+    An *intrinsic* module keeps the alias and stays out of ``stub_modules``:
+    the standard provides it, no file in any tree defines it, and the runtime
+    inlined into every generated module already binds that exact name -- so
+    the header has nothing to import and must not try. Those aliases are
+    returned as the third value because a reader that does not know them
+    cannot tell ``_iso_fortran_env.output_unit`` from a name of its own --
+    the static read/write check is one such reader, and it has to map the
+    attribute back to the ``stdout`` the Fortran read.
     A renamed item that a companion *does* cover is rebound to the module
     the rename names -- ``r8 => wp_r8`` must not resolve to another
     companion's ``r8`` that happened to register first -- which is why
@@ -192,6 +209,7 @@ def bind_use_statements(
     state = {s["name"] for s in record["module_state"]}
     bindings: dict[str, str] = {}
     stub_modules: dict[str, str] = {}
+    intrinsic_aliases: set[str] = set()
     for statement in record.get("use_statements", ()):
         match = USE_STATEMENT.match(statement)
         if not match:
@@ -200,7 +218,10 @@ def bind_use_statements(
         alias = module_of_alias.get(module)
         if not alias:
             alias = f"_{module}"
-            stub_modules[module] = alias
+            if module in INTRINSIC_MODULES:
+                intrinsic_aliases.add(alias)
+            else:
+                stub_modules[module] = alias
         if not match.group(2):
             continue
         for item in match.group(2).split(","):
@@ -220,4 +241,4 @@ def bind_use_statements(
             if local in parameters or local in state:
                 continue
             bindings[local] = f"{alias}.{pysafe(remote)}"
-    return bindings, stub_modules
+    return bindings, stub_modules, intrinsic_aliases

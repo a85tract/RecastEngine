@@ -103,6 +103,36 @@ def _f_vfloor(x: Any) -> Any:
     return np.floor(x).astype(np.int32)
 
 
+class _FLoopExit(Exception):
+    """``EXIT <name>`` naming a DO that is not the innermost one.
+
+    Python's ``break`` leaves one loop, and Fortran's named EXIT leaves the
+    one it names. Emitting ``break`` for both is not a shape difference: it
+    leaves the *inner* loop and then runs whatever follows it inside the
+    outer one, so the program keeps going down a path the Fortran had
+    abandoned. The named loop catches this and checks the name, so an EXIT
+    crossing two loops passes through the first.
+    """
+
+
+class _FLoopCycle(Exception):
+    """``CYCLE <name>`` naming a DO that is not the innermost one.
+
+    The counterpart of ``_FLoopExit``, and the more dangerous of the two: a
+    wrong ``continue`` re-runs an inner loop that was supposed to be
+    finished, which usually still terminates and still produces numbers.
+    """
+
+
+class _FBlockExit(Exception):
+    """``EXIT <name>`` naming an enclosing BLOCK construct.
+
+    A BLOCK is inlined rather than emitted as a scope of its own, so there
+    is no Python construct for a ``break`` to leave -- it would bind to
+    whatever loop happens to be outside.
+    """
+
+
 class _FGoto(Exception):
     """forward-goto region jump (structured replacement for `goto L`)."""
 
@@ -436,6 +466,118 @@ def _f_verfc(x: Any) -> Any:
     from scipy.special import erfc as _sp_erfc
 
     return _sp_erfc(x)
+
+
+class _FIntrinsicModule:
+    """The public names of one Fortran intrinsic module, as a namespace.
+
+    ``USE ISO_FORTRAN_ENV`` names a module the standard (or the compiler)
+    provides rather than one sitting in the tree, so there is no companion to
+    translate and nothing to import. Binding such a USE the way an ordinary
+    one is bound emits ``import iso_fortran_env_numpy``, a module that can
+    never exist, and the translated file fails at import before any number is
+    wrong. The emitter binds it to one of the objects below instead, and
+    because they are part of this runtime they are already in the generated
+    file -- no import line is emitted for them at all.
+    """
+
+    def __init__(self, **names: Any) -> None:
+        self.__dict__.update(names)
+
+
+def _f_ieee_value(x: Any, cls: Any) -> Any:
+    """``IEEE_VALUE(X, CLASS)``: the class constants are spelled as themselves."""
+    return {
+        "ieee_positive_inf": np.inf,
+        "ieee_negative_inf": -np.inf,
+        "ieee_quiet_nan": np.nan,
+        "ieee_signaling_nan": np.nan,
+        "ieee_positive_zero": 0.0,
+        "ieee_negative_zero": -0.0,
+    }[cls]
+
+
+# The named constants of these modules are kind *numbers* -- ``real64`` is 8,
+# not a dtype -- because that is what the source reads when it compares one
+# (``if (kind(x) /= real64)``). The frontend has a table of its own mapping the
+# same names to dtypes for a declaration; the two are different questions.
+_iso_fortran_env = _FIntrinsicModule(
+    int8=np.int32(1),
+    int16=np.int32(2),
+    int32=np.int32(4),
+    int64=np.int32(8),
+    real32=np.int32(4),
+    real64=np.int32(8),
+    real128=np.int32(16),
+    input_unit=np.int32(5),
+    output_unit=np.int32(6),
+    error_unit=np.int32(0),
+    iostat_end=np.int32(-1),
+    iostat_eor=np.int32(-2),
+    numeric_storage_size=np.int32(32),
+    character_storage_size=np.int32(8),
+    file_storage_size=np.int32(8),
+)
+
+# ``c_null_char`` and ``c_new_line`` are the characters, not the two-character
+# escapes that spell them in source: ``C_NULL_CHAR`` is ``ACHAR(0)``, and a
+# string terminated with a literal backslash-zero is not terminated at all.
+_iso_c_binding = _FIntrinsicModule(
+    c_int=np.int32(4),
+    c_short=np.int32(2),
+    c_long=np.int32(8),
+    c_long_long=np.int32(8),
+    c_size_t=np.int32(8),
+    c_int8_t=np.int32(1),
+    c_int16_t=np.int32(2),
+    c_int32_t=np.int32(4),
+    c_int64_t=np.int32(8),
+    c_float=np.int32(4),
+    c_double=np.int32(8),
+    c_long_double=np.int32(16),
+    c_float_complex=np.int32(4),
+    c_double_complex=np.int32(8),
+    c_bool=np.int32(1),
+    c_char=np.int32(1),
+    c_null_char=chr(0),
+    c_new_line=chr(10),
+    c_carriage_return=chr(13),
+    c_horizontal_tab=chr(9),
+    c_null_ptr=None,
+    c_loc=_f_c_loc,
+)
+
+_ieee_arithmetic = _FIntrinsicModule(
+    ieee_is_nan=np.isnan,
+    ieee_is_finite=np.isfinite,
+    ieee_is_negative=np.signbit,
+    ieee_is_normal=lambda x: np.isfinite(x) & (x != 0.0),
+    ieee_value=_f_ieee_value,
+    ieee_support_datatype=lambda *_a: True,
+    ieee_positive_inf="ieee_positive_inf",
+    ieee_negative_inf="ieee_negative_inf",
+    ieee_quiet_nan="ieee_quiet_nan",
+    ieee_signaling_nan="ieee_signaling_nan",
+    ieee_positive_zero="ieee_positive_zero",
+    ieee_negative_zero="ieee_negative_zero",
+)
+
+_ieee_exceptions = _FIntrinsicModule()
+_ieee_features = _FIntrinsicModule()
+
+# The translated module is serial, so the OpenMP enquiries answer as the
+# runtime library does outside a parallel region. A translation that reported
+# more than one thread would be describing a program that is not running.
+_omp_lib = _FIntrinsicModule(
+    omp_get_num_threads=lambda: np.int32(1),
+    omp_get_max_threads=lambda: np.int32(1),
+    omp_get_thread_num=lambda: np.int32(0),
+    omp_get_num_procs=lambda: np.int32(1),
+    omp_in_parallel=lambda: False,
+    omp_get_wtime=lambda: 0.0,
+)
+_omp_lib_kinds = _FIntrinsicModule()
+_openacc = _FIntrinsicModule(acc_get_num_devices=lambda *_a: np.int32(0))
 
 
 def emit() -> str:

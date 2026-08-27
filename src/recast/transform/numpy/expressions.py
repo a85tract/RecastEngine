@@ -245,7 +245,18 @@ class Expressions:
         if isinstance(node, f03.Array_Constructor):
             items = node.children[1]
             values = items.children if hasattr(items, "children") else [items]
-            return f"np.array([{', '.join(self.render(v) for v in values)}])"
+            # An implied-do is already the whole sequence, not one element of
+            # it: nesting its comprehension inside the brackets gives shape
+            # ``(1, n)`` where Fortran says ``(n,)``, and every later index
+            # into it is off by a dimension. Alone it *is* the constructor;
+            # beside other elements it is spliced.
+            if len(values) == 1 and isinstance(values[0], f03.Ac_Implied_Do):
+                return f"np.array({self.render(values[0])})"
+            rendered = [
+                f"*{self.render(v)}" if isinstance(v, f03.Ac_Implied_Do) else self.render(v)
+                for v in values
+            ]
+            return f"np.array([{', '.join(rendered)}])"
         if isinstance(node, (f03.Intrinsic_Function_Reference, f03.Part_Ref)):
             return self.reference(node)
         if isinstance(node, f03.And_Operand):

@@ -64,6 +64,20 @@ IDENTIFIER = re.compile(r"[a-zA-Z_]\w*")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 
 
+def _is_expression(text: str) -> str | bool:
+    """Whether ``text`` is something Python can evaluate.
+
+    The check the token pass never had. Cheap, and it is the only thing
+    standing between an initializer nobody could translate and a module that
+    does not import.
+    """
+    try:
+        compile(text, "<initializer>", "eval")
+    except SyntaxError:
+        return False
+    return True
+
+
 def strip_kind(expression: str) -> str:
     """``'2._r8 * PI'`` -> ``'2. * PI'``, ``'1.0D-3'`` -> ``'1.0e-3'``."""
     return KIND_SUFFIX.sub(r"\1", D_EXPONENT.sub(r"\1e\2", expression))
@@ -166,6 +180,13 @@ class Subprograms:
     the mechanical rules refuse. Applied verbatim, and recorded as such."""
 
     use_bindings: dict[str, str] = field(init=False, default_factory=dict)
+    intrinsic_aliases: frozenset[str] = field(init=False, default=frozenset())
+    """Aliases bound to the runtime's intrinsic-module namespaces.
+
+    No header line imports them -- they are already in the inlined runtime --
+    so nothing downstream can infer them from the emitted imports the way it
+    can for a companion. Carried here for the read/write protocol."""
+
     stub_imports: tuple[str, ...] = field(init=False, default=())
     """Derived in ``__post_init__`` from the module's USE statements; see
     ``names.bind_use_statements``. ``stub_imports`` are the header lines for
@@ -222,9 +243,10 @@ class Subprograms:
     def __post_init__(self) -> None:
         aliases = {remote.alias for remote in self.remotes.values()}
         aliases |= {spelling.split(".")[0] for spelling in self.companion_globals.values()}
-        self.use_bindings, stubs = bind_use_statements(
+        self.use_bindings, stubs, intrinsic = bind_use_statements(
             self.record, aliases, set(self.remotes), self.companion_globals
         )
+        self.intrinsic_aliases = frozenset(intrinsic)
         self.stub_imports = tuple(f"import {mod}_numpy as {alias}" for mod, alias in stubs.items())
 
     # -- the per-subprogram stack ---------------------------------------------
@@ -518,10 +540,20 @@ class Subprograms:
             initializer = parameter.get("init_expr", "0")
             if initializer is None:
                 continue
-            lines.append(
-                f"    {pysafe(parameter['name'])} = "
-                f"{self._parameter_value(initializer.strip(), own_parameters)}"
-            )
+            name = pysafe(parameter["name"])
+            try:
+                value = self._parameter_value(initializer.strip(), own_parameters, statements)
+            except REFUSED as refusal:
+                # The name is still bound, because a later statement that
+                # reads it should fail on the value rather than on a
+                # NameError -- and because the module has to import at all
+                # for anything else in it to be checked.
+                lines.append(
+                    f"    {name} = None  # AGENT_QUEUE: local parameter "
+                    f"{parameter['name']} ({refusal}): {initializer.strip()}"
+                )
+                continue
+            lines.append(f"    {name} = {value}")
         parameter_names = {p["name"] for p in subprogram["local_parameters"]}
         for local in subprogram["locals"]:
             if local["name"] in parameter_names:
@@ -698,8 +730,31 @@ class Subprograms:
             return [f"    {name} = ''"]
         return []
 
+    def _parameter_value(
+        self,
+        text: str,
+        local_parameters: frozenset[str] = frozenset(),
+        statements: Statements | None = None,
+    ) -> str:
+        """A local parameter's initializer, as something Python can evaluate.
+
+        The token pass below classifies; it does not *parse*, and until this
+        wrapper existed it had no way to say so. Every branch of it returns a
+        string whether or not that string is Python -- an implied-do array
+        constructor came out as upper-cased Fortran inside the emitted
+        module, a ``SyntaxError`` that takes the whole file down at import
+        rather than the one initializer nobody could read. The check belongs
+        here, at the pass's boundary, rather than on any one branch: the
+        branch that gets it wrong is by definition the one that did not know
+        it was wrong.
+        """
+        spelled = self._token_parameter_value(text, local_parameters)
+        if _is_expression(spelled):
+            return spelled
+        return self._reparsed_parameter_value(text, spelled, statements)
+
     @staticmethod
-    def _parameter_value(text: str, local_parameters: frozenset[str] = frozenset()) -> str:
+    def _token_parameter_value(text: str, local_parameters: frozenset[str]) -> str:
         """A local parameter's initializer, rendered from its source text.
 
         Text-level, not node-level: declarations were extracted as text, and
@@ -738,6 +793,35 @@ class Subprograms:
             return pysafe(token.lower()) if token.lower() in local_parameters else token.upper()
 
         return IDENTIFIER.sub(case_of, strip_kind(text))
+
+    @staticmethod
+    def _reparsed_parameter_value(
+        text: str, spelled: str, statements: Statements | None
+    ) -> str:
+        """What the token pass could not classify, read as an expression.
+
+        Reached only once the token pass has produced something that is not
+        valid Python, so there is nothing to lose by parsing: the answer is
+        either better than the text or it is a refusal, and the text was
+        already unusable. The renderer spells an array constructor as
+        ``np.array(...)`` itself, so only a bare comprehension -- an
+        implied-do standing alone -- needs wrapping; a Fortran array is not a
+        Python list.
+        """
+        if statements is None:
+            raise NoRule(f"initializer needs a parse and none was available: {spelled}")
+        from recast.fortran._parse import f03
+
+        try:
+            node = f03.Expr(text)
+        except Exception as exc:  # fparser raises its own hierarchy
+            raise NoRule(f"initializer does not parse: {exc}") from exc
+        rendered = statements.expressions.render(node)
+        if rendered.startswith("[") and rendered.endswith("]"):
+            rendered = f"np.array({rendered})"
+        if not _is_expression(rendered):
+            raise NoRule(f"initializer did not render as an expression: {rendered}")
+        return rendered
 
     # -- declared extents -----------------------------------------------------
 

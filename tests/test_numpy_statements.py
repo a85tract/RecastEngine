@@ -542,9 +542,17 @@ def test_a_descending_section_carries_its_declared_lower_bound(
 def test_an_implied_do_in_an_array_constructor_is_a_comprehension(
     sources: dict[str, Path],
 ) -> None:
+    """And is the constructor rather than an element of it.
+
+    This asserted the nested spelling, ``np.array([[...]])``, until the shape
+    it produces was noticed: Fortran's ``(/ (2*n, n=1,3) /)`` is three
+    elements and that is one element holding three, ``(1, 3)`` against
+    ``(3,)``. Every subsequent index into the result is off by a dimension,
+    which numpy broadcasts rather than refuses.
+    """
     statements, nodes = build(sources["emit_mod"], "sections")
     assert statements.render(nodes[3], 1) == [
-        "    ks[...] = np.array([[(2 * n) for n in range(1, I_3 + 1)]])"
+        "    ks[...] = np.array([(2 * n) for n in range(1, I_3 + 1)])"
     ]
 
 
