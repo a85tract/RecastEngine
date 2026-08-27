@@ -6,12 +6,16 @@ RecastEngine started as a Fortran→Python translator. It is now driving three
 structurally different modernization efforts, and a fourth workload that is not
 modernization at all:
 
-| Project | What it actually does |
-|---|---|
-| CESM-language-translator | rule-driven Fortran → NumPy/Numba/CUDA, gated bit-exact against f2py |
-| freeCAM | generates C-interop adapters + 16 ordered source patches that carve a Python control plane into iCESM1.3.1, gated on a 512-rank 50-step bit-for-bit run |
-| CESM-jax-kernels | rewrites CLUBB/MG/Kessler/RTE-RRTMGP kernels for JAX, gated against captured Fortran dumps |
-| CC-Test (cyber half) | secret scan, SBOM+CVE+VEX, LLM source audit, ASan — findings to Sec-Track |
+| Project | What it actually does | Recipe | Product |
+|---|---|---|---|
+| the Fortran translator | rule-driven Fortran → NumPy/Numba/CUDA, gated bit-exact against f2py | `translate` | [PyCAM5](https://github.com/a85tract/PyCAM5) |
+| freeCAM | generates C-interop adapters + 16 ordered source patches that carve a Python control plane into iCESM1.3.1, gated on a 512-rank 50-step bit-for-bit run | `refactor` | [freeCAM](https://github.com/a85tract/freeCAM) |
+| CESM-jax-kernels | rewrites CLUBB/MG/Kessler/RTE-RRTMGP kernels for JAX, gated against captured Fortran dumps | `port` | [JaxCAM6](https://github.com/a85tract/CESM-jax-kernels) |
+| CC-Test (cyber half) | secret scan, SBOM+CVE+VEX, LLM source audit, ASan — findings to Sec-Track | `audit` | CC-Test (restricted access) |
+
+The last two columns are the mapping the CLI shows as `recast recipes`: each
+workload became one recipe, and the product column is what that recipe is
+being driven to produce.
 
 The first three share a shape that survives the differences, and freeCAM's own
 `tools/` directory is the clearest evidence for it: `capture_*`/`extract_*` are
