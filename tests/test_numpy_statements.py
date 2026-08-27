@@ -22,7 +22,7 @@ from recast.fortran._parse import f03, f08, parse, walk
 from recast.fortran.semantics import for_subprogram
 from recast.transform.numpy.expressions import Expressions, Remote
 from recast.transform.numpy.names import for_subprogram as names_for
-from recast.transform.numpy.statements import REFUSED, Statements
+from recast.transform.numpy.statements import INT_SENTINEL, REFUSED, Statements
 from recast.transform.profiles import PROFILES
 
 KINDS = {"wp_r8": "float64", "wp_r4": "float32", "wp_i8": "int64"}
@@ -401,6 +401,8 @@ def build(
     function_transforms: dict[str, Any] | None = None,
     handle_producers: frozenset[str] = frozenset(),
     type_bound: frozenset[str] = frozenset(),
+    poison: bool = False,
+    poison_integers: bool = False,
 ) -> tuple[Statements, list[Any]]:
     """A ``Statements`` for one subprogram, plus its executable nodes."""
     record = interface.extract(src, kind_assumptions=KINDS)
@@ -421,6 +423,8 @@ def build(
         semantics,
         names,
         expressions,
+        poison_undefined=poison,
+        poison_integers=poison_integers,
         externals=externals or {},
         stubs=stubs or {},
         call_transforms=call_transforms or {},
@@ -628,6 +632,24 @@ def test_allocate_takes_the_declared_dtype(sources: dict[str, Path]) -> None:
     statements, nodes = build(sources["emit_mod"], "alloc")
     assert statements.render(nodes[0], 1) == ["    buf = np.empty((n,), dtype=np.float64)"]
     assert statements.render(nodes[1], 1) == ["    idx = np.empty((n,), dtype=np.int32)"]
+
+
+def test_an_allocate_is_undefined_memory_too_and_is_poisoned_with_the_rest(
+    sources: dict[str, Path],
+) -> None:
+    """``allocate(buf(n))`` leaves ``buf`` undefined exactly as a local
+    automatic array is, and the tool this arm came from poisons by patching
+    ``np.empty`` -- which reaches this site along with the prologue's. Covering
+    the prologue alone would report a clean run for a defect here.
+    """
+    statements, nodes = build(sources["emit_mod"], "alloc", poison=True)
+    assert statements.render(nodes[0], 1) == ["    buf = np.full((n,), np.nan, dtype=np.float64)"]
+    assert statements.render(nodes[1], 1) == ["    idx = np.empty((n,), dtype=np.int32)"]
+
+    statements, nodes = build(sources["emit_mod"], "alloc", poison=True, poison_integers=True)
+    assert statements.render(nodes[1], 1) == [
+        f"    idx = np.full((n,), {INT_SENTINEL}, dtype=np.int32)"
+    ]
 
 
 def test_an_allocated_lower_bound_shifts_later_subscripts(sources: dict[str, Path]) -> None:

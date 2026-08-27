@@ -56,6 +56,42 @@ __all__ = ["REFUSED", "Statements"]
 REFUSED = (NoRule, Unanalyzable)
 """What a refusal looks like from either floor below this one."""
 
+INT_SENTINEL = -2147483647
+"""``INT32_MIN + 1``: the fill for an undefined integer under ``poison_integers``.
+
+An "impossible" index, so a read of an unwritten cell crashes on the subscript
+or moves the answer, rather than passing as a plausible one. The value is the
+one the tool this arm came from uses; a different sentinel would be a different
+experiment.
+"""
+
+
+def undefined_array(owner: Any, shape: str, dtype: str) -> str:
+    """An array Fortran leaves undefined, as this backend spells it.
+
+    ``shape`` is the ``(a, b,)`` or ``np.shape(x)`` argument text, already
+    formed. ``owner`` is whichever layer carries the two poison flags.
+
+    Every site that would emit ``np.empty`` for undefined memory goes through
+    here, because the tool this was taken from poisons by patching ``np.empty``
+    itself and so reaches all of them at once -- the automatic locals, the
+    intent(out) buffers, *and* the arrays an ``ALLOCATE`` statement brings into
+    existence. Covering three of the four would report a clean run for a defect
+    in the fourth.
+
+    ``np.empty_like``, which an ``ALLOCATE`` with ``SOURCE=``/``MOLD=`` emits,
+    is deliberately not covered: that patch reaches ``np.empty`` and not
+    ``np.empty_like``, so poisoning it here would be this backend answering a
+    question the experiment does not ask.
+    """
+    if getattr(owner, "poison_undefined", False):
+        if dtype in ("np.float64", "np.float32"):
+            return f"np.full({shape}, np.nan, dtype={dtype})"
+        if getattr(owner, "poison_integers", False) and dtype in ("np.int32", "np.int64"):
+            return f"np.full({shape}, {INT_SENTINEL}, dtype={dtype})"
+    return f"np.empty({shape}, dtype={dtype})"
+
+
 ALLOCATED_DTYPES = {
     "float64": "np.float64",
     "float32": "np.float32",
@@ -113,6 +149,12 @@ class Statements:
     ``Expressions``: calls into a framework the translation does not carry.
     Supplied by the domain package that knows the framework.
     """
+
+    poison_undefined: bool = False
+    """NaN-fill a float array Fortran leaves undefined; see ``Subprograms``."""
+
+    poison_integers: bool = False
+    """The integer arm of the above, and off even when it is on."""
 
     masks: list[str] = field(default_factory=list)
     """Enclosing WHERE masks. Fortran ANDs a nested WHERE into its outer one."""
@@ -643,7 +685,7 @@ class Statements:
                 if declaration
                 else "np.float64"
             )
-            lines.append(f"{pad}{rendered} = np.empty({shape_text}, dtype={dtype})")
+            lines.append(f"{pad}{rendered} = {undefined_array(self, shape_text, dtype)}")
         if not lines:
             # `allocate(x)` with no shape: a scalar allocatable, which for a
             # derived type is the object coming into existence.

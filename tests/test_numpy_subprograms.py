@@ -18,6 +18,7 @@ pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 
 from recast.fortran import constants, interface
 from recast.fortran._parse import f03, parse, walk
+from recast.transform.numpy.statements import INT_SENTINEL
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.profiles import PROFILES
 
@@ -68,6 +69,7 @@ contains
     integer, parameter :: mask = z'FF'
     logical, parameter :: yes = .true.
     real(r8) :: scr(n)
+    integer :: tally(n)
     real(r8), allocatable :: dyn(:)
     type(pack_t) :: box
     integer :: i
@@ -125,6 +127,8 @@ def build(
     patches: dict[str, Any] | None = None,
     profile: str = "ifx",
     intrinsics: dict[str, Any] | None = None,
+    poison: bool = False,
+    poison_integers: bool = False,
 ) -> Subprograms:
     return Subprograms(
         record=interface.extract(source, kind_assumptions=KINDS),
@@ -132,6 +136,8 @@ def build(
         profile=PROFILES[profile],
         patches=patches or {},
         intrinsics=intrinsics or {},
+        poison_undefined=poison,
+        poison_integers=poison_integers,
     )
 
 
@@ -234,6 +240,35 @@ def test_locals_are_determinized(source: Path) -> None:
     assert "    dyn = None" in lines
     assert "    box = _make_pack_t()" in lines
     assert "    i = 0" in lines
+
+
+def test_poisoning_makes_a_read_before_write_visible(source: Path) -> None:
+    """The other half of the test above, and the reason it is not enough.
+
+    Determinizing makes an unwritten read reproducible; it does not make it
+    *findable*. ``np.empty`` usually lands on a zero page, so the answer looks
+    stable and the defect survives review. Poisoned, every float Fortran left
+    undefined starts as NaN, so the read propagates into the outputs the gate
+    compares and ``differential.bitexact`` counts it as ``nan_mismatch``.
+    """
+    lines, _ = build(source, poison=True).render(node_of(source, "work"), "work")
+    assert "    scr = np.full((n,), np.nan, dtype=np.float64)" in lines
+    # Unchanged: an allocatable is not undefined memory, it is unallocated,
+    # and a scalar is outside what this covers.
+    assert "    dyn = None" in lines
+    assert "    i = 0" in lines
+
+
+def test_the_integer_arm_is_a_second_switch(source: Path) -> None:
+    """Off even when the float arm is on, because it is answered differently:
+    nothing propagates from an integer to a NaN scan, so its detector is an A/B
+    diff against the unpoisoned run rather than the gate already running."""
+    plain, _ = build(source, poison=True).render(node_of(source, "work"), "work")
+    both, _ = build(source, poison=True, poison_integers=True).render(
+        node_of(source, "work"), "work"
+    )
+    assert "    tally = np.empty((n,), dtype=np.int32)" in plain
+    assert f"    tally = np.full((n,), {INT_SENTINEL}, dtype=np.int32)" in both
 
 
 def test_a_function_result_is_preinitialized(source: Path) -> None:

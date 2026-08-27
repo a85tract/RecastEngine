@@ -79,6 +79,64 @@ def test_a_good_candidate_earns_its_verdict(verifier_case: Any, judge: Any, tmp_
     )
 
 
+def test_where_the_artifact_sits_does_not_change_the_verdict(
+    verifier_case: Any, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A positive control on the harness, not on the candidate.
+
+    Every other check here asks whether the verifier judged the artifact
+    correctly. This one asks whether the *placement* of the artifact was part
+    of the judgement -- whether the same candidate, byte for byte, judged in
+    two different workspaces, gets the same conclusion. A verifier that
+    resolves anything from ``__file__``, or an import that reaches a sibling
+    by walking up from where it happened to be written, passes every check
+    above and fails this one.
+
+    It is not a hypothetical. The run's output directory moved once already,
+    from ``<root>/.recast/`` to ``output/<project>/``, and anything that had
+    inferred a path from where the candidate sat would have changed its answer
+    silently on that commit -- with the gate still green, because a gate
+    cannot tell you it compared the wrong thing.
+
+    Only the conclusion is compared, not the metrics. A verifier is allowed to
+    sample, and a sampling verifier may legitimately report different numbers
+    on two runs; it is not allowed to reach a different verdict because of
+    where the file was.
+    """
+    missing = [m for m in verifier_case.requires if importlib.util.find_spec(m) is None]
+    missing += [c for c in verifier_case.requires_commands if shutil.which(c) is None]
+    if missing:
+        pytest.skip(f"{verifier_case.name!r} needs {', '.join(missing)}")
+
+    verifier: Verifier = (
+        verifier_case.build()
+        if verifier_case.build
+        else REGISTRY.get("verifier", verifier_case.name)()
+    )
+    verdicts: list[Verdict] = []
+    for label in ("here", "elsewhere"):
+        workspace = tmp_path_factory.mktemp(f"placement-{label}")
+        candidate = verifier_case.candidate(workspace)
+        oracle = (
+            verifier_case.oracle(workspace, LocalExecutor()) if verifier_case.oracle else NO_ORACLE
+        )
+        executor = verifier_case.executor() if verifier_case.executor else LocalExecutor()
+        unit = verifier_case.unit or Unit(uid=candidate.unit, kind="subprogram")
+        verdicts.append(
+            verifier.verify(
+                unit, candidate, oracle, workspace, executor, dict(verifier_case.config)
+            )
+        )
+
+    first, second = verdicts
+    assert first.confidence is second.confidence, (
+        f"the same candidate earned {first.confidence.value} in one workspace and "
+        f"{second.confidence.value} in another, so something in this verifier's path "
+        f"is the workspace: {first.detail} / {second.detail}"
+    )
+    assert first.passed == second.passed
+
+
 def test_a_broken_candidate_fails(verifier_case: Any, judge: Any, tmp_path: Path) -> None:
     broken = verifier_case.break_candidate(verifier_case.candidate(tmp_path))
     verdict = judge(broken)
