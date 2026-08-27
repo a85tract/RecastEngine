@@ -206,16 +206,17 @@ issue, and the engine is on the correct side of all of them.** That is worth
 stating plainly rather than leaving as four counts, because a raw count reads
 as "the port is four wrong" and it is the other way round:
 
-| | count | issue | what it is |
+| | count | upstream issue | what it is |
 |---|---|---|---|
-| `emit_diff` | 2 | [#6] | a type-bound call in statement position becomes `pass` and the block still scores `mechanical`; this engine refuses it |
+| `emit_diff` | 2 | #6 | a type-bound call in statement position becomes `pass` and the block still scores `mechanical`; this engine refuses it |
 | `numba_diff` | 0 | -- | |
-| `cuda_diff` | 4 | [#14] | a generic call in a device function is resolved correctly and then spelled in the *host* naming scheme, so the emitted name is one the generated file never defines |
-| `cuda_diff` crashes | 145 | [#13] | `emit_kernel_variant` omits the per-subprogram state its base sets up, so the pipeline raises before emitting an expression |
+| `cuda_diff` | 4 | #14 | a generic call in a device function is resolved correctly and then spelled in the *host* naming scheme, so the emitted name is one the generated file never defines |
+| `cuda_diff` crashes | 145 | #13 | `emit_kernel_variant` omits the per-subprogram state its base sets up, so the pipeline raises before emitting an expression |
 
-[#6]: https://github.com/a85tract/CESM-language-translator/issues/6
-[#13]: https://github.com/a85tract/CESM-language-translator/issues/13
-[#14]: https://github.com/a85tract/CESM-language-translator/issues/14
+The numbers are the translator's own tracker and are not linked, for the
+reason `tools/check_hygiene.py` gives: that repository is private, so a URL
+here is one nobody outside can follow. Each row says what the issue says, so
+the table stands on its own for a reader who cannot open them.
 
 All four `cuda_diff` differences are #14 and nothing else: the three
 `rising_factorial` sites in `mg_utils` the issue names, and the `distance`
