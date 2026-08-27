@@ -1,7 +1,9 @@
 # Writing a plugin
 
 Everything the engine can do arrives this way, in-tree parts included. There is
-no privileged path.
+no privileged path. The ten interfaces are in
+[`../src/recast/plugins/`](../src/recast/plugins/); implement one, register an
+entry point under `recast.<kind>s`, and `recast plugins` shows it.
 
 ## 1. Pick a kind
 
@@ -48,6 +50,14 @@ Two rules that are easy to get wrong:
 Group name is `recast.<kind>s`. Install the package and `recast plugins` shows
 it. For tests and in-process use, `recast.registry.register(kind, name, factory)`
 is equivalent.
+
+Registration is also all `recast plan` checks. A slot reads `[MISS]` when no
+plugin is registered under the name the recipe asked for -- a typo in the
+config, an extension that was meant to be installed and is not -- and `[ok]`
+otherwise. It does not import your factory, so a plugin whose own dependency
+is missing plans clean and fails at run time. The one exception is a scanner
+or adjudicator that declares a `tool`: `plan` looks for that binary on PATH
+and reports it beside the stage. See *Scanners specifically* below.
 
 ## 4. Prove it
 
