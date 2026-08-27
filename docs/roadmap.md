@@ -723,12 +723,40 @@ no extension installed, recording per unit what the rules refused and why.
 question the relay kept raising: a rule goes into the engine when code
 nobody here wrote needs it, and into the extension when only CAM does.
 
-The first baseline says two things above everything else. Calls between
-sibling modules of one tree are refused, because the recipe takes
-companions only from config where the translator's `auto_translate`
-derives them from USE; and files of bare subprograms are not units at all,
-which is fifty-eight of fftpack's fifty-nine files and CLOUDSC's kernel
-itself. Neither is a CAM question, so neither was ever asked.
+The first baseline said two things above everything else, and one of them
+has since turned out to be wrong about this repository. Files of bare
+subprograms are not units at all -- fifty-eight of fftpack's fifty-nine
+files, and CLOUDSC's kernel itself -- which stands, and is not a CAM
+question, so it was never asked.
+
+The other said calls between sibling modules of one tree are refused
+"because the recipe takes companions only from config, where the
+translator's `auto_translate` derives them from USE". **That is not what the
+code does.** `FortranFrontend._companions` walks this unit's USE statements
+against a module index of the tree, transitively through a bare `use`, and
+hands what it finds to the transform; `fortran-utils`' `linalg` emits
+`import constants_numpy as _constants` and `import types_numpy as _types`
+and both sit beside it. The mechanism is there and it works, so there was
+never anything to relay here. What is left is smaller and different, and
+naming it wrongly cost a re-derivation:
+
+Of the eight units whose emitted Python still does not import, **seven fail
+on an import of a module nothing in the file binds to** -- the alias appears
+on its import line and nowhere else. Three separate reasons put the module
+out of reach, and the last step is the same in all three: a `use` that
+resolves to no companion emits `import <mod>_numpy as _<mod>` whether or not
+anything needed it.
+
+| units | the module | why it is out of reach |
+|---|---|---|
+| cloudsc's four, `fortran-utils:special`, `splines` | `file_io_mod`, `amos`, `lapack` | not in the case's file set in `cases.json`, so not in the tree |
+| `fftpack` | `fftpack_kind` | its source is in the tree and does not parse: `rk.f90:3` is `implicit none(type, external)`, which is Fortran 2018, and `_parse.STD` is `f2008`. The companion walk recorded exactly that in `unresolved` |
+| `fortran-utils:linalg` | `lapack` | nothing is wrong with it: `_lapack.ilaenv(...)` is a real call into LAPACK, which is a library and not a translation |
+
+Only the last is a dependency in any meaningful sense. The unconditional
+import is shared with the reference pipeline -- `translate.py` emits one for
+every `auto_stub_modules` entry with no test of whether the alias is used --
+so it is an upstream finding to report rather than a rule to write here.
 
 **And it did what it was written to do the first time a relay was measured
 against it.** The five translation defects relayed from the translator move
