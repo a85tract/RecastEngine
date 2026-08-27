@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from recast import WORKSPACE_DIRNAME
+from recast import OUTPUT_DIRNAME, WORKSPACE_DIRNAME
 from recast.errors import ConfigError
 from recast.model import Facts, Unit
 from recast.plugins.frontend import Frontend
@@ -429,18 +429,23 @@ end module open_mod
     assert visibility == {"bold": True, "shy": False}
 
 
-def test_the_engines_own_workspace_is_not_source(tree, fe) -> None:
+@pytest.mark.parametrize("dirname", [OUTPUT_DIRNAME, WORKSPACE_DIRNAME])
+def test_the_engines_own_output_is_not_source(tree, fe, dirname: str) -> None:
     """A previous run's generated code is output, not input.
 
-    ``run_recipe`` puts its workspace at ``<root>/.recast`` by default, and the
-    f2py oracle leaves compilable wrappers under it. Discovering those turns the
-    engine's output into its own input: the same tree yields a different unit
-    set before and after a run, and the second run offers to translate the
-    scaffolding the first one generated.
+    The f2py oracle leaves compilable wrappers in the run's workspace.
+    Discovering those turns the engine's output into its own input: the same
+    tree yields a different unit set before and after a run, and the second run
+    offers to translate the scaffolding the first one generated.
+
+    ``output/`` normally sits outside the tree, which is the real fix; both
+    names are pinned because ``config["output"]`` can be pointed back inside,
+    and because a tree carrying a run from before the move still has a
+    ``.recast/``.
     """
     before = {u.uid for u in fe.discover(tree)}
 
-    build = tree / WORKSPACE_DIRNAME / "translate" / "oracle-deadbeef"
+    build = tree / dirname / "translate" / "oracle-deadbeef"
     build.mkdir(parents=True)
     (build / "wrappers.f90").write_text(SOURCE)
 

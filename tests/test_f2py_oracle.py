@@ -261,14 +261,18 @@ def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
     import shutil as _shutil
 
     from recast.cli import main
+    from recast.run import output_root
 
     example = Path(__file__).resolve().parent.parent / "examples" / "toy_physics"
     staged = tmp_path / "toy_physics"
-    _shutil.copytree(example, staged, ignore=_shutil.ignore_patterns(".recast"))
+    _shutil.copytree(example, staged, ignore=_shutil.ignore_patterns(".recast", "output"))
 
     code = main(["run", "translate", str(staged), "--config", str(staged / "recast.json")])
     assert code == 0
-    manifests = list((staged / ".recast" / "evidence").rglob("*.json"))
+    # Not under ``staged``: the run's output is ``output/toy_physics/``, which
+    # is what makes the generated Python findable and keeps it out of the tree
+    # it was generated from.
+    manifests = list((output_root(staged, {}) / "evidence").rglob("*.json"))
     assert len(manifests) == 3  # rwset, bitexact, notary
     results = {json.loads(m.read_text())["result"]["verdict"] for m in manifests}
     assert results == {"sampled", "bit_exact", "symbolic"}

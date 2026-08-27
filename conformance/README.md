@@ -74,10 +74,10 @@ the SemVer promise everything out-of-tree rests on.
 
 | Kind | Must hold | Checked |
 |---|---|---|
-| `Frontend` | it discovers the units the case names; `discover` and `analyze` are deterministic and leave the tree byte-for-byte unchanged; re-running on unchanged source yields identical `Unit` sets; `Unit.sources` are relative to the root; nothing under the engine's own `.recast/` is read as source; `preprocess` records its flags in `Facts.provenance` | `test_frontend.py` |
+| `Frontend` | it discovers the units the case names; `discover` and `analyze` are deterministic and leave the tree byte-for-byte unchanged; re-running on unchanged source yields identical `Unit` sets; `Unit.sources` are relative to the root; nothing under the engine's own output directory is read as source; `preprocess` records its flags in `Facts.provenance` | `test_frontend.py` |
 | `Transform` | `requires` names real `Facts` fields; `applicable` never raises on degenerate input and is true for the case's own subject; unhandled sites land in `deferred`, not exceptions, and the partial Candidate still carries what did translate; a `deterministic` Transform yields an identical `Candidate.digest()` for identical inputs, while a `deterministic = False` one instead records `model` and `prompt_digest` in `Candidate.notes` so its Evidence replays to a valid artifact | `test_transform.py` |
 | `Oracle` | `key` is stable for unchanged inputs and changes for every perturbation the case declares — flags, rank count, wrapped surface — and when the source moves; the ref is filed under the key `key` reports; a refusing executor produces a `RecastError`, not an exception the runner does not catch; `release` is idempotent | `test_oracle.py` |
-| `Verifier` | a good candidate earns the verdict its case declares; a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; an executor that refuses the requested scale produces `FAILED`, not a retry at a smaller one; `Verdict.candidate` is the digest that was judged; `metrics` on any real comparison, `detail` on any failure | `test_verifier.py` |
+| `Verifier` | a good candidate earns the verdict its case declares; a broken candidate produces `FAILED`; an unavailable oracle produces `FAILED`, never a weaker pass; an executor that refuses the requested scale produces `FAILED`, not a retry at a smaller one; `Verdict.candidate` is the digest that was judged; the same candidate judged in two different workspaces reaches the same conclusion; `metrics` on any real comparison, `detail` on any failure | `test_verifier.py` |
 | `Scanner` | findings default to `EMBARGOED`/`PLAUSIBLE`; a scan of a clean tree yields nothing; a scan of the seeded fixture yields the seeded defect | not yet |
 | `Adjudicator` | can return `REFUTED` — the suite feeds it a known false positive and requires it to be killed | not yet |
 | `Executor` | refuses resources it cannot honestly satisfy; `wait` is idempotent; `cancel` on an unknown handle is a no-op, not a crash | `test_executor.py` |
@@ -95,13 +95,16 @@ defect, a known false positive, a provider that falls back) can be real.
 **The `Frontend` row grew two clauses, and the second one found a bug.** The
 first is that `Unit.sources` are relative to the root -- the ABC says so, and an
 absolute path is a machine's, which travels into Evidence. The second is that
-nothing under the engine's own `.recast/` is read as source. `run_recipe` puts
-its workspace there by default and the f2py oracle leaves compilable wrappers
-under it, so discovery over a tree the engine had already run on returned
-`fortran:wrappers` -- the engine's output, offered back as its input, and a
-different unit set before and after a run. `SKIP_DIRS` did not list it. The
-directory now has a name, `recast.WORKSPACE_DIRNAME`, the frontend skips it, and
-`tests/test_fortran_frontend.py` pins it. The example was insulated from this
+nothing under the engine's own output directory is read as source. `run_recipe`
+put its workspace at `<root>/.recast` at the time and the f2py oracle leaves
+compilable wrappers under it, so discovery over a tree the engine had already
+run on returned `fortran:wrappers` -- the engine's output, offered back as its
+input, and a different unit set before and after a run. `SKIP_DIRS` did not
+list it. The directory got a name, `recast.WORKSPACE_DIRNAME`, the frontend
+skips it, and `tests/test_fortran_frontend.py` pins it. **The default has since
+moved out of the tree entirely**, to `output/<project>/`, which is the fix the
+skip was standing in for; both names stay in `SKIP_DIRS` and both are pinned,
+because `config["output"]` can still be pointed back inside a checkout. The example was insulated from this
 only because its config pins `units`, which is not the same as being correct.
 
 **The `Transform` row grew three.** `requires` must name real `Facts` fields,

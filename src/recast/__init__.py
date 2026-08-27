@@ -36,16 +36,30 @@ from recast.model import (
 )
 
 WORKSPACE_DIRNAME = ".recast"
-"""The one directory the engine writes into a project it is pointed at.
+"""Where per-machine state that is not a run's output lives.
 
-Workspaces, oracle builds, and the default evidence store all land under it,
-which makes it the engine's own output rather than anybody's source. A
-``Frontend`` has to skip it: discovery that reads back a previous run's
-generated code turns the engine's output into its input, and the second run
-over a tree sees units the first one created.
+Only the embargoed finding store uses it now, at ``~/.recast/findings``. It
+stays in a ``Frontend``'s skip list because trees carrying a pre-``output/``
+run still have one, and reading a previous run's generated code back in turns
+the engine's output into its input.
+"""
+
+OUTPUT_DIRNAME = "output"
+"""The directory a run's candidates and evidence are written under.
+
+One level down is the source project's name -- ``output/toy_physics/`` -- so
+that runs over different trees stay apart and a person looking for what the
+engine produced has one place to look. It deliberately does not live inside
+the tree it was produced from: generated code sitting in the source is one
+``git add -A`` from being committed as if it were source, and a discovery pass
+that reads it back finds units the previous run created.
+
+``config["output"]`` overrides the whole path; ``config["workspace"]``
+overrides only the per-recipe half.
 """
 
 __all__ = [
+    "OUTPUT_DIRNAME",
     "WORKSPACE_DIRNAME",
     "Access",
     "AccessViolation",

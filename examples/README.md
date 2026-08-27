@@ -12,11 +12,11 @@ not only on the private corpus it was migrated against.
 (`pip install 'recast-engine[fortran,translate,verify]'` and a `gfortran` on
 PATH). The run translates the module, cross-checks its dataflow, compiles
 the untouched Fortran as the reference, compares every output bit for bit,
-and writes the evidence manifests under `.recast/evidence/`.
+and writes the evidence manifests under `output/toy_physics/evidence/`.
 
 Two records come out of that, and they are for different readers.
 
-`.recast/evidence/` holds the **manifests**: one immutable, content-addressed
+`output/toy_physics/evidence/` holds the **manifests**: one immutable, content-addressed
 CC-Test document per verdict per run, append-only, carrying the full metrics
 and the environment. That is the audit trail, and it accumulates a file per
 attempt -- including the attempts that failed, which is the point of an audit
