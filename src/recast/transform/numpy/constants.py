@@ -25,7 +25,12 @@ from typing import Any
 
 from recast.fortran.expr import Expr, render
 
-__all__ = ["constants_module", "defined_module_parameters", "use_constants_module"]
+__all__ = [
+    "constants_module",
+    "defined_module_parameters",
+    "np_int_literal",
+    "use_constants_module",
+]
 
 LEADING_ZERO = re.compile(r"^0\d")
 
@@ -89,6 +94,26 @@ def defined_module_parameters(record: dict[str, Any]) -> set[str]:
     }
 
 
+def np_int_literal(value: int) -> str:
+    """An integer constant, in the narrowest of int32/int64 that holds it.
+
+    Fortran's default INTEGER is 32-bit and this backend spelled every
+    non-``int64`` constant ``np.int32(...)``, which numpy refuses outright:
+    a mask or a multiplier that does not fit -- ``Z'9908B0DF'``, an
+    mt19937_64 constant -- raises ``OverflowError`` while the module is
+    still being imported, so nothing in the translation runs.
+
+    The width comes from the *value* rather than the declared kind, which is
+    what keeps this from being a formatting change: every constant that
+    already fit stays byte-identical, and only the ones that could not be
+    emitted at all move. The declared kind is the better answer and this is
+    not it -- an explicitly ``int64`` literal small enough to fit narrows to
+    int32 here, which is harmless while the bit intrinsics coerce to Python
+    ``int``, and wrong the moment one of them starts respecting a width.
+    """
+    return f"np.int64({value})" if not -(2**31) <= value < 2**31 else f"np.int32({value})"
+
+
 def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     name = parameter["name"].upper()
     kind, payload = parameter["kind"], parameter["payload"]
@@ -98,7 +123,7 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     if kind == "int64":
         return f"{name} = np.int64({payload})  {where}"
     if kind == "int":
-        return f"{name} = np.int32({int(payload)})  {where}"
+        return f"{name} = {np_int_literal(int(payload))}  {where}"
     if kind in ("real", "real32"):
         spelled = _real(payload, kind == "real32")
         note = " [unsuffixed default REAL]" if kind == "real32" else ""
@@ -122,7 +147,7 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
             f"  # local param array {parameter['name']} in {parameter['subprogram']}"
         )
     if kind == "int":
-        return f"{constant} = np.int32({int(payload)})  {about}"
+        return f"{constant} = {np_int_literal(int(payload))}  {about}"
     if kind in ("real", "real32"):
         spelled = _real(payload, kind == "real32")
         note = " [unsuffixed default REAL]" if kind == "real32" else ""
@@ -148,7 +173,7 @@ def _hoisted(name: str, entry: dict[str, Any]) -> str:
         # Python 3 forbids a leading zero on a decimal literal.
         if LEADING_ZERO.match(value):
             value = str(int(value))
-        spelled = f"np.int32({value})"
+        spelled = np_int_literal(int(value))
     where = "; ".join(sorted(set(entry["locations"])))
     return f"{name} = {spelled}  # {where}"
 

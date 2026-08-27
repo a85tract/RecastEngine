@@ -155,6 +155,48 @@ def test_what_it_cannot_handle_is_deferred_and_not_raised(
     )
 
 
+def test_what_it_calls_mechanical_is_at_least_well_formed(
+    transform_case: Any, transform: Transform, tmp_path: Path
+) -> None:
+    """A Candidate's own files have to parse in the language they are written in.
+
+    Weaker than "correct" on purpose -- nothing here can judge the numbers --
+    and it is still the check that four separate defects would have been
+    caught by. Each of them emitted a file that no interpreter would load:
+    an untranslatable initializer passed through as upper-cased Fortran, an
+    integer constant too wide for the ``np.int32`` it was spelled with, a
+    ``DIMENSION``-only array read as a statement function and emitted as
+    ``def pm(i, i)``, an ``import`` of a companion module that cannot exist.
+    Every one of them was reported *mechanical*, which is the part that
+    matters: a transform that refuses out loud is behaving, and a transform
+    that hands back a file which cannot be loaded has not refused at all.
+
+    A deferred site is a comment or a raise in an otherwise loadable file, so
+    this holds for partial candidates too, and skipping when ``deferred`` is
+    non-empty would excuse exactly the runs most likely to fail it.
+    """
+    subject = transform_case.subject(tmp_path)
+    candidate = transform.apply(subject.unit, subject.facts, _config(transform_case, subject))
+    checked = 0
+    for path, content in sorted(candidate.files.items()):
+        if path.suffix != ".py":
+            continue
+        checked += 1
+        try:
+            compile(content, str(path), "exec")
+        except SyntaxError as bad:
+            raise AssertionError(
+                f"{transform.name!r} emitted {path} and it does not parse as Python: "
+                f"{bad.msg} at line {bad.lineno}. A file the candidate wrote itself is "
+                "the transform's own claim about its output, and a syntax error in it "
+                "is a refusal that was never made."
+            ) from bad
+    if not checked:
+        pytest.skip(
+            f"{transform_case.name!r} emitted no Python of its own -- unexercised, not passed"
+        )
+
+
 def _config(case: Any, subject: Any) -> dict[str, Any]:
     """The subject's own config over the case's: where the source lives is
     decided when the subject is planted, not when the case is declared."""

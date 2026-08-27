@@ -58,8 +58,7 @@
     },
     "fortran:bspline_defc_module": {
      "deferred": 9,
-     "import_error": "SyntaxError: 'break' outside loop",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -71,11 +70,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "54/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+49 more)",
+       "detail": "55/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+50 more)",
        "metrics": {
         "blocks_checked": 319,
         "blocks_deferred": 9,
-        "blocks_matched": 265,
+        "blocks_matched": 264,
         "blocks_waived": 0
        },
        "passed": false
@@ -653,8 +652,7 @@
    "units": {
     "fortran:minpack_module": {
      "deferred": 12,
-     "import_error": "ModuleNotFoundError: No module named 'iso_fortran_env_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -861,8 +859,7 @@
     },
     "fortran:exponential": {
      "deferred": 1,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -964,8 +961,7 @@
     },
     "fortran:gauss": {
      "deferred": 2,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1094,8 +1090,7 @@
     },
     "fortran:mt19937_64": {
      "deferred": 0,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1146,8 +1141,7 @@
     },
     "fortran:mtrandom": {
      "deferred": 1,
-     "import_error": "OverflowError: Python integer 4294967295 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1172,8 +1166,7 @@
     },
     "fortran:numfor": {
      "deferred": 0,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1328,8 +1321,7 @@
     },
     "fortran:randist": {
      "deferred": 0,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1355,8 +1347,7 @@
     },
     "fortran:random": {
      "deferred": 3,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1431,8 +1422,7 @@
     },
     "fortran:uniform": {
      "deferred": 0,
-     "import_error": "OverflowError: Python integer 2270628950310912 out of bounds for int32",
-     "imports": false,
+     "imports": true,
      "mechanical": true,
      "parses": true,
      "stages": {
@@ -1536,8 +1526,7 @@
    "units": {
     "fortran:polyroots_module": {
      "deferred": 4,
-     "import_error": "SyntaxError: 'break' outside loop",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1549,11 +1538,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "56/434 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+51 more)",
+       "detail": "60/434 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+55 more)",
        "metrics": {
         "blocks_checked": 434,
         "blocks_deferred": 4,
-        "blocks_matched": 378,
+        "blocks_matched": 374,
         "blocks_waived": 0
        },
        "passed": false
@@ -1564,7 +1553,7 @@
   },
   "quadpack": {
    "bare_files": 0,
-   "blocks": 0,
+   "blocks": 627,
    "deferred": 1,
    "refusals": [
     [
@@ -1576,8 +1565,9 @@
    "units": {
     "fortran:quadpack_double": {
      "deferred": 1,
+     "imports": true,
      "mechanical": false,
-     "parses": false,
+     "parses": true,
      "stages": {
       "frontend/fortran": "ok",
       "store/fs-evidence": "ok",
@@ -1585,12 +1575,14 @@
       "verifier/static.rwset": "failed"
      },
      "stopped_by": "static.rwset",
-     "syntax_error": "<unknown>:2461: invalid syntax. Maybe you meant '==' or ':=' instead of '='?",
      "verdicts": {
       "static.rwset": {
-       "detail": "emitted file does not parse: invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 2461)",
+       "detail": "30/627 blocks disagree: dqag/B006, dqage/B012, dqagi/B006, dqagie/B013, dqagpe/B023 (+25 more)",
        "metrics": {
-        "blocks_checked": 0
+        "blocks_checked": 627,
+        "blocks_deferred": 1,
+        "blocks_matched": 597,
+        "blocks_waived": 0
        },
        "passed": false
       }
@@ -1620,8 +1612,7 @@
    "units": {
     "fortran:root_module": {
      "deferred": 5,
-     "import_error": "ModuleNotFoundError: No module named 'iso_fortran_env_numpy'",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1786,8 +1777,7 @@
    "units": {
     "fortran:specfun_module": {
      "deferred": 21,
-     "import_error": "SyntaxError: duplicate argument 'i' in function definition",
-     "imports": false,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -1799,11 +1789,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/1588 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+9 more)",
+       "detail": "33/1588 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+28 more)",
        "metrics": {
         "blocks_checked": 1588,
         "blocks_deferred": 21,
-        "blocks_matched": 1574,
+        "blocks_matched": 1555,
         "blocks_waived": 0
        },
        "passed": false

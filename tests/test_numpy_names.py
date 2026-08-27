@@ -183,7 +183,10 @@ def test_use_statements_bind_the_uncovered_and_rebind_a_rename() -> None:
         ],
     }
     companion_globals = {"r8": "_wv.r8"}
-    bindings, stubs = names.bind_use_statements(record, {"_wv"}, {"qsat_water"}, companion_globals)
+    bindings, stubs, intrinsic = names.bind_use_statements(
+        record, {"_wv"}, {"qsat_water"}, companion_globals
+    )
+    assert not intrinsic  # none of these is a module the standard provides
     assert companion_globals["r8"] == "_precision_mod.wp_r8"
     assert bindings == {"i8": "_precision_mod.wp_i8"}
     # A companion is recognised by its alias minus the underscore, as the

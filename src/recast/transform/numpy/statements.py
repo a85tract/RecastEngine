@@ -177,6 +177,15 @@ class Statements:
     body would break the wrong loop, and the ``None`` on top blocks it.
     """
 
+    construct_stack: list[tuple[str, str | None]] = field(default_factory=list)
+    """``("do" | "block", construct-name-or-None)`` for each enclosing
+    construct, outermost first.
+
+    What an ``EXIT``/``CYCLE`` naming a construct has to consult. Kept apart
+    from ``active_labels``, which answers a different question -- where a goto
+    may land -- and whose entries are labels rather than construct names.
+    """
+
     # -- entry points ---------------------------------------------------------
 
     def scan(self, subprogram: Any) -> None:
@@ -235,10 +244,8 @@ class Statements:
             return self._case_construct(node, indent)
         if isinstance(node, f03.Return_Stmt):
             return [f"{pad}return {self.returned_value()}"]
-        if isinstance(node, f03.Cycle_Stmt):
-            return [f"{pad}continue"]
-        if isinstance(node, f03.Exit_Stmt):
-            return [f"{pad}break"]
+        if isinstance(node, (f03.Cycle_Stmt, f03.Exit_Stmt)):
+            return self.exit_stmt(node, pad)
         if isinstance(node, f03.Goto_Stmt):
             return self._goto(node, pad)
         if isinstance(node, f03.Continue_Stmt):
@@ -418,10 +425,8 @@ class Statements:
             return lines
         lines = []
         for node in nodes:
-            if isinstance(node, f03.Cycle_Stmt):
-                lines.append(f"{pad}continue")
-            elif isinstance(node, f03.Exit_Stmt):
-                lines.append(f"{pad}break")
+            if isinstance(node, (f03.Cycle_Stmt, f03.Exit_Stmt)):
+                lines.extend(self.exit_stmt(node, pad))
             else:
                 lines.extend(self.render(node, indent))
         return lines
@@ -1098,13 +1103,128 @@ class Statements:
                 body.extend(self.render(child, indent + 1))
         return lines
 
+    # -- named EXIT and CYCLE -------------------------------------------------
+
+    LOOP_CONSTRUCTS = (
+        f03.Block_Nonlabel_Do_Construct,
+        f03.Block_Label_Do_Construct,
+        f03.Action_Term_Do_Construct,
+    )
+
+    @staticmethod
+    def construct_name(node: Any) -> str | None:
+        """The label a construct was opened with -- ``col:`` of ``col: do ...``.
+
+        fparser hangs it off the *reader line* rather than the statement's
+        children, which is why it is easy to translate a whole corpus without
+        noticing it is there.
+        """
+        item = getattr(node, "item", None)
+        name = getattr(item, "name", None)
+        return str(name).lower() if name else None
+
+    def opening_name(self, node: Any) -> str | None:
+        """The construct name of a DO or BLOCK construct node."""
+        opener = walk(node, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt, f08.Block_Stmt))
+        return self.construct_name(opener[0]) if opener else None
+
+    def exit_stmt(self, node: Any, pad: str) -> list[str]:
+        """``EXIT``/``CYCLE``, named or not.
+
+        Unnamed, or naming the loop it already sits in, this is Python's own
+        ``break``/``continue``. Naming an *outer* loop it is not: ``break``
+        leaves one loop, and the statement means to leave two. The engine
+        emitted the bare keyword for every form, so ``cycle col`` from inside
+        an inner loop continued the inner one -- a program that still runs,
+        still terminates, and is wrong in a way no structural check sees.
+        """
+        is_exit = isinstance(node, f03.Exit_Stmt)
+        keyword = "break" if is_exit else "continue"
+        target = node.children[1] if len(node.children) > 1 else None
+        if target is None:
+            return [f"{pad}{keyword}"]
+        name = str(target).lower()
+        crossed_a_loop = False
+        for kind, construct in reversed(self.construct_stack):
+            if kind == "block":
+                if construct != name:
+                    continue
+                if not is_exit:
+                    raise NoRule(f"CYCLE names a BLOCK construct ({name})")
+                return [f"{pad}raise _FBlockExit({name!r})"]
+            if construct != name:
+                crossed_a_loop = True
+                continue
+            if not crossed_a_loop:
+                # The loop it names is the one it is in: plain, and this is
+                # the overwhelmingly common case -- a named loop with an
+                # unnamed body reads better and costs nothing.
+                return [f"{pad}{keyword}"]
+            raiser = "_FLoopExit" if is_exit else "_FLoopCycle"
+            return [f"{pad}raise {raiser}({name!r})"]
+        raise NoRule(f"{keyword.upper()} names {name!r}, which encloses nothing here")
+
+    def _cross_loop_targets(self, node: Any, name: str | None) -> tuple[bool, bool]:
+        """Whether anything under a *nested* loop leaves or cycles ``name``.
+
+        Only those need a catcher. A named loop whose EXITs all sit in its own
+        body emits exactly what it emitted before, so a corpus that never
+        crosses a loop boundary is byte-identical either way.
+        """
+        if not name:
+            return False, False
+        inner = [c for c in walk(node, self.LOOP_CONSTRUCTS) if c is not node]
+        if not inner:
+            return False, False
+        exits = cycles = False
+        for stmt in walk(node, (f03.Exit_Stmt, f03.Cycle_Stmt)):
+            target = stmt.children[1] if len(stmt.children) > 1 else None
+            if target is None or str(target).lower() != name:
+                continue
+            if not any(any(s is stmt for s in walk(loop, type(stmt))) for loop in inner):
+                continue
+            if isinstance(stmt, f03.Exit_Stmt):
+                exits = True
+            else:
+                cycles = True
+        return exits, cycles
+
     def _do_construct(self, node: Any, indent: int) -> list[str]:
+        """A DO construct, with catchers for whatever crosses it.
+
+        An EXIT that names this loop from inside a nested one wraps the whole
+        loop, so the loop is what is left; a CYCLE wraps the *body*, so the
+        header runs again. Both re-raise a name that is not this loop's,
+        which is what lets them nest. Neither is emitted unless something
+        actually crosses a loop boundary to reach this one.
+        """
+        name = self.opening_name(node)
+        self.construct_stack.append(("do", name))
+        try:
+            exits, cycles = self._cross_loop_targets(node, name)
+            cycle_name = name if cycles else None
+            if not exits:
+                return self._do_construct_inner(node, indent, cycle_name)
+            pad = "    " * indent
+            return [
+                f"{pad}try:  # exit {name}",
+                *self._do_construct_inner(node, indent + 1, cycle_name),
+                f"{pad}except _FLoopExit as _le:",
+                f"{pad}    if _le.args[0] != {name!r}:",
+                f"{pad}        raise",
+            ]
+        finally:
+            self.construct_stack.pop()
+
+    def _do_construct_inner(
+        self, node: Any, indent: int, cycle_name: str | None = None
+    ) -> list[str]:
         pad = "    " * indent
         do_statement = walk(node, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))[0]
         if not walk(do_statement, f03.Loop_Control):
             # `do` with no control at all: an unbounded loop something inside
             # leaves, which in Fortran is an EXIT or a goto past the END DO.
-            return [f"{pad}while True:", *self._loop_body(node, indent)]
+            return [f"{pad}while True:", *self._loop_body(node, indent, cycle_name)]
         control = walk(do_statement, f03.Loop_Control)
         if not control:
             raise NoRule("do while / infinite do")
@@ -1116,7 +1236,7 @@ class Statements:
                 if isinstance(child, (f03.Nonlabel_Do_Stmt, f03.End_Do_Stmt)):
                     continue
                 body.extend(self.render(child, indent + 1))
-            lines.extend(body or [f"{pad}    pass"])
+            lines.extend(self._caught_cycle(body or [f"{pad}    pass"], indent, cycle_name))
             return lines
         if control[0].children[1] is None:
             raise NoRule("do with a loop control that is neither a count nor a condition")
@@ -1143,9 +1263,22 @@ class Statements:
                     f"{pad}for {name} in range({low}, "
                     f"({high}) + (1 if ({step}) > 0 else -1), {step}):"
                 )
-        return [head, *self._loop_body(node, indent)]
+        return [head, *self._loop_body(node, indent, cycle_name)]
 
-    def _loop_body(self, node: Any, indent: int) -> list[str]:
+    def _caught_cycle(self, body: list[str], indent: int, cycle_name: str | None) -> list[str]:
+        """A loop body, wrapped so a CYCLE naming *this* loop reaches its header."""
+        if not cycle_name:
+            return body
+        pad = "    " * (indent + 1)
+        return [
+            f"{pad}try:",
+            *(f"    {line}" for line in body),
+            f"{pad}except _FLoopCycle as _lc:",
+            f"{pad}    if _lc.args[0] != {cycle_name!r}:",
+            f"{pad}        raise",
+        ]
+
+    def _loop_body(self, node: Any, indent: int, cycle_name: str | None = None) -> list[str]:
         """The statements between the DO and its END DO, at one more indent."""
         pad = "    " * indent
         # Every do pushes something, label or None: a goto from deeper than
@@ -1184,7 +1317,7 @@ class Statements:
             if cycle_label:
                 self.active_labels.pop()
             self.active_labels.pop()
-        return body or [f"{pad}    pass"]
+        return self._caught_cycle(body or [f"{pad}    pass"], indent, cycle_name)
 
     def _associate(self, node: Any, indent: int) -> list[str]:
         """``associate (a => expr)``: the name is bound once, then read.
@@ -1219,16 +1352,42 @@ class Statements:
         no source in the corpus does it.
         """
         pad = "    " * indent
-        lines: list[str] = []
-        for child in node.children:
-            if isinstance(child, (f08.Block_Stmt, f08.End_Block_Stmt)):
-                continue
-            if isinstance(child, f03.Specification_Part):
-                for declaration in walk(child, f03.Type_Declaration_Stmt):
-                    lines.extend(self._block_declaration(declaration, pad))
-                continue
-            lines.extend(self.render(child, indent))
-        return lines or [f"{pad}pass"]
+        name = self.opening_name(node)
+        # An ``EXIT`` naming this block has no Python construct to leave --
+        # the body is inlined at the enclosing indent, so ``break`` would
+        # bind to whatever loop happens to be outside it. The catcher is
+        # emitted only when something actually names this block.
+        exited = bool(name) and any(
+            len(stmt.children) > 1
+            and stmt.children[1] is not None
+            and str(stmt.children[1]).lower() == name
+            for stmt in walk(node, f03.Exit_Stmt)
+        )
+        body_indent = indent + 1 if exited else indent
+        body_pad = "    " * body_indent
+        self.construct_stack.append(("block", name))
+        try:
+            lines: list[str] = []
+            for child in node.children:
+                if isinstance(child, (f08.Block_Stmt, f08.End_Block_Stmt)):
+                    continue
+                if isinstance(child, f03.Specification_Part):
+                    for declaration in walk(child, f03.Type_Declaration_Stmt):
+                        lines.extend(self._block_declaration(declaration, body_pad))
+                    continue
+                lines.extend(self.render(child, body_indent))
+        finally:
+            self.construct_stack.pop()
+        body = lines or [f"{body_pad}pass"]
+        if not exited:
+            return body
+        return [
+            f"{pad}try:  # exit {name}",
+            *body,
+            f"{pad}except _FBlockExit as _be:",
+            f"{pad}    if _be.args[0] != {name!r}:",
+            f"{pad}        raise",
+        ]
 
     def _block_declaration(self, declaration: Any, pad: str) -> list[str]:
         """One declaration inside a BLOCK, as a zero-initialised local."""

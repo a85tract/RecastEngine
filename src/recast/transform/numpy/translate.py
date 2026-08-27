@@ -383,6 +383,15 @@ class NumpyTranslation(Transform):
         names: dict[str, str] = {}
         for table in renames.values():
             names.update(table)
+        # ``use, intrinsic :: iso_fortran_env, only: stdout => output_unit``
+        # reads ``stdout`` on the source side and ``_iso_fortran_env.
+        # output_unit`` on this one. The alias rule below undoes exactly that
+        # shape for a companion; an intrinsic namespace is the same shape and
+        # is invisible here otherwise, because no import line announces it.
+        for local, spelling in assembler.use_bindings.items():
+            alias, _, attribute = spelling.partition(".")
+            if alias in assembler.intrinsic_aliases and attribute:
+                names.setdefault(attribute, local)
         return {
             "file": emitted_file,
             "blocks": blocks,
@@ -393,7 +402,10 @@ class NumpyTranslation(Transform):
                 # call, and without these the alias rule would read it as data.
                 | {remote.name for remote in assembler.remotes.values()}
             ),
-            "aliases": sorted({remote.alias for remote in assembler.remotes.values()}),
+            "aliases": sorted(
+                {remote.alias for remote in assembler.remotes.values()}
+                | set(assembler.intrinsic_aliases)
+            ),
             "reserved": sorted(RESERVED),
             "scaffolding": sorted(
                 _scaffolding_names()

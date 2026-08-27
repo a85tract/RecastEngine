@@ -335,6 +335,70 @@ def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
     return [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
 
 
+def dimension_stmt_shapes(spec_part: Any) -> dict[str, dict[str, Any]]:
+    """``dimension a(10), b(0:n,3)`` -> ``{name: {"dims", "array_spec"}}``.
+
+    The F77 standalone form, which says the shape of a name declared -- or
+    not declared -- somewhere else. Nothing here read it, so such a name
+    stayed a scalar, and a scalar with subscripts on the left of an ``=`` is
+    exactly the shape of an old-style statement function: ``pm(i,i) = ...``
+    became ``def pm(i, i)``, a duplicate-argument ``SyntaxError`` that takes
+    the whole translated module down at import.
+    """
+    shapes: dict[str, dict[str, Any]] = {}
+    for stmt in walk(spec_part, f03.Dimension_Stmt):
+        # ``Dimension_Stmt.children`` is a one-tuple holding a list of plain
+        # ``(Name, Array_Spec)`` pairs -- ordinary tuples, not nodes, so there
+        # is no ``.children`` to descend into on the pair itself.
+        for group in stmt.children:
+            for entry in group or ():
+                if not isinstance(entry, tuple) or len(entry) != 2:
+                    continue
+                name_node, spec_node = entry
+                if spec_node is None:
+                    continue
+                shapes[str(name_node).lower()] = {
+                    "dims": dims_of(spec_node),
+                    "array_spec": str(spec_node),
+                }
+    return shapes
+
+
+def apply_dimension_stmts(
+    entities: dict[str, dict[str, Any]], shapes: dict[str, dict[str, Any]]
+) -> None:
+    """Give a DIMENSION statement's shape to the entity it names.
+
+    A shape only ever *fills in*: an entity that carries its own array spec
+    keeps it, because a type declaration and a DIMENSION statement for the
+    same name is a conflict the compiler rejects and not something to
+    silently resolve. A name that appears in no type declaration at all --
+    legal under implicit typing, which is how the F77 sources write it --
+    gets a minimal record, so the later passes see an array rather than
+    nothing.
+    """
+    for name, shape in shapes.items():
+        entity = entities.get(name)
+        if entity is None:
+            entities[name] = {
+                "fortran_type": None,
+                "kind": None,
+                "dtype": "UNDECLARED",
+                "intent": None,
+                "optional": False,
+                "parameter": False,
+                "array_spec": shape["array_spec"],
+                "dims": shape["dims"],
+                "char_len": None,
+                "init_expr": None,
+                "line": None,
+            }
+            continue
+        if not entity.get("dims"):
+            entity["dims"] = shape["dims"]
+            entity["array_spec"] = entity.get("array_spec") or shape["array_spec"]
+
+
 def sub_name_of(sub: Any) -> str:
     """Lowercased name of a subprogram node."""
     stmt = walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0]
@@ -463,6 +527,15 @@ def extract_subprogram(
                         "line": d["line"],
                     }
                 )
+    # A standalone `dimension x(n)` says the shape of a name a type
+    # declaration may not have mentioned at all. Applied after the loop
+    # above, so an entity's own array spec still wins, and re-synced into
+    # the parameter records the loop already appended.
+    if spec is not None:
+        apply_dimension_stmts(ent_info, dimension_stmt_shapes(spec))
+        for parameter in local_parameters:
+            parameter["dims"] = ent_info[parameter["name"]].get("dims")
+
     # separate-form `PARAMETER (NAME=expr, ...)` statements (F77 style)
     if spec is not None:
         for pstmt in walk(spec, f03.Parameter_Stmt):
@@ -724,6 +797,19 @@ def extract(
                     module_parameters.append(rec)
                 else:
                     module_state.append(rec)
+
+    if mod_spec is not None:
+        by_name = {rec["name"]: rec for rec in module_parameters + module_state}
+        shapes = dimension_stmt_shapes(mod_spec)
+        apply_dimension_stmts(by_name, shapes)
+        # A module-level DIMENSION for a name no declaration mentioned is
+        # state, not a parameter: a PARAMETER has to be declared to have a
+        # value, and this name has none.
+        for added in shapes:
+            if added not in {rec["name"] for rec in module_parameters + module_state}:
+                record = by_name[added]
+                record["name"] = added
+                module_state.append(record)
 
     kind_map = resolve_kind_map(module_parameters)
     for k, v in kind_aliases_from_use(ast, kind_dtypes).items():
