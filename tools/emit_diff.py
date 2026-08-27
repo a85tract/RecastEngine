@@ -47,7 +47,7 @@ there on both sides and a mismatched pairing measures the harness, not the
 emitters.
 
 Usage:
-    uv run --extra fortran tools/emit_diff.py --translator ../CESM-language-translator
+    uv run --extra fortran tools/emit_diff.py --translator ../<translator-checkout>
 
 Exit status is 1 on any difference or error, 0 otherwise.
 """
@@ -56,7 +56,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +80,36 @@ from recast.transform.profiles import PROFILES
 REASON_IN_MARKER = re.compile(r"(# B\d{3} <- L\d+-L\d+ AGENT_QUEUE: ).*")
 REASON_IN_RAISE = re.compile(r"(raise NotImplementedError\().*(\)  # B\d{3})")
 SOURCE_PATH = re.compile(r"#\s+\S*/(\S+\.F90)(:\d+)", re.IGNORECASE)
+
+
+def compared_against(root: Path) -> list[str]:
+    """What this run measured, so the count it prints has something to pin it to.
+
+    A differential's answer is a claim about two trees, and only one of them is
+    in this repository. Without the other one's revision the number is
+    unfalsifiable later: ``different=5`` recorded in a document says nothing
+    about which upstream it was 5 against, and upstream moves. It moved under
+    this repository once already -- a squashed single commit was replaced with
+    249 real ones -- and nothing here could have detected it.
+    """
+    git_binary = shutil.which("git")
+
+    def git(*arguments: str) -> str:
+        if git_binary is None:
+            return ""
+        finished = subprocess.run(  # noqa: S603 -- git, resolved, on a path the caller named
+            [git_binary, *arguments],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return finished.stdout.strip() if finished.returncode == 0 else ""
+
+    revision = git("rev-parse", "--short=9", "HEAD") or "unknown revision"
+    if git("status", "--porcelain"):
+        revision += " +dirty"
+    return [f"compared against {root}@{revision}"]
 
 
 def normalized(line: str) -> str:
@@ -170,7 +202,6 @@ def _intrinsics() -> dict[str, Any]:
     differently, and every one of them shows up as a difference.
     """
     import importlib
-    import os
 
     spec = os.environ.get("RECAST_INTRINSICS", "")
     if not spec:
@@ -338,7 +369,7 @@ def main() -> int:
         "--translator",
         type=Path,
         required=True,
-        help="the CESM-language-translator checkout to compare against",
+        help="the translator checkout to compare against",
     )
     ap.add_argument("--only", help="check just this module")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every disagreement")
@@ -351,6 +382,9 @@ def main() -> int:
     ns = ap.parse_args()
 
     root = ns.translator.resolve()
+    for line in compared_against(root):
+        print(line)
+    print()
     sys.path.insert(0, str(root / "pipeline"))
     import translate as pipeline
 

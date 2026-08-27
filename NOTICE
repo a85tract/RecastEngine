@@ -47,6 +47,25 @@ and both are needed. See CONTRIBUTING.md.
      theirs; what changed on the way in was the command-line front end, the
      emitted header, and the formatting.
 
+  transform/numpy/subprograms.py's poison_undefined, the provenance banner
+     in tools/*_diff.py, and conformance/test_verifier.py's placement control
+     -- three checks, from poison_empty.py, corpus_fingerprint.py and
+     substitute_selfcheck.py in the same pipeline/ as the first entry above.
+     Written by Qinrun Dai, who commits as second5t
+     <mouseisnotalwaysmouse@outlook.com> and from NCAR machines under their
+     own name. Not a port: none of those three files was carried, and each
+     mechanism here is different -- theirs monkeypatches np.empty at run time
+     where this emits the fill, theirs hashes a corpus tree where this records
+     a revision, theirs substitutes a module into a live harness where this
+     runs a conformance case twice. What is theirs is the finding in each
+     case: that determinizing an undefined read makes it reproducible rather
+     than visible, that NaN is what makes a float one visible and an
+     impossible-index sentinel plus an A/B diff is what makes an integer one
+     visible; that a count derived from
+     a corpus is unfalsifiable without that corpus's identity beside it; and
+     that a harness needs a positive control on itself, out-of-tree, because
+     substituting a thing for itself in place exercises nothing.
+
   recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
      cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
      (hpc-devsecops). Written by Chien-Wei Huang, who commits under that name

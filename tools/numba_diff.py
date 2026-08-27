@@ -107,6 +107,9 @@ def main() -> int:
     ns = ap.parse_args()
 
     root = ns.translator.resolve()
+    for line in emit_diff.compared_against(root):
+        print(line)
+    print()
     sys.path.insert(0, str(root / "pipeline"))
     import numbaize
     import translate as pipeline

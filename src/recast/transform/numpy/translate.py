@@ -280,6 +280,8 @@ class NumpyTranslation(Transform):
             handle_producers=frozenset(config.get("handle_producers", ())),
             type_bound_procedures=frozenset(config.get("type_bound_procedures", ())),
             patches=config.get("patches", {}),
+            poison_undefined=bool(config.get("poison_undefined", False)),
+            poison_integers=bool(config.get("poison_integers", False)),
             deferred_handler=self._handler(config),
         )
         module = facts.interface["module"]

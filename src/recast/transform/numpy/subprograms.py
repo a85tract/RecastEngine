@@ -46,6 +46,7 @@ from recast.transform.numpy.statements import (
     REFUSED,
     Statements,
     derived_array,
+    undefined_array,
 )
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.profiles import Profile
@@ -114,6 +115,51 @@ class Subprograms:
     function_transforms: dict[str, Any] = field(default_factory=dict)
     handle_producers: frozenset[str] = frozenset()
     type_bound_procedures: frozenset[str] = frozenset()
+
+    poison_undefined: bool = False
+    """Fill an undefined float local with NaN instead of leaving it undefined.
+
+    Off by default, and the default is not the safe-looking one. A Fortran
+    local is undefined until assigned; this backend gives every one of them an
+    initializer, which makes a read-before-write *reproducible* -- and a
+    reproducible wrong number is the kind that survives a run, a re-run and a
+    reviewer. ``np.empty`` usually lands on an OS zero page, so the answer
+    looks deterministic and drifts only once the heap is dirty.
+
+    Turned on, every float array Fortran would have left undefined is
+    NaN-filled instead of merely allocated, so a read of an unwritten cell
+    propagates to the outputs the gate compares and ``differential.bitexact``
+    counts it as ``nan_mismatch``.
+
+    Integer arrays are a separate switch, ``poison_integers``, because the
+    detector is separate -- see there.
+
+    Scalars are untouched. A scalar local gets the UB-guard zero either way,
+    which is the same reproducible-not-visible problem one level down, and no
+    smaller: it is simply not what the tool this came from covers, and
+    covering it is a separate question rather than a free extension of this
+    flag.
+
+    A poisoned candidate is not the one being shipped -- which is why this is
+    a separate run rather than a default, and why its digest differs.
+    """
+
+    poison_integers: bool = False
+    """The integer arm of ``poison_undefined``, and off even when that is on.
+
+    An undefined integer read cannot announce itself the way a float one can:
+    there is no integer NaN, so the fill is ``INT32_MIN + 1`` -- an impossible
+    index -- and reading an unwritten cell either crashes on the subscript or
+    shifts the poisoned run's outputs. Nothing propagates to a NaN scan; the
+    detector is an A/B diff against the unpoisoned run.
+
+    Two switches rather than one because of that, which is how the tool this
+    came from has it: the float arm is answered by the gate already running,
+    the integer arm needs a second run and a comparison, and turning both on
+    together would report the first while quietly requiring the second.
+
+    Has no effect unless ``poison_undefined`` is on.
+    """
 
     patches: dict[str, dict[str, Any]] = field(default_factory=dict)
     """``"subprogram/block"`` -> an operator-audited replacement for a block
@@ -221,6 +267,8 @@ class Subprograms:
             externals=self.externals,
             stubs=dict(self.statement_stubs),
             call_transforms=dict(self.call_transforms),
+            poison_undefined=self.poison_undefined,
+            poison_integers=self.poison_integers,
         )
 
     # -- assembly -------------------------------------------------------------
@@ -549,14 +597,15 @@ class Subprograms:
                 # allocated() -> `is not None` checks keep working.
                 return [f"    {name} = None  # out-arg: assumed shape, no donor"]
             dtype = ALLOCATED_DTYPES.get(argument["dtype"], "np.float64")
-            return [f"    {name} = np.empty(np.shape({pysafe(donor)}), dtype={dtype})"]
+            shape = f"np.shape({pysafe(donor)})"
+            return [f"    {name} = {undefined_array(self, shape, dtype)}"]
         if dims and all(d["ub"] is not None for d in dims):
             try:
                 shape = ", ".join(self._extent(d, statements) for d in dims)
             except REFUSED as refusal:
                 return [f"    # out-arg {argument['name']}: allocation skipped ({refusal})"]
             dtype = ALLOCATED_DTYPES.get(argument["dtype"], "np.float64")
-            return [f"    {name} = np.empty(({shape},), dtype={dtype})"]
+            return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if not dims and argument["dtype"] in ("float64", "float32"):
             return [f"    {name} = 0.0"]
         if not dims and argument["dtype"] in ("int32", "int64"):
@@ -629,7 +678,7 @@ class Subprograms:
                 if filled is not None:
                     return [f"    {name} = {filled}"]
             dtype = ALLOCATED_DTYPES.get(local["dtype"], "np.float64")
-            return [f"    {name} = np.empty(({shape},), dtype={dtype})"]
+            return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if local.get("array_spec"):
             return []
         derived = DERIVED.match(str(local["dtype"]))

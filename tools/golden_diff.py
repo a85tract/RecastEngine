@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a migrated frontend against the pipeline it was migrated from.
 
-CESM-language-translator's ``pipeline/`` produced JSON for every scheme it
+The translator's ``pipeline/`` produced JSON for every scheme it
 ran on. ``recast.fortran`` is that analysis, moved in and refactored. Running
 both over the same sources and diffing the JSON is the only check that says
 the move preserved behaviour, rather than merely that the result still runs.
@@ -21,7 +21,7 @@ golden set. Those are emitter output, and emitting source is not a Frontend's
 job -- the rendering left with the Transform that has a target language.
 
 Usage:
-    uv run --extra fortran tools/golden_diff.py --golden ../CESM-language-translator/extracted
+    uv run --extra fortran tools/golden_diff.py --golden ../<translator-checkout>/extracted
     ... --map mg2=reports/suite/micro_mg2_0/micro_mg2_0_cpp.F90
     ... --intent-overrides zm_conv=reports/zm/intent_overrides.json
 
@@ -40,6 +40,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from emit_diff import compared_against
 
 from recast.fortran import constants as new_constants
 from recast.fortran import interface as new_interface
@@ -260,6 +263,9 @@ def main() -> int:
     args = ap.parse_args()
 
     root = (args.sources or args.golden.parent).resolve()
+    for line in compared_against(root):
+        print(line)
+    print()
     mapped = dict(entry.split("=", 1) for entry in args.map)
     intents = dict(entry.split("=", 1) for entry in args.intent_overrides)
 
