@@ -48,4 +48,3 @@ recast-engine.cdx.json
 # Anything site-specific belongs in a case repo, not here
 .env
 config.local.*
-corpus/.build/
