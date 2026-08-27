@@ -111,7 +111,10 @@ def run_case(name: str) -> dict[str, Any]:
     root = stage(name)
     units = _units(root)
     recipe = _recipe("translate")
-    run = run_recipe(recipe, root, {"units": units, "workspace": str(root / ".recast")})
+    # No ``workspace``: the default is ``output/<case>/``, outside the staged
+    # tree, so a re-stage does not delete the last run's candidates and a
+    # second run does not discover the first one's generated Python.
+    run = run_recipe(recipe, root, {"units": units})
     record: dict[str, Any] = {
         "units": {},
         "status": run.status.value if hasattr(run.status, "value") else str(run.status),

@@ -27,7 +27,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from recast import WORKSPACE_DIRNAME
+from recast import OUTPUT_DIRNAME, WORKSPACE_DIRNAME
 from recast.errors import ConfigError, RecastError
 from recast.model import Facts, Unit
 from recast.plugins.frontend import Frontend
@@ -105,15 +105,29 @@ def declared_names(record: dict[str, Any]) -> set[str]:
 
 
 SKIP_DIRS = frozenset(
-    {".git", ".hg", ".svn", "__pycache__", ".venv", "build", "dist", WORKSPACE_DIRNAME}
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".venv",
+        "build",
+        "dist",
+        OUTPUT_DIRNAME,
+        WORKSPACE_DIRNAME,
+    }
 )
 """Directories that are not somebody's source.
 
-``WORKSPACE_DIRNAME`` is in the list for a reason the others are not: it is the
-engine's *own* output. An oracle build leaves generated wrappers under it, and
+The last two are in the list for a reason the others are not: they are the
+engine's *own* output. An oracle build leaves generated wrappers under one, and
 a discovery pass that reads them back finds units the previous run created --
 so the same tree yields a different unit set before and after a run, and the
-second run offers to translate the first one's scaffolding."""
+second run offers to translate the first one's scaffolding. ``output/`` is
+normally outside the tree, which is the real fix; it is skipped by name as well
+for the case where someone points ``config["output"]`` back inside, and on the
+same reading that already skips ``build`` and ``dist``. ``WORKSPACE_DIRNAME``
+stays for trees carrying a run from before ``output/``."""
 
 
 class UnparsableSource(RecastError):

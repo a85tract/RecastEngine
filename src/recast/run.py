@@ -36,7 +36,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from recast import WORKSPACE_DIRNAME, __version__
+from recast import OUTPUT_DIRNAME, WORKSPACE_DIRNAME, __version__
 from recast.errors import ConfigError, RecastError, ScannerUnavailable
 from recast.model import (
     Candidate,
@@ -305,7 +305,8 @@ def run_recipe(
     waived = _waived(recipe, stages, config)
     _require_valid_bars(recipe, stages, config)
 
-    workspace = Path(config.get("workspace") or root / WORKSPACE_DIRNAME / recipe.name)
+    output = output_root(root, config)
+    workspace = Path(config.get("workspace") or output / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
     run = RecipeRun(recipe=recipe.name, root=root, workspace=workspace)
 
@@ -323,7 +324,7 @@ def run_recipe(
         scope to one reads it, while one that cannot (composition describes
         the whole tree regardless, by design) ignores it."""
         invocation = {"range": config["range"]} if config.get("range") else {}
-        return {"root": root, **invocation, **stage_config(stage)}
+        return {"root": root, "output": output, **invocation, **stage_config(stage)}
 
     # An executor stage is not a step: it declares the executor every stage
     # that runs something receives as an argument. The requirement is
@@ -861,6 +862,38 @@ def _findings_root(root: Path) -> Path:
     return base / f"{resolved.name or 'root'}-{key}"
 
 
+def output_root(root: Path, config: dict[str, Any]) -> Path:
+    """Where this run's candidates and evidence go: ``output/<project>/``.
+
+    Outside the source tree by default, and named after it rather than hidden
+    inside it. Two reasons, and the second is the one that bites: generated
+    code written into a checkout is one ``git add -A`` from being committed as
+    if it were source, and a ``Frontend`` that discovers it on the next pass
+    offers to translate the last run's scaffolding.
+
+    The project segment is the tree's own directory name, so
+    ``examples/toy_physics`` and ``corpus/.build/numfor`` land in
+    ``output/toy_physics`` and ``output/numfor`` -- readable, and the thing a
+    person asking "where did it go" already knows. Two trees whose basenames
+    collide share a directory; keying by a path hash instead would be correct
+    and unreadable, and readable is what this directory is for. Override when
+    that matters.
+
+    Two overrides, and they are not the same thing. ``config["output"]`` names
+    this run's directory outright, project segment included.
+    ``RECAST_OUTPUT_HOME`` moves only the base that the project segment hangs
+    under -- the same shape ``RECAST_FINDINGS_HOME`` has, and what a test
+    harness wants: every run in the process lands somewhere disposable
+    without any of them naming a path.
+    """
+    configured = config.get("output")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    home = os.environ.get("RECAST_OUTPUT_HOME")
+    base = Path(home).expanduser() if home else Path.cwd() / OUTPUT_DIRNAME
+    return (base / (root.name or "root")).resolve()
+
+
 def _build_store(factory: Any, config: dict[str, Any]) -> Any:
     """Construct a store, rooted where its access class belongs.
 
@@ -874,7 +907,8 @@ def _build_store(factory: Any, config: dict[str, Any]) -> Any:
     """
     findings = isinstance(factory, type) and issubclass(factory, FindingStore)
     root = Path(config.get("root", "."))
-    default = _findings_root(root) if findings else root / WORKSPACE_DIRNAME / "evidence"
+    output = Path(config.get("output") or output_root(root, {}))
+    default = _findings_root(root) if findings else output / "evidence"
     return factory(**_store_config(config, default))
 
 
@@ -890,6 +924,7 @@ def _store_config(config: dict[str, Any], default_root: Path) -> dict[str, Any]:
     """
     prepared = dict(config)
     prepared.pop("range", None)
+    prepared.pop("output", None)
     root = Path(prepared.pop("root", "."))
     store_root = Path(prepared.pop("store_root", default_root))
     if not store_root.is_absolute():

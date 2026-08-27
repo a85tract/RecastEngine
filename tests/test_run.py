@@ -38,7 +38,14 @@ from recast.plugins.store import EvidenceStore, FindingStore
 from recast.plugins.transform import Transform
 from recast.plugins.verifier import Verifier
 from recast.registry import KINDS, Registry
-from recast.run import _NOT_STAGES, _NOT_STEPS, _STEPS, RunStatus, run_recipe
+from recast.run import (
+    _NOT_STAGES,
+    _NOT_STEPS,
+    _STEPS,
+    RunStatus,
+    output_root,
+    run_recipe,
+)
 
 # --- a complete fake plugin set ----------------------------------------------
 
@@ -120,9 +127,10 @@ class FailVerifier(PassVerifier):
 class MemoryStore(EvidenceStore):
     name = "fake-store"
     written: ClassVar[list[Any]] = []
+    roots: ClassVar[list[Path]] = []
 
-    def __init__(self, **_config: Any) -> None:
-        pass
+    def __init__(self, **config: Any) -> None:
+        type(self).roots.append(Path(config["root"]))
 
     def put(self, evidence) -> str:
         type(self).written.append(evidence)
@@ -188,6 +196,7 @@ def _stages(*extra: Stage) -> list[Stage]:
 def _fresh_counters() -> None:
     FakeOracle.materialized = 0
     MemoryStore.written = []
+    MemoryStore.roots = []
 
 
 # --- selection and order -----------------------------------------------------
@@ -703,12 +712,19 @@ def test_two_projects_do_not_share_a_findings_directory(
     assert all(r.name.startswith("proj-") for r in MemoryFindingStore.roots)
 
 
-def test_the_evidence_store_still_lives_beside_the_source(tmp_path: Path) -> None:
-    """Only findings move. Evidence is meant to be committed, and the summary
-    that indexes it is written to be diffed in CI."""
+def test_the_two_stores_do_not_share_a_root(tmp_path: Path) -> None:
+    """Evidence goes to this run's ``output/<project>/evidence``; findings go
+    to the per-machine finding home. Neither is written into the source tree,
+    and the point of the assertion is that they are not the same place: an
+    embargoed finding landing in the evidence store would be published by the
+    next commit."""
     run_recipe(FakeRecipe(_both_stores_stages()), tmp_path, registry=_audit_registry())
     assert MemoryStore.written  # the evidence store ran
-    assert (tmp_path / WORKSPACE_DIRNAME).exists()
+    evidence = MemoryStore.roots[-1]
+    findings = MemoryFindingStore.roots[-1]
+    assert evidence == output_root(tmp_path, {}) / "evidence"
+    assert not evidence.is_relative_to(tmp_path)
+    assert not findings.is_relative_to(evidence)
 
 
 def test_the_summary_says_nothing_about_findings(tmp_path: Path) -> None:
