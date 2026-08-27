@@ -187,9 +187,7 @@ class Kernels:
         self._companion_kernels: dict[str, set[str]] = {}
         self._companion_state: dict[str, dict[str, Any]] = {}
         self._companion_types: dict[str, dict[str, Any]] = {}
-        self.names = {
-            s["name"] for s in self.record["subprograms"] if eligible(s, self.externals)
-        }
+        self.names = {s["name"] for s in self.record["subprograms"] if eligible(s, self.externals)}
         for alias, companion in self.companions.items():
             self._companion_subprograms[alias] = {s["name"]: s for s in companion["subprograms"]}
             self._companion_state[alias] = {

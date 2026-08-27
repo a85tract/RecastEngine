@@ -244,9 +244,7 @@ class NumbaExpressions(Expressions):
                 return self._companion_reference(remote, items)
             raise NoRule(f"companion {name!r} is not njit-eligible")
 
-        if name in kernels.names and name in {
-            s["name"] for s in kernels.record["subprograms"]
-        }:
+        if name in kernels.names and name in {s["name"] for s in kernels.record["subprograms"]}:
             return self._kernel_reference(name, items)
         return super()._call(name, items, arguments)
 
@@ -297,8 +295,7 @@ class NumbaExpressions(Expressions):
         formals = [
             a
             for a in callee["args"]
-            if a["intent"] in ("IN", "INOUT", "UNKNOWN")
-            and not Statements.is_optional_output(a)
+            if a["intent"] in ("IN", "INOUT", "UNKNOWN") and not Statements.is_optional_output(a)
         ]
         positional: list[str] = []
         keyword: list[str] = []
@@ -601,9 +598,7 @@ class NumbaStatements(Statements):
             return [f"own__{root}__{c}" for c in components]
         raise NoRule(f"derived actual {root!r} is not a flattened kernel argument")
 
-    def _flattened_remote(
-        self, actual: Any, components: list[str], remote: Any
-    ) -> list[str]:
+    def _flattened_remote(self, actual: Any, components: list[str], remote: Any) -> list[str]:
         """The same, to a companion's kernel.
 
         The order of the three tests is the pipeline's and is not the order
@@ -782,7 +777,7 @@ class NumbaSubprograms(Subprograms):
             # A Python int literal arrives as i8, so the i4 signature alone
             # would fail to match at the call site.
             signatures.append(f'"{result}({arguments.replace("i4", "i8")})"')
-        return f'@vectorize([{", ".join(signatures)}], nopython=True)'
+        return f"@vectorize([{', '.join(signatures)}], nopython=True)"
 
     def _vectorizable(self, subprogram: dict[str, Any]) -> bool:
         assert self.emission is not None
@@ -857,9 +852,7 @@ class NumbaSubprograms(Subprograms):
                         raise NoRule(
                             f"derived local {name!r} has a component with no static extent"
                         )
-                    shape = ", ".join(
-                        statements.expressions.bound(d["ub"]) for d in spec["dims"]
-                    )
+                    shape = ", ".join(statements.expressions.bound(d["ub"]) for d in spec["dims"])
                     lines.append(
                         f"    {name}__{component} = np.empty(({shape},), dtype=np.float64)"
                     )
@@ -896,12 +889,12 @@ class NumbaSubprograms(Subprograms):
         wants = [
             f"want_{a['name']}" for a in subprogram["args"] if Statements.is_optional_output(a)
         ]
-        parameters = (
-            positional + [f"{k}=None" for k in keyword] + [f"{w}=False" for w in wants]
-        )
+        parameters = positional + [f"{k}=None" for k in keyword] + [f"{w}=False" for w in wants]
         state = self.emission.closure_of(subprogram["name"])
         call = ", ".join(
-            actuals + [_host_reference(s, self.emission) for s in state] + keyword
+            actuals
+            + [_host_reference(s, self.emission) for s in state]
+            + keyword
             + [f"{w}={w}" for w in wants]
         )
         errors = [
@@ -963,8 +956,7 @@ class NumbaSubprograms(Subprograms):
             if remote is not None and remote.name in kernels.companion_kernels(remote.alias):
                 prefix = remote.alias.lstrip("_")
                 extra |= {
-                    f"{prefix}__{n}"
-                    for n in kernels.companion_closure(remote.alias, remote.name)
+                    f"{prefix}__{n}" for n in kernels.companion_closure(remote.alias, remote.name)
                 }
         return extra
 

@@ -128,7 +128,7 @@ def _f_vlog10(x: Any) -> Any:
 
 @njit(cache=True, fastmath=False, error_model="numpy")
 def _f_vpow(a: Any, b: Any) -> Any:
-    return a ** b
+    return a**b
 
 
 @njit(cache=True, fastmath=False, error_model="numpy")

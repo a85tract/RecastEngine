@@ -215,9 +215,7 @@ def test_the_state_closure_is_appended_to_the_signature(
     assert lines[1] == "def _twice_scaled_k(x, omeps, tmelt):"
 
 
-def test_an_elemental_scalar_function_becomes_a_ufunc(
-    source: Path, record: dict[str, Any]
-) -> None:
+def test_an_elemental_scalar_function_becomes_a_ufunc(source: Path, record: dict[str, Any]) -> None:
     """ELEMENTAL over scalars *is* a ufunc: numba builds one that takes scalar
     or array actuals, which is what ELEMENTAL means."""
     assembler, _ = build(source, record)
@@ -273,14 +271,10 @@ def test_the_wrapper_keeps_the_fortran_signature_and_fills_the_closure(
     assert wrapper[2] == "    return _twice_scaled_k(x, _host.omeps, _host.tmelt)"
 
 
-def test_the_wrapper_unpacks_a_derived_argument(
-    source: Path, record: dict[str, Any]
-) -> None:
+def test_the_wrapper_unpacks_a_derived_argument(source: Path, record: dict[str, Any]) -> None:
     """The kernel takes one parameter per component; the wrapper keeps taking
     the object and unpacks it on the way in."""
-    assert derived_components(record, subprogram(record, "from_props")) == {
-        "p": ["rho", "eff_dim"]
-    }
+    assert derived_components(record, subprogram(record, "from_props")) == {"p": ["rho", "eff_dim"]}
     assembler, _ = build(source, record)
     lines, _ = assembler.render(node_of(source, "from_props"), "from_props")
     assert lines[1] == "def _from_props_k(p__rho, p__eff_dim, x):"

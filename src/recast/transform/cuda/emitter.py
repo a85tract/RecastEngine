@@ -114,9 +114,7 @@ class CudaExpressions(NumbaExpressions):
         callee = {s["name"]: s for s in kernels.record["subprograms"]}[name]
         formals = [a for a in callee["args"] if a["intent"] in ("IN", "INOUT", "UNKNOWN")]
         current = self.emission.subprogram or {}
-        removed = (
-            set(optionals_of(current)) if self.emission.variant == "a" else set()
-        )
+        removed = set(optionals_of(current)) if self.emission.variant == "a" else set()
         positional: list[str] = []
         optional: list[str] = []
         variant = "a"
@@ -131,7 +129,6 @@ class CudaExpressions(NumbaExpressions):
         state = sorted(kernels.state_closure(name))
         callee_name = kernel_name(name, variant if optionals_of(callee) else None)
         return f"{callee_name}({', '.join(positional + state + optional)})"
-
 
 
 class CudaStatements(NumbaStatements):

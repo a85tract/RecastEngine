@@ -182,10 +182,7 @@ SIGNATURES = {
 def _candidate_module(tmp_path: Path, body: str) -> Path:
     path = tmp_path / "toy_numpy.py"
     path.write_text(
-        "import numpy as np\n"
-        f"_SIGNATURES = {SIGNATURES!r}\n"
-        "def scale_by_two(n, x):\n"
-        f"{body}\n"
+        f"import numpy as np\n_SIGNATURES = {SIGNATURES!r}\ndef scale_by_two(n, x):\n{body}\n"
     )
     return path
 
