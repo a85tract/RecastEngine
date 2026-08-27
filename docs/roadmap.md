@@ -179,26 +179,54 @@ part worth writing down rather than leaving in two commit messages.
 
 Both re-confirmed 2026-08-27 against the translator at `6486e104d`,
 with `RECAST_INTRINSICS` pointing at the domain extension's intrinsics table.
-So were `emit_diff` (`different=5`) and `golden_diff --live` (no unexplained
+So were `emit_diff` (`different=2`) and `golden_diff --live` (no unexplained
 differences).
 
 | | compared | result |
 |---|---|---|
-| `tools/numba_diff.py` | 27 modules, 176 kernels, 10,182 lines | `different=1 error=0` |
-| `tools/cuda_diff.py` | 27 modules, 43 device functions, 1,504 lines | `different=4 crashed=145` |
+| `tools/numba_diff.py` | 27 modules, 177 kernels, 10,193 lines | `different=0 error=0` |
+| `tools/cuda_diff.py` | 27 modules, 44 device functions, 1,504 lines | `different=4 crashed=145` |
 
-**Two of those three moved because upstream did, which is the case the
-revision line was added for.** At `3c9411d4f` they were `different=0` and
-`different=3 crashed=146`. The translator has since given generic dispatch a
-declared-dtype axis, so it resolves `distance` between `distance_cart2d` and
-`distance_cart3d` on the argument's derived type and emits a kernel where
-this engine still reports the overloads ambiguous and delegates. One finding,
-counted once by each of the two differentials that reach it -- and the whole
-of the remaining drift: `emit_diff` is unmoved, and the five defects relayed
-in `NOTICE` moved none of the three, because none of them fires on the CAM
-corpus. It is the next thing to relay, and it is tracked as such rather than
-excused: an accepted divergence pins a value, and this one has no argument
-behind it except that the work has not been done yet.
+**`emit_diff` is at 2 rather than the 5 it sat at for three revisions, and
+that is the same finding arriving in a third place.** Generic dispatch gained
+a declared-dtype axis upstream and then here; all three of
+`coordinate_systems_mod`'s differences were the two `distance` overloads,
+which rank and integer-ness cannot separate and the argument's derived type
+can. The two that remain are `vertical_diffusion`'s `p%finalize` and
+`p_dry%finalize`, are older than any of this, and are [#6]. `numba_diff` went `1` to `0` for the same reason and gained the kernel
+it had been delegating.
+
+**`cuda_diff` stayed at 4, and the fourth changed character rather than
+closing.** It was "the pipeline emitted a device function and the engine
+delegated"; it is now "both emit it, and the engine calls
+`_distance_cart2d_kp` where the pipeline calls `distance_cart2d`".
+
+**Every difference these three tools still report is a tracked upstream
+issue, and the engine is on the correct side of all of them.** That is worth
+stating plainly rather than leaving as four counts, because a raw count reads
+as "the port is four wrong" and it is the other way round:
+
+| | count | issue | what it is |
+|---|---|---|---|
+| `emit_diff` | 2 | [#6] | a type-bound call in statement position becomes `pass` and the block still scores `mechanical`; this engine refuses it |
+| `numba_diff` | 0 | -- | |
+| `cuda_diff` | 4 | [#14] | a generic call in a device function is resolved correctly and then spelled in the *host* naming scheme, so the emitted name is one the generated file never defines |
+| `cuda_diff` crashes | 145 | [#13] | `emit_kernel_variant` omits the per-subprogram state its base sets up, so the pipeline raises before emitting an expression |
+
+[#6]: https://github.com/a85tract/CESM-language-translator/issues/6
+[#13]: https://github.com/a85tract/CESM-language-translator/issues/13
+[#14]: https://github.com/a85tract/CESM-language-translator/issues/14
+
+All four `cuda_diff` differences are #14 and nothing else: the three
+`rising_factorial` sites in `mg_utils` the issue names, and the `distance`
+site in `coordinate_systems_mod` that the dispatch axis above made reachable
+for the first time. The engine's `_<name>_k`/`_kp`/`_ka` spelling is what a
+generated CUDA module actually defines -- `transform/cuda/emitter.py` gives
+the reason -- and the pipeline's bare `<name>` is a `NameError` waiting on the
+first launch that reaches it. So this pair of counts cannot reach zero from
+this side: closing them needs the upstream fix, not a change here, and
+adopting the pipeline's spelling to make a number go down would be adopting
+the defect.
 
 **Numba is what a finished relay looks like.** Every kernel and host wrapper
 the pipeline emits over the corpus, byte for byte, with headers carved out for
@@ -710,7 +738,10 @@ unchanged: fourteen units that could not be loaded now load, and nothing that
 worked stopped working. That is the whole of the evidence for those five,
 because the three emission differentials cannot see them -- the defects fire
 on the corpus libraries and not on CAM, which is exactly the case the corpus
-was pinned for. It also caught the one thing the relay got wrong on the way
+was pinned for. The sixth, the dispatch axis, is the reverse case and shows
+the two gates are not redundant: it moves all three CAM differentials *and*
+takes the corpus's deferred-block total from 377 to 366, because a generic
+that cannot be resolved is a refusal wherever it appears. It also caught the one thing the relay got wrong on the way
 in, and caught it as a *drop*: binding `use, intrinsic :: iso_fortran_env`
 correctly changed `stdout` from a bare name the module never defined into
 `_iso_fortran_env.output_unit`, and the read/write check reported numfor's

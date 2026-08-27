@@ -342,8 +342,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 495,
-   "deferred": 99,
+   "blocks": 504,
+   "deferred": 90,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -351,7 +351,7 @@
     ],
     [
      "generic 'X': ambiguous between ['X', 'X']",
-     42
+     34
     ],
     [
      "goto N is not a loop-exit pattern",
@@ -367,10 +367,6 @@
     ],
     [
      "write with ADVANCE= control",
-     1
-    ],
-    [
-     "generic 'X': ambiguous between ['X', 'X', 'X']",
      1
     ],
     [
@@ -509,7 +505,7 @@
      }
     },
     "fortran:sorting": {
-     "deferred": 10,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -522,11 +518,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/30 blocks disagree: iargsort/B004, rargsort/B004",
+       "detail": "2/39 blocks disagree: iargsort/B004, rargsort/B004",
        "metrics": {
-        "blocks_checked": 30,
-        "blocks_deferred": 10,
-        "blocks_matched": 28,
+        "blocks_checked": 39,
+        "blocks_deferred": 1,
+        "blocks_matched": 37,
         "blocks_waived": 0
        },
        "passed": false
@@ -679,12 +675,12 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 893,
-   "deferred": 52,
+   "blocks": 894,
+   "deferred": 51,
    "refusals": [
     [
      "generic 'X': no match",
-     11
+     12
     ],
     [
      "call to external subroutine 'X'",
@@ -695,11 +691,11 @@
      8
     ],
     [
-     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
-     8
+     "formatted internal write",
+     6
     ],
     [
-     "formatted internal write",
+     "generic 'X': ambiguous between ['X', 'X']",
      6
     ],
     [
@@ -707,7 +703,7 @@
      4
     ],
     [
-     "generic 'X': ambiguous between ['X', 'X']",
+     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
      3
     ],
     [
@@ -1396,7 +1392,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 12,
+     "deferred": 11,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1409,11 +1405,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "11/97 blocks disagree: upper/B002, lower/B002, swapcase/B002, count_sub/B008, find/B007 (+6 more)",
+       "detail": "11/98 blocks disagree: upper/B002, lower/B002, swapcase/B002, count_sub/B008, find/B007 (+6 more)",
        "metrics": {
-        "blocks_checked": 97,
-        "blocks_deferred": 12,
-        "blocks_matched": 86,
+        "blocks_checked": 98,
+        "blocks_deferred": 11,
+        "blocks_matched": 87,
         "blocks_waived": 0
        },
        "passed": false
@@ -1592,8 +1588,8 @@
   },
   "roots": {
    "bare_files": 0,
-   "blocks": 233,
-   "deferred": 5,
+   "blocks": 234,
+   "deferred": 4,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -1602,16 +1598,12 @@
     [
      "operator 'X'",
      1
-    ],
-    [
-     "generic 'X': ambiguous between ['X', 'X']",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:root_module": {
-     "deferred": 5,
+     "deferred": 4,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1624,11 +1616,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/233 blocks disagree: root_scalar_by_type/B001, toms748/B007, bracket/B004, lowercase/B002",
+       "detail": "4/234 blocks disagree: root_scalar_by_type/B001, toms748/B007, bracket/B004, lowercase/B002",
        "metrics": {
-        "blocks_checked": 233,
-        "blocks_deferred": 5,
-        "blocks_matched": 229,
+        "blocks_checked": 234,
+        "blocks_deferred": 4,
+        "blocks_matched": 230,
         "blocks_waived": 0
        },
        "passed": false
