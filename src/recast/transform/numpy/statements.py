@@ -1516,6 +1516,26 @@ class Statements:
 
     # -- calls ----------------------------------------------------------------
 
+    def _procedure_dummy_interface(self, name: str) -> dict[str, Any] | None:
+        """The interface record a call through dummy ``name`` binds against."""
+        dummy = next(
+            (a for a in self.semantics.subprogram["args"] if a["name"].lower() == name), None
+        )
+        if dummy is None:
+            return None
+        declared = self.semantics.declaration(name) or {}
+        is_procedure = (
+            dummy.get("dtype") in ("PROCEDURE", "UNDECLARED")
+            or bool(declared.get("procedure"))
+            or (not dummy.get("dims") and dummy.get("dtype") != "str")
+        )
+        if not is_procedure:
+            return None
+        interface = (self.semantics.module.get("interfaces") or {}).get(name)
+        if interface is None:
+            return None
+        return {**interface, "name": name}
+
     def _call(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
         name = str(node.children[0]).lower()
@@ -1566,6 +1586,13 @@ class Statements:
             remote = self.expressions.remotes[name]
             record = self.semantics.procedures.get(remote.name)
             name, prefix = remote.name, remote.alias + "."
+        if record is None:
+            # A call through a procedure dummy, bound against the explicit
+            # interface of the same name: ``external :: func`` in a solver,
+            # ``call func(p, x, val)`` in its loop. The dummy is the Python
+            # callable the caller passed; the interface says which actuals
+            # come back.
+            record = self._procedure_dummy_interface(name)
         if record is None:
             external = self.externals.get(name)
             if external and external.get("kind") == "subroutine":
