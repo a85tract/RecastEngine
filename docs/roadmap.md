@@ -314,6 +314,85 @@ the recipe's first gate, whatever `plan` said about stage 3. Whether a relayed
 backend should record spans upstream never produces is open, and is why the
 evidence for these two is an emission differential rather than the recipe.
 
+### The second relay, 2026-08-28: what eleven upstream commits moved
+
+The translator went from `a88abe935` to `e3bfcc38e` in eleven commits,
+closing #13, #14, #16, #17, #18, #19, #20, #37, #38 and #39 -- every one
+of them an issue this repository's differentials had found and filed. Re-run
+before any of it was relayed, against the new revision:
+
+| | before | after |
+|---|---|---|
+| `emit_diff` | `different=4` over 274 subprograms, 17,923 lines | `different=2` over 275 and 18,023 |
+| `numba_diff` | `different=0` | `different=0` |
+| `cuda_diff` | `different=4 crashed=0`, 171 device functions | `different=4 crashed=0`, 171 |
+| `golden_diff --live` | clean | clean |
+
+**`crashed` went 143 to 0 before this repository changed a line, because
+#13 landed upstream.** The denominator the section above said would move
+when #13 did has moved: 171 device functions compared where 46 were, and
+the 79%-unchecked figure is retired. What the wider comparison found is
+the rest of this section.
+
+**`emit_diff` 4 to 2 is `prim_advance_mod` closing, and it took two relays,
+not one.** The `Phis_avg` pair the table above called "neither side right"
+was two things: #39, the trailing subscript of a sequence-associated
+element shifted by a blanket 1 rather than the axis's declared bound, which
+upstream fixed and this relays; and #27, the result of an INOUT call
+through such an element coming back through the *view* rather than into
+the single element the actual named, which upstream had fixed a revision
+earlier and this repository had not carried. With both, the engine writes
+`_f_copy_out(phis_avg[:, :, (ie) - (nets)], fill_element(phis_avg[:, :,
+(ie) - (nets)]))`, the same bytes as the pipeline. The two that remain are
+`vertical_diffusion`'s, and are #6 as before.
+
+**`cuda_diff` stayed at 4 and every one of the four changed identity.** The
+four that were #14 closed, upstream's fix arriving at the spelling this
+engine already used. The four now reported are two defects the relay
+surfaced, both filed upstream the day they were found:
+
+| | count | upstream issue | what it is |
+|---|---|---|---|
+| `cuda_diff` | 2 | #40 | `mg_utils`: a generic reached through the constructor-shaped call path -- `var_coef(relvar(:), 2.47_r8)`, which fparser reads as a `Structure_Constructor` -- resolves to its specific and is emitted `_f_ecall(var_coef_r8, ...)`, a host-scheme name the CUDA file never defines and a vectorize shim a device function cannot call. #14 patched `funcref`, which this path never reaches. The engine writes `_var_coef_r8_k(...)` |
+| `cuda_diff` | 2 | #41 | `eddy_diff`, `hetfrz_classnuc`: #13 made the device variant share the Numba kernel's per-subprogram state, so a character OUT argument is now an integer error code there too -- relayed -- but the variant never emits the `_errflag_<arg> = 0` the Numba kernel starts with, so `zisocl`, which assigns `errstring` only on error paths, returns an unbound name. The engine zeroes the flags, and the one line is the whole difference on both modules |
+
+Both rows are the engine on the correct side by the same argument the
+section above makes for #14, and neither can reach zero from here. A
+third issue, #42, is not a difference: `cudaize.py`'s own command line
+exits in `emit_launchers` on `mg_utils` before writing the file, so the
+reproduction for #40 had to be its `emit_kernels` called directly, which
+is what `cuda_diff` has always done.
+
+**The corpus is where the rest of the relay shows.** `emit_diff` cannot see
+#16, #17, #18, #20, #37 or #38: CAM has no formatted internal write, no
+array-valued function through the oracle, its headers are not compared,
+and the three read/write-set rules are the verifier's, not the emitter's.
+`corpus/baseline.json` re-run at the end of the relay, against the one
+recorded before it:
+
+| case | column | before | after | why |
+|---|---|---|---|---|
+| cloudsc | import | 2/6 | 6/6 | #18: `import file_io_mod_numpy` for a USE nothing bound to |
+| fftpack | import | 0/1 | 1/1 | #18: `fftpack_kind_numpy`, a kinds-only USE |
+| fortran-utils | import, rwset | 7/10, 3/10 | 9/10, 4/10 | #18: `amos_numpy` and `lapack_numpy` imported where nothing bound to them (`linalg` still binds to LAPACK, and still fails, correctly); `splines`' two disagreeing blocks now match under the read/write-set rules |
+| bspline | mech, deferred | 2/4, 13 | 3/4, 4 | #16: nine formatted internal writes translate; the top refusal is now `size` with a keyword |
+| numfor | deferred, blocks | 51, 894 | 45, 900 | #16 and #18; `fortran_basic` goes 5 deferred to 3, and its rwset from 55 to 57 blocks matched |
+| pchip | rwset | 0/1 | 1/1 | the read/write-set rules (#20, #37, #38): the four blocks that disagreed match, and the unit now reaches the oracle gate |
+| minpack | rwset | 0/1 | 1/1 | the same three rules: the six blocks that disagreed match |
+
+Every other column is unchanged, and `docs/corpus-numfor-example.md` now
+shows the three deferred blocks rather than the five.
+
+Two upstream commits are relayed as findings only. #19, a DO with no loop
+control crashing the read/write analysis, this repository had already
+handled: `fortran/rwset.py` reads all three forms, and the tests pinned the
+counted and `do while` ones before the issue was filed. #14 is above. One rule is relayed with a knob upstream
+does not have: #18 drops an unbound stub import for a non-CESM project and
+keeps every import for CESM, whose harness provides a runtime stub per
+USE'd module; the engine has no project, so `Modules` takes
+`keep_unbound_stub_imports`, off by default, and the CESM extension can
+turn it on.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.

@@ -46,8 +46,8 @@ $ recast run translate output/numfor/staged \
       --config output/numfor/staged/recast.json --unit fortran:basic
 fortran:basic
   [ok ] frontend   fortran
-  [ok ] transform  translate.numpy             5 deferred block(s)
-  [ok ] verifier   static.rwset                sampled: 55 blocks match
+  [ok ] transform  translate.numpy             3 deferred block(s)
+  [ok ] verifier   static.rwset                sampled: 57 blocks match
   [ok ] oracle     f2py-golden                 f2py:basic:f4038505...
   [ok ] verifier   differential.bitexact       bit_exact: 10 points across 1 subprogram(s), all bit-exact
   [ok ] verifier   symbolic.notary             symbolic: no rewrites to notarize; the translation is print-order faithful
@@ -66,8 +66,8 @@ a date stamp, `is_inf`. Two things to open under `output/numfor/`:
 
 ### Five blocks the rules would not guess
 
-The `5 deferred block(s)` are the rules declining to guess: two `cpu_time`
-calls, one `date_and_time`, and two formatted internal writes. A refusal is
+The `3 deferred block(s)` are the rules declining to guess: two `cpu_time`
+calls and one `date_and_time`. A refusal is
 left standing in the output as a raise, tagged for whoever answers it:
 
 ```text
@@ -75,7 +75,7 @@ left standing in the output as a raise, tagged for whoever answers it:
     raise NotImplementedError("intrinsic subroutine 'cpu_time' has no rule")  # B006
 ```
 
-That is not a wrong translation, and it is not a silent one. The other 55
+That is not a wrong translation, and it is not a silent one. The other 57
 blocks in the module are translated, and checked.
 
 ### How far the passing run actually reaches
@@ -85,7 +85,7 @@ ground:
 
 | verifier | what it covered |
 |---|---|
-| `static.rwset` | 55 of the module's 60 blocks — reads and writes agree with the source's |
+| `static.rwset` | 57 of the module's 60 blocks — reads and writes agree with the source's |
 | `differential.bitexact` | **one** subprogram, `is_inf`, 10 points, `max_ulp: 0` |
 | `symbolic.notary` | 0 rewrites to notarize — the translation reorders no output |
 
@@ -94,7 +94,7 @@ it saw one of the module's thirteen procedures. The reason is visibility, not
 sampling: the reference is an f2py build of the untouched Fortran, f2py wraps
 what the module makes public, and `basic.f90:74` declares `private` and then
 exports exactly two procedures — `is_inf` and `print_msg`. `print_msg` holds
-one of the five deferred blocks, so the gate skips it and says so
+one of the three deferred blocks, so the gate skips it and says so
 (`"skipped": ["print_msg"]`). The other eleven — the timer type's bound
 procedures and the helpers around them — are private, and never reach the
 oracle at all.
