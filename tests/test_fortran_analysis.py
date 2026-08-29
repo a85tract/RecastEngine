@@ -1429,3 +1429,36 @@ def test_an_associate_binds_its_aliases_and_analyses_its_body(tmp_path: Path) ->
     assert {"dpai", "cp", "fp", "p", "w"} <= set(block["writes"])
     assert {"inst", "n", "filter", "dpai", "w"} <= set(block["reads"])
     assert "cp" not in block["reads"]
+
+
+REBASED_COMPONENT = """\
+module con_mod
+  use precision_mod, only: r8 => wp_r8
+  implicit none
+  integer, parameter :: mxpft = 3
+  type con_t
+    real(r8), allocatable :: slatop(:)
+    real(r8), allocatable :: plain(:)
+  end type con_t
+  type(con_t), public :: con
+contains
+  subroutine init(this)
+    class(con_t) :: this
+    allocate (this%slatop(0:mxpft))
+    allocate (this%plain(mxpft))
+  end subroutine init
+end module con_mod
+"""
+
+
+def test_a_component_allocated_from_zero_carries_its_lower_bound(tmp_path: Path) -> None:
+    """``allocate (this%slatop(0:mxpft))`` in a type's init routine sets a
+    lower bound the ``(:)`` declaration does not carry; without it every
+    ``pftcon%slatop(itype)`` in the model was shifted by one and read the
+    wrong plant functional type (caught bit-exact on CLM-ml's
+    LeafHeatCapacity)."""
+    src = _write(tmp_path, "con.f90", REBASED_COMPONENT)
+    record = interface.extract(src, kind_assumptions=KINDS)
+    comps = record["types"]["con_t"]
+    assert comps["slatop"]["allocated_dims"] == [{"lb": "0", "ub": "mxpft"}]
+    assert "allocated_dims" not in comps["plain"]

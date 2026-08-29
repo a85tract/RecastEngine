@@ -812,11 +812,68 @@ def _scope_of(ast: Any, path: Path) -> tuple[str, Any, Any]:
     return mod_name, spec, ast
 
 
-def _derived_types(mod_spec: Any, kind_map: dict[str, str]) -> dict[str, Any]:
-    """``{type_name: {component: {dtype, dims, allocatable, pointer}}}``."""
+def _component_allocate_bounds(scope: Any, visible: set[str]) -> dict[str, Any]:
+    """Component -> the bounds an ``allocate (obj%comp(lb:ub, ...))`` in this
+    module gave it, when a lower bound is not one.
+
+    The same fact ``_module_allocate_bounds`` records for module state, for
+    the components of a derived type: ``allocate (this%slatop(0:mxpft))`` in
+    a type's init routine sets a lower bound the component's ``(:)`` does not
+    carry, and every ``pftcon%slatop(itype)`` elsewhere then lands a slot off
+    under the blanket one-based shift. A bound is usable only when a literal
+    or a name every reader of the type can see; a lower bound that is an
+    expression or a local of the allocating routine, or two allocations that
+    disagree, leaves the component unrecorded and the declaration wins.
+    Keyed by component name alone: which type ``this`` is would need the
+    declaration table, and a module whose types share a component name with
+    different bounds has not been seen.
+    """
+    found: dict[str, Any] = {}
+    if scope is None:
+        return found
+    for allocation in walk(scope, f03.Allocation):
+        target, shape = allocation.children[0], allocation.children[1]
+        if not isinstance(target, f03.Data_Ref) or len(target.children) != 2:
+            continue
+        component = target.children[1]
+        if isinstance(component, f03.Part_Ref):
+            component = component.children[0]
+        if not isinstance(component, f03.Name):
+            continue
+        name = str(component).lower()
+        bounds: list[dict[str, str]] = []
+        rebased = False
+        unusable = False
+        for spec in walk(shape, f03.Allocate_Shape_Spec):
+            low, high = spec.children
+            text = "1" if low is None else str(low).split("_")[0]
+            if text != "1":
+                rebased = True
+                # A literal, or a name every reader of the type can see. A
+                # local of the allocating routine (``begp``) is neither, and a
+                # reference elsewhere shifted by it would name something that
+                # does not exist there.
+                if not re.fullmatch(r"-?\d+", text) and text.lower() not in visible:
+                    unusable = True
+            bounds.append({"lb": text, "ub": str(high)})
+        if not rebased:
+            continue
+        previous = found.get(name)
+        if previous is not None and previous != bounds:
+            unusable = True
+        found[name] = CONFLICTING_BOUNDS if unusable else bounds
+    return {k: v for k, v in found.items() if v != CONFLICTING_BOUNDS}
+
+
+def _derived_types(
+    mod_spec: Any, kind_map: dict[str, str], scope: Any = None, visible: set[str] | None = None
+) -> dict[str, Any]:
+    """``{type_name: {component: {dtype, dims, allocatable, pointer}}}``,
+    plus ``allocated_dims`` on a component whose ALLOCATE re-bases it."""
     types: dict[str, Any] = {}
     if mod_spec is None:
         return types
+    allocated = _component_allocate_bounds(scope, visible or set())
     for td in walk(mod_spec, f03.Derived_Type_Def):
         tname = None
         for st in walk(td, f03.Derived_Type_Stmt):
@@ -842,7 +899,8 @@ def _derived_types(mod_spec: Any, kind_map: dict[str, str]) -> dict[str, Any]:
             for spec in walk(attr_list, f03.Dimension_Component_Attr_Spec):
                 attr_dims = dims_of(spec.children[1])
             for ent in walk(decl, f03.Component_Decl):
-                comps[str(ent.children[0]).lower()] = {
+                cname = str(ent.children[0]).lower()
+                comps[cname] = {
                     "dtype": dtype_of(base, kind, kind_map),
                     # The entity's own shape wins where it has one: Fortran
                     # lets ``dimension(4) :: a, b(7)`` give ``b`` a different
@@ -851,6 +909,8 @@ def _derived_types(mod_spec: Any, kind_map: dict[str, str]) -> dict[str, Any]:
                     "allocatable": "ALLOCATABLE" in attrs,
                     "pointer": "POINTER" in attrs,
                 }
+                if cname in allocated:
+                    comps[cname]["allocated_dims"] = allocated[cname]
         if tname:
             types[tname] = comps
     return types
@@ -1018,7 +1078,7 @@ def extract(
         # init routine and the references are everywhere else.
         "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
-        "types": _derived_types(mod_spec, kind_map),
+        "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible),
         "generics": _generics(mod_spec),
         "subprograms": subprograms,
     }

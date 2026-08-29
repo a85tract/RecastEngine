@@ -51,6 +51,9 @@ from recast.transform.profiles import Profile
 from recast.transform.rules import NoRule, indexing
 from recast.transform.rules.indexing import Kind
 
+DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.IGNORECASE)
+"""A dummy or module variable of derived type, as the frontend spells its dtype."""
+
 EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*)?\)", re.I)
 """``size(a)``, ``size(a, 2)``, ``ubound(a, dim=2)`` inside a declared bound."""
 
@@ -651,8 +654,9 @@ class Expressions:
                     called = ", ".join(self.render(item) for item in _items(component.children[1]))
                     parts.append(f"{head}({called})")
                     continue
+                dims = self._component_dims(node, position, name)
                 positions = indexing.describe(
-                    component.children[1], None, rank_of=self.semantics.rank
+                    component.children[1], dims, rank_of=self.semantics.rank
                 )
                 parts.append(f"{head}[{', '.join(self._position(p) for p in positions)}]")
             elif isinstance(component, f03.Data_Ref):
@@ -661,6 +665,45 @@ class Expressions:
             else:
                 raise NoRule(f"data-ref component {type(component).__name__}")
         return ".".join(parts)
+
+    def selector_dims(self, selector: Any) -> Any:
+        """The dims an ``associate`` alias inherits from its selector.
+
+        ``slatop => pftcon%slatop`` binds a name the body then subscripts as
+        a plain array, so the shift the component carries -- its allocated
+        lower bound -- has to travel with the alias, or the alias is shifted
+        by one where the selector would have been shifted by zero.
+        """
+        if not isinstance(selector, f03.Data_Ref) or len(selector.children) != 2:
+            return None
+        component = selector.children[1]
+        if isinstance(component, f03.Part_Ref):
+            component = component.children[0]
+        if not isinstance(component, f03.Name):
+            return None
+        return self._component_dims(selector, 1, str(component).lower())
+
+    def _component_dims(self, node: Any, position: int, component: str) -> Any:
+        """The declared -- or allocated -- dims of ``root%component``.
+
+        Only the first component of a chain is resolved: the root's
+        declaration names its type, the type record names the component,
+        and an ``allocate (obj%c(0:n))`` seen by the frontend is on that
+        record as ``allocated_dims``. Deeper chains and unknown types keep
+        the unit origin, which is the shift every component had before.
+        """
+        if position != 1:
+            return None
+        root = node.children[0]
+        root_name = str(root.children[0] if isinstance(root, f03.Part_Ref) else root).lower()
+        declared = self.semantics.declaration(root_name)
+        match = DERIVED_TYPE.match(str((declared or {}).get("dtype", "")))
+        if match is None:
+            return None
+        record = self.semantics.types.get(match.group(1).lower(), {}).get(component)
+        if not record:
+            return None
+        return record.get("allocated_dims") or record.get("dims")
 
     # -- calls ----------------------------------------------------------------
 
