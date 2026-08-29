@@ -233,3 +233,21 @@ def test_the_protocol_names_every_alias_the_header_imports(
         if line.startswith("import ") and "_numpy as " in line
     }
     assert imported <= set(candidate.notes["rwset"]["aliases"]), imported
+
+
+def test_an_integer_parameter_divides_the_way_fortran_does(tmp_path: Path) -> None:
+    """``integer, parameter :: nrk = runge_kutta_type / 10`` is 4 in Fortran
+    and was rendered ``41 / 10`` -- 4.1 -- in the use-constants file."""
+    from recast.transform.numpy.constants import use_constants_module
+
+    (tmp_path / "ctl.f90").write_text(
+        "module ctl\n  implicit none\n  integer, parameter :: runge_kutta_type = 41\n"
+        "  integer, parameter :: nrk = (runge_kutta_type/10)\n"
+        "  real(8), parameter :: half = 1.0d0/2\nend module ctl\n"
+    )
+    resolved = resolve(["nrk", "half"], [tmp_path / "ctl.f90"])
+    text = use_constants_module(resolved, "ctl")
+    namespace: dict[str, object] = {}
+    exec(text, namespace)
+    assert namespace["NRK"] == 4 and isinstance(namespace["NRK"], int)
+    assert namespace["HALF"] == 0.5

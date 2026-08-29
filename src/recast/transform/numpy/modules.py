@@ -451,6 +451,9 @@ class Modules:
                     entry["dims"] = [
                         {"lb": d.get("lb", "1"), "ub": d.get("ub")} for d in argument["dims"]
                     ]
+                if argument.get("buffer") and self.subprograms.buffer_out_arrays:
+                    # The caller's storage: a harness has to pass one in.
+                    entry["buffer"] = True
                 arguments.append(entry)
             table[emit_name(subprogram)] = {
                 "kind": subprogram["kind"],

@@ -1076,6 +1076,7 @@ def extract(
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
     _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
+    buffer_convention = buffer_out_arrays
     _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
@@ -1107,6 +1108,7 @@ def extract(
         "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible),
         "generics": _generics(mod_spec),
         "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
+        "buffer_convention": buffer_convention,
         "subprograms": subprograms,
     }
 
