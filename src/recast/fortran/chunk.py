@@ -44,15 +44,20 @@ def chunk_subprogram(sub: Any) -> list[tuple[str, Any, tuple[int | None, int | N
     ``B002``. They are positional by construction, so inserting a statement
     renumbers everything after it -- ids address a revision, not a lineage.
     """
-    exec_part = next((c for c in sub.children if isinstance(c, f03.Execution_Part)), None)
-    if exec_part is None:
+    # Every execution part, in order: fparser splits a body into several when
+    # a declaration block sits between statements, and a subprogram chunked
+    # from its first part alone was translated from that part alone -- and
+    # scored fully mechanical for it.
+    exec_parts = [c for c in sub.children if isinstance(c, f03.Execution_Part)]
+    if not exec_parts:
         return []
     blocks: list[tuple[str, Any, tuple[int | None, int | None]]] = []
-    for stmt in exec_part.children:
-        at = len(blocks) + 1
-        # Three digits past 999 would repeat an id, and a block report keyed
-        # on a repeated id loses a block.
-        blocks.append((f"B{at:03d}" if at <= 999 else f"B{at}", stmt, node_span(stmt)))
+    for exec_part in exec_parts:
+        for stmt in exec_part.children:
+            at = len(blocks) + 1
+            # Three digits past 999 would repeat an id, and a block report
+            # keyed on a repeated id loses a block.
+            blocks.append((f"B{at:03d}" if at <= 999 else f"B{at}", stmt, node_span(stmt)))
     return blocks
 
 
