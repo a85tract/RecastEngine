@@ -393,6 +393,18 @@ USE'd module; the engine has no project, so `Modules` takes
 `keep_unbound_stub_imports`, off by default, and the CESM extension can
 turn it on.
 
+**Two more upstream commits the same day, `11d794b3f`.** #15 -- the bit
+intrinsics `iand`/`ior`/`ieor`/`ishft` operated on unbounded Python ints
+and kept bits Fortran drops, so `mt19937_64` was wrong past its first
+tempering step -- is relayed into the runtime: the width comes from the
+operands' dtype, a bare literal stays unbounded as before, and `ishft` is a
+logical shift within it. #6 is relayed as a finding only: upstream now
+queues a type-bound call *with arguments* and keeps the argument-less
+`p%finalize()` a `pass`, so the two `vertical_diffusion` differences stand
+exactly as the table above describes them, this engine refusing what the
+pipeline drops. No differential moves -- the runtime is in the header --
+and the corpus table is unchanged; its baseline is not re-recorded.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.
