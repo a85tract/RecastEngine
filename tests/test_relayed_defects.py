@@ -1198,3 +1198,42 @@ def test_a_submodule_is_linked_to_its_parent(tmp_path: Path) -> None:
         assert module.twice(np.float64(2.0)) == 4.0, "reached through the parent"
     finally:
         sys.path.remove(str(out))
+
+
+# --- #26, the USE half: a kind that arrives through an intrinsic module ---------
+
+
+def test_a_kind_renamed_from_an_intrinsic_module_resolves(tmp_path: Path) -> None:
+    """``use, intrinsic :: iso_fortran_env, only: error_unit, wp => real64``
+    is how pchip spells its working precision, and it resolved to nothing:
+    the USE pass consulted only the operator's kind table, and the
+    ``real64``-in-an-initializer half of #26 was the only half relayed. So
+    every dummy was ``UNKNOWN_REAL_KIND(wp)`` and the f2py oracle refused the
+    whole module. The four spellings upstream reads, and the two intrinsic
+    modules."""
+    cases = {
+        "use, intrinsic :: iso_fortran_env, only: error_unit, wp => real64": ("wp", "float64"),
+        "use iso_fortran_env, only: wp => real64": ("wp", "float64"),
+        "use iso_fortran_env, only: real32": ("real32", "float32"),
+        "use iso_fortran_env": ("real64", "float64"),
+        "use iso_c_binding, only: wp => c_double": ("wp", "float64"),
+    }
+    for use, (kind, dtype) in cases.items():
+        src = _write(
+            tmp_path,
+            f"k{len(kind)}",
+            f"module k\n{use}\nimplicit none\ncontains\nsubroutine s(x)\n"
+            f"real({kind}), intent(in) :: x\nend subroutine\nend module\n",
+        )
+        record = interface.extract(src)
+        assert record["kind_map"].get(kind) == dtype, use
+        assert record["subprograms"][0]["args"][0]["dtype"] == dtype, use
+    # real128 stays what it was: numpy has no portable 128-bit float.
+    src = _write(
+        tmp_path,
+        "k128",
+        "module k\nuse iso_fortran_env, only: qp => real128\n"
+        "implicit none\ncontains\nsubroutine s(x)\nreal(qp), intent(in) :: x\n"
+        "end subroutine\nend module\n",
+    )
+    assert "qp" not in interface.extract(src)["kind_map"]
