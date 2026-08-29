@@ -465,3 +465,20 @@ def test_a_local_sized_by_a_derived_type_component_renders_the_attribute(
     path.write_text(source)
     lines, _ = build(path).render(node_of(path, "sized"), "sized")
     assert any("b.mxpft" in line for line in lines), lines
+
+
+def test_a_local_with_a_declared_initializer_starts_from_it(tmp_path: Path) -> None:
+    """``real(r8) :: minlwp = -2._r8`` came out ``minlwp = 0.0`` -- the
+    UB-guard zero over the value the declaration gives (CLM-ml's
+    SoilResistance, where every layer's evaporation then vanished)."""
+    source = REBASED_COMPONENT.replace(
+        "    real(r8), intent(out) :: v\n    v = inst%slatop(i) + con%slatop(i)\n",
+        "    real(r8), intent(out) :: v\n    real(r8) :: floor_ = -2._r8\n"
+        "    v = inst%slatop(i) + floor_\n",
+    )
+    assert "floor_ = -2._r8" in source
+    path = tmp_path / "con_mod.f90"
+    path.write_text(source)
+    lines, _ = build(path).render(node_of(path, "pick"), "pick")
+    assert any(line.strip().startswith("floor_ = ") and "-2" in line for line in lines), lines
+    assert not any(line.strip() == "floor_ = 0.0" for line in lines)

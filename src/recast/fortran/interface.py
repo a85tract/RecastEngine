@@ -707,7 +707,15 @@ def extract_subprogram(
                 result_dtype = dtype_of(str(t.children[0]), k, kind_map)
 
     locals_ = [
-        {"name": n, "dtype": i["dtype"], "array_spec": i["array_spec"], "dims": i.get("dims")}
+        {
+            "name": n,
+            "dtype": i["dtype"],
+            "array_spec": i["array_spec"],
+            "dims": i.get("dims"),
+            # ``real(r8) :: x = -2._r8``: the declaration's value, which the
+            # prologue emits instead of its UB-guard zero.
+            "init_expr": i.get("init_expr"),
+        }
         for n, i in ent_info.items()
         if n not in arg_names and n != result_name and not i["parameter"]
     ]
