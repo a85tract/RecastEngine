@@ -772,7 +772,11 @@ class Subprograms:
         if INTEGER_TEXT.fullmatch(text):
             return str(int(text.replace(" ", "")))
         if REAL_TEXT.fullmatch(text):
-            return "np.float64('" + text.replace(" ", "").split("_")[0].replace("d", "e") + "')"
+            # Both exponent letters: fparser hands this text back with the D
+            # upper-cased, and np.float64('0.5D0') is a ValueError at run time
+            # rather than anything this file would notice.
+            exponent = text.replace(" ", "").split("_")[0]
+            return "np.float64('" + exponent.replace("d", "e").replace("D", "e") + "')"
         constructed = ARRAY_CONSTRUCTOR.search(text)
         if constructed:
             items = [strip_kind(item.strip()) for item in constructed.group(1).split(",")]
