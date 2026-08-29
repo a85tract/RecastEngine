@@ -493,7 +493,10 @@ def extract_subprogram(
 
     arg_names = [str(a).lower() for a in walk(dummy_args, f03.Name)] if dummy_args else []
 
-    spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
+    # Every specification part, not the first: statement functions between
+    # declaration blocks make fparser split one into several. ``walk`` takes
+    # a list, so the readers below need no change.
+    spec = [c for c in sub.children if isinstance(c, f03.Specification_Part)] or None
     decls = collect_decls(spec) if spec is not None else []
 
     ent_info: dict[str, dict[str, Any]] = {}
@@ -569,7 +572,7 @@ def extract_subprogram(
     for d in decls:
         if "EXTERNAL" in d["attrs"]:
             procedure_names.update(e["name"] for e in d["entities"])
-    execution = next((c for c in sub.children if isinstance(c, f03.Execution_Part)), None)
+    execution = [c for c in sub.children if isinstance(c, f03.Execution_Part)] or None
     if execution is not None:
         for ref in walk(
             execution, (f03.Part_Ref, f03.Function_Reference, f03.Structure_Constructor)
@@ -651,7 +654,8 @@ def extract_subprogram(
         if n not in arg_names and n != result_name and not i["parameter"]
     ]
 
-    exec_part = next((c for c in sub.children if isinstance(c, f03.Execution_Part)), None)
+    # Every execution part, for the same reason as ``spec`` above.
+    exec_part = [c for c in sub.children if isinstance(c, f03.Execution_Part)] or None
 
     present_args: list[str] = []
     calls: list[str] = []
@@ -1070,7 +1074,7 @@ def _host_associate(
         if parent is None:
             continue
         rec["host"] = sub_name_of(parent)
-        exec_part = next((c for c in s.children if isinstance(c, f03.Execution_Part)), None)
+        exec_part = [c for c in s.children if isinstance(c, f03.Execution_Part)] or None
         if exec_part is None:
             continue
         used = set(names_in(exec_part))
