@@ -847,14 +847,16 @@ def _component_allocate_bounds(scope: Any, visible: set[str]) -> dict[str, Any]:
         for spec in walk(shape, f03.Allocate_Shape_Spec):
             low, high = spec.children
             text = "1" if low is None else str(low).split("_")[0]
+            # A literal, or a name every reader of the type can see, is a
+            # bound every reference can shift by. A local of the allocating
+            # routine (``begp``) is neither: that axis keeps the unit origin,
+            # which is what every reference assumed before -- per axis,
+            # because ``(begp:endp, 0:nlevmlcan)`` re-bases its second axis
+            # whatever its first one is called.
+            if text != "1" and not re.fullmatch(r"-?\d+", text) and text.lower() not in visible:
+                text = "1"
             if text != "1":
                 rebased = True
-                # A literal, or a name every reader of the type can see. A
-                # local of the allocating routine (``begp``) is neither, and a
-                # reference elsewhere shifted by it would name something that
-                # does not exist there.
-                if not re.fullmatch(r"-?\d+", text) and text.lower() not in visible:
-                    unusable = True
             bounds.append({"lb": text, "ub": str(high)})
         if not rebased:
             continue

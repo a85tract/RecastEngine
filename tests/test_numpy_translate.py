@@ -215,3 +215,21 @@ def test_the_emitters_own_temporaries_are_scaffolding() -> None:
     # Fortran variable that happens to look like one is not in it.
     assert "out" not in names
     assert "result" not in names
+
+
+def test_the_protocol_names_every_alias_the_header_imports(
+    root: Path, analyzed: tuple[Unit, Facts]
+) -> None:
+    """``_physconst.cpair`` is a read of ``cpair``; the read/write check maps
+    it back only for an alias the protocol lists, and a stub or globals-only
+    companion alias was imported but not listed -- so CLM-ml's
+    ``_pftconmod.pftcon`` came out as a read of ``_pftconmod``."""
+    unit, facts = analyzed
+    candidate = NumpyTranslation().apply(unit, facts, config_for(root))
+    module = candidate.files[Path("wave_mod_numpy.py")].decode()
+    imported = {
+        line.rsplit(" as ", 1)[-1].strip()
+        for line in module.splitlines()
+        if line.startswith("import ") and "_numpy as " in line
+    }
+    assert imported <= set(candidate.notes["rwset"]["aliases"]), imported
