@@ -1709,13 +1709,65 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "10 subprogram(s) could not be compared: dchfdv: candidate raised: TypeError: dchfdv() missing 2 required positional arguments: 'fe' and 'de'; dchfev: candidate ",
+       "metrics": {
+        "bit_exact": 44,
+        "max_rel": Infinity,
+        "max_ulp": 4746776785696325632,
+        "nan_mismatch": 0,
+        "points": 100,
+        "subprograms": {
+         "dchfdv": {
+          "error": "candidate raised: TypeError: dchfdv() missing 2 required positional arguments: 'fe' and 'de'"
+         },
+         "dchfev": {
+          "error": "candidate raised: TypeError: dchfev() missing 1 required positional argument: 'fe'"
+         },
+         "dpchbs": {
+          "error": "candidate raised: TypeError: dpchbs() missing 1 required positional argument: 'bcoef'"
+         },
+         "dpchcm": {
+          "bit_exact": 44,
+          "max_rel": Infinity,
+          "max_ulp": 4746776785696325632,
+          "nan_mismatch": 0,
+          "points": 100
+         },
+         "dpchfd": {
+          "error": "candidate raised: TypeError: dpchfd() missing 2 required positional arguments: 'fe' and 'de'"
+         },
+         "dpchfe": {
+          "error": "candidate raised: TypeError: dpchfe() missing 1 required positional argument: 'fe'"
+         },
+         "dpchia": {
+          "error": "candidate raised: TypeError: dpchid() takes 8 positional arguments but 9 were given"
+         },
+         "dpchic": {
+          "error": "candidate raised: TypeError: dpchic() missing 1 required positional argument: 'd'"
+         },
+         "dpchid": {
+          "error": "value: shape () vs (2,)"
+         },
+         "dpchim": {
+          "error": "candidate raised: TypeError: dpchim() missing 1 required positional argument: 'd'"
+         },
+         "dpchsp": {
+          "error": "candidate raised: TypeError: dpchsp() missing 1 required positional argument: 'd'"
+         }
+        },
+        "trials": 10
+       },
+       "passed": false
+      },
       "static.rwset": {
        "detail": "158 blocks match",
        "metrics": {

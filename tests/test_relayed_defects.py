@@ -1237,3 +1237,52 @@ def test_a_kind_renamed_from_an_intrinsic_module_resolves(tmp_path: Path) -> Non
         "end subroutine\nend module\n",
     )
     assert "qp" not in interface.extract(src)["kind_map"]
+
+
+# --- the f2py wrapper and an assumed-size dummy ---------------------------------
+
+
+def test_a_wrapper_spells_an_array_dummy_as_the_source_declares_it() -> None:
+    """pchip declares ``f(incfd,*)``; the wrapper spelled the ``*`` as ``:``
+    and gfortran refused the mix (``Bad array specification for an
+    explicitly shaped array``) on every wrapper of the module, once its
+    kinds resolved far enough to reach the build. ``(:)`` alone and ``(*)``
+    alone are fine through f2py's interface; the mix is not. An operator
+    extent -- the pipeline's ``--dims-override``, ``wrapper_dims`` here --
+    still wins, and one naming no argument becomes a hidden dummy."""
+    from recast.oracle.f2py import wrappers_for
+
+    record = {
+        "module": "m",
+        "subprograms": [
+            {
+                "name": "chfev",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "incfd", "dtype": "int32", "intent": "IN"},
+                    {
+                        "name": "f",
+                        "dtype": "float64",
+                        "intent": "IN",
+                        "dims": [
+                            {"lb": "1", "ub": "incfd"},
+                            {"lb": "1", "ub": None, "assumed_size": True},
+                        ],
+                    },
+                    {
+                        "name": "xe",
+                        "dtype": "float64",
+                        "intent": "IN",
+                        "dims": [{"lb": "1", "ub": None}],
+                    },
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["chfev"])
+    assert "real(8), intent(in) :: f(incfd, *)" in text
+    assert "real(8), intent(in) :: xe(:)" in text
+    text, _ = wrappers_for(record, ["chfev"], dims_override={"xe": "ne"})
+    assert "subroutine w_chfev(incfd, f, xe, ne)" in text
+    assert "real(8), intent(in) :: xe(ne)" in text
+    assert "integer, intent(in) :: ne" in text
