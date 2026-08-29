@@ -817,6 +817,14 @@ class Expressions:
             return f"{self.array_table[name]}({', '.join(arguments)})"
         if name in REDUCTIONS:
             return self._reduction(name, arguments)
+        if name in ELEMENTAL_SCALAR:
+            # An intrinsic with no vector spelling keeps its scalar one, as
+            # the pipeline's rank>0 branch falls back to its scalar map.
+            # Without this, ``index(letters, s(i:i))`` -- a substring actual
+            # ranks as a section -- reached the subscript fallback and came
+            # out ``index[letters - 1, ...]``: runnable, wrong, mechanical.
+            arguments = _without_kind(name, arguments)
+            return f"{self.scalar_table[name]}({', '.join(arguments)})"
         raise UnknownReference(name)
 
     def _over_scalars(self, name: str, arguments: list[str]) -> str:

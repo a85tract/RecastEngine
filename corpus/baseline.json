@@ -408,11 +408,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "23/229 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+18 more)",
+       "detail": "21/229 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+16 more)",
        "metrics": {
         "blocks_checked": 229,
         "blocks_deferred": 65,
-        "blocks_matched": 206,
+        "blocks_matched": 208,
         "blocks_waived": 0
        },
        "passed": false
@@ -611,11 +611,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "12/46 blocks disagree: upcase/B003, lowcase/B003, stop_error/B001, loadtxt/B001, loadtxt/B004 (+7 more)",
+       "detail": "10/46 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B004, loadtxt/B005, loadtxt/B007 (+5 more)",
        "metrics": {
         "blocks_checked": 46,
         "blocks_deferred": 2,
-        "blocks_matched": 34,
+        "blocks_matched": 36,
         "blocks_waived": 0
        },
        "passed": false
@@ -722,11 +722,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/69 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016, save_array2d/B017",
+       "detail": "3/69 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016",
        "metrics": {
         "blocks_checked": 69,
         "blocks_deferred": 1,
-        "blocks_matched": 65,
+        "blocks_matched": 66,
         "blocks_waived": 0
        },
        "passed": false
@@ -880,11 +880,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "20/124 blocks disagree: splrep_msg/B002, splprep/B003, splprep/B014, splprep/B016, splprep/B019 (+15 more)",
+       "detail": "18/124 blocks disagree: splrep_msg/B002, splprep/B014, splprep/B016, splprep/B019, splprep/B020 (+13 more)",
        "metrics": {
         "blocks_checked": 124,
         "blocks_deferred": 8,
-        "blocks_matched": 104,
+        "blocks_matched": 106,
         "blocks_waived": 0
        },
        "passed": false
@@ -1111,11 +1111,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "8/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_decode/B004, genrand_load_state/B003 (+3 more)",
+       "detail": "7/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_load_state/B003, genrand_load_state/B004 (+2 more)",
        "metrics": {
         "blocks_checked": 187,
         "blocks_deferred": 3,
-        "blocks_matched": 179,
+        "blocks_matched": 180,
         "blocks_waived": 0
        },
        "passed": false
@@ -1423,11 +1423,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "13/101 blocks disagree: upper/B002, lower/B002, swapcase/B002, count_sub/B008, find/B007 (+8 more)",
+       "detail": "6/101 blocks disagree: replace/B006, str2i/B001, zarr2str/B002, dparr2str/B002, rarr2str/B002 (+1 more)",
        "metrics": {
         "blocks_checked": 101,
         "blocks_deferred": 8,
-        "blocks_matched": 88,
+        "blocks_matched": 95,
         "blocks_waived": 0
        },
        "passed": false
@@ -1643,11 +1643,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/234 blocks disagree: root_scalar_by_type/B001, bracket/B004, lowercase/B002",
+       "detail": "2/234 blocks disagree: root_scalar_by_type/B001, bracket/B004",
        "metrics": {
         "blocks_checked": 234,
         "blocks_deferred": 4,
-        "blocks_matched": 231,
+        "blocks_matched": 232,
         "blocks_waived": 0
        },
        "passed": false
