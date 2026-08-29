@@ -70,11 +70,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "45/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+40 more)",
+       "detail": "47/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+42 more)",
        "metrics": {
         "blocks_checked": 319,
         "blocks_deferred": 9,
-        "blocks_matched": 274,
+        "blocks_matched": 272,
         "blocks_waived": 0
        },
        "passed": false
@@ -691,11 +691,11 @@
      8
     ],
     [
-     "formatted internal write",
-     6
+     "generic 'X': ambiguous between ['X', 'X']",
+     7
     ],
     [
-     "generic 'X': ambiguous between ['X', 'X']",
+     "formatted internal write",
      6
     ],
     [
@@ -704,7 +704,7 @@
     ],
     [
      "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
-     3
+     2
     ],
     [
      "no statement rule for Select_Type_Construct",
@@ -1565,11 +1565,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "51/434 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+46 more)",
+       "detail": "69/434 blocks disagree: rpoly/B011, fxshfr/B006, fxshfr/B007, fxshfr/B008, quadit/B006 (+64 more)",
        "metrics": {
         "blocks_checked": 434,
         "blocks_deferred": 4,
-        "blocks_matched": 383,
+        "blocks_matched": 365,
         "blocks_waived": 0
        },
        "passed": false
@@ -1812,11 +1812,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "33/1588 blocks disagree: jdzo/B005, rmn2sp/B008, cjylv/B002, jy01a/B004, jynbh/B004 (+28 more)",
+       "detail": "44/1588 blocks disagree: cpdsa/B003, cfs/B005, clpmn/B001, jdzo/B005, rmn2sp/B008 (+39 more)",
        "metrics": {
         "blocks_checked": 1588,
         "blocks_deferred": 21,
-        "blocks_matched": 1555,
+        "blocks_matched": 1544,
         "blocks_waived": 0
        },
        "passed": false
