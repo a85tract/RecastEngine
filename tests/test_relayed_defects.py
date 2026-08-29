@@ -1117,3 +1117,84 @@ def test_an_interface_body_declares_no_module_state(tmp_path: Path) -> None:
     assert [s["name"] for s in record["module_state"]] == ["real_state"]
     inner = next(s for s in record["subprograms"] if s["name"] == "get_tolerance")
     assert "me" in (inner.get("host_vars") or [])
+
+
+# --- #29: a submodule is a module whose host is its parent ---------------------
+
+PARENT = """\
+module fftlike
+implicit none
+integer, parameter :: rk = selected_real_kind(12)
+interface
+  pure module function twice(x) result(y)
+    real(kind=rk), intent(in) :: x
+    real(kind=rk) :: y
+  end function twice
+end interface
+end module fftlike
+"""
+
+CHILD = """\
+submodule(fftlike) fftlike_impl
+contains
+  pure module function twice(x) result(y)
+    real(kind=rk), intent(in) :: x
+    real(kind=rk) :: y
+    y = 2.0_rk * x
+  end function twice
+end submodule fftlike_impl
+"""
+
+
+def test_a_submodule_is_linked_to_its_parent(tmp_path: Path) -> None:
+    """``submodule (parent) name`` was neither a module nor a dependency:
+    the file was discovered as bare subprograms named for its stem, its
+    ``rk`` stayed unresolved because nothing said where it came from, and
+    the parent -- interfaces only -- exposed none of the procedures whose
+    bodies live in it (upstream #29, in the pinned a88abe935 and not
+    carried). Now the submodule is a module unit with a synthetic ``USE
+    parent`` that makes the parent its companion, and the parent's
+    translation re-exports the submodule's procedures lazily, correct
+    whichever of the two is imported first."""
+    import importlib
+    import sys
+
+    from recast.fortran.frontend import FortranFrontend
+    from recast.transform.numpy.translate import NumpyTranslation
+
+    (tmp_path / "fftlike.f90").write_text(PARENT)
+    (tmp_path / "fftlike_impl.f90").write_text(CHILD)
+    frontend = FortranFrontend()
+    units = {u.uid: u for u in frontend.discover(tmp_path)}
+    assert units["fortran:fftlike_impl"].kind == "module"
+    assert "fortran:fftlike_impl/twice" in units
+
+    child = frontend.analyze(units["fortran:fftlike_impl"], tmp_path)
+    assert child.interface["submodule_of"] == "fftlike"
+    assert child.interface["use_statements"][0] == "USE fftlike"
+    assert [c["module"] for c in child.provenance["companions"]] == ["fftlike"]
+    twice = child.interface["subprograms"][0]
+    assert twice["args"][0]["dtype"] == "float64", "rk resolved through the parent"
+
+    parent = frontend.analyze(units["fortran:fftlike"], tmp_path)
+    assert parent.interface["submodules"] == {"fftlike_impl": ["twice"]}
+
+    out = tmp_path / "translated"
+    out.mkdir()
+    for facts, unit in ((parent, units["fortran:fftlike"]), (child, units["fortran:fftlike_impl"])):
+        candidate = NumpyTranslation().apply(unit, facts, {"root": str(tmp_path)})
+        for name, data in candidate.files.items():
+            (out / name).write_bytes(data)
+    text = (out / "fftlike_numpy.py").read_text()
+    assert "def __getattr__(name):" in text
+    assert "_SUBMODULE_EXPORTS['twice'] = 'fftlike_impl_numpy'" in text
+    assert "_SUBMODULE_EXPORTS" not in (out / "fftlike_impl_numpy.py").read_text()
+
+    sys.path.insert(0, str(out))
+    try:
+        for stale in [m for m in sys.modules if m.startswith("fftlike")]:
+            del sys.modules[stale]
+        module = importlib.import_module("fftlike_numpy")
+        assert module.twice(np.float64(2.0)) == 4.0, "reached through the parent"
+    finally:
+        sys.path.remove(str(out))

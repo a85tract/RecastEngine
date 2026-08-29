@@ -61,7 +61,19 @@ A dependency resolver that did not know these would go looking for a
 that -- it is one of the defects its author catalogued.
 """
 
-MODULE_DEFINITION = re.compile(r"^\s*module\s+(?!procedure\b)(\w+)", re.IGNORECASE | re.MULTILINE)
+MODULE_DEFINITION = re.compile(
+    r"^\s*module\s+(?!(?:procedure|function|subroutine|pure|elemental|impure"
+    r"|recursive|non_recursive)\b)(\w+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+"""A module statement. ``module function f(...)`` inside an interface block
+is a separate-module procedure's interface, not a module named ``function``."""
+
+SUBMODULE_DEFINITION = re.compile(
+    r"^\s*submodule\s*\(\s*(\w+)(?:\s*:\s*\w+)?\s*\)\s*(\w+)", re.IGNORECASE | re.MULTILINE
+)
+"""``submodule (parent[:ancestor]) name`` defines ``name`` and depends on
+``parent`` (#29)."""
 """``module X``, but not ``module procedure X``."""
 
 USE_STATEMENT = re.compile(
@@ -267,6 +279,7 @@ class FortranFrontend(Frontend):
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
         self.exclude = tuple(Path(d) for d in exclude)
         self._module_indexes: dict[Path, dict[str, Path]] = {}
+        self._submodule_parents: dict[Path, dict[str, str]] = {}
         self._analyzed: dict[tuple[str, str], dict[str, Any]] = {}
 
     # --- discovery -----------------------------------------------------------
@@ -287,7 +300,7 @@ class FortranFrontend(Frontend):
             yield from self._units_in(path, relative)
 
     def _units_in(self, path: Path, rel: Path) -> Iterator[Unit]:
-        from recast.fortran._parse import STD, digest, f03, walk
+        from recast.fortran._parse import STD, digest, f03, f08, walk
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.interface import _scope_of, node_span
 
@@ -307,7 +320,7 @@ class FortranFrontend(Frontend):
             return
 
         mod_name, _spec, scope = _scope_of(ast, path)
-        if walk(ast, f03.Module):
+        if walk(ast, f03.Module) or walk(ast, f08.Submodule):
             kind = "module"
         else:
             kind = "program" if walk(ast, f03.Main_Program) else "file"
@@ -374,6 +387,22 @@ class FortranFrontend(Frontend):
         # a use-rename is looked up under the local spelling the call uses.
         # The operator's table wins where both name a procedure.
         companions, unresolved = self._companions(record, path, Path(root))
+        # A submodule's procedures belong to its parent's namespace -- `use
+        # parent` reaches them -- so the parent's translation re-exports them
+        # (#29). Which submodules, and what they define, is a fact about the
+        # tree, and this is where the tree is read.
+        submodules: dict[str, list[str]] = {}
+        if record.get("is_module") and not record.get("submodule_of"):
+            for name in self._submodules_of(str(record["module"]).lower(), Path(root)):
+                source = self._module_index(Path(root).resolve()).get(name)
+                record_of = self._readable(source, interface_mod.extract) if source else None
+                if record_of is None:
+                    continue
+                exported = [s["name"] for s in record_of["subprograms"] if not s.get("host")]
+                if exported:
+                    submodules[name] = exported
+        if submodules:
+            record = {**record, "submodules": submodules}
         externals = dict(self.externals)
         for companion in companions:
             table = companion_externals(companion["record"])
@@ -461,7 +490,13 @@ class FortranFrontend(Frontend):
         resolved_root = root.resolve()
         index = self._module_index(resolved_root)
         found: dict[str, dict[str, str]] = {}
-        pending = [str(u) for u in walk(parse(path), f03.Use_Stmt)]
+        ast = parse(path)
+        pending = [str(u) for u in walk(ast, f03.Use_Stmt)]
+        parent = interface_mod.submodule_parent(ast)
+        if parent:
+            # A submodule's kinds come from its parent by host association,
+            # the same way ``extract`` gives it a synthetic ``USE parent``.
+            pending.insert(0, f"USE {parent}")
         seen: set[str] = set()
         while pending:
             statement = pending.pop(0)
@@ -638,6 +673,7 @@ class FortranFrontend(Frontend):
         if index is not None:
             return index
         index = {}
+        parents: dict[str, str] = {}
         for candidate in sorted(resolved.rglob("*")):
             if candidate.suffix.lower() not in SUFFIXES or not candidate.is_file():
                 continue
@@ -648,8 +684,19 @@ class FortranFrontend(Frontend):
             text = re.sub(r"&\s*\n\s*&?", " ", text)
             for name in MODULE_DEFINITION.findall(text):
                 index.setdefault(name.lower(), candidate)
+            for parent, name in SUBMODULE_DEFINITION.findall(text):
+                index.setdefault(name.lower(), candidate)
+                parents.setdefault(name.lower(), parent.lower())
         self._module_indexes[resolved] = index
+        self._submodule_parents[resolved] = parents
         return index
+
+    def _submodules_of(self, module: str, root: Path) -> list[str]:
+        """The submodules of ``module`` the tree defines, in name order."""
+        resolved = root.resolve()
+        self._module_index(resolved)
+        parents = self._submodule_parents.get(resolved, {})
+        return sorted(name for name, parent in parents.items() if parent == module)
 
     def _source_of(self, unit: Unit, root: Path) -> Path:
         if not unit.sources:

@@ -129,9 +129,36 @@ class Modules:
         ``py_lines`` re-based to final-file line numbers."""
         nodes = self._subprogram_nodes(source)
         body, report = self.body(nodes)
-        text = self.header(body) + "\n".join(body)
+        text = self.header(body) + "\n".join(body) + self._submodule_exports()
         self._rebase(text, report)
         return text, report
+
+    def _submodule_exports(self) -> str:
+        """A lazy re-export of every procedure whose body lives in one of this
+        module's submodules (#29): ``use parent`` reaches them in Fortran, so
+        ``import parent_numpy`` has to here. PEP 562 ``__getattr__``, so it is
+        correct whichever of parent and submodule is imported first. The text
+        is the pipeline's, appended after the body so no block line moves."""
+        submodules = self.subprograms.record.get("submodules") or {}
+        if not submodules:
+            return ""
+        lines = [
+            "",
+            "",
+            "# -- submodule re-exports (#29) --",
+            "_SUBMODULE_EXPORTS = {}",
+            "",
+            "",
+            "def __getattr__(name):",
+            "    mod = _SUBMODULE_EXPORTS.get(name)",
+            "    if mod is None:",
+            "        raise AttributeError(name)",
+            "    import importlib",
+            "    return getattr(importlib.import_module(mod), name)",
+        ]
+        for submodule, names in submodules.items():
+            lines.extend(f"_SUBMODULE_EXPORTS[{n!r}] = {submodule + '_numpy'!r}" for n in names)
+        return "\n".join(lines) + "\n"
 
     def _stub_imports(self, body: list[str] | None) -> list[str]:
         """The auto-stub imports the file needs: every one when told to keep

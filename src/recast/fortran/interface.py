@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.errors import RecastError
-from recast.fortran._parse import f03, parse, walk
+from recast.fortran._parse import f03, f08, parse, walk
 
 INTENTS = frozenset({"IN", "OUT", "INOUT"})
 
@@ -748,6 +748,17 @@ def _scope_of(ast: Any, path: Path) -> tuple[str, Any, Any]:
         spec = next((c for c in mod.children if isinstance(c, f03.Specification_Part)), None)
         return mod_name, spec, mod
 
+    submodules = walk(ast, f08.Submodule)
+    if submodules:
+        # A submodule is a module whose host is its parent (#29): its bodies
+        # see the parent's entities by host association, which the
+        # translation gets through a synthetic ``USE parent`` -- see
+        # ``submodule_parent`` and ``extract``.
+        mod = submodules[0]
+        mod_name = str(walk(mod, f08.Submodule_Stmt)[0].children[1]).lower()
+        spec = next((c for c in mod.children if isinstance(c, f03.Specification_Part)), None)
+        return mod_name, spec, mod
+
     programs = walk(ast, f03.Main_Program)
     stem = path.stem.lower().replace("_cpp", "")
     mod_name = stem
@@ -822,6 +833,17 @@ def _generics(mod_spec: Any) -> dict[str, list[str]]:
         if specs:
             generics[gname] = specs
     return generics
+
+
+def submodule_parent(ast: Any) -> str | None:
+    """The parent module of a ``submodule (parent[:ancestor]) name`` file,
+    or ``None`` for anything else. The ancestor, when spelled, is a
+    submodule of the same parent and is not what a synthetic USE names."""
+    submodules = walk(ast, f08.Submodule)
+    if not submodules:
+        return None
+    statement = walk(submodules[0], f08.Submodule_Stmt)[0]
+    return str(walk(statement.children[0], f03.Name)[0]).lower()
 
 
 def extract(
@@ -933,14 +955,23 @@ def extract(
     for record in subprograms:
         record["public"] = is_public(record["name"])
 
+    parent = submodule_parent(ast)
+    use_statements = [str(u) for u in walk(sub_scope, f03.Use_Stmt)]
+    if parent:
+        # The parent's entities reach a submodule by host association; the
+        # translation reaches them as a companion, through this USE (#29).
+        use_statements.insert(0, f"USE {parent}")
+
     return {
         "source_file": str(path),
         "module": mod_name,
         # A file of bare subprograms borrows its stem for a name; consumers
-        # that emit `use <module>` need to know the name is borrowed.
-        "is_module": bool(walk(ast, f03.Module)),
+        # that emit `use <module>` need to know the name is borrowed. A
+        # submodule is a module scope, reached through its parent's name.
+        "is_module": bool(walk(ast, f03.Module)) or parent is not None,
+        **({"submodule_of": parent} if parent else {}),
         "kind_map": kind_map,
-        "use_statements": [str(u) for u in walk(sub_scope, f03.Use_Stmt)],
+        "use_statements": use_statements,
         "module_parameters": module_parameters,
         "module_state": module_state,
         # Module state whose ALLOCATE gave it a lower bound its declaration
