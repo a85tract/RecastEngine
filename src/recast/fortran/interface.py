@@ -918,6 +918,29 @@ def _derived_types(
     return types
 
 
+def _interfaces(
+    mod_spec: Any, kind_map: dict[str, str], state_names: set[str], sub_names: set[str]
+) -> dict[str, Any]:
+    """``{name: subprogram record}`` for the bodies of unnamed interface blocks.
+
+    An explicit interface for a procedure the module does not define -- the
+    shape a procedure dummy has to have (``external :: func`` in a solver,
+    ``interface / subroutine func(...)`` above it). It is what a call through
+    that dummy is bound against, and the record has the same shape as a
+    subprogram's so the call renderer needs no second path.
+    """
+    interfaces: dict[str, Any] = {}
+    if mod_spec is None:
+        return interfaces
+    for ib in walk(mod_spec, f03.Interface_Block):
+        if any(st.children[0] is not None for st in walk(ib, f03.Interface_Stmt)):
+            continue  # a generic: its specifics are procedures, see _generics
+        for body in walk(ib, (f03.Subroutine_Body, f03.Function_Body)):
+            record = extract_subprogram(body, kind_map, state_names, sub_names)
+            interfaces[record["name"]] = record
+    return interfaces
+
+
 def _generics(mod_spec: Any) -> dict[str, list[str]]:
     """``{generic_name: [specific names]}`` from interface blocks."""
     generics: dict[str, list[str]] = {}
@@ -1082,6 +1105,7 @@ def extract(
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible),
         "generics": _generics(mod_spec),
+        "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
         "subprograms": subprograms,
     }
 

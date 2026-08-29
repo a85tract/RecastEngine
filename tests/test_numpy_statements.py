@@ -1141,3 +1141,48 @@ def test_a_negative_case_value_keeps_its_sign(tmp_path):
     branch = next(line for line in lines if line.strip().startswith("if"))
     assert "-1" in branch.replace("- 1", "-1") or "(-1)" in branch, branch
     assert "== 1)" not in branch or "(k == -1)" in branch.replace("- 1", "-1"), branch
+
+
+def test_a_call_through_a_procedure_dummy_binds_to_its_interface(tmp_path):
+    """``external :: func`` and ``call func(x, val)`` in a solver, with the
+    interface block above saying ``val`` is OUT: the dummy is the callable
+    the caller passed, and the interface says what comes back (CLM-ml's
+    hybrid/zbrent/bisection, which every stomatal and Obukhov solve calls)."""
+    from pathlib import Path
+
+    from recast.fortran import constants, interface
+    from recast.fortran._parse import f03, parse, walk
+    from recast.transform.numpy.subprograms import Subprograms
+    from recast.transform.profiles import PROFILES
+
+    source = Path(tmp_path) / "solve.f90"
+    source.write_text(
+        "module solve_mod\n"
+        "  implicit none\n"
+        "  interface\n"
+        "    subroutine func (x, val)\n"
+        "    real(8), intent(in) :: x\n"
+        "    real(8), intent(out) :: val\n"
+        "    end subroutine func\n"
+        "  end interface\n"
+        "contains\n"
+        "  subroutine once(func, x, y)\n"
+        "    external :: func\n"
+        "    real(8), intent(in) :: x\n"
+        "    real(8), intent(out) :: y\n"
+        "    call func(x, y)\n"
+        "  end subroutine once\n"
+        "end module solve_mod\n"
+    )
+    record = interface.extract(source)
+    assert "func" in record["interfaces"]
+    assembler = Subprograms(
+        record=record, constants=constants.extract(source), profile=PROFILES["gfortran"]
+    )
+    node = next(
+        sub
+        for sub in walk(parse(source), f03.Subroutine_Subprogram)
+        if str(walk(sub, f03.Subroutine_Stmt)[0].children[1]).lower() == "once"
+    )
+    lines, _ = assembler.render(node, "once")
+    assert any(line.strip() == "y = func(x)" for line in lines), lines
