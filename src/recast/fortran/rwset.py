@@ -32,12 +32,32 @@ from recast.fortran.intrinsics import ALL as INTRINSICS
 from recast.fortran.intrinsics import STATE_QUERY, TRANSFORMATIONAL
 from recast.fortran.semantics import Semantics, Unanalyzable, for_subprogram
 
-KIND_ARG_FNS = frozenset({"real", "dble", "int", "nint", "aint", "anint", "floor", "ceiling"})
-"""Conversions whose optional second argument is a kind name, not a value.
+KIND_ARG_FNS = frozenset(
+    {"real", "dble", "int", "nint", "aint", "anint", "floor", "ceiling", "cmplx", "float"}
+)
+"""Conversions whose KIND argument is a kind name, not a value.
 
 ``real(x, r8)`` reads ``x`` and not ``r8``. Counting the kind as a read is the
 one over-approximation that would fire on nearly every line of model physics.
+The rule has to match the emitter's exactly, which is the pipeline's #37: a
+``kind=`` keyword anywhere, the second positional of a two-argument
+conversion -- except ``cmplx``, whose second is the imaginary part -- and
+``cmplx``'s third positional.
 """
+
+
+def _without_kind_argument(fname: str, items: list[Any]) -> list[Any]:
+    """The actuals of a conversion that are values, the KIND name dropped."""
+    kept = []
+    for at, item in enumerate(items):
+        if isinstance(item, f03.Actual_Arg_Spec) and str(item.children[0]).lower() == "kind":
+            continue
+        if len(items) == 2 and at == 1 and fname != "cmplx":
+            continue
+        if fname == "cmplx" and len(items) == 3 and at == 2:
+            continue
+        kept.append(item)
+    return kept
 
 
 @dataclass(frozen=True)
@@ -163,8 +183,8 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
         if node.children[1] is not None:
             args = node.children[1]
             items = list(args.children) if hasattr(args, "children") else [args]
-            if fname in KIND_ARG_FNS and len(items) == 2:
-                items = items[:1]
+            if fname in KIND_ARG_FNS:
+                items = _without_kind_argument(fname, items)
             for item in items:
                 reads |= expr_reads(item, scope)
         if scope.ranks.get(fname, 0) > 0:
@@ -297,8 +317,11 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             if actual is None:
                 continue
             # UNKNOWN counts as a read: an undeclared intent might be one, and
-            # a missed read only ever costs a spurious mismatch.
-            if formal["intent"] in ("IN", "INOUT", "UNKNOWN"):
+            # a missed read only ever costs a spurious mismatch. A buffer OUT
+            # (#36) is passed by the caller *and* returned -- the emitter
+            # renders the actual as a call argument and as an unpack target
+            # -- so this side records the read as well as the write (#38).
+            if formal["intent"] in ("IN", "INOUT", "UNKNOWN") or formal.get("buffer"):
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)

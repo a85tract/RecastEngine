@@ -200,10 +200,29 @@ class _Visitor(ast.NodeVisitor):
         callee = node.func
         if not (isinstance(callee, ast.Name) and callee.id in self.protocol.procedures):
             self.visit(callee)
-        for argument in node.args:
+        arguments = list(node.args)
+        if isinstance(callee, ast.Name) and callee.id == "_f_copy_out" and arguments:
+            # ``_f_copy_out(dst, src)`` writes into ``dst``. The AST has it in
+            # Load context, so visiting it would record a read, and the
+            # source side marks the intent(OUT) actual a write (#20).
+            self._store(arguments.pop(0))
+        for argument in arguments:
             self.visit(argument)
         for keyword_argument in node.keywords:
             self.visit(keyword_argument.value)
+
+    def _store(self, node: ast.expr) -> None:
+        """An expression shaped like an assignment target, counted as one:
+        a write of its root name, with the subscripts inside it reads."""
+        root: ast.expr = node
+        while isinstance(root, (ast.Subscript, ast.Attribute)):
+            if isinstance(root, ast.Subscript):
+                self.visit(root.slice)
+            root = root.value
+        if isinstance(root, ast.Name):
+            self.record(root.id, store=True)
+        else:
+            self.visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """``a.b`` is a read or write of ``a``; ``b`` is a component of it.

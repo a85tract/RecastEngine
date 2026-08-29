@@ -634,7 +634,11 @@ def test_allocate_and_deallocate_are_writes(tmp_path: Path) -> None:
 
 def test_a_call_splits_its_arguments_by_declared_intent(tmp_path: Path) -> None:
     call = _blocks(tmp_path)["B006"]
-    assert call["reads"] == ["acc"], "intent(in)"
+    # ``y(:)`` is an intent(out) the callee cannot size, so it is the
+    # caller's buffer (#36): passed in as well as returned, which the
+    # emitter renders as a call argument and an unpack target -- so this
+    # side records the read as well as the write (#38).
+    assert call["reads"] == ["acc", "out"], "intent(in), and the buffer OUT"
     assert call["writes"] == ["out"], "intent(out)"
 
 
@@ -681,7 +685,11 @@ def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) 
         if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
     )
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
-    assert blocks["B001"] == {"id": "B001", "reads": ["n", "q"], "writes": ["b"]}, "out-argument"
+    # ``slot(:)`` is a caller-buffer OUT (#36), so ``b`` is read as well as
+    # written on the call (#38); ``q`` is the pipeline's component read.
+    assert blocks["B001"] == {"id": "B001", "reads": ["b", "n", "q"], "writes": ["b"]}, (
+        "out-argument"
+    )
     assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
 
 
