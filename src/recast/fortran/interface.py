@@ -126,7 +126,13 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
         if isinstance(d, f03.Explicit_Shape_Spec):
             lb, ub = d.children
             dims.append({"lb": str(lb) if lb is not None else "1", "ub": str(ub)})
-        elif isinstance(d, f03.Assumed_Shape_Spec | f03.Deferred_Shape_Spec):
+        elif isinstance(d, f03.Assumed_Shape_Spec):
+            # ``tk(bounds%begc:, -nlevsno+1:)``: the shape is the caller's,
+            # the lower bound is this declaration's, and a subscript shifts
+            # by it.
+            lower = d.children[0] if getattr(d, "children", None) else None
+            dims.append({"lb": str(lower) if lower is not None else "1", "ub": None})
+        elif isinstance(d, f03.Deferred_Shape_Spec):
             dims.append({"lb": "1", "ub": None})
         elif isinstance(d, f03.Assumed_Size_Spec):
             dims.extend(dims_of(d) or [])
@@ -812,6 +818,18 @@ def _scope_of(ast: Any, path: Path) -> tuple[str, Any, Any]:
     return mod_name, spec, ast
 
 
+def _only_names(statement: str) -> set[str]:
+    """The local names a ``use ..., only:`` statement brings in."""
+    match = re.search(r"only\s*:\s*(.*)$", statement, re.I | re.S)
+    if not match:
+        return set()
+    return {
+        item.split("=>", 1)[0].strip().lower()
+        for item in match.group(1).split(",")
+        if item.strip()
+    }
+
+
 def _component_allocate_bounds(scope: Any, visible: set[str]) -> dict[str, Any]:
     """Component -> the bounds an ``allocate (obj%comp(lb:ub, ...))`` in this
     module gave it, when a lower bound is not one.
@@ -853,7 +871,8 @@ def _component_allocate_bounds(scope: Any, visible: set[str]) -> dict[str, Any]:
             # which is what every reference assumed before -- per axis,
             # because ``(begp:endp, 0:nlevmlcan)`` re-bases its second axis
             # whatever its first one is called.
-            if text != "1" and not re.fullmatch(r"-?\d+", text) and text.lower() not in visible:
+            tokens = [t.lower() for t in re.findall(r"[A-Za-z_]\w*", text)]
+            if text != "1" and any(t not in visible for t in tokens):
                 text = "1"
             if text != "1":
                 rebased = True
@@ -1077,6 +1096,10 @@ def extract(
     # dummy is one this rule has to see.
     _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
     buffer_convention = buffer_out_arrays
+    # A component's allocate bound may spell a use-imported name -- CLM's
+    # ``(begc:endc, -nlevsno+1:nlevgrnd)`` -- which every module that reads
+    # the component imports the same way; those count as visible for it.
+    imported = {n for u in walk(sub_scope, f03.Use_Stmt) for n in _only_names(str(u))}
     _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
@@ -1105,7 +1128,7 @@ def extract(
         # init routine and the references are everywhere else.
         "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
-        "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible),
+        "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible | imported),
         "generics": _generics(mod_spec),
         "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
         "buffer_convention": buffer_convention,

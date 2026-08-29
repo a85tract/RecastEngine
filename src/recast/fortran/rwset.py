@@ -91,6 +91,10 @@ class Scope:
     """
 
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    alias_dims: dict[str, Any] = field(default_factory=dict)
+    """An ``associate`` alias -> the dims of the component it selects, so a
+    subscript of the alias reads the component's lower-bound names the way
+    the translation spells them. Filled while the construct is visited."""
     """Procedures with no source here, and which arguments they write.
 
     ``{"endrun": {"out_positions": []}}``. Operator-supplied, like intent
@@ -105,6 +109,7 @@ def scope_for(
     sub_name: str,
     *,
     externals: dict[str, dict[str, Any]] | None = None,
+    companions: tuple[dict[str, Any], ...] = (),
 ) -> Scope:
     """Build a ``Scope`` for one subprogram out of an ``interface.extract`` record."""
     from recast.fortran.interface import subprogram_key
@@ -153,9 +158,30 @@ def scope_for(
         generics=dict(record["generics"]),
         ranks=ranks,
         chars=frozenset(chars),
-        semantics=for_subprogram(record, sub_name),
+        semantics=for_subprogram(record, sub_name, companions=companions),
         externals=dict(externals or {}),
     )
+
+
+def _selector_dims(selector: Any, scope: Scope) -> Any:
+    """The dims of ``root%component`` -- allocated where the frontend saw an
+    ALLOCATE, declared otherwise -- for an associate alias to inherit."""
+    semantics = scope.semantics
+    if semantics is None or not isinstance(selector, f03.Data_Ref):
+        return None
+    if len(selector.children) != 2:
+        return None
+    root, component = selector.children
+    if isinstance(component, f03.Part_Ref):
+        component = component.children[0]
+    declared = semantics.declaration(str(root).lower()) or {}
+    match = re.match(r"UNKNOWN\(TYPE\((\w+)\)\)", str(declared.get("dtype", "")), re.I)
+    if match is None:
+        return None
+    record = semantics.types.get(match.group(1).lower(), {}).get(str(component).lower())
+    if not record:
+        return None
+    return record.get("allocated_dims") or record.get("dims")
 
 
 def lower_bound_reads(name: str, scope: Scope) -> set[str]:
@@ -167,8 +193,9 @@ def lower_bound_reads(name: str, scope: Scope) -> set[str]:
     if semantics is None:
         return set()
     declared = semantics.declaration(name) or {}
+    dims = scope.alias_dims.get(name) or declared.get("dims") or ()
     found: set[str] = set()
-    for dim in declared.get("dims") or ():
+    for dim in dims:
         lower = str(dim.get("lb") or "").strip()
         if not lower or re.fullmatch(r"-?\d+", lower):
             continue
@@ -217,10 +244,11 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
                 items = _without_kind_argument(fname, items)
             for item in items:
                 reads |= expr_reads(item, scope)
-        if scope.ranks.get(fname, 0) > 0:
+        if scope.ranks.get(fname, 0) > 0 or fname in scope.alias_dims:
             # A declared array shadows an intrinsic name -- the same rule the
             # bare-Name branch applies. zm_conv declares `gamma(pcols,pver)`,
-            # and reading `gamma(i,k)` is dataflow, not a call to GAMMA.
+            # and reading `gamma(i,k)` is dataflow, not a call to GAMMA. An
+            # associate alias of an array component is an array here too.
             reads.add(fname)
             reads |= lower_bound_reads(fname, scope)
             return reads
@@ -500,6 +528,9 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                         alias, _, selector = association.children
                         writes.add(str(alias).lower())
                         reads.update(expr_reads(selector, scope))
+                        dims = _selector_dims(selector, scope)
+                        if dims:
+                            scope.alias_dims[str(alias).lower()] = dims
                 elif not isinstance(child, f03.End_Associate_Stmt):
                     visit(child)
 
