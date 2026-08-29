@@ -444,3 +444,24 @@ def test_an_associate_alias_inherits_its_selector_lower_bound(tmp_path: Path) ->
     lines, _ = build(path).render(node_of(path, "pick"), "pick")
     body = next(line for line in lines if "v =" in line)
     assert "- 1" not in body, body
+
+
+def test_a_local_sized_by_a_derived_type_component_renders_the_attribute(
+    tmp_path: Path,
+) -> None:
+    """``real(r8) :: albd(bounds%begp:bounds%endp)``: CLM sizes locals off the
+    bounds object, and the bound tokenizer refused the ``%``."""
+    source = REBASED_COMPONENT.replace(
+        "  subroutine pick(i, inst, v)\n",
+        "  subroutine sized(b, v)\n    type(con_t), intent(in) :: b\n"
+        "    real(r8), intent(out) :: v\n    real(r8) :: work(b%mxpft)\n"
+        "    work = 0._r8\n    v = work(1)\n  end subroutine sized\n\n"
+        "  subroutine pick(i, inst, v)\n",
+    ).replace(
+        "    real(r8), allocatable :: slatop(:)\n",
+        "    real(r8), allocatable :: slatop(:)\n    integer :: mxpft\n",
+    )
+    path = tmp_path / "con_mod.f90"
+    path.write_text(source)
+    lines, _ = build(path).render(node_of(path, "sized"), "sized")
+    assert any("b.mxpft" in line for line in lines), lines
