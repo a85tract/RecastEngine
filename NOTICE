@@ -141,7 +141,15 @@ and both are needed. See CONTRIBUTING.md.
      handled here, and #14's naming of a resolved generic in a device
      function was already spelled here the way the CUDA file defines it.
      The format shim, ``_f_fmt_write``, is the one piece of code carried
-     across close to verbatim, retyped.
+     across close to verbatim, retyped, and "close" is two substitutions:
+     its unparsable-format raise is ``ValueError`` where upstream's is
+     ``NotImplementedError``, because that name is how a generated file
+     here spells a refused block and a runtime that inlines it would read
+     as one; and ``_fmt_one``'s ``w``/``d``/``mn`` are ``width``/
+     ``decimals``/``minimum``, because the first is reused as a string and
+     an integer and the type checker will not have it. Neither changes a
+     byte of output. The bit intrinsics of #15, from the same
+     fortran_shims.py, are carried the same way and unchanged.
 
   recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
      cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
