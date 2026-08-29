@@ -395,3 +395,52 @@ def test_a_result_named_after_a_python_keyword_is_renamed_in_its_initializer(
     assert "    lambda_ = 0.0" in lines
     assert not any(line.strip().startswith("lambda =") for line in lines)
     compile("\n".join(lines), "<latent>", "exec")
+
+
+REBASED_COMPONENT = """\
+module con_mod
+  use precision_mod, only: r8 => wp_r8
+  implicit none
+  integer, parameter :: mxpft = 3
+  type con_t
+    real(r8), allocatable :: slatop(:)
+  end type con_t
+  type(con_t), public :: con
+contains
+  subroutine init(this)
+    class(con_t) :: this
+    allocate (this%slatop(0:mxpft))
+  end subroutine init
+
+  subroutine pick(i, inst, v)
+    integer, intent(in) :: i
+    type(con_t), intent(in) :: inst
+    real(r8), intent(out) :: v
+    v = inst%slatop(i) + con%slatop(i)
+  end subroutine pick
+end module con_mod
+"""
+
+
+def test_a_component_subscript_shifts_by_its_allocated_lower_bound(tmp_path: Path) -> None:
+    path = tmp_path / "con_mod.f90"
+    path.write_text(REBASED_COMPONENT)
+    lines, _ = build(path).render(node_of(path, "pick"), "pick")
+    body = next(line for line in lines if "slatop" in line and "v =" in line)
+    assert "inst.slatop[i]" in body or "inst.slatop[(i) - (0)]" in body, body
+    assert "- 1" not in body
+
+
+def test_an_associate_alias_inherits_its_selector_lower_bound(tmp_path: Path) -> None:
+    """``associate (slatop => con%slatop)`` then ``slatop(i)``: the alias is
+    a plain name in the body, and it has to shift the way the component
+    does. CLM-ml writes every physics routine this way."""
+    source = REBASED_COMPONENT.replace(
+        "    v = inst%slatop(i) + con%slatop(i)\n",
+        "    associate (s => con%slatop)\n    v = s(i)\n    end associate\n",
+    )
+    path = tmp_path / "con_mod.f90"
+    path.write_text(source)
+    lines, _ = build(path).render(node_of(path, "pick"), "pick")
+    body = next(line for line in lines if "v =" in line)
+    assert "- 1" not in body, body

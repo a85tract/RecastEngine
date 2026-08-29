@@ -261,6 +261,9 @@ class Semantics:
     from did. See ``_reference_rank``.
     """
     types: dict[str, dict[str, Any]] = field(default_factory=dict)
+    companion_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """A companion module's state, by name: the declaration a use-imported
+    variable has, which is what says a ``pftcon`` is a ``pftcon_type``."""
     parameters: frozenset[str] = frozenset()
     """Names that are compile-time constants, including companions'."""
 
@@ -321,6 +324,8 @@ class Semantics:
         found = self._declared.get(name.lower())
         if found is not None:
             return found
+        if name.lower() in self.companion_state:
+            return self.companion_state[name.lower()]
         if self.subprogram.get("result") == name.lower() and self.subprogram.get("result_dims"):
             return {
                 "name": name.lower(),
@@ -850,11 +855,14 @@ def for_subprogram(
     companion_generics: dict[str, list[str]] = {}
     types = dict(record["types"])
     parameters = {p["name"] for p in record["module_parameters"]}
+    companion_state: dict[str, dict[str, Any]] = {}
     for other in companions:
         procedures.update({s["name"]: s for s in other["subprograms"]})
         companion_generics.update(other["generics"])
         types.update(other["types"])
         parameters |= {p["name"] for p in other["module_parameters"]}
+        for state in other.get("module_state", ()):
+            companion_state.setdefault(str(state["name"]).lower(), state)
 
     # ``name`` may be the key form ``host/name`` for an internal procedure.
     host, _, plain = name.rpartition("/")
@@ -883,6 +891,7 @@ def for_subprogram(
         generics=generics,
         companion_generics=companion_generics,
         types=types,
+        companion_state=companion_state,
         parameters=frozenset(parameters),
         statement_functions=statement_functions,
     )

@@ -1417,15 +1417,32 @@ class Statements:
         """
         pad = "    " * indent
         lines = []
+        inherited: dict[str, Any] = {}
         for association in walk(node, f03.Association):
-            name = pysafe(str(association.children[0]).lower())
-            lines.append(f"{pad}{name} = {self.expressions.render(association.children[2])}")
-        body = [
-            line
-            for child in node.children
-            if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
-            for line in self.render(child, indent)
-        ]
+            alias, _, selector = association.children
+            name = pysafe(str(alias).lower())
+            lines.append(f"{pad}{name} = {self.expressions.render(selector)}")
+            dims = self.expressions.selector_dims(selector)
+            if dims:
+                inherited[str(alias).lower()] = dims
+        # The alias subscripts like its selector for the body's duration: a
+        # component allocated from zero keeps its zero through the alias.
+        bounds = self.expressions.allocated_bounds
+        previous = {name: bounds.get(name) for name in inherited}
+        bounds.update(inherited)
+        try:
+            body = [
+                line
+                for child in node.children
+                if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
+                for line in self.render(child, indent)
+            ]
+        finally:
+            for name, before in previous.items():
+                if before is None:
+                    bounds.pop(name, None)
+                else:
+                    bounds[name] = before
         return lines + (body or [f"{pad}pass"])
 
     def _block(self, node: Any, indent: int) -> list[str]:
