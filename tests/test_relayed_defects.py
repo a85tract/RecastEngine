@@ -991,3 +991,51 @@ def test_bit_intrinsics_wrap_at_the_operand_width() -> None:
     assert ns["_f_ishft"](np.int32(1), 31) == -2147483648, "wraps to the sign bit at 32"
     assert ns["_f_ishft"](np.int32(-1), -1) == 2147483647, "a logical right shift zero-fills"
     assert ns["_f_ishft"](1, 40) == 1 << 40, "a literal is unbounded, as before"
+
+
+# --- #6: a type-bound call in statement position -------------------------------
+
+TYPE_BOUND_CALLS = """\
+module box_mod
+implicit none
+integer, parameter :: r8 = selected_real_kind(12)
+type :: box_t
+  real(r8) :: v = 0.0_r8
+contains
+  procedure :: reset => box_reset
+  procedure :: store => box_store
+end type
+contains
+subroutine box_reset(self)
+  class(box_t), intent(inout) :: self
+  self%v = 0.0_r8
+end subroutine
+subroutine box_store(self, x)
+  class(box_t), intent(inout) :: self
+  real(r8), intent(in) :: x
+  self%v = x
+end subroutine
+subroutine driver(x)
+  real(r8), intent(in) :: x
+  type(box_t) :: b
+  call b%reset()
+  call b%store(x)
+end subroutine driver
+end module
+"""
+
+
+def test_a_type_bound_call_with_arguments_is_refused_and_without_is_a_no_op(
+    tmp_path: Path,
+) -> None:
+    """A type-bound call carrying arguments is value-bearing -- ``obj%pack(state,
+    buf)`` writes through ``buf`` -- and dropping it to a bare ``pass`` loses
+    the write silently (#6). It is refused. An argument-less call passes no
+    value and stays the no-op the pipeline emits; this engine used to refuse
+    both, which was the last `emit_diff` pair on CAM."""
+    from recast.transform.rules import NoRule
+
+    statements, nodes = build(_write(tmp_path, "box", TYPE_BOUND_CALLS), "driver")
+    assert statements.render(nodes[0], 1) == ["    pass  # b%reset (OOP method stub)"]
+    with pytest.raises(NoRule, match="type-bound call b%store with arguments"):
+        statements.render(nodes[1], 1)
