@@ -115,6 +115,34 @@ and both are needed. See CONTRIBUTING.md.
      failure. The sixth of the set, an assumed-size ``x(*)`` read as rank 2,
      was already right here.
 
+  Eight more -- fortran/rwset.py's KIND and caller-buffer rules and
+     verify/rwset.py's copy-out target, transform/cuda/emitter.py's
+     per-variant state, oracle/f2py.py's array-valued results,
+     transform/numpy/statements.py's declared lower bound under sequence
+     association and its formatted internal write with the shim in
+     transform/numpy/runtime.py, and transform/numpy/modules.py's unbound
+     stub imports -- from the fixes for issues #13, #16, #17, #18, #20, #37,
+     #38 and #39 against CESM-language-translator, in its pipeline/rwset.py,
+     cudaize.py, numbaize.py, gen_wrapper.py, translate.py and
+     fortran_shims.py. Those issues were found by this repository's
+     differentials and filed from here; the fixes are Qinrun Dai's, who
+     commits as second5t <mouseisnotalwaysmouse@outlook.com>. What is theirs
+     is each rule's shape: that the KIND exclusion has to be the emitter's
+     rule exactly, a ``kind=`` keyword anywhere and the positional the
+     conversion reserves for it; that a caller-buffer OUT is a read on the
+     source side because the emission passes it in; that the copy-out
+     shim's destination is a write; that an array-valued result is spelled
+     with its extents and an extent naming no argument is a hidden dummy;
+     that a trailing subscript under sequence association shifts by the
+     axis's declared bound; that a format decides a write's layout and an
+     unimplemented descriptor is refused rather than list-directed; and
+     that an import nothing binds to is an error waiting to happen. Two are
+     relayed as findings only: #19, a DO with no loop control, was already
+     handled here, and #14's naming of a resolved generic in a device
+     function was already spelled here the way the CUDA file defines it.
+     The format shim, ``_f_fmt_write``, is the one piece of code carried
+     across close to verbatim, retyped.
+
   recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
      cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
      (hpc-devsecops). Written by Chien-Wei Huang, who commits under that name
