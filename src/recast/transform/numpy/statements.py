@@ -469,7 +469,62 @@ class Statements:
                     f"{pad}def {pysafe(root)}({formals}):  # statement function",
                     f"{pad}    return {self.expressions.render(value)}",
                 ]
-        return [f"{pad}{self.target(target)} = {self.expressions.render(value)}"]
+        rendered = self.expressions.render(value)
+        if (
+            self.semantics.is_scalar_integer_target(target)
+            and not self.semantics.is_integer(value)
+            and not self._rhs_is_opaque(value)
+        ):
+            # Fortran converts on assignment: a REAL expression stored into an
+            # INTEGER scalar truncates toward zero, the mapping INT already
+            # has. Without this the Python name silently holds a float, and
+            # every later use of it as an index or a count either drifts or
+            # raises "cannot be interpreted as an integer" somewhere else.
+            try:
+                rank = self.semantics.rank(value)
+            except Unanalyzable:
+                rank = 0
+            if rank == 0 and not self.semantics.is_logical_or_character(value):
+                rendered = f"int({rendered})"
+        return [f"{pad}{self.target(target)} = {rendered}"]
+
+    def _rhs_is_opaque(self, node: Any) -> bool:
+        """Whether a stub, a domain transform or a foreign module decides the
+        right-hand side's Python type, rather than Fortran typing.
+
+        Those never take the integer conversion above. Wrapping one would be
+        claiming Fortran typed it REAL, and nothing here typed it at all --
+        the answer comes from a table this translation does not own.
+        """
+        while isinstance(node, f03.Parenthesis):
+            node = node.children[1]
+        if isinstance(node, f03.Name):
+            name = str(node).lower()
+            return name in self.names.use_bindings or name in self.names.use_parameters
+        if isinstance(
+            node,
+            (
+                f03.Part_Ref,
+                f03.Intrinsic_Function_Reference,
+                f03.Function_Reference,
+                f03.Structure_Constructor,
+            ),
+        ):
+            name = str(node.children[0]).lower()
+            if self.semantics.is_array(name):
+                return False
+            return (
+                name in self.expressions.function_transforms
+                or name in self.expressions.stubs
+                or name in self.externals
+                or name in self.names.use_bindings
+                or name in self.semantics.companion_generics
+                # The engine's member of the same category: a handle producer
+                # is supplied by the domain package beside the stubs and the
+                # transforms above, and what it returns is not a number at all.
+                or name in self.expressions.handle_producers
+            )
+        return False
 
     def target(self, node: Any) -> str:
         """An assignment target, honouring Fortran's COPY semantics: a whole
