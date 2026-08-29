@@ -135,19 +135,58 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
     return dims
 
 
+INTRINSIC_KIND_MODULES = frozenset({"iso_fortran_env", "iso_c_binding"})
+"""The intrinsic modules whose named constants are kinds."""
+
+INTRINSIC_KINDS: dict[str, str] = {
+    **ISO_FORTRAN_ENV_KINDS,
+    "c_float": "float32",
+    "c_double": "float64",
+    "c_long_double": "float64",
+    "c_int": "int32",
+    "c_short": "int16",
+    "c_long": "int64",
+    "c_long_long": "int64",
+    "c_size_t": "int64",
+    "c_int32_t": "int32",
+    "c_int64_t": "int64",
+}
+"""What a USE of an intrinsic kind module can bring in: ``iso_fortran_env``'s
+names above, and ``iso_c_binding``'s C kinds. ``real128`` stays out for the
+reason ``ISO_FORTRAN_ENV_KINDS`` gives."""
+
+
 def kind_aliases_from_use(ast: Any, kind_dtypes: dict[str, str]) -> dict[str, str]:
-    """Resolve use-renamed kind params (``use kinds_mod, only: r8 => wp_r8``)."""
+    """Kind names made available by USE: the operator's table (``use
+    kinds_mod, only: r8 => wp_r8``, or the bare names) and the standard
+    intrinsic modules -- ``wp => real64``, ``only: real64``, or a bare ``use
+    iso_fortran_env``, which brings every name in (the pipeline's #26)."""
     aliases: dict[str, str] = {}
     for use in walk(ast, f03.Use_Stmt):
+        module = str(use.children[2]).lower() if len(use.children) > 2 else ""
+        intrinsic = module in INTRINSIC_KIND_MODULES
+        table = dict(kind_dtypes)
+        if intrinsic:
+            table.update(INTRINSIC_KINDS)
         for rename in walk(use, f03.Rename):
             local = str(rename.children[1]).lower()
             remote = str(rename.children[2]).lower()
-            if remote in kind_dtypes:
-                aliases[local] = kind_dtypes[remote]
-        for nm in walk(use, f03.Name):
-            n = str(nm).lower()
-            if n in kind_dtypes:
-                aliases[n] = kind_dtypes[n]
+            if remote in table:
+                aliases[local] = table[remote]
+        only = use.children[4] if len(use.children) > 4 else None
+        if only is not None:
+            for nm in walk(only, f03.Name):
+                n = str(nm).lower()
+                if n in table:
+                    aliases.setdefault(n, table[n])
+        elif intrinsic:
+            for n, dtype in INTRINSIC_KINDS.items():
+                aliases.setdefault(n, dtype)
+        else:
+            for nm in walk(use, f03.Name):
+                n = str(nm).lower()
+                if n in kind_dtypes:
+                    aliases[n] = kind_dtypes[n]
     return aliases
 
 
