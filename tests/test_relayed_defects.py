@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,7 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
 
 def _runtime_namespace() -> dict[str, Any]:
     """The runtime as a generated module gets it: exec'd text, not an import."""
-    namespace: dict[str, Any] = {"np": np, "math": math, "os": os, "Any": Any}
+    namespace: dict[str, Any] = {"np": np, "math": math, "os": os, "_re": re, "Any": Any}
     exec(runtime.emit(), namespace)
     return namespace
 
@@ -858,3 +859,63 @@ def test_a_sequence_associated_element_shifts_by_the_declared_lower_bound(
     assert "_f_copy_out(a[:, :, (ie) - (nets)], dbl(a[:, :, (ie) - (nets)]))" in body
     assert "ie - 1" not in body
     assert "a[0, 0," not in body
+
+
+# --- #16: a formatted internal write -----------------------------------------
+
+FORMATTED_WRITE = """\
+module fmt_mod
+implicit none
+contains
+subroutine fmt2(code, tmp)
+  integer, intent(in) :: code
+  character(len=2), intent(out) :: tmp
+  write (tmp, '(I2.2)') abs(code)
+end subroutine
+subroutine lw(n, s)
+  integer, intent(in) :: n
+  character(len=20), intent(out) :: s
+  write (s, *) n
+end subroutine
+subroutine dexp(x, s)
+  real(8), intent(in) :: x
+  character(len=12), intent(out) :: s
+  write (s, '(D12.4)') x
+end subroutine
+end module
+"""
+
+
+def test_a_formatted_internal_write_keeps_its_format(tmp_path: Path) -> None:
+    """The FMT was parsed and discarded, and the write emitted list-directed
+    -- a silently wrong string, ``' 3'`` where ``I2.2`` says ``'03'`` (#16).
+    A descriptor the runtime does not implement is refused, not
+    list-directed; a ``*`` format stays list-directed."""
+    from recast.transform.rules import NoRule
+
+    src = _write(tmp_path, "fmt", FORMATTED_WRITE)
+    statements, nodes = build(src, "fmt2")
+    body = "\n".join(line for node in nodes for line in statements.render(node, 1))
+    assert "tmp = _f_fmt_write('(I2.2)', " in body
+    assert "_f_list_write" not in body
+
+    statements, nodes = build(src, "lw")
+    body = "\n".join(line for node in nodes for line in statements.render(node, 1))
+    assert "s = _f_list_write(n)" in body
+
+    statements, nodes = build(src, "dexp")
+    with pytest.raises(NoRule, match="unsupported edit descriptor"):
+        statements.render(nodes[0], 1)
+
+
+def test_the_format_shim_has_fortran_field_semantics() -> None:
+    write = _runtime_namespace()["_f_fmt_write"]
+    assert write("(I2.2)", 3) == "03"
+    assert write("(I5.3)", -7) == " -007"
+    assert write("(I2)", 123) == "**", "overflow is asterisks"
+    assert write("(F8.3)", 3.14159) == "   3.142"
+    assert write("(F3.2)", 0.5) == ".50", "a leading zero gives way to the width"
+    assert write("(E10.3)", 1234.0) == " 0.123E+04"
+    assert write("(ES10.3)", 1234.0) == " 1.234E+03"
+    assert write("(A,I3,2X,L1)", "n=", 42, True) == "n= 42  T"
+    assert write("(2I3,'/',A)", 1, 2, "ab") == "  1  2/ab"

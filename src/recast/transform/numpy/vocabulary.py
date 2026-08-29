@@ -208,7 +208,7 @@ ARITH_OPS: dict[str, str] = {"+": "+", "-": "-", "*": "*", "/": "/", "**": "**"}
 """Spelled identically, and listed anyway: an operator absent from this table
 is one the emitter has no rule for, which is the answer it needs."""
 
-RESERVED: frozenset[str] = frozenset({"copy", "math", "mp", "np", "os"})
+RESERVED: frozenset[str] = frozenset({"_re", "copy", "math", "mp", "np", "os"})
 """Module aliases the emitted file uses itself.
 
 A Fortran dummy argument named ``np`` would shadow NumPy in the translation,

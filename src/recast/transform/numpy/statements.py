@@ -121,6 +121,16 @@ def derived_array(type_name: str, extents: list[str], known: dict[str, Any]) -> 
 
 UNIT_NAME = re.compile(r"[a-z_]\w*")
 
+FORMAT_SUPPORTED = re.compile(
+    r"\(\s*(?:(?:\d*\s*(?:I\d+(?:\.\d+)?|F\d+\.\d+"
+    r"|E[SN]?\d+\.\d+(?:E\d+)?|G\d+\.\d+|A(?:\d+)?|L\d+|\d*X|/"
+    r"|'[^']*'|\"[^\"]*\"))\s*(?:,\s*)?)*\)",
+    re.I,
+)
+"""The edit descriptors ``_f_fmt_write`` implements. A formatted internal
+write using anything else is refused rather than silently list-directed."""
+
+
 @dataclass
 class Statements:
     """Render Fortran statements for one subprogram.
@@ -850,13 +860,23 @@ class Statements:
         name = str(unit).strip().lower() if unit is not None else "*"
         declaration = self.semantics.declaration(name) if UNIT_NAME.fullmatch(name) else None
         if declaration is not None and declaration.get("dtype") == "str":
-            if str(format_).strip() != "*":
-                raise NoRule("formatted internal write")
             arguments = ", ".join(
                 self.expressions.render(item)
                 for item in (items.children if hasattr(items, "children") else [items])
             )
-            return [f"{pad}{pysafe(name)} = _f_list_write({arguments})"]
+            spelled = str(format_).strip() if format_ is not None else "*"
+            if spelled == "*":
+                return [f"{pad}{pysafe(name)} = _f_list_write({arguments})"]
+            # A formatted internal write: the FMT decides the layout, so the
+            # list-directed shim would be a silently wrong string (#16).
+            if isinstance(format_, f03.Char_Literal_Constant):
+                text = str(format_)[1:-1]
+                if not FORMAT_SUPPORTED.fullmatch(text.strip()):
+                    raise NoRule(
+                        f"formatted internal write: unsupported edit descriptor in {text!r}"
+                    )
+                return [f"{pad}{pysafe(name)} = _f_fmt_write({text!r}, {arguments})"]
+            raise NoRule("formatted internal write with a non-literal format")
         return [f"{pad}pass  # write({name},...) log — no dataflow"]
 
     # -- control flow ---------------------------------------------------------

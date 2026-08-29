@@ -26,6 +26,7 @@ from __future__ import annotations
 import inspect
 import math
 import os
+import re as _re
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,7 @@ __all__ = ["REQUIRED_IMPORTS", "emit"]
 REQUIRED_IMPORTS = (
     "import math",
     "import os",
+    "import re as _re",
     "from typing import Any",
     "",
     "import numpy as np",
@@ -320,6 +322,105 @@ def _f_list_write(*items: Any) -> Any:
                 mant, ex = ("%.16E" % v).split("E")  # noqa: UP031
                 out += ("%sE%+04d" % (mant, int(ex))).rjust(26) + " "  # noqa: UP031
     return out
+
+
+_FMT_TOKEN = _re.compile(
+    r"\s*(?:(?P<rep>\d+)?\s*(?P<ed>I\d+(?:\.\d+)?|F\d+\.\d+"
+    r"|E[SN]?\d+\.\d+(?:E\d+)?|G\d+\.\d+|A(?:\d+)?|L\d+|\d*X|/"
+    r"|'[^']*'|\"[^\"]*\"))\s*,?",
+    _re.I,
+)
+
+
+def _f_fmt_write(fmt: str, *vals: Any) -> str:
+    """Formatted internal WRITE (#16), for the edit descriptors the corpus
+    uses: ``Iw[.m]``, ``Fw.d``, ``Ew.d`` / ``ESw.d``, ``Gw.d``, ``A[w]``,
+    ``Lw``, ``nX``, ``/``, literals, repeat counts. Fortran field semantics:
+    right-justified, asterisks on overflow, ``Iw.m`` zero-filled to ``m``
+    digits, ``E`` as ``0.dddE+ee``."""
+    body = fmt.strip()
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1]
+    out: list[str] = []
+    values = list(vals)
+    pos = 0
+    while pos < len(body):
+        m = _FMT_TOKEN.match(body, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"_f_fmt_write: cannot parse {fmt!r}")
+        pos = m.end()
+        rep = int(m.group("rep")) if m.group("rep") else 1
+        ed = m.group("ed")
+        for _ in range(rep):
+            u = ed.upper()
+            if u.startswith(("'", '"')):
+                out.append(ed[1:-1])
+            elif u.endswith("X"):
+                out.append(" " * (int(u[:-1]) if u[:-1] else 1))
+            elif u == "/":
+                out.append("\n")
+            else:
+                if not values:
+                    return "".join(out)
+                out.append(_fmt_one(u, values.pop(0)))
+    return "".join(out)
+
+
+def _fmt_one(u: str, v: Any) -> str:
+    def fit(s: str, w: int) -> str:
+        return s.rjust(w) if len(s) <= w else "*" * w
+
+    if u[0] == "I":
+        width, _, minimum = u[1:].partition(".")
+        iv = int(v)
+        digits = str(abs(iv))
+        if minimum:
+            digits = digits.rjust(int(minimum), "0")
+        return fit(("-" if iv < 0 else "") + digits, int(width))
+    if u[0] == "F":
+        width, decimals = u[1:].split(".")
+        s = f"{float(v):.{int(decimals)}f}"
+        if s.startswith("0.") and len(s) > int(width):
+            s = s[1:]
+        elif s.startswith("-0.") and len(s) > int(width):
+            s = "-" + s[2:]
+        return fit(s, int(width))
+    if u[0] == "E":
+        sci = u.startswith("ES")
+        spec = u[2:] if u.startswith(("ES", "EN")) else u[1:]
+        wd, _, ee = spec.partition("E")
+        w, d = (int(x) for x in wd.split("."))
+        ew = int(ee) if ee else 2
+        x = float(v)
+        if x == 0.0:
+            mant, exp = 0.0, 0
+        else:
+            exp = int(np.floor(np.log10(abs(x))))
+            if sci:
+                mant = round(x / 10.0**exp, d)
+                if abs(mant) >= 10.0:
+                    mant /= 10.0
+                    exp += 1
+            else:
+                exp += 1
+                mant = round(x / 10.0**exp, d)
+                if abs(mant) >= 1.0:
+                    mant /= 10.0
+                    exp += 1
+        s = f"{mant:.{d}f}E{'+' if exp >= 0 else '-'}{abs(exp):0{ew}d}"
+        return fit(s, w)
+    if u[0] == "G":
+        width, decimals = u[1:].split(".")
+        return fit(f"{float(v):.{int(decimals)}g}", int(width))
+    if u[0] == "A":
+        s = str(v)
+        if len(u) > 1:
+            w = int(u[1:])
+            return s[:w] if len(s) >= w else s.rjust(w)
+        return s
+    if u[0] == "L":
+        return fit("T" if bool(v) else "F", int(u[1:]))
+    raise ValueError(f"_f_fmt_write: descriptor {u}")
 
 
 def _f_unpack(vector: Any, mask: Any, field: Any) -> Any:

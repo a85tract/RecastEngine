@@ -39,10 +39,10 @@ contains
     real(r8), intent(in)  :: x
     real(r8), intent(out) :: y
     character(len=32) :: buffer
-    ! A formatted internal write is refused on purpose -- an edit descriptor
-    ! is a rounding rule -- so this block is what the hook is offered.
+    ! A formatted internal write with a D edit descriptor is refused -- the
+    ! runtime does not implement it -- so this block is what the hook is offered.
     y = 2.0_r8 * x
-    write(buffer, '(F8.2)') y
+    write(buffer, '(D8.2)') y
   end subroutine refused
 end module hook_demo
 """
@@ -68,7 +68,9 @@ def test_without_a_handler_the_site_is_deferred(subject: Any) -> None:
     still gets: refused means refused, and the run stays reproducible."""
     first = _apply(subject, NumpyTranslation())
     second = _apply(subject, NumpyTranslation())
-    assert first.deferred == ["refused/B002: formatted internal write"]
+    assert first.deferred == [
+        "refused/B002: formatted internal write: unsupported edit descriptor in '(D8.2)'"
+    ]
     assert first.digest() == second.digest()
 
 
@@ -101,7 +103,7 @@ def test_a_transform_that_declared_otherwise_may_fill_the_site(subject: Any) -> 
     assert [s.block for s in seen] == ["B002"]
     assert seen[0].subprogram == "refused"
     assert "WRITE" in seen[0].fortran.upper(), "the handler sees the source it was asked about"
-    assert seen[0].reason == "formatted internal write"
+    assert seen[0].reason == "formatted internal write: unsupported edit descriptor in '(D8.2)'"
 
     emitted = candidate.files[Path("hook_demo_numpy.py")].decode()
     assert "buffer = '%8.2f' % y" in emitted
@@ -131,7 +133,9 @@ def test_a_handler_that_raises_leaves_the_site_deferred_and_says_so(subject: Any
         raise RuntimeError("model timed out")
 
     candidate = _apply(subject, NumpyTranslation(deterministic=False), deferred_handler=handler)
-    assert candidate.deferred == ["refused/B002: formatted internal write"]
+    assert candidate.deferred == [
+        "refused/B002: formatted internal write: unsupported edit descriptor in '(D8.2)'"
+    ]
     queued = [b for b in candidate.notes["blocks"] if b["status"] == "agent_queue"]
     assert queued[0]["handler_error"] == "handler raised RuntimeError: model timed out"
 
@@ -154,7 +158,9 @@ def test_a_handler_may_decline(subject: Any) -> None:
     )
     queued = [b for b in candidate.notes["blocks"] if b["status"] == "agent_queue"]
     assert "handler_error" not in queued[0]
-    assert candidate.deferred == ["refused/B002: formatted internal write"]
+    assert candidate.deferred == [
+        "refused/B002: formatted internal write: unsupported edit descriptor in '(D8.2)'"
+    ]
 
 
 def test_a_handler_from_a_config_file_is_rejected(subject: Any) -> None:
