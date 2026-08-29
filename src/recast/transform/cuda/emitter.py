@@ -180,11 +180,22 @@ class CudaSubprograms(NumbaSubprograms):
         statements.scan(node)
         subprogram = statements.semantics.subprogram
         self.emission.subprogram = subprogram
-        self.emission.error_args = set()
+        # The per-subprogram state the Numba floor's statement rules read,
+        # set up the same way ``NumbaSubprograms.render`` does (#13): a
+        # character OUT argument becomes an integer error code here too.
+        self.emission.error_args = {
+            a["name"] for a in subprogram["args"] if a["dtype"] == "str" and a["intent"] == "OUT"
+        }
         self.emission.extra = set()
 
         lines = ["@cuda.jit(device=True, inline=True)", self.signature(subprogram)]
         lines.extend(self._result_initializer(subprogram, statements.semantics, statements))
+        # The Numba kernel zeroes each error code before the body; upstream's
+        # device variant does not, so a subprogram that assigns its character
+        # OUT only on an error path returns an unbound name. Deliberately not
+        # byte-identical: the pipeline's spelling is the defect.
+        for argument in sorted(self.emission.error_args):
+            lines.append(f"    _errflag_{argument} = 0")
 
         report: list[dict[str, Any]] = []
         for block, statement, span in chunk_subprogram(node):

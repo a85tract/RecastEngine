@@ -704,3 +704,55 @@ def test_a_copy_out_destination_is_a_write_not_a_read() -> None:
     reads, writes = span_rwset(ast.parse(emitted), 1, 4, protocol)
     assert writes == {"phis", "dst", "wa"}
     assert reads == {"ie", "a", "b"}
+
+
+# --- #13: the state a CUDA device function is emitted with --------------------
+
+CHARACTER_OUT = """\
+module dev_mod
+implicit none
+contains
+subroutine check(x, errstring)
+  real(8), intent(in) :: x
+  character(len=*), intent(out) :: errstring
+  errstring = ' '
+  if (x < 0.0d0) errstring = 'check: negative'
+end subroutine
+end module
+"""
+
+
+def test_a_device_function_turns_a_character_out_into_an_error_code(tmp_path: Path) -> None:
+    """The CUDA entry point set up less per-subprogram state than the Numba
+    one, and a character OUT argument was the part that showed: the Numba
+    kernel spells it as an integer error code, the device function assigned
+    the string. Upstream's fix (#13) shares the state setup between the two
+    entry points; here the device variant computes the same set."""
+    from recast.fortran import constants
+    from recast.fortran._parse import f03, parse, walk
+    from recast.transform.cuda.emitter import CudaSubprograms
+    from recast.transform.numba.backend import Kernels
+    from recast.transform.numba.emitter import Emission
+    from recast.transform.profiles import PROFILES
+
+    src = _write(tmp_path, "dev", CHARACTER_OUT)
+    record = interface.extract(src)
+    assembler = CudaSubprograms(
+        record=record,
+        constants=constants.extract(src),
+        profile=PROFILES["ifx"],
+        emission=Emission(kernels=Kernels(record=record)),
+    )
+    node = next(iter(walk(parse(src), f03.Subroutine_Subprogram)))
+    lines, _ = assembler.render(node, "check")
+    body = "\n".join(lines)
+    assert "_errflag_errstring = 0  # str-OUT -> error code" in body
+    assert "_errflag_errstring = 1  # str-OUT -> error code" in body
+    # Zeroed before the body, as the Numba kernel does -- a subprogram that
+    # assigns its character OUT only on an error path would otherwise return
+    # an unbound name. Upstream's device variant omits this; see the roadmap.
+    assert lines.index("    _errflag_errstring = 0") < lines.index(
+        "    _errflag_errstring = 0  # str-OUT -> error code"
+    )
+    assert "errstring = " not in body.replace("_errflag_errstring = ", "")
+    assert "return _errflag_errstring" in body
