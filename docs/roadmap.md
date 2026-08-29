@@ -177,18 +177,37 @@ third and fourth emission differential beside `emit_diff.py`.
 They landed the same way and their evidence is not comparable, which is the
 part worth writing down rather than leaving in two commit messages.
 
-Both re-confirmed 2026-08-27 against the translator at `6486e104d`,
+Both re-confirmed 2026-08-28 against the translator at `a88abe935`,
 with `RECAST_INTRINSICS` pointing at the domain extension's intrinsics table.
-So were `emit_diff` (`different=2`) and `golden_diff --live` (no unexplained
-differences).
+So were `emit_diff` (`different=4` over 274 subprograms and 17,923 lines)
+and `golden_diff --live` (no unexplained differences).
 
 | | compared | result |
 |---|---|---|
-| `tools/numba_diff.py` | 27 modules, 177 kernels, 10,193 lines | `different=0 error=0` |
-| `tools/cuda_diff.py` | 27 modules, 44 device functions, 1,504 lines | `different=4 crashed=145` |
+| `tools/numba_diff.py` | 27 modules, 177 kernels, 10,192 lines | `different=0 error=0` |
+| `tools/cuda_diff.py` | 27 modules, 46 device functions, 22 launchers | `different=4 crashed=143` |
 
-**`emit_diff` is at 2 rather than the 5 it sat at for three revisions, and
-that is the same finding arriving in a third place.** Generic dispatch gained
+**That revision is fifteen translator commits past `6486e104d`, where these
+numbers were last confirmed, and the relay of them is the nine commits
+ending at `63f6e3f`.** Re-run before any of it, `emit_diff` stood at 32,
+`numba_diff` at 7 and `golden_diff --live` had one unexplained difference.
+Four of the 32 were the harness's: `emit_diff.py` wrote each companion's
+constants file as `constants.py` while declaring a different stem in the
+descriptor, and the translator had just started reading the stem -- so every
+companion parameter came out lower-cased, and `mg2` reported five
+differences that were not the engine's (32 -> 28). The rest were the engine
+behind on the translator's fixes -- REAL-to-INTEGER assignment, the D
+exponent, `cmplx`'s KIND, its five F77 idioms, INOUT inference, every
+execution part, and caller-buffer OUT arrays -- and each commit's message
+carries the count it moved: 28 -> 18 -> 15 -> 12 -> 8 -> 7 -> 4. Coverage
+grew with them, 255 subprograms and 14,928 lines compared before, 274 and
+17,923 after, because subprograms that could not be emitted now can. The
+first relay could not be measured this way -- its defects fired on the corpus
+libraries and not on CAM -- and this one is the reverse: the corpus barely
+sees it (below), and the differentials see all of it.
+
+**`emit_diff` went to 2 with the dispatch axis, from the 5 it sat at for
+three revisions, and that was the same finding arriving in a third place.** Generic dispatch gained
 a declared-dtype axis upstream and then here; all three of
 `coordinate_systems_mod`'s differences were the two `distance` overloads,
 which rank and integer-ness cannot separate and the argument's derived type
@@ -201,17 +220,19 @@ closing.** It was "the pipeline emitted a device function and the engine
 delegated"; it is now "both emit it, and the engine calls
 `_distance_cart2d_kp` where the pipeline calls `distance_cart2d`".
 
-**Every difference these three tools still report is a tracked upstream
-issue, and the engine is on the correct side of all of them.** That is worth
-stating plainly rather than leaving as four counts, because a raw count reads
-as "the port is four wrong" and it is the other way round:
+**Every difference these three tools still report but one pair is a tracked
+upstream issue with the engine on the correct side, and the pair is a case
+neither side has right.** That is worth stating plainly rather than leaving
+as counts, because a raw count reads as "the port is eight wrong" and it is
+not:
 
 | | count | upstream issue | what it is |
 |---|---|---|---|
 | `emit_diff` | 2 | #6 | a type-bound call in statement position becomes `pass` and the block still scores `mechanical`; this engine refuses it |
+| `emit_diff` | 2 | -- | `prim_advance_mod`'s `calc_dp3d_reference`: `Phis_avg(:,:,ie) = ...` on an array declared `(np,np,nets:nete)`. The pipeline writes `phis_avg[:, :, ie - 1]` and drops the `nets` lower bound; the engine writes `phis_avg[0, 0, ie - nets]` and drops the two leading axes. Neither is right, it is not in the translator's tracker, and the differential cannot settle it from this side because matching the pipeline would mean adopting its bound. It surfaced because coverage grew, not because either side changed |
 | `numba_diff` | 0 | -- | |
 | `cuda_diff` | 4 | #14 | a generic call in a device function is resolved correctly and then spelled in the *host* naming scheme, so the emitted name is one the generated file never defines |
-| `cuda_diff` crashes | 145 | #13 | `emit_kernel_variant` omits the per-subprogram state its base sets up, so the pipeline raises before emitting an expression |
+| `cuda_diff` crashes | 143 | #13 | `emit_kernel_variant` omits the per-subprogram state its base sets up, so the pipeline raises before emitting an expression. 145 -> 143 because two device functions the pipeline could not reach now emit -- one of the relayed fixes got them past their first subscript -- and #13 itself is untouched |
 
 The numbers are the translator's own tracker and are not linked, for the
 reason `tools/check_hygiene.py` gives: that repository is private, so a URL
@@ -234,11 +255,14 @@ the pipeline emits over the corpus, byte for byte, with headers carved out for
 the reason `transform.numpy.modules` already gives.
 
 **CUDA's denominator is a quarter of the surface it emits, and that is not a
-detail of the count.** `cudaize.py` raises on 146 of the corpus's subprograms
+detail of the count.** `cudaize.py` raises on 143 of the corpus's subprograms
 before emitting an expression, so for those there is no upstream answer to
-compare against. The engine emits 127 of them anyway -- **5,725 lines that
+compare against. The engine emits them anyway -- measured with a probe copy
+at `6486e104d`, when the count was 146: 127 of them, **5,725 lines that
 nothing has checked, against 1,504 that something has, or 79% of the target's
-output resting on no evidence at all.** It is not that those lines are known
+output resting on no evidence at all.** The probe has not been re-run at
+`a88abe935`; two functions crossed from one side to the other, and the
+proportion did not. It is not that those lines are known
 wrong; it is that the relay standard is "the same bytes as upstream", and where
 upstream produces nothing that standard is vacuous rather than satisfied.
 
@@ -246,7 +270,7 @@ Two things make the gap easy to under-read, and both were under-read here
 first:
 
 * `cuda_diff` counts a crash apart from a difference, correctly -- saying the
-  engine disagrees with a traceback would be false. But `crashed=146` reads as
+  engine disagrees with a traceback would be false. But `crashed=143` reads as
   a fact about upstream when it is also a fact about this repository's
   coverage, and the harness never renders the engine's side on that path, so
   the 5,725 lines do not appear in its output at all. They were measured with a
@@ -793,6 +817,28 @@ correctly changed `stdout` from a bare name the module never defined into
 `basic` as disagreeing until the alias was declared to it. A verifier that
 does not know about a new binding reports the translation wrong rather than
 saying it cannot tell, which is the right direction to fail in.
+
+**The second relay measured against it -- the nine commits ending at
+`63f6e3f` -- is the reverse case of the first, and worth recording as one.**
+The three differentials moved on every commit (above); the corpus's table
+did not move at all, and `corpus/baseline.json` moved three `rwset` rows by
+31 blocks, every one of them the check lagging a translation that is now
+right. Twenty-nine are `reads_source_only: [wp]` -- `cmplx(pd, 0.0_wp, wp)`
+now drops its KIND, and the check's KIND-exclusion table has the eight
+conversions and not `cmplx`, on both sides of the port; that is a gap in
+the translator's `rwset.py` too, and its `translate.py` disagrees with it.
+One is `dlsei`'s `x`, an assumed-size `intent(out)` actual the caller now
+passes and the check counts as a read. One is `dwnlsm`'s `scale`, which
+`drotmg` now returns as the INOUT the inference says it is -- and the
+corpus's check scope carries no companion procedures, so its Fortran side
+never knew `drotmg` writes: before the relay both sides were wrong together.
+The fixes the corpus *should* have seen, it mostly has no site for: no
+translated unit has several execution parts (only the bare `CLOUDSC` does),
+no constructor-parsed F77 call survives in any emitted module, and the one
+site that did change -- `polyroots`'s `ieee_is_nan(re_a)`, from an array
+subscript to a call -- is invisible to `rwset` either way. A verifier that
+executes nothing cannot see a translation stop crashing, which is what this
+relay mostly did.
 
 **Done when:** the engine passes its tests with the CESM extension
 uninstalled, and freeCAM's validation gate runs through `Verifier` rather than its own
