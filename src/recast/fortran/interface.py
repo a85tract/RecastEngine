@@ -327,17 +327,25 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
 
 
 def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
-    """Every type declaration in a specification part, interface bodies and all.
+    """Type declarations that belong to THIS scope: the direct children of
+    the specification part.
 
     A declaration inside an ``interface`` block declares a dummy argument of
-    somebody *else's* procedure, so reading them as module state gives a
-    module of nothing but abstract interfaces two dozen variables named ``x``
-    and ``f``, several of them twice. This reads them anyway, because the
-    pipeline this was migrated from does and its answers are the ones a
-    bit-exact gate has been run against. Reported upstream rather than fixed
-    here; relay the fix when it lands.
+    somebody *else's* procedure. Walking the subtree picked those up too, and
+    a module of nothing but abstract interfaces reported two dozen variables
+    named ``x`` and ``f`` as its state, several of them twice -- and then
+    subtracted a host's ``me`` from an internal function's host variables
+    because a module "state" of that name existed. The pipeline's fix for
+    its #7, relayed.
     """
-    return [parse_decl_stmt(d) for d in walk(spec_part, f03.Type_Declaration_Stmt)]
+    parts = spec_part if isinstance(spec_part, (list, tuple)) else [spec_part]
+    return [
+        parse_decl_stmt(child)
+        for part in parts
+        if part is not None
+        for child in (part.children or [])
+        if isinstance(child, f03.Type_Declaration_Stmt)
+    ]
 
 
 def dimension_stmt_shapes(spec_part: Any) -> dict[str, dict[str, Any]]:
