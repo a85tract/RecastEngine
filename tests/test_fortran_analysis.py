@@ -1366,3 +1366,58 @@ end module hosted
     reads = set().union(*(set(b["reads"]) for b in rwset.block_rwsets(node, scope)))
     assert "norm" not in reads, "a call is not a read of its own name"
     assert {"n", "a"} <= reads
+
+
+ASSOCIATE = """\
+module assoc_mod
+  use precision_mod, only: r8 => wp_r8
+  implicit none
+  type inst_t
+    real(r8), pointer :: dpai(:,:)
+    real(r8), pointer :: cp(:,:)
+  end type inst_t
+contains
+  subroutine heat(n, filter, inst)
+    integer, intent(in) :: n
+    integer, intent(in) :: filter(:)
+    type(inst_t), intent(inout) :: inst
+    integer :: fp, p
+    real(r8) :: w
+    associate ( &
+    dpai => inst%dpai , &
+    cp   => inst%cp     &
+    )
+    do fp = 1, n
+       p = filter(fp)
+       if (dpai(p,1) > 0._r8) then
+          w = dpai(p,1) * 2._r8
+          cp(p,1) = w
+       end if
+    end do
+    end associate
+  end subroutine heat
+end module assoc_mod
+"""
+
+
+def test_an_associate_binds_its_aliases_and_analyses_its_body(tmp_path: Path) -> None:
+    """``associate (a => x%c)`` fell through to the conservative fallback,
+    which reported every name in the whole construct as a read and none as a
+    write -- so every block of a model whose physics is written this way
+    (CLM-ml: all of it) failed the static gate. The emitter spells the
+    construct as alias assignments followed by the body, and the sets here
+    now say the same."""
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "assoc.f90", ASSOCIATE)
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == "heat"
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "heat"))}
+    (block,) = blocks.values()
+    assert {"dpai", "cp", "fp", "p", "w"} <= set(block["writes"])
+    assert {"inst", "n", "filter", "dpai", "w"} <= set(block["reads"])
+    assert "cp" not in block["reads"]

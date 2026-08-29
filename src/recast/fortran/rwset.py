@@ -420,6 +420,24 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 elif body and not isinstance(child, (f03.Cycle_Stmt, f03.Exit_Stmt)):
                     visit(child)
 
+        elif isinstance(stmt, f03.Associate_Construct):
+            # ``associate (a => x%comp, ...)``: each association binds a name
+            # to a selector, which is how the emitter spells it too -- an
+            # assignment of the alias from the selector's root -- so the alias
+            # is a write and the selector's roots and subscripts are reads.
+            # The body then uses the aliases as ordinary variables. Falling
+            # through to the fallback below instead reported every name in
+            # the whole construct as a read and none as a write, which failed
+            # every block of a model whose physics is written this way.
+            for child in stmt.children:
+                if isinstance(child, f03.Associate_Stmt):
+                    for association in walk(child, f03.Association):
+                        alias, _, selector = association.children
+                        writes.add(str(alias).lower())
+                        reads.update(expr_reads(selector, scope))
+                elif not isinstance(child, f03.End_Associate_Stmt):
+                    visit(child)
+
         else:
             # Conservative fallback. Over-reporting a read costs a block a
             # review; under-reporting a write costs a wrong answer nobody sees.
