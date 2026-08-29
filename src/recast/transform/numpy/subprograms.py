@@ -782,12 +782,28 @@ class Subprograms:
                 f"_make_{type_name}()" if type_name in semantics.types else "_new_derived()"
             )
             return [f"    {name} = {constructor}"]
+        initializer = local.get("init_expr")
+        if initializer and local["dtype"] in ("float64", "float32", "int32", "int64", "bool"):
+            # ``real(r8) :: minlwp = -2._r8``: the declaration's value, not
+            # the UB-guard zero. (Fortran also SAVEs such a local; a value
+            # the body never changes is the same on every call, and one it
+            # does change is a deviation this note is the record of.)
+            own = frozenset(p["name"].lower() for p in semantics.subprogram["local_parameters"])
+            try:
+                value = self._parameter_value(str(initializer).strip(), own, statements)
+            except REFUSED as refusal:
+                value = None
+                note = f"  # initializer not translated ({refusal})"
+            if value is not None:
+                return [f"    {name} = {value}  # declared initializer"]
+        else:
+            note = ""
         if local["dtype"] in ("float64", "float32"):
-            return [f"    {name} = 0.0"]
+            return [f"    {name} = 0.0{note}"]
         if local["dtype"] in ("int32", "int64"):
-            return [f"    {name} = 0"]
+            return [f"    {name} = 0{note}"]
         if local["dtype"] == "bool":
-            return [f"    {name} = False"]
+            return [f"    {name} = False{note}"]
         if local["dtype"] == "str":
             return [f"    {name} = ''"]
         return []
