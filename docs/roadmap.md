@@ -398,12 +398,16 @@ intrinsics `iand`/`ior`/`ieor`/`ishft` operated on unbounded Python ints
 and kept bits Fortran drops, so `mt19937_64` was wrong past its first
 tempering step -- is relayed into the runtime: the width comes from the
 operands' dtype, a bare literal stays unbounded as before, and `ishft` is a
-logical shift within it. #6 is relayed as a finding only: upstream now
-queues a type-bound call *with arguments* and keeps the argument-less
-`p%finalize()` a `pass`, so the two `vertical_diffusion` differences stand
-exactly as the table above describes them, this engine refusing what the
-pipeline drops. No differential moves -- the runtime is in the header --
-and the corpus table is unchanged; its baseline is not re-recorded.
+logical shift within it. #6 is relayed as a rule: a type-bound call
+carrying arguments is value-bearing and refused with upstream's reason,
+and the argument-less `p%finalize()` is the `pass` the pipeline emits
+rather than the refusal this engine used to answer. **That closes
+`emit_diff`: `different=0` over 276 subprograms, 18,384 lines and 26
+modules**, the last two differences on CAM gone and `vertical_diffusion`
+compared in full -- 6 subprograms and 611 lines where the refusal had
+left it at 5 and 250. The runtime is in the header, so #15 moves no
+differential; the corpus table is unchanged by either, and its baseline
+is not re-recorded.
 
 ### The replay oracle, and the direction it made the gate run
 

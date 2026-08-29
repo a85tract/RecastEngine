@@ -1520,8 +1520,25 @@ class Statements:
 
     def _call(self, node: Any, indent: int) -> list[str]:
         pad = "    " * indent
-        name = str(node.children[0]).lower()
         items = list(node.children[1].children) if node.children[1] is not None else []
+        designator = node.children[0]
+        if isinstance(designator, f03.Procedure_Designator):
+            # ``call obj%method(...)``. The receiver's methods are not
+            # modelled -- ``_new_derived`` has no methods -- so a call would
+            # crash. A framework stub answers first; a call carrying
+            # arguments is value-bearing (``obj%pack(state, buf)`` writes
+            # through ``buf``) and is refused rather than dropped (#6); an
+            # argument-less one passes no value and stays the no-op the
+            # pipeline emits.
+            obj = str(designator.children[0]).lower()
+            method = str(designator.children[2]).lower()
+            stub = self.stubs.get(f"{obj}.{method}")
+            if stub is not None:
+                return [f"{pad}{stub}  # {obj}%{method} (infra stub)"]
+            if items:
+                raise NoRule(f"type-bound call {obj}%{method} with arguments")
+            return [f"{pad}pass  # {obj}%{method} (OOP method stub)"]
+        name = str(designator).lower()
         transform = self.call_transforms.get(name)
         if transform is not None:
             # A call whose meaning is a framework's: answered by the package
