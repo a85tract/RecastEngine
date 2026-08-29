@@ -121,7 +121,6 @@ def derived_array(type_name: str, extents: list[str], known: dict[str, Any]) -> 
 
 UNIT_NAME = re.compile(r"[a-z_]\w*")
 
-
 @dataclass
 class Statements:
     """Render Fortran statements for one subprogram.
@@ -1606,13 +1605,18 @@ class Statements:
             passes = formal["intent"] in ("IN", "INOUT", "UNKNOWN") or bool(
                 formal.get("buffer") and self.buffer_out_arrays
             )
+            view = None
             if passes and not self.is_optional_output(formal):
                 # A buffer formal is a parameter of the callee as well as one
                 # of its returns: the callee writes into the storage this
                 # caller owns, so the actual has to be passed in too.
-                inputs.append(self._input_argument(formal, actual, substitutions, inputs))
+                argument, view = self._input_argument(formal, actual, substitutions, inputs)
+                inputs.append(argument)
             if formal["intent"] in ("OUT", "INOUT"):
-                outputs.append(self._output_target(actual))
+                # A sequence-associated element actual: the callee's array IS
+                # the view into this caller's buffer, so the result comes
+                # back through that view (#27).
+                outputs.append(f"{view}[...]" if view else self._output_target(actual))
 
         elemental = any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or []))
         broadcasts = False
@@ -1659,8 +1663,11 @@ class Statements:
 
     def _input_argument(
         self, formal: dict[str, Any], actual: Any, substitutions: dict[str, str], inputs: list[str]
-    ) -> str:
+    ) -> tuple[str, str | None]:
+        """The rendered actual, and -- when it is a sequence-associated
+        element -- the view of the caller's storage it stands for."""
         rendered = self.expressions.render(actual)
+        view = None
         formal_dims = formal.get("dims") or []
         if len(formal_dims) >= 1 and all(d.get("ub") for d in formal_dims):
             try:
@@ -1680,9 +1687,9 @@ class Statements:
                 and isinstance(actual, f03.Part_Ref)
                 and self.semantics.is_array(str(actual.children[0]).lower())
             ):
-                rendered = self._sequence_association(actual, formal_dims, substitutions)
+                rendered = view = self._sequence_association(actual, formal_dims, substitutions)
         keyword = formal["optional"] or any("=" in a for a in inputs)
-        return f"{pysafe(formal['name'])}={rendered}" if keyword else rendered
+        return (f"{pysafe(formal['name'])}={rendered}" if keyword else rendered), view
 
     def _output_target(self, actual: Any) -> str:
         if isinstance(actual, f03.Name):
@@ -1810,8 +1817,16 @@ class Statements:
             for at in range(len(actual_dims)):
                 if at < len(formal_dims):
                     parts.append(":")
-                else:
+                    continue
+                # A trailing scalar subscript shifts by the axis's DECLARED
+                # lower bound, not a blanket 1 (#39): an element ``a(1,1,ie)``
+                # of a local ``a(np,np,nets:nete)`` is ``a[:, :, ie - nets]``.
+                low = actual_dims[at].get("lb", "1")
+                if low in (None, "1", ":"):
                     parts.append(self._shifted(subscripts[at]))
+                else:
+                    rendered = self.expressions.render(subscripts[at])
+                    parts.append(f"({rendered}) - ({self.bound(low)})")
             return f"{self.names.symbol(name)}[{', '.join(parts)}]"
 
         shape = ", ".join(
