@@ -124,7 +124,40 @@ def wrappers_for(
         names.append(wrapper)
         use_line = [f"  use {module}, only: {call_name}"] if is_module else []
         external_line = [] if is_module else [f"  external {call_name}"]
-        if sub["kind"] == "function":
+        result_dims = sub.get("result_dims") or [] if sub["kind"] == "function" else []
+        if result_dims:
+            # An array-valued function result needs its extents too, spelled
+            # the way a dummy's are, and f2py cannot wrap an array-valued
+            # *function*: the wrapper becomes a subroutine whose ``res`` is
+            # an intent(out) dummy. An extent naming neither an argument nor
+            # a local parameter becomes a hidden integer dummy (#17).
+            if any(d.get("ub") is None for d in result_dims):
+                raise ConfigError(
+                    f"{name}: array-valued result with a deferred/assumed extent "
+                    "is not wrappable; wrap it by hand or drop the subprogram from the gate"
+                )
+            result = FORTRAN_TYPES.get(sub["result_dtype"], "real(8)")
+            extents = [str(d["ub"]) for d in result_dims]
+            hidden: list[str] = []
+            for extent in extents:
+                for token in re.findall(r"[A-Za-z_]\w*", extent):
+                    if token not in argument_names and token not in (parameters or {}):
+                        if token not in hidden:
+                            hidden.append(token)
+            declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
+            pieces += [
+                f"subroutine {wrapper}({', '.join([*argument_names, *hidden, 'res'])})",
+                *use_line,
+                "  implicit none",
+                *parameter_lines,
+                *declarations,
+                f"  {result}, intent(out) :: res({', '.join(extents)})",
+                *([f"  {result}, external :: {call_name}"] if not is_module else []),
+                f"  res = {call_name}({', '.join(argument_names)})",
+                f"end subroutine {wrapper}",
+                "",
+            ]
+        elif sub["kind"] == "function":
             result = FORTRAN_TYPES.get(sub["result_dtype"], "real(8)")
             pieces += [
                 f"function {wrapper}({', '.join(argument_names)}) result(res)",

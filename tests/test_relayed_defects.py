@@ -756,3 +756,64 @@ def test_a_device_function_turns_a_character_out_into_an_error_code(tmp_path: Pa
     )
     assert "errstring = " not in body.replace("_errflag_errstring = ", "")
     assert "return _errflag_errstring" in body
+
+
+# --- #17: an array-valued function through the f2py oracle --------------------
+
+
+def _wrapper_record(result_dims: list[dict[str, str]] | None, *args: str) -> dict[str, Any]:
+    return {
+        "module": "m",
+        "subprograms": [
+            {
+                "name": "f",
+                "kind": "function",
+                "args": [
+                    {"name": a, "dtype": "float64" if a != "num" else "int32", "intent": "IN"}
+                    for a in args
+                ],
+                "result": "y",
+                "result_dtype": "float64",
+                "result_dims": result_dims,
+            }
+        ],
+    }
+
+
+def test_an_array_valued_result_is_declared_with_its_extents() -> None:
+    """``x(num)`` came out as a scalar result, and the wrapper did not compile
+    (``Incompatible ranks 0 and 1``) -- #17. f2py cannot wrap an array-valued
+    *function* either, so the wrapper is a subroutine with ``res`` an
+    intent(out) dummy carrying the extents."""
+    from recast.oracle.f2py import wrappers_for
+
+    text, names = wrappers_for(_wrapper_record([{"lb": "1", "ub": "num"}], "start", "num"), ["f"])
+    assert names == ["w_f"]
+    assert "subroutine w_f(start, num, res)" in text
+    assert "real(8), intent(out) :: res(num)" in text
+    assert "res = f(start, num)" in text
+
+
+def test_a_result_extent_that_names_no_argument_becomes_a_hidden_dummy() -> None:
+    from recast.oracle.f2py import wrappers_for
+
+    text, _ = wrappers_for(_wrapper_record([{"lb": "1", "ub": "n"}], "x"), ["f"])
+    assert "subroutine w_f(x, n, res)" in text
+    assert "integer, intent(in) :: n" in text
+    assert "real(8), intent(out) :: res(n)" in text
+
+
+def test_a_deferred_result_extent_refuses_to_wrap() -> None:
+    from recast.errors import ConfigError
+    from recast.oracle.f2py import wrappers_for
+
+    with pytest.raises(ConfigError, match="deferred/assumed extent"):
+        wrappers_for(_wrapper_record([{"lb": "1", "ub": None}], "x"), ["f"])
+
+
+def test_a_scalar_result_is_wrapped_as_before() -> None:
+    from recast.oracle.f2py import wrappers_for
+
+    text, _ = wrappers_for(_wrapper_record(None, "x"), ["f"])
+    assert "function w_f(x) result(res)" in text
+    assert "res(" not in text
