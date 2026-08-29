@@ -480,22 +480,60 @@ def _f_modulo(a: Any, p: Any) -> Any:
     return a % p
 
 
+def _int_bits(*vals: Any) -> int | None:
+    """The widest integer KIND among the operands, in bits, or ``None`` when
+    none carries a dtype -- a bare literal -- in which case the operation
+    stays unbounded, as it always was.
+
+    Fortran's bit intrinsics work on the operand's KIND, 32- or 64-bit two's
+    complement; a Python int is unbounded and keeps bits Fortran drops, which
+    put ``mt19937_64`` wrong past its first tempering step (#15)."""
+    width = None
+    for v in vals:
+        dt = getattr(v, "dtype", None)
+        if dt is not None and np.issubdtype(dt, np.integer):
+            b = dt.itemsize * 8
+            width = b if width is None else max(width, b)
+    return width
+
+
+def _wrap_signed(v: Any, bits: int | None) -> Any:
+    if bits is None:
+        return int(v)
+    v = int(v) & ((1 << bits) - 1)
+    if v >= (1 << (bits - 1)):
+        v -= 1 << bits
+    return v
+
+
 def _f_iand(a: Any, b: Any) -> Any:
-    return int(a) & int(b)
+    bits = _int_bits(a, b)
+    m = (1 << bits) - 1 if bits is not None else -1
+    return _wrap_signed((int(a) & m) & (int(b) & m), bits)
 
 
 def _f_ior(a: Any, b: Any) -> Any:
-    return int(a) | int(b)
+    bits = _int_bits(a, b)
+    m = (1 << bits) - 1 if bits is not None else -1
+    return _wrap_signed((int(a) & m) | (int(b) & m), bits)
 
 
 def _f_ieor(a: Any, b: Any) -> Any:
-    return int(a) ^ int(b)
+    bits = _int_bits(a, b)
+    m = (1 << bits) - 1 if bits is not None else -1
+    return _wrap_signed((int(a) & m) ^ (int(b) & m), bits)
 
 
 def _f_ishft(i: Any, shift: Any) -> Any:
-    """Fortran ISHFT: positive shift = left, negative = right."""
+    """Fortran ISHFT: a LOGICAL shift (zero-fill), positive = left, negative
+    = right, within the operand's bit width (#15)."""
     s = int(shift)
-    return (int(i) << s) if s >= 0 else (int(i) >> (-s))
+    bits = _int_bits(i)
+    v = int(i)
+    if bits is not None:
+        v &= (1 << bits) - 1  # the unsigned view, for a logical shift
+    r = (v << s) if s >= 0 else (v >> (-s))
+    return _wrap_signed(r, bits)
 
 
 def _f_scan(string: str, set_chars: str) -> int:

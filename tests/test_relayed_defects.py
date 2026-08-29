@@ -969,3 +969,25 @@ def test_an_auto_stub_import_nothing_binds_to_is_dropped(tmp_path: Path) -> None
     kept = render(keep_unbound_stub_imports=True)
     assert "import some_lib_numpy as _some_lib" in kept
     assert "import ext_lib_numpy as _ext_lib" in kept
+
+
+# --- #15: bit intrinsics at the operand's width --------------------------------
+
+
+def test_bit_intrinsics_wrap_at_the_operand_width() -> None:
+    """``ishft``/``iand``/``ieor`` on a 64-bit integer kept the bits Fortran
+    drops, because a Python int is unbounded -- ``mt19937_64`` was wrong past
+    its first tempering step (#15). The width comes from the operand's dtype;
+    a bare literal stays unbounded, as before."""
+    ns = _runtime_namespace()
+    x = np.int64(123456789012345)
+    got = ns["_f_ieor"](x, ns["_f_iand"](ns["_f_ishft"](x, 37), np.int64(-2270628950310912)))
+    want = int(
+        np.bitwise_xor(
+            x, np.bitwise_and(np.left_shift(x, np.int64(37)), np.int64(-2270628950310912))
+        )
+    )
+    assert got == want == -4489070231795409031
+    assert ns["_f_ishft"](np.int32(1), 31) == -2147483648, "wraps to the sign bit at 32"
+    assert ns["_f_ishft"](np.int32(-1), -1) == 2147483647, "a logical right shift zero-fills"
+    assert ns["_f_ishft"](1, 40) == 1 << 40, "a literal is unbounded, as before"
