@@ -535,26 +535,29 @@ class Subprograms:
         if subprogram["kind"] != "function":
             return []
         lines = []
+        # The emitted spelling, not the source one: ``result(lambda)`` is
+        # legal Fortran, and every other mention of the result is renamed.
+        result = pysafe(subprogram["result"])
         if subprogram.get("result_dims"):
             shape = ", ".join(
                 statements.bound(d["ub"]) if d.get("ub") else "1" for d in subprogram["result_dims"]
             )
-            lines.append(f"    {subprogram['result']} = np.zeros(({shape},), dtype=np.float64)")
+            lines.append(f"    {result} = np.zeros(({shape},), dtype=np.float64)")
         elif subprogram["result_dtype"] in ("float64", "float32"):
-            lines.append(f"    {subprogram['result']} = 0.0")
+            lines.append(f"    {result} = 0.0")
         if subprogram["result_dtype"] in ("int32", "int64"):
-            lines.append(f"    {subprogram['result']} = 0")
+            lines.append(f"    {result} = 0")
         if subprogram["result_dtype"] == "bool":
-            lines.append(f"    {subprogram['result']} = False")
+            lines.append(f"    {result} = False")
         if subprogram["result_dtype"] == "str":
-            lines.append(f"    {subprogram['result']} = ''")
+            lines.append(f"    {result} = ''")
         derived = DERIVED.match(str(subprogram["result_dtype"]))
         if derived is not None:
             type_name = derived.group(1).lower()
             constructor = (
                 f"_make_{type_name}()" if type_name in semantics.types else "_new_derived()"
             )
-            lines.append(f"    {subprogram['result']} = {constructor}")
+            lines.append(f"    {result} = {constructor}")
         return lines
 
     def _prologue(

@@ -362,3 +362,36 @@ def test_a_boz_local_parameter_is_its_integer_value(source: Path) -> None:
     token pass and came out as the bare text upper-cased."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
     assert "    mask = 255" in lines
+
+
+KEYWORD_RESULT = """\
+module kw_mod
+  use precision_mod, only: r8 => wp_r8
+  implicit none
+contains
+  function latent(t) result(lambda)
+    real(r8), intent(in) :: t
+    real(r8) :: lambda
+    if (t > 273.15_r8) then
+      lambda = 2.5e6_r8
+    else
+      lambda = 2.8e6_r8
+    end if
+  end function latent
+end module kw_mod
+"""
+
+
+def test_a_result_named_after_a_python_keyword_is_renamed_in_its_initializer(
+    tmp_path: Path,
+) -> None:
+    """``result(lambda)`` is legal Fortran and ``lambda = 0.0`` is not Python.
+    The uses and the return were already spelled ``lambda_``; the UB-guard
+    initializer emitted the source name and the file did not parse
+    (CLM-ml's ``MLWaterVaporMod/LatVap``)."""
+    path = tmp_path / "kw_mod.f90"
+    path.write_text(KEYWORD_RESULT)
+    lines, _ = build(path).render(node_of(path, "latent"), "latent")
+    assert "    lambda_ = 0.0" in lines
+    assert not any(line.strip().startswith("lambda =") for line in lines)
+    compile("\n".join(lines), "<latent>", "exec")
