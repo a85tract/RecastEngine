@@ -1284,21 +1284,22 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/9 blocks disagree: d_init/B001, d_init/B002, c_init/B001, c_init/B002",
+       "detail": "9 blocks match",
        "metrics": {
         "blocks_checked": 9,
         "blocks_deferred": 0,
-        "blocks_matched": 5,
+        "blocks_matched": 9,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1592,11 +1593,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "16/627 blocks disagree: dqagie/B013, dqagpe/B023, dqagse/B012, dqawfe/B009, dqawoe/B049 (+11 more)",
+       "detail": "14/627 blocks disagree: dqagie/B013, dqagpe/B023, dqagse/B012, dqawfe/B009, dqawoe/B049 (+9 more)",
        "metrics": {
         "blocks_checked": 627,
         "blocks_deferred": 1,
-        "blocks_matched": 611,
+        "blocks_matched": 613,
         "blocks_waived": 0
        },
        "passed": false

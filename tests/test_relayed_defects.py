@@ -1069,3 +1069,51 @@ end module
     assert statements.render(nodes[0], 0) == ["n = _f_index(LETTERS, s[0:1])"]
     assert statements.render(nodes[1], 0) == ["m = _f_index(LETTERS, s)"]
     assert statements.render(nodes[2], 0) == ["k = _f_len_trim(s[1:I_3])"]
+
+
+# --- #7: declarations inside an interface body are not module state ------------
+
+ABSTRACT_INTERFACE = """\
+module solver_mod
+implicit none
+integer, parameter :: wp = selected_real_kind(12)
+type :: root_solver
+  real(wp) :: atol = 1.0e-9_wp, rtol = 1.0e-9_wp
+end type
+abstract interface
+  function func(me, x) result(f)
+    import :: root_solver, wp
+    class(root_solver), intent(inout) :: me
+    real(wp), intent(in) :: x
+    real(wp) :: f
+  end function func
+end interface
+real(wp) :: real_state
+contains
+subroutine bracket(me, b, tol)
+  class(root_solver), intent(inout) :: me
+  real(wp), intent(in) :: b
+  real(wp), intent(out) :: tol
+  tol = get_tolerance(b)
+contains
+  pure function get_tolerance(b) result(tol)
+    real(wp), intent(in) :: b
+    real(wp) :: tol
+    tol = 2.0_wp * (me%atol + 2.0_wp * abs(b) * me%rtol)
+  end function get_tolerance
+end subroutine bracket
+end module
+"""
+
+
+def test_an_interface_body_declares_no_module_state(tmp_path: Path) -> None:
+    """``me``, ``x`` and ``f`` inside the abstract interface are dummies of
+    somebody else's procedure. Walking the whole specification part reported
+    them as module state, and then ``get_tolerance``'s host variable ``me``
+    was subtracted as "state", so the emitted function referenced a name it
+    was never passed (upstream #7, fixed at a88abe935 and not carried until
+    the corpus's read/write check found it)."""
+    record = interface.extract(_write(tmp_path, "solver", ABSTRACT_INTERFACE))
+    assert [s["name"] for s in record["module_state"]] == ["real_state"]
+    inner = next(s for s in record["subprograms"] if s["name"] == "get_tolerance")
+    assert "me" in (inner.get("host_vars") or [])

@@ -423,6 +423,24 @@ translator #43 -- an internal function's result variable counted as
 host-associated, which both sides share -- and left the rest of the
 failing blocks catalogued for a later pass.
 
+**And one hunk of `a88abe935` itself that the first relay never took.**
+The pinned revision's own commit closed upstream #7 -- a declaration
+inside an interface body is a dummy of somebody else's procedure, not
+module state -- and `collect_decls` here still walked the whole
+specification part, with a docstring saying to relay the fix when it
+landed. It had landed. `roots`' `root_module` reported thirteen
+"state" variables from its abstract interfaces, and then subtracted
+the host's `me` from an internal function's host variables because a
+state of that name existed, so the emitted function referenced a name it
+was never passed. Relayed: the direct children of the specification
+part, as upstream. `emit_diff` stays at 0 and its line count moves 18,384
+to 18,378, six state lines CAM never had; `golden_diff --live` is clean,
+so the interface records agree too; the corpus's read/write check goes
+5,203 to 5,209 blocks matched. The same commit's other half, #29
+(submodules), has no counterpart here either -- `fftpack`'s eight
+`submodule` files are outside its case file set for that reason -- and
+is the next relay, not this one.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.
