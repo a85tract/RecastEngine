@@ -70,11 +70,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "47/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+42 more)",
+       "detail": "23/319 blocks disagree: defcmn/B012, defcmn/B019, defcmn/B030, defcmn/B031, defcmn/B032 (+18 more)",
        "metrics": {
         "blocks_checked": 319,
         "blocks_deferred": 9,
-        "blocks_matched": 272,
+        "blocks_matched": 296,
         "blocks_waived": 0
        },
        "passed": false
@@ -544,11 +544,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "21/95 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1n_real/B001, hankel1v_real/B001, hankel1v_complex/B004 (+16 more)",
+       "detail": "18/95 blocks disagree: besseljv_real/B001, besselyv_real/B001, hankel1n_real/B001, hankel1v_real/B001, hankel1v_complex/B004 (+13 more)",
        "metrics": {
         "blocks_checked": 95,
         "blocks_deferred": 16,
-        "blocks_matched": 74,
+        "blocks_matched": 77,
         "blocks_waived": 0
        },
        "passed": false
@@ -842,11 +842,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "12/66 blocks disagree: csplder/B005, csplantider/B004, cspl_interp/B002, spline_coeff/B004, cspleps/B003 (+7 more)",
+       "detail": "10/66 blocks disagree: cspl_interp/B002, spline_coeff/B004, cspleps/B003, csplint/B006, csplint/B012 (+5 more)",
        "metrics": {
         "blocks_checked": 66,
         "blocks_deferred": 10,
-        "blocks_matched": 54,
+        "blocks_matched": 56,
         "blocks_waived": 0
        },
        "passed": false
@@ -918,11 +918,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/29 blocks disagree: upper/B001, lower/B001, swapcase/B001, startswith/B001, endswith/B001 (+9 more)",
+       "detail": "1/29 blocks disagree: readf/B003",
        "metrics": {
         "blocks_checked": 29,
         "blocks_deferred": 2,
-        "blocks_matched": 15,
+        "blocks_matched": 28,
         "blocks_waived": 0
        },
        "passed": false
@@ -1021,11 +1021,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/34 blocks disagree: histogram/B005, get_bins/B001, get_bins/B008, width_doane/B005, width_doane/B006",
+       "detail": "2/34 blocks disagree: histogram/B005, get_bins/B001",
        "metrics": {
         "blocks_checked": 34,
         "blocks_deferred": 1,
-        "blocks_matched": 29,
+        "blocks_matched": 32,
         "blocks_waived": 0
        },
        "passed": false
@@ -1711,11 +1711,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "24/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+19 more)",
+       "detail": "23/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+18 more)",
        "metrics": {
         "blocks_checked": 111,
         "blocks_deferred": 2,
-        "blocks_matched": 87,
+        "blocks_matched": 88,
         "blocks_waived": 0
        },
        "passed": false

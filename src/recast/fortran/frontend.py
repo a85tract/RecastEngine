@@ -332,7 +332,7 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import STD, digest
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
-        from recast.fortran.interface import _scope_of, subprogram_key
+        from recast.fortran.interface import _scope_of, companion_externals, subprogram_key
         from recast.fortran.rwset import block_rwsets, scope_for
 
         path = self._source_of(unit, Path(root))
@@ -365,6 +365,24 @@ class FortranFrontend(Frontend):
         wanted = self._selected(unit, defined)
 
         subprograms = [s for s in record["subprograms"] if subprogram_key(s) in wanted]
+
+        # The read/write scope has to know the sibling modules' procedures --
+        # which names are calls, and which positions they write -- or every
+        # call into one scores as reads of its actuals and no write. That is
+        # the fact the pipeline's ``--companions`` carried into its check, and
+        # ``companion_externals`` derives it from each sibling's own record;
+        # a use-rename is looked up under the local spelling the call uses.
+        # The operator's table wins where both name a procedure.
+        companions, unresolved = self._companions(record, path, Path(root))
+        externals = dict(self.externals)
+        for companion in companions:
+            table = companion_externals(companion["record"])
+            for local, remote in companion["renames"].items():
+                if remote in table:
+                    table[local] = table[remote]
+            for name, entry in table.items():
+                externals.setdefault(name, entry)
+
         callgraph: dict[str, list[str]] = {}
         effects: dict[str, Any] = {}
         for sub in subprograms:
@@ -373,7 +391,7 @@ class FortranFrontend(Frontend):
             callgraph[sub_uid] = [f"{module_uid}/{c}" for c in sub["calls"]] + _external_calls(
                 nodes[sub_name], plain_names
             )
-            scope = scope_for(record, sub_name, externals=self.externals)
+            scope = scope_for(record, sub_name, externals=externals)
             effects[sub_uid] = {
                 "reads": sub["module_state_read"],
                 "writes": sub["module_state_written"],
@@ -384,7 +402,6 @@ class FortranFrontend(Frontend):
                 "blocks": block_rwsets(nodes[sub_name], scope),
             }
 
-        companions, unresolved = self._companions(record, path, Path(root))
         return Facts(
             unit=unit.uid,
             interface={**record, "subprograms": subprograms},
