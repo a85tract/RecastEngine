@@ -307,8 +307,14 @@ end module blas_mod
 """,
     )
     args = {a["name"]: a for a in interface.extract(src)["subprograms"][0]["args"]}
-    assert args["dx"]["dims"] == [{"lb": "1", "ub": None}]
-    assert args["work"]["dims"] == [{"lb": "1", "ub": "3"}, {"lb": "1", "ub": None}]
+    # The assumed-size dimension carries a marker: its ``ub`` of None is
+    # otherwise indistinguishable from an assumed-shape ``(:)``, and only
+    # assumed-size means the caller owns storage the callee cannot size.
+    assert args["dx"]["dims"] == [{"lb": "1", "ub": None, "assumed_size": True}]
+    assert args["work"]["dims"] == [
+        {"lb": "1", "ub": "3"},
+        {"lb": "1", "ub": None, "assumed_size": True},
+    ]
 
 
 def test_generic_interfaces_map_to_their_specific_procedures(tmp_path: Path) -> None:

@@ -112,7 +112,12 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
         leading, lower = spec_node.children
         if leading is not None:
             dims.extend(dims_of(leading) or [])
-        dims.append({"lb": str(lower) if lower is not None else "1", "ub": None})
+        # Marked, because an assumed-size ``ub`` of None is otherwise
+        # indistinguishable from an assumed-shape one, and only the first
+        # means the caller owns storage the callee cannot size.
+        dims.append(
+            {"lb": str(lower) if lower is not None else "1", "ub": None, "assumed_size": True}
+        )
         return dims
     children = getattr(spec_node, "children", None)
     if children is None:
@@ -913,6 +918,9 @@ def extract(
         for s in subs
     ]
     _infer_write_only_intents(subs, subprograms)
+    # After the inference, not before: an intent this pass just gave a
+    # dummy is one this rule has to see.
+    _mark_buffer_out_arrays(subprograms)
     _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
@@ -1047,6 +1055,59 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
             write_only = mentions.get(argument["name"], 0) == written
             argument["intent"] = "OUT" if write_only else "INOUT"
             argument["intent_inferred"] = True
+
+
+def _mark_buffer_out_arrays(records: list[dict[str, Any]]) -> None:
+    """Mark an intent(out) ARRAY dummy the callee cannot size as the caller's.
+
+    Fortran passes array storage, so an ``intent(out)`` array whose extent
+    this subprogram cannot derive was allocated by the caller and has to stay
+    a parameter -- returned like an INOUT rather than created here. It cannot
+    derive one when the dummy is assumed-size (``a(*)``), or assumed-shape
+    with neither a same-rank assumed-shape IN/INOUT donor to take the shape
+    from nor explicit-bound IN arguments covering every dimension.
+
+    Without the mark the return convention drops the argument from the
+    signature and allocates a fresh array, so the caller's buffer is never
+    written and every call is built with the wrong arity.
+    """
+    for record in records:
+        args = record.get("args") or []
+        for argument in args:
+            if (
+                argument.get("intent") != "OUT"
+                or not argument.get("dims")
+                or argument.get("optional")
+                or argument.get("buffer")
+            ):
+                continue
+            dims = argument["dims"]
+            if any(d.get("assumed_size") for d in dims):
+                argument["buffer"] = True
+                continue
+            if not all(d.get("ub") is None for d in dims):
+                continue
+            rank = len(dims)
+            donor = any(
+                other.get("intent") in ("IN", "INOUT")
+                and len(other.get("dims") or []) == rank
+                and any(d.get("ub") is None for d in other["dims"])
+                for other in args
+            )
+            if donor:
+                continue
+            explicit = [
+                other
+                for other in args
+                if other.get("intent") in ("IN", "INOUT")
+                and other.get("dims")
+                and all(d.get("ub") is not None for d in other["dims"])
+            ]
+            covered = all(
+                any(axis < len(other["dims"]) for other in explicit) for axis in range(rank)
+            )
+            if not covered:
+                argument["buffer"] = True
 
 
 def _host_associate(
