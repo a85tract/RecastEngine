@@ -42,6 +42,62 @@ candidate it might have matched."""
 
 ARITHMETIC = frozenset({"+", "-", "*", "/", "**"})
 
+F77_SPECIFIC_TO_GENERIC = {
+    "datan2": "atan2",
+    "dsign": "sign",
+    "dmod": "mod",
+    "dacos": "acos",
+    "dasin": "asin",
+    "dcosh": "cosh",
+    "dsinh": "sinh",
+    "dtanh": "tanh",
+    "dtan": "tan",
+    "dint": "aint",
+    "dnint": "anint",
+    "amax1": "max",
+    "amin1": "min",
+    "dmax1": "max",
+    "dmin1": "min",
+    "max0": "max",
+    "min0": "min",
+    "amax0": "max",
+    "amin0": "min",
+    "amod": "mod",
+    "idint": "int",
+    "idnint": "nint",
+    "ifix": "int",
+    "iabs": "abs",
+    "isign": "sign",
+    "idim": "dim",
+    "ddim": "dim",
+    "dabs": "abs",
+    "dsqrt": "sqrt",
+    "dsin": "sin",
+    "dcos": "cos",
+    "datan": "atan",
+    "dlog": "log",
+    "dlog10": "log10",
+    "dexp": "exp",
+    "alog": "log",
+    "alog10": "log10",
+    "dimag": "aimag",
+    "dconjg": "conjg",
+    "dcmplx": "cmplx",
+    "cdabs": "abs",
+    "zabs": "abs",
+    "cabs": "abs",
+}
+"""F77's specific intrinsic names, and the generic each one spells.
+
+These are alternate spellings, not separate intrinsics, so they are
+canonicalised once and every later question -- integer-ness, rank, the
+scalar/array split, the elemental dispatch -- is asked about the generic. A
+table mapping each specific name straight to Python would answer those
+questions about a name none of them know, which is how ``min0`` came out as
+Python's ``min`` while ``min`` itself went through the helper that carries
+Fortran's NaN semantics.
+"""
+
 INTEGER_RESULT_INTRINSICS = frozenset(
     {
         "int",
@@ -461,6 +517,25 @@ class Semantics:
         if children and len(children) == 3 and _is_operator(children[1], ARITHMETIC):
             return self.is_integer(children[0]) and self.is_integer(children[2])
         return False
+
+    def canonical_intrinsic(self, name: str) -> str:
+        """An F77 specific intrinsic name, as its generic.
+
+        Only when nothing in scope claims the name as a callable or an array:
+        a subprogram, a companion procedure, a procedure dummy or an array
+        declaration means ``dsign`` is that entity, and Fortran lets a program
+        declare one. A plain scalar declaration does not claim it -- that is
+        the F77 typing of an intrinsic, which declares no variable.
+        """
+        lowered = name.lower()
+        if lowered not in F77_SPECIFIC_TO_GENERIC:
+            return lowered
+        if lowered in self.procedures:
+            return lowered
+        declared = self.declaration(lowered)
+        if declared is not None and (declared.get("procedure") or declared.get("dims")):
+            return lowered
+        return F77_SPECIFIC_TO_GENERIC[lowered]
 
     def _arguments_are_integer(self, name: str, items: list[Any]) -> bool:
         """Whether an argument-typed intrinsic call is INTEGER here."""

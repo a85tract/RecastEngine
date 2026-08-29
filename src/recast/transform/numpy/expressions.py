@@ -34,7 +34,7 @@ from typing import Any
 
 from recast.fortran._parse import f03
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
-from recast.fortran.semantics import Semantics, Unanalyzable
+from recast.fortran.semantics import F77_SPECIFIC_TO_GENERIC, Semantics, Unanalyzable
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import (
     ARITH_OPS,
@@ -413,6 +413,19 @@ class Expressions:
         name = str(node.children[0]).lower()
         if self.semantics.is_array(name):
             return self.subscript(name, node.children[1])
+        # F77's specific spellings are the same intrinsic: canonicalise here,
+        # once, so the constant folder, the scalar/array split and the
+        # elemental dispatch below all see a name they know. A name that
+        # canonicalised is the intrinsic, whatever else is declared under it.
+        canonical = self.semantics.canonical_intrinsic(name)
+        if canonical == name and self._is_procedure_dummy(name, node.children[1]):
+            # The caller passed a callable, so this is a call whatever the
+            # rest of the name resolution would make of it. It precedes the
+            # intrinsic tables too: a dummy may be named after one, and the
+            # argument is the caller's, not ours.
+            arguments = self._arguments(_items(node.children[1]))
+            return f"{self.names.symbol(name)}({', '.join(arguments)})"
+        name = canonical
 
         items = _items(node.children[1])
         if name in self.semantics.generics:
@@ -444,7 +457,38 @@ class Expressions:
             # a call would emit a call to a name nothing defines; a subscript
             # is what the source spelling says, and what the pipeline settled
             # on.
+            declared = self.semantics.declaration(name)
+            if (
+                declared is not None
+                and not declared.get("dims")
+                and declared.get("dtype") not in (None, "UNDECLARED", "PROCEDURE", "str")
+                and not declared.get("procedure")
+            ):
+                # A DECLARED scalar cannot be subscripted (a CHARACTER one
+                # can: ``s(i:j)``), so this is a call to something no table
+                # knows -- an unmapped intrinsic -- and never ``name[args -
+                # 1]``. Undeclared names keep the fallback: the extractor has
+                # blind spots (host-associated arrays, duplicate subprogram
+                # names) where the name is a real array.
+                raise NoRule(f"unknown function or array {name!r}") from None
             return self.subscript(name, node.children[1])
+
+    def _is_procedure_dummy(self, name: str, arglist: Any) -> bool:
+        """Whether ``name(...)`` calls a callable this subprogram was passed.
+
+        Two ways in. ``EXTERNAL``, ``PROCEDURE`` and an explicit INTERFACE
+        body say so in the declaration; F77 had none of those spellings, so a
+        scalar non-character DUMMY referenced with an argument list is one by
+        use -- there is nothing else it could be, because a dummy that were
+        an array would have been declared with a shape.
+        """
+        if arglist is None:
+            return False
+        declared = self.semantics.declaration(name)
+        if declared is not None and declared.get("procedure"):
+            return True
+        argument = next((a for a in self.semantics.subprogram["args"] if a["name"] == name), None)
+        return argument is not None and not argument.get("dims") and argument.get("dtype") != "str"
 
     def bound(self, text: str) -> str:
         """Declared bound text -> Python. Bound texts are simple -- names,
@@ -856,6 +900,33 @@ class Expressions:
 
     # -- structure constructors -----------------------------------------------
 
+    def _constructor_is_reference(self, name: str) -> bool:
+        """Whether a constructor-parsed ``name(...)`` is really a reference.
+
+        Nothing in scope claims the name as a procedure, a generic or an
+        array, and either its canonical spelling is an intrinsic this
+        translation maps, or the name is a procedure dummy -- declared one,
+        or a scalar dummy of this subprogram used as one.
+        """
+        if (
+            name in self.semantics.procedures
+            or name in self.semantics.generics
+            or name in self.semantics.companion_generics
+            or self.semantics.is_array(name)
+        ):
+            return False
+        canonical = F77_SPECIFIC_TO_GENERIC.get(name, name)
+        if canonical in ELEMENTAL_SCALAR or canonical in REDUCTIONS or canonical in ARRAY_TRANSFORM:
+            return True
+        declared = self.semantics.declaration(name)
+        return declared is not None and (
+            bool(declared.get("procedure"))
+            or (
+                not declared.get("dims")
+                and any(a["name"] == name for a in self.semantics.subprogram["args"])
+            )
+        )
+
     def _structure_constructor(self, node: Any) -> str:
         """fparser reads an ambiguous call as a constructor.
 
@@ -866,6 +937,12 @@ class Expressions:
         """
         name = str(node.children[0]).lower()
         items = _items(node.children[1])
+        if self._constructor_is_reference(name):
+            # An intrinsic -- an F77 specific spelling included -- or a
+            # procedure dummy parsed this way is a plain function reference,
+            # and ``reference`` owns the mapping. Left here, ``datan2(0d0,
+            # -one)`` was emitted verbatim: a call to a name nothing defines.
+            return self.reference(node)
         arguments = self._arguments(items)
 
         if name in self.semantics.generics:

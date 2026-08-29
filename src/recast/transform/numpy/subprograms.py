@@ -48,7 +48,12 @@ from recast.transform.numpy.statements import (
     derived_array,
     undefined_array,
 )
-from recast.transform.numpy.vocabulary import pysafe
+from recast.transform.numpy.vocabulary import (
+    ELEMENTAL_ARRAY,
+    ELEMENTAL_SCALAR,
+    REDUCTIONS,
+    pysafe,
+)
 from recast.transform.profiles import Profile
 from recast.transform.rules import NoRule
 
@@ -558,8 +563,30 @@ class Subprograms:
         for local in subprogram["locals"]:
             if local["name"] in parameter_names:
                 continue
+            if self._types_an_intrinsic(local, statements):
+                continue
             lines.extend(self._local(local, semantics, statements))
         return lines
+
+    @staticmethod
+    def _types_an_intrinsic(local: dict[str, Any], statements: Statements) -> bool:
+        """Whether ``real(8) :: abs`` types an INTRINSIC rather than declaring
+        a local.
+
+        F77 let a program give an intrinsic a type without shadowing it, and
+        the declaration reads identically to a scalar local. The body settles
+        it: a name it calls and never assigns is the intrinsic, and giving it
+        a prologue ``abs = 0.0`` shadows the builtin, so every later ``abs(x)``
+        raises "float object is not callable" rather than anything this file
+        would notice.
+        """
+        name = local["name"]
+        return (
+            not local.get("dims")
+            and name not in statements.assigned_names
+            and name in statements.called_names
+            and (name in ELEMENTAL_SCALAR or name in ELEMENTAL_ARRAY or name in REDUCTIONS)
+        )
 
     def component_shape(self, component: dict[str, Any]) -> str | None:
         """A derived-type component's allocation shape, or None.

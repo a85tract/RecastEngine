@@ -555,6 +555,56 @@ def extract_subprogram(
                         }
                     )
 
+    # A procedure dummy is a callable, never an array, and reads like a
+    # scalar declaration. Four spellings say so, and the fourth says it only
+    # through use: F77 had no PROCEDURE, so `real(8) :: rad` for a dummy that
+    # the body then calls as `rad(v)` is one. Without this the reference
+    # falls through to the subscript rule and `f(a)` is emitted `f[a - 1]`.
+    procedure_names: set[str] = set()
+    if spec is not None:
+        for pstmt in walk(spec, f03.Procedure_Declaration_Stmt):
+            procedure_names.update(str(n).lower() for n in walk(pstmt.children[-1], f03.Name))
+        for estmt in walk(spec, f03.External_Stmt):
+            procedure_names.update(str(n).lower() for n in walk(estmt.children[-1], f03.Name))
+    for d in decls:
+        if "EXTERNAL" in d["attrs"]:
+            procedure_names.update(e["name"] for e in d["entities"])
+    execution = next((c for c in sub.children if isinstance(c, f03.Execution_Part)), None)
+    if execution is not None:
+        for ref in walk(
+            execution, (f03.Part_Ref, f03.Function_Reference, f03.Structure_Constructor)
+        ):
+            referenced = str(ref.children[0]).lower()
+            info = ent_info.get(referenced)
+            if (
+                referenced in arg_names
+                and info is not None
+                and not info.get("dims")
+                and info.get("dtype") != "str"
+                and ref.children[1] is not None
+            ):
+                procedure_names.add(referenced)
+    for procedure_name in procedure_names:
+        info = ent_info.setdefault(
+            procedure_name,
+            {
+                "fortran_type": None,
+                "kind": None,
+                "dtype": "UNDECLARED",
+                "intent": None,
+                "optional": False,
+                "parameter": False,
+                "array_spec": None,
+                "dims": None,
+                "char_len": None,
+                "init_expr": None,
+                "line": None,
+            },
+        )
+        info["procedure"] = True
+        info["fortran_type"] = "PROCEDURE"
+        info["dtype"] = "PROCEDURE"
+
     args: list[dict[str, Any]] = []
     for pos, an in enumerate(arg_names):
         info = ent_info.get(an, {})
@@ -570,6 +620,7 @@ def extract_subprogram(
             "dims": info.get("dims"),
             "char_len": info.get("char_len"),
             "line": info.get("line"),
+            **({"procedure": True} if info.get("procedure") else {}),
         }
         apply_intent_override(arg, name, (intent_overrides or {}).get(an))
         args.append(arg)
