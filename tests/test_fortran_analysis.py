@@ -1145,22 +1145,27 @@ end module inner_lit
 
 
 def test_a_write_only_f77_dummy_is_given_the_intent_its_use_shows(tmp_path: Path) -> None:
-    """A dummy declared without INTENT that the body only assigns to is
-    intent(out); without the attribute the return convention drops it from
-    the signature and from the return, and the value is lost."""
+    """A dummy declared without INTENT gets the intent its use shows.
+
+    Assigned and never read is intent(out); assigned and also read is
+    intent(inout), because Fortran passes by reference and the update is the
+    caller's to see. Without either attribute the return convention drops the
+    dummy from the signature and from the return, and the value is lost.
+    """
     from recast.fortran import interface
 
     source = """\
 module f77ish
   implicit none
 contains
-  subroutine rates(x, made, used, buf, n)
-    real :: x, made, used, buf(4)
+  subroutine rates(x, made, used, buf, n, onward)
+    real :: x, made, used, buf(4), onward
     integer :: n
     made = x * 2.0
     used = x + used
     buf(1) = x
     n = 3
+    call elsewhere(onward)
   end subroutine rates
 end module f77ish
 """
@@ -1168,9 +1173,10 @@ end module f77ish
     intents = {a["name"]: a["intent"] for a in record["subprograms"][0]["args"]}
     assert intents["made"] == "OUT"  # assigned, never read
     assert intents["n"] == "OUT"
-    assert intents["used"] == "UNKNOWN"  # read on its own right-hand side
+    assert intents["used"] == "INOUT"  # read on its own right-hand side
     assert intents["x"] == "UNKNOWN"  # only read
     assert intents["buf"] == "UNKNOWN"  # an array mutates through its buffer
+    assert intents["onward"] == "UNKNOWN"  # only passed on; its fate is the callee's
 
 
 def test_a_module_allocatable_records_the_lower_bound_its_allocate_gave_it(
