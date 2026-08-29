@@ -977,15 +977,34 @@ def emit_name(record: dict[str, Any]) -> str:
     return str(record.get("emit_name") or record["name"])
 
 
-def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) -> None:
-    """Give a write-only F77 dummy the intent its use says it has.
+def _intent_inferable(dtype: Any) -> bool:
+    """Numeric and logical scalars, the kinds an intent can be inferred for.
 
-    A dummy declared without INTENT that the body only ever assigns to --
-    bare name on the left, never read anywhere -- is semantically
-    ``intent(out)``. Without the attribute the return convention leaves it
-    out of the signature and out of the return, so the value the routine
+    A REAL whose kind name did not resolve is still a REAL scalar: excluding
+    it left exactly the F77 sources this rule exists for -- the ones that
+    spell their kind through a module parameter -- without an intent.
+    """
+    return dtype in ("float64", "float32", "int32", "int64", "bool") or str(dtype).startswith(
+        "UNKNOWN_REAL_KIND("
+    )
+
+
+def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) -> None:
+    """Give an un-INTENTed F77 dummy the intent its use says it has.
+
+    Two rules, both on scalar dummies the declaration left UNKNOWN:
+
+    * assigned and never read -- bare name on the left, mentioned nowhere
+      else -- is ``intent(out)``;
+    * assigned AND read is ``intent(inout)``: Fortran passes by reference, so
+      the update is the caller's to see.
+
+    Either way, without the attribute the return convention leaves the dummy
+    out of the signature and out of the return, and the value the routine
     computed is dropped on the floor. Scalars only: an array dummy mutates
-    through the buffer it was passed and is not lost either way.
+    through the buffer it was passed and is not lost either way. A dummy that
+    is only *passed on* to another procedure stays UNKNOWN -- its fate is the
+    callee's, and is not decidable here.
     """
     by_name = {sub_name_of(s): s for s in subs}
     for record in records:
@@ -995,29 +1014,35 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
             if argument["intent"] == "UNKNOWN"
             and not argument.get("dims")
             and not argument.get("optional")
-            and argument.get("dtype") in ("float64", "float32", "int32", "int64", "bool")
+            and _intent_inferable(argument.get("dtype"))
         ]
         node = by_name.get(record["name"])
         if not candidates or node is None:
             continue
-        exec_part = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
-        if exec_part is None:
+        # Every execution part, not the first: a subprogram with an internal
+        # CONTAINS has more than one, and reading only the first scored the
+        # rest as if the body never mentioned the dummy at all.
+        exec_parts = [c for c in node.children if isinstance(c, f03.Execution_Part)]
+        if not exec_parts:
             continue
         mentions: dict[str, int] = {}
-        for name in walk(exec_part, f03.Name):
-            key = str(name).lower()
-            mentions[key] = mentions.get(key, 0) + 1
         assigned: dict[str, int] = {}
-        for assignment in walk(exec_part, f03.Assignment_Stmt):
-            target = assignment.children[0]
-            if isinstance(target, f03.Name):
-                key = str(target).lower()
-                assigned[key] = assigned.get(key, 0) + 1
+        for exec_part in exec_parts:
+            for name in walk(exec_part, f03.Name):
+                key = str(name).lower()
+                mentions[key] = mentions.get(key, 0) + 1
+            for assignment in walk(exec_part, f03.Assignment_Stmt):
+                target = assignment.children[0]
+                if isinstance(target, f03.Name):
+                    key = str(target).lower()
+                    assigned[key] = assigned.get(key, 0) + 1
         for argument in candidates:
             written = assigned.get(argument["name"], 0)
-            if written and mentions.get(argument["name"], 0) == written:
-                argument["intent"] = "OUT"
-                argument["intent_inferred"] = "write-only"
+            if not written:
+                continue
+            write_only = mentions.get(argument["name"], 0) == written
+            argument["intent"] = "OUT" if write_only else "INOUT"
+            argument["intent_inferred"] = True
 
 
 def _host_associate(
