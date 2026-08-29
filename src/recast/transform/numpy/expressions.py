@@ -87,14 +87,51 @@ at run time -- ``gamma(1.8)`` differs from both. Only consulted under a profile
 that says the reference compiler does this.
 """
 
-KIND_SECOND_ARGUMENT = frozenset(
-    {"aint", "anint", "ceiling", "dble", "float", "floor", "int", "nint", "real"}
+KIND_CONVERSIONS = frozenset(
+    {
+        "aint",
+        "anint",
+        "ceiling",
+        "cmplx",
+        "dble",
+        "float",
+        "floor",
+        "int",
+        "nint",
+        "real",
+    }
 )
-"""Conversions whose optional second argument names a kind, not a value."""
+"""Conversions that take an optional KIND, in any of its spellings.
+
+``cmplx`` is the one whose second positional argument is a value -- the
+imaginary part -- so its kind is third. Every other member's kind is second,
+and a ``kind=`` keyword drops the tail whichever member it is.
+"""
 
 MAX_EXPANDED_POWER = 16
 """Beyond this, expanding ``x**n`` to multiplications stops being worth reading
 and starts being a place for a transcription error. Refused instead."""
+
+
+def _without_kind(name: str, arguments: list[str]) -> list[str]:
+    """A conversion's arguments, with the KIND dropped.
+
+    Three cases, and the third is why this is not one membership test: a
+    ``kind=`` keyword names itself whichever position it is in; ``cmplx``'s
+    second positional argument is the imaginary part and stays, its third is
+    the kind; every other conversion's second is the kind. Python's
+    ``complex`` takes two arguments, so a kind passed through is a TypeError
+    at the first call rather than anything visible here.
+    """
+    if name not in KIND_CONVERSIONS:
+        return arguments
+    if len(arguments) == 2:
+        if any("kind=" in a.lower() for a in arguments[1:]):
+            return arguments[:1]
+        return arguments if name == "cmplx" else arguments[:1]
+    if name == "cmplx" and len(arguments) == 3:
+        return arguments[:2]
+    return arguments
 
 
 class UnknownReference(NoRule):
@@ -732,8 +769,7 @@ class Expressions:
                 folded = f"{self.array_table[name]}({folded}, {argument})"
             return folded
         if name in ELEMENTAL_ARRAY:
-            if name in KIND_SECOND_ARGUMENT and len(arguments) == 2:
-                arguments = arguments[:1]
+            arguments = _without_kind(name, arguments)
             return f"{self.array_table[name]}({', '.join(arguments)})"
         if name in REDUCTIONS:
             return self._reduction(name, arguments)
@@ -747,8 +783,7 @@ class Expressions:
             # because expressions that reach here are pure.
             return f"(({arguments[0]}) if ({arguments[2]}) else ({arguments[1]}))"
         if name in ELEMENTAL_SCALAR:
-            if name in KIND_SECOND_ARGUMENT and len(arguments) == 2:
-                arguments = arguments[:1]
+            arguments = _without_kind(name, arguments)
             if self.elemental and name in ("exp", "log", "log10"):
                 # An elemental body is written at scalar rank and runs over
                 # arrays: math.* would reject one and np.* is an ULP off libm.
