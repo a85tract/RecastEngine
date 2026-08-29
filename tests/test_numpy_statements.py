@@ -955,17 +955,20 @@ def test_a_character_case_compares_with_blank_padding(sources: dict[str, Path]) 
     assert "    else:" in lines
 
 
-def test_a_case_value_range_slips_past_the_refusal(sources: dict[str, Path]) -> None:
-    """Reproduced, not endorsed. The pipeline means to refuse ``case (1:2)``,
-    but its check looks at the selector's children, which hold a
-    ``Case_Value_Range_List`` rather than a bare range -- so the refusal never
-    fires and the range's endpoints come out as equality tests. Right for
-    ``(1:2)`` by luck, wrong for any wider range. Kept identical because the
-    pipeline's output is the one the bit-exact gates have run against; this
-    test is the record that the behaviour is inherited rather than intended."""
+def test_a_case_value_range_is_refused(sources: dict[str, Path]) -> None:
+    """Was ``test_a_case_value_range_slips_past_the_refusal``: the pipeline
+    meant to refuse ``case (1:2)`` but looked at the wrong node, so the
+    range's endpoints came out as equality tests -- right for ``(1:2)`` by
+    luck, wrong for any wider range -- and this test recorded the inherited
+    behaviour. Reading the value list item by item, which is what keeps a
+    negative literal's sign, also makes the refusal fire; a refusal is the
+    right answer for a range, and the emitted-text differential against the
+    pipeline moves by exactly this construct."""
+    from recast.transform.rules import NoRule
+
     statements, nodes = build(sources["emit_mod"], "switch")
-    lines = statements.render(pick(nodes, f03.Case_Construct, 1), 1)
-    assert lines[0] == "    if (n == 1) or (n == 2):"
+    with pytest.raises(NoRule, match="case value range"):
+        statements.render(pick(nodes, f03.Case_Construct, 1), 1)
 
 
 def test_a_stub_answers_only_where_the_pipeline_answers(sources: dict[str, Path]) -> None:
@@ -1091,3 +1094,50 @@ def _specification_of(source: Path, name: str) -> Any:
         if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == name
     )
     return next(c for c in subprogram.children if isinstance(c, f03.Specification_Part))
+
+
+def test_a_negative_case_value_keeps_its_sign(tmp_path):
+    """``case (0, -1)``: the minus is a node above the literal, and walking
+    the leaves under the selector read it as ``1`` -- so CLM-ml's
+    FluxProfileSolution took the well-mixed branch under the implicit
+    solver's setting, and aborted."""
+    from pathlib import Path
+
+    from recast.fortran import constants, interface
+    from recast.fortran._parse import f03, parse, walk
+    from recast.transform.numpy.subprograms import Subprograms
+    from recast.transform.profiles import PROFILES
+
+    source = Path(tmp_path) / "sw.f90"
+    source.write_text(
+        "module sw_mod\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine pick(k, x)\n"
+        "    integer, intent(in) :: k\n"
+        "    real(8), intent(out) :: x\n"
+        "    select case (k)\n"
+        "    case (0, -1)\n"
+        "      x = 1.0d0\n"
+        "    case (1)\n"
+        "      x = 2.0d0\n"
+        "    case default\n"
+        "      x = 0.0d0\n"
+        "    end select\n"
+        "  end subroutine pick\n"
+        "end module sw_mod\n"
+    )
+    assembler = Subprograms(
+        record=interface.extract(source),
+        constants=constants.extract(source),
+        profile=PROFILES["gfortran"],
+    )
+    node = next(
+        sub
+        for sub in walk(parse(source), f03.Subroutine_Subprogram)
+        if str(walk(sub, f03.Subroutine_Stmt)[0].children[1]).lower() == "pick"
+    )
+    lines, _ = assembler.render(node, "pick")
+    branch = next(line for line in lines if line.strip().startswith("if"))
+    assert "-1" in branch.replace("- 1", "-1") or "(-1)" in branch, branch
+    assert "== 1)" not in branch or "(k == -1)" in branch.replace("- 1", "-1"), branch
