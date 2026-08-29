@@ -65,10 +65,28 @@ build rounds, and aggressive optimization is a second variable nobody asked
 to test."""
 
 
+def _extent(dim: dict[str, Any]) -> str:
+    if dim.get("ub"):
+        return str(dim["ub"])
+    return "*" if dim.get("assumed_size") else ":"
+
+
+def _hide(
+    extents: str, argument_names: list[str], parameters: dict[str, int] | None, hidden: list[str]
+) -> None:
+    """An extent naming neither an argument nor a local parameter is a hidden
+    integer dummy the caller supplies; recorded once, in order of first use."""
+    for token in re.findall(r"[A-Za-z_]\w*", extents):
+        if token not in argument_names and token not in (parameters or {}):
+            if token not in hidden:
+                hidden.append(token)
+
+
 def wrappers_for(
     record: dict[str, Any],
     subprograms: list[str],
     parameters: dict[str, int] | None = None,
+    dims_override: dict[str, str] | None = None,
 ) -> tuple[str, list[str]]:
     """Flat wrapper subroutines for the named subprograms of one module.
 
@@ -106,7 +124,9 @@ def wrappers_for(
         sub = table[name]
         call_name = generic_of.get(name, name)
         arguments = [a for a in sub["args"] if not a.get("optional")]
+        argument_names = [a["name"] for a in arguments]
         declarations = []
+        hidden: list[str] = []
         for argument in arguments:
             spelled = FORTRAN_TYPES.get(argument["dtype"])
             if spelled is None:
@@ -119,10 +139,20 @@ def wrappers_for(
                 argument["intent"]
             ]
             dims = ""
-            if argument.get("dims"):
-                dims = "(" + ", ".join(d["ub"] or ":" for d in argument["dims"]) + ")"
+            override = (dims_override or {}).get(argument["name"])
+            if override and argument.get("dims"):
+                # An explicit override wins: a use-imported extent is
+                # invisible to f2py, and the operator names it instead (the
+                # pipeline's ``gen_wrapper --dims-override``).
+                dims = f"({override})"
+                _hide(override, argument_names, parameters, hidden)
+            elif argument.get("dims"):
+                # Spelled as the source declares it: an explicit extent, ``*``
+                # for an assumed-size dummy, ``:`` for an assumed-shape one.
+                # f2py's interface carries either alone; what it cannot carry
+                # is the mix ``(incfd, :)`` that spelling ``*`` as ``:`` made.
+                dims = "(" + ", ".join(_extent(d) for d in argument["dims"]) + ")"
             declarations.append(f"  {spelled}, intent({intent}) :: {argument['name']}{dims}")
-        argument_names = [a["name"] for a in arguments]
         wrapper = f"w_{name}"
         names.append(wrapper)
         use_line = [f"  use {module}, only: {call_name}"] if is_module else []
@@ -141,12 +171,8 @@ def wrappers_for(
                 )
             result = FORTRAN_TYPES.get(sub["result_dtype"], "real(8)")
             extents = [str(d["ub"]) for d in result_dims]
-            hidden: list[str] = []
             for extent in extents:
-                for token in re.findall(r"[A-Za-z_]\w*", extent):
-                    if token not in argument_names and token not in (parameters or {}):
-                        if token not in hidden:
-                            hidden.append(token)
+                _hide(extent, argument_names, parameters, hidden)
             declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
                 f"subroutine {wrapper}({', '.join([*argument_names, *hidden, 'res'])})",
@@ -162,8 +188,9 @@ def wrappers_for(
             ]
         elif sub["kind"] == "function":
             result = FORTRAN_TYPES.get(sub["result_dtype"], "real(8)")
+            declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
-                f"function {wrapper}({', '.join(argument_names)}) result(res)",
+                f"function {wrapper}({', '.join([*argument_names, *hidden])}) result(res)",
                 *use_line,
                 "  implicit none",
                 *parameter_lines,
@@ -175,8 +202,9 @@ def wrappers_for(
                 "",
             ]
         else:
+            declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
-                f"subroutine {wrapper}({', '.join(argument_names)})",
+                f"subroutine {wrapper}({', '.join([*argument_names, *hidden])})",
                 *use_line,
                 "  implicit none",
                 *parameter_lines,
@@ -268,6 +296,7 @@ class F2pyGoldenOracle(Oracle):
         digest.update(_compiler_version(compiler).encode())
         digest.update(config.get("fflags", DEFAULT_FLAGS).encode())
         digest.update(str(sorted((config.get("wrapper_parameters") or {}).items())).encode())
+        digest.update(str(sorted((config.get("wrapper_dims") or {}).items())).encode())
         digest.update(",".join(self._subprograms(facts, config)).encode())
         return f"f2py:{facts.interface.get('module', unit.uid)}:{digest.hexdigest()[:16]}"
 
@@ -295,7 +324,10 @@ class F2pyGoldenOracle(Oracle):
                 f"{unit.uid}: no public subprogram to wrap; there is no reference to build"
             )
         wrapper_text, wrapper_names = wrappers_for(
-            facts.interface, subprograms, parameters=config.get("wrapper_parameters")
+            facts.interface,
+            subprograms,
+            parameters=config.get("wrapper_parameters"),
+            dims_override=config.get("wrapper_dims"),
         )
         (build / "wrappers.f90").write_text(wrapper_text)
 
