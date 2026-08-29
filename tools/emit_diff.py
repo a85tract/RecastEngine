@@ -246,15 +246,22 @@ def companion_tables(
         source = COMPANION_SOURCES.get(companion["interface"], stale["source_file"])
         record = finterface.extract(root / source)
         constants = fconstants.extract(root / source)
-        # The pipeline spells a companion's parameter the way the constants.py
-        # beside its interface.json spells it, so each live interface gets a
-        # directory of its own with that file in it -- rendered by the engine,
-        # whose constants emission emit_diff holds to the pipeline's anyway.
+        # The pipeline spells a companion's parameter the way the constants
+        # module beside its interface.json spells it, so each live interface
+        # gets a directory of its own with that file in it -- rendered by the
+        # engine, whose constants emission emit_diff holds to the pipeline's
+        # anyway. The file has to carry the stem the descriptor declares, not
+        # a fixed "constants": the pipeline looks it up under
+        # ``constants_stem``, and writing it anywhere else leaves that lookup
+        # empty -- which is not a missing file to the pipeline but a companion
+        # whose parameters are all unresolved, so every reference to one comes
+        # out lower-cased and every line carrying one reads as a difference.
         live_dir = scratch / record["module"]
         live_dir.mkdir(exist_ok=True)
         live = live_dir / "interface.json"
         live.write_text(json.dumps(record))
-        (live_dir / "constants.py").write_text(constants_module(constants))
+        stem = companion.get("constants_stem") or "constants"
+        (live_dir / f"{stem}.py").write_text(constants_module(constants))
         fixed.append({**companion, "interface": str(live)})
         entries.append({**companion, "record": record, "constants": constants})
     records, remotes, globals_, _imports = companion_views(entries)
