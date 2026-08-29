@@ -919,3 +919,53 @@ def test_the_format_shim_has_fortran_field_semantics() -> None:
     assert write("(ES10.3)", 1234.0) == " 1.234E+03"
     assert write("(A,I3,2X,L1)", "n=", 42, True) == "n= 42  T"
     assert write("(2I3,'/',A)", 1, 2, "ab") == "  1  2/ab"
+
+
+# --- #18: an import nothing binds to ------------------------------------------
+
+KINDS_ONLY_USE = """\
+module rules_m
+use some_lib, only: wp => dp_kind
+use ext_lib, only: helper
+implicit none
+contains
+function go(x) result(y)
+  real(8), intent(in) :: x
+  real(8) :: y
+  y = helper(x) + 1.0_8
+end function go
+end module rules_m
+"""
+
+
+def test_an_auto_stub_import_nothing_binds_to_is_dropped(tmp_path: Path) -> None:
+    """A USE of a module that is no companion imported ``<mod>_numpy``
+    unconditionally, and a kinds-only USE -- the common case -- named a
+    module that is not part of the run, so the file raised
+    ``ModuleNotFoundError`` before running anything (#18). A bound alias
+    keeps its import: a genuine dependency still fails at import, which is
+    correct. A harness that provides a runtime stub per USE'd module can
+    ask for every import, as the pipeline's CESM project does."""
+    from recast.fortran import constants
+    from recast.transform.numpy.modules import Modules
+    from recast.transform.profiles import PROFILES
+
+    src = _write(tmp_path, "rules_m", KINDS_ONLY_USE)
+
+    def render(**options: Any) -> str:
+        assembler = Subprograms(
+            record=interface.extract(src),
+            constants=constants.extract(src),
+            profile=PROFILES["ifx"],
+        )
+        text, _ = Modules(subprograms=assembler, **options).render(src)
+        return text
+
+    text = render()
+    assert "import some_lib_numpy" not in text
+    assert "import ext_lib_numpy as _ext_lib" in text
+    assert "_ext_lib.helper(x)" in text
+
+    kept = render(keep_unbound_stub_imports=True)
+    assert "import some_lib_numpy as _some_lib" in kept
+    assert "import ext_lib_numpy as _ext_lib" in kept

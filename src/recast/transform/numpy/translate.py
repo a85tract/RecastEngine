@@ -303,6 +303,7 @@ class NumpyTranslation(Transform):
             use_constants_stem=use_stem,
             externals_module=config.get("externals_module"),
             companion_imports=companion_imports,
+            keep_unbound_stub_imports=bool(config.get("keep_unbound_stub_imports", False)),
         )
 
         text, report = renderer.render(source)
