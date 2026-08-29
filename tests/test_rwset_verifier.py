@@ -333,3 +333,24 @@ def test_an_alias_attribute_naming_a_procedure_is_a_call() -> None:
     reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol)
     assert reads == {"t"}
     assert writes == {"es"}
+
+
+def test_a_raise_nested_in_a_branch_is_scaffolding(verify) -> None:
+    """A statement stub for an abort is ``raise RuntimeError(...)``. Standing
+    alone in a block it was already skipped; nested in a contained ``if`` it
+    reached the generic visit and ``RuntimeError`` became a read the source
+    never made, failing every block with a guarded ``endrun`` in it."""
+    emitted = EMITTED.replace(
+        "        if flag:\n            out[i] = acc\n",
+        "        if flag:\n            raise RuntimeError('endrun')\n",
+    )
+    candidate = _candidate(
+        [
+            _block("B001", [], ["acc"]),
+            _block("B002", ["acc", "flag", "i", "n", "pool"], ["acc", "i"]),
+            _block("B003", ["acc", "cpair", "gam"], ["gam"]),
+        ]
+    )
+    candidate.files = {Path("demo_numpy.py"): emitted.encode()}
+    verdict = verify(candidate)
+    assert verdict.confidence is Confidence.SAMPLED, verdict.detail

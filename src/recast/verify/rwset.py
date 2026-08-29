@@ -275,6 +275,13 @@ class _Visitor(ast.NodeVisitor):
     def visit_Return(self, node: ast.Return) -> None:
         pass  # signature plumbing, not dataflow
 
+    def visit_Raise(self, node: ast.Raise) -> None:
+        """A raise is scaffolding wherever it stands -- a statement stub for
+        an abort, a STOP -- and the exception class it names is not a source
+        symbol. The block walker already skips a raise that is a block on its
+        own; one nested in a contained ``if`` reached the generic visit and
+        counted ``RuntimeError`` as a read the source never made."""
+
     def visit_Global(self, node: ast.Global) -> None:
         pass
 
