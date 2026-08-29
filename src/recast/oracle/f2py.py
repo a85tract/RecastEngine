@@ -93,6 +93,9 @@ def wrappers_for(
     table = {s["name"]: s for s in record["subprograms"]}
     module = record["module"]
     is_module = record.get("is_module", True)
+    # A submodule cannot be USEd; its procedures are reached through the
+    # parent module whose interface declares them (#29).
+    module = record.get("submodule_of") or module
     parameter_lines = [
         f"  integer, parameter :: {name} = {int(value)}"
         for name, value in (parameters or {}).items()

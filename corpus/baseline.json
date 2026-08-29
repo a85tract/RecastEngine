@@ -297,10 +297,15 @@
    }
   },
   "fftpack": {
-   "bare_files": 58,
-   "blocks": 0,
-   "deferred": 0,
-   "refusals": [],
+   "bare_files": 50,
+   "blocks": 24,
+   "deferred": 12,
+   "refusals": [
+    [
+     "call to external subroutine 'X'",
+     12
+    ]
+   ],
    "status": "failed",
    "units": {
     "fortran:fftpack": {
@@ -323,6 +328,207 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_dct": {
+     "deferred": 4,
+     "imports": true,
+     "mechanical": false,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/2 blocks disagree: dct_rk/B001, idct_rk/B001",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 4,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_fft": {
+     "deferred": 2,
+     "imports": true,
+     "mechanical": false,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/3 blocks disagree: fft_rk/B001",
+       "metrics": {
+        "blocks_checked": 3,
+        "blocks_deferred": 2,
+        "blocks_matched": 2,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_fftshift": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/2 blocks disagree: fftshift_crk/B001, fftshift_rrk/B001",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_ifft": {
+     "deferred": 2,
+     "imports": true,
+     "mechanical": false,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/3 blocks disagree: ifft_rk/B001",
+       "metrics": {
+        "blocks_checked": 3,
+        "blocks_deferred": 2,
+        "blocks_matched": 2,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_ifftshift": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "2/2 blocks disagree: ifftshift_crk/B001, ifftshift_rrk/B001",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_irfft": {
+     "deferred": 2,
+     "imports": true,
+     "mechanical": false,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/3 blocks disagree: irfft_rk/B001",
+       "metrics": {
+        "blocks_checked": 3,
+        "blocks_deferred": 2,
+        "blocks_matched": 2,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_rfft": {
+     "deferred": 2,
+     "imports": true,
+     "mechanical": false,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "failed"
+     },
+     "stopped_by": "static.rwset",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "1/3 blocks disagree: rfft_rk/B001",
+       "metrics": {
+        "blocks_checked": 3,
+        "blocks_deferred": 2,
+        "blocks_matched": 2,
+        "blocks_waived": 0
+       },
+       "passed": false
+      }
+     }
+    },
+    "fortran:fftpack_utils": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "6 blocks match",
+       "metrics": {
+        "blocks_checked": 6,
+        "blocks_deferred": 0,
+        "blocks_matched": 6,
         "blocks_waived": 0
        },
        "passed": true

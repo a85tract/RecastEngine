@@ -441,6 +441,26 @@ so the interface records agree too; the corpus's read/write check goes
 `submodule` files are outside its case file set for that reason -- and
 is the next relay, not this one.
 
+**#29, relayed the same day.** A `submodule (parent) name` file was
+discovered as bare subprograms named for its stem: no module, no
+dependency, `rk` unresolved because nothing said where it came from, and
+the parent -- interfaces only -- exposed none of the procedures whose
+bodies live in it. Now the frontend's module index reads the submodule
+statement too (and no longer reads `module function f(...)` inside an
+interface block as a module named `function`), a submodule is a module
+unit, `extract` records `submodule_of` and puts a synthetic `USE parent`
+first in its use statements so the parent is its companion and the
+source of its kinds, the parent's record carries `submodules` and its
+translation ends with the pipeline's lazy `__getattr__` re-export table,
+and the f2py wrapper USEs the parent, which is the only name Fortran lets
+it USE. The corpus's `fftpack` case goes from 1 unit and 58 bare files to
+9 units and 50: every submodule parses and imports, two pass the
+read/write check, and the seven that do not disagree on an implied-do
+index and on `cshift` -- source-side analysis gaps that predate this.
+Over the units the two recordings share, the read/write check is
+unchanged at 5,209 blocks matched. CAM has no submodule, so the
+differentials are unmoved.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.

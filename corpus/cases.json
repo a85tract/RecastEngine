@@ -109,7 +109,7 @@
       "submodule": "fftpack",
       "upstream": "https://github.com/fortran-lang/fftpack",
       "license": "MIT",
-      "about": "FFTPACK: 58 files of bare subprograms (no module) plus the wrapper module",
+      "about": "FFTPACK: 50 files of bare subprograms (no module), the wrapper module, and its eight submodules",
       "files": [
         "src/*.f90"
       ]
