@@ -354,3 +354,24 @@ def test_a_raise_nested_in_a_branch_is_scaffolding(verify) -> None:
     candidate.files = {Path("demo_numpy.py"): emitted.encode()}
     verdict = verify(candidate)
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+
+
+def test_a_copy_out_writes_its_target(verify) -> None:
+    """``_f_copy_out(u, tridiag(...))`` is how the runtime fills a caller's
+    out-argument buffer; the target is written, not read (CLM-ml's
+    LongwaveRadiation reported ``utri`` unwritten)."""
+    emitted = EMITTED.replace(
+        "        if flag:\n            out[i] = acc\n",
+        "        if flag:\n            _f_copy_out(out, POOL)\n",
+    )
+    candidate = _candidate(
+        [
+            _block("B001", [], ["acc"]),
+            _block("B002", ["acc", "flag", "i", "n", "pool"], ["acc", "i", "out"]),
+            _block("B003", ["acc", "cpair", "gam"], ["gam"]),
+        ],
+        scaffolding=["range", "_f_copy_out"],
+    )
+    candidate.files = {Path("demo_numpy.py"): emitted.encode()}
+    verdict = verify(candidate)
+    assert verdict.confidence is Confidence.SAMPLED, verdict.detail

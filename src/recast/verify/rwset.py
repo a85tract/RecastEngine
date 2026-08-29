@@ -147,6 +147,15 @@ class Protocol:
         )
 
 
+def _as_store(node: ast.expr) -> ast.expr:
+    """The same subscript or attribute, in store context."""
+    if isinstance(node, ast.Subscript):
+        return ast.Subscript(value=node.value, slice=node.slice, ctx=ast.Store())
+    if isinstance(node, ast.Attribute):
+        return ast.Attribute(value=node.value, attr=node.attr, ctx=ast.Store())
+    return node
+
+
 class _Visitor(ast.NodeVisitor):
     """Read and write sets of emitted Python, in source-side vocabulary."""
 
@@ -196,8 +205,21 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         """A procedure name at callee position is a call even when it is the
-        block's own name -- recursion is not a read of the result variable."""
+        block's own name -- recursion is not a read of the result variable.
+
+        ``_f_copy_out(target, value)`` is the runtime's in-place write of an
+        out-argument buffer: its first argument is a store, not a load, or
+        every ``call tridiag(..., u, n)`` reports ``u`` unwritten."""
         callee = node.func
+        if isinstance(callee, ast.Name) and callee.id == "_f_copy_out" and node.args:
+            target = node.args[0]
+            if isinstance(target, ast.Name):
+                self.record(target.id, store=True)
+            else:
+                self.visit(ast.copy_location(_as_store(target), target))
+            for argument in node.args[1:]:
+                self.visit(argument)
+            return
         if not (isinstance(callee, ast.Name) and callee.id in self.protocol.procedures):
             self.visit(callee)
         for argument in node.args:

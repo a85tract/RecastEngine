@@ -415,6 +415,12 @@ class NumpyTranslation(Transform):
             "aliases": sorted(
                 {remote.alias for remote in assembler.remotes.values()}
                 | set(assembler.intrinsic_aliases)
+                # A stub module's alias too: ``_pftconmod.pftcon`` is a read
+                # of ``pftcon``, and without the alias the check read ``_pftconmod``.
+                | {line.rsplit(" as ", 1)[-1] for line in assembler.stub_imports}
+                # ...and a companion reached only for its globals, whose alias
+                # the emitter binds through ``companion_globals``.
+                | {spelling.split(".")[0] for spelling in assembler.companion_globals.values()}
             ),
             "reserved": sorted(RESERVED),
             "scaffolding": sorted(

@@ -1431,13 +1431,16 @@ module con_mod
   type con_t
     real(r8), allocatable :: slatop(:)
     real(r8), allocatable :: plain(:)
+    real(r8), pointer :: tbi(:,:)
   end type con_t
   type(con_t), public :: con
 contains
-  subroutine init(this)
+  subroutine init(this, begp, endp)
     class(con_t) :: this
+    integer, intent(in) :: begp, endp
     allocate (this%slatop(0:mxpft))
     allocate (this%plain(mxpft))
+    allocate (this%tbi(begp:endp, 0:mxpft))
   end subroutine init
 end module con_mod
 """
@@ -1454,3 +1457,7 @@ def test_a_component_allocated_from_zero_carries_its_lower_bound(tmp_path: Path)
     comps = record["types"]["con_t"]
     assert comps["slatop"]["allocated_dims"] == [{"lb": "0", "ub": "mxpft"}]
     assert "allocated_dims" not in comps["plain"]
+    # Per axis: ``begp`` is a local nobody else can see, so that axis keeps
+    # the unit origin; the ``0:`` beside it is still recorded (CLM-ml's
+    # ``tbi_profile(begp:endp, 0:nlevmlcan)`` was read one layer off).
+    assert comps["tbi"]["allocated_dims"] == [{"lb": "1", "ub": "endp"}, {"lb": "0", "ub": "mxpft"}]
