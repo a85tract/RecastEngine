@@ -817,3 +817,44 @@ def test_a_scalar_result_is_wrapped_as_before() -> None:
     text, _ = wrappers_for(_wrapper_record(None, "x"), ["f"])
     assert "function w_f(x) result(res)" in text
     assert "res(" not in text
+
+
+# --- #39, #27: a sequence-associated element of a non-unit-based array --------
+
+ELEMENT_OF_OFFSET_ARRAY = """\
+module seq_mod
+implicit none
+integer, parameter :: r8 = selected_real_kind(12)
+contains
+subroutine dbl(eval)
+  real(r8), intent(inout) :: eval(4,4)
+  eval = eval * 2.0_r8
+end subroutine dbl
+subroutine calc(nets, nete, out)
+  integer, intent(in) :: nets, nete
+  real(r8), intent(out) :: out(4, 4, nets:nete)
+  real(r8) :: a(4, 4, nets:nete)
+  integer :: ie
+  do ie = nets, nete
+    a(:, :, ie) = 1.0_r8
+    call dbl(a(1, 1, ie))
+    out(:, :, ie) = a(:, :, ie)
+  end do
+end subroutine calc
+end module
+"""
+
+
+def test_a_sequence_associated_element_shifts_by_the_declared_lower_bound(
+    tmp_path: Path,
+) -> None:
+    """``call dbl(a(1,1,ie))`` with ``a(4,4,nets:nete)``: the view's trailing
+    subscript is ``ie - nets``, not the blanket ``ie - 1`` (#39, which put
+    ``prim_advance_mod``'s ``Phis_avg`` in the wrong slot whenever
+    ``nets /= 1``). And the INOUT result comes back through that same view
+    (#27) rather than into the single element the actual names."""
+    statements, nodes = build(_write(tmp_path, "seq", ELEMENT_OF_OFFSET_ARRAY), "calc")
+    body = "\n".join(line for node in nodes for line in statements.render(node, 1))
+    assert "_f_copy_out(a[:, :, (ie) - (nets)], dbl(a[:, :, (ie) - (nets)]))" in body
+    assert "ie - 1" not in body
+    assert "a[0, 0," not in body
