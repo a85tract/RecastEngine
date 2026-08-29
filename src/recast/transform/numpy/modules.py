@@ -106,6 +106,14 @@ class Modules:
     externals_module: str | None = None
     """Where the audited externals shims live; default ``<module>_externals``."""
 
+    keep_unbound_stub_imports: bool = False
+    """Keep ``import <mod>_numpy as _<mod>`` for a USE'd module nothing in the
+    body binds to. Off, such an import names a module that is not part of the
+    run -- a kinds-only USE is the common case -- and only raises
+    ``ModuleNotFoundError`` (#18). On, for a harness that provides a runtime
+    stub per USE'd module and wants every one imported, as the pipeline's
+    CESM project does."""
+
     companion_imports: tuple[str, ...] = ()
     """``import micro_mg_utils_numpy as _mgu`` lines, one per companion.
 
@@ -121,11 +129,20 @@ class Modules:
         ``py_lines`` re-based to final-file line numbers."""
         nodes = self._subprogram_nodes(source)
         body, report = self.body(nodes)
-        text = self.header() + "\n".join(body)
+        text = self.header(body) + "\n".join(body)
         self._rebase(text, report)
         return text, report
 
-    def header(self) -> str:
+    def _stub_imports(self, body: list[str] | None) -> list[str]:
+        """The auto-stub imports the file needs: every one when told to keep
+        them, otherwise only those whose alias the body binds to."""
+        imports = list(self.subprograms.stub_imports)
+        if self.keep_unbound_stub_imports or body is None:
+            return imports
+        text = "\n".join(body)
+        return [line for line in imports if f"{line.rsplit(' as ', 1)[1]}." in text]
+
+    def header(self, body: list[str] | None = None) -> str:
         record = self.subprograms.record
         init = record["subprograms"][0]["name"] if record["subprograms"] else "<none>"
         # The file's name, never the path it happened to be found at. An
@@ -155,7 +172,7 @@ class Modules:
             pieces.append(f"import {shims} as _ext")
         extra = sorted(
             set(self.companion_imports)
-            | set(self.subprograms.stub_imports)
+            | set(self._stub_imports(body))
             | {
                 imported
                 for patch in self.subprograms.patches.values()
