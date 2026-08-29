@@ -829,11 +829,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/66 blocks disagree: cspl_interp/B002, cspleps/B003, csplint/B006, csplint/B012, csplint/B016 (+2 more)",
+       "detail": "10/66 blocks disagree: cspl_interp/B002, spline_coeff/B004, cspleps/B003, csplint/B006, csplint/B012 (+5 more)",
        "metrics": {
         "blocks_checked": 66,
         "blocks_deferred": 10,
-        "blocks_matched": 59,
+        "blocks_matched": 56,
         "blocks_waived": 0
        },
        "passed": false
@@ -1611,11 +1611,19 @@
    "deferred": 4,
    "refusals": [
     [
-     "call to external subroutine 'X'",
-     3
+     "operator 'X'",
+     1
     ],
     [
-     "operator 'X'",
+     "type-bound call s%initialize with arguments",
+     1
+    ],
+    [
+     "type-bound call s%solve with arguments",
+     1
+    ],
+    [
+     "type-bound call me%get_fa_fb with arguments",
      1
     ]
    ],
