@@ -1177,23 +1177,23 @@ class Statements:
                     else:
                         lines.append(f"{pad}else:")
                 else:
-                    values = walk(
-                        chosen,
-                        (
-                            f03.Name,
-                            f03.Int_Literal_Constant,
-                            f03.Char_Literal_Constant,
-                            f03.Real_Literal_Constant,
-                            f03.Logical_Literal_Constant,
-                        ),
+                    # Each item of the value list, rendered whole: walking the
+                    # leaves under it read ``case (0, -1)`` as ``0`` and ``1``,
+                    # the unary minus being a node above the literal, and the
+                    # translation took the wrong branch of a solver switch
+                    # (CLM-ml's FluxProfileSolution).
+                    value_list = chosen.children[0]
+                    items = (
+                        list(value_list.children)
+                        if hasattr(value_list, "children")
+                        else [value_list]
                     )
-                    if any(
-                        isinstance(v, f03.Case_Value_Range) for v in getattr(chosen, "children", [])
-                    ):
+                    if any(isinstance(v, f03.Case_Value_Range) for v in items):
                         raise NoRule("case value range")
                     conditions = []
-                    for value in values:
-                        if character or isinstance(value, f03.Char_Literal_Constant):
+                    for value in items:
+                        is_text = character or bool(walk(value, f03.Char_Literal_Constant))
+                        if is_text:
                             conditions.append(
                                 f"_fstr_eq({selector}, {self.expressions.render(value)})"
                             )
