@@ -125,6 +125,11 @@ def scope_for(
     # counts it as a call on the other side, so the two sides disagreed on
     # every block that calls a host-associated procedure.
     subs = {s["name"]: s for s in record["subprograms"]}
+    # An explicit interface is the shape a procedure dummy calls through:
+    # ``call func(x, val)`` binds its actuals the way a call to a known
+    # procedure does, or ``val`` is counted read where the callee wrote it.
+    for name, body in (record.get("interfaces") or {}).items():
+        subs.setdefault(name, body)
 
     ranks: dict[str, int] = {}
     chars: set[str] = set()
@@ -326,6 +331,15 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
 
         callee = scope.subprograms.get(name)
         actuals = _bind_actuals(callee, items) if callee is not None else items
+        # A call through a dummy reads the dummy: the callable is data this
+        # subprogram was passed, and the translation spells it as a name.
+        dummies = (
+            {a["name"].lower() for a in scope.semantics.subprogram["args"]}
+            if (scope.semantics is not None)
+            else set()
+        )
+        if name in dummies:
+            reads.add(name)
 
         if callee is None:
             external = scope.externals.get(name)
