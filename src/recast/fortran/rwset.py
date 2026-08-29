@@ -153,8 +153,12 @@ def lower_bound_reads(name: str, scope: Scope) -> set[str]:
         if not lower or re.fullmatch(r"-?\d+", lower):
             continue
         for token in re.findall(r"[A-Za-z_]\w*", lower.split("%", 1)[0]):
-            if token.lower() in scope.ranks or semantics.declaration(token.lower()):
-                found.add(token.lower())
+            name_ = token.lower()
+            if name_ in INTRINSICS or name_ in STATE_QUERY or name_ in TRANSFORMATIONAL:
+                continue
+            # A local, a dummy, or a use-imported parameter (``nlevsno``):
+            # the translation spells each of them in the shift.
+            found.add(name_)
     return found
 
 
@@ -336,7 +340,14 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 continue
             # UNKNOWN counts as a read: an undeclared intent might be one, and
             # a missed read only ever costs a spurious mismatch.
-            if formal["intent"] in ("IN", "INOUT", "UNKNOWN"):
+            passed_in = formal.get("buffer") and (
+                scope.semantics is not None
+                and scope.semantics.module.get("buffer_convention") == "all"
+            )
+            if formal["intent"] in ("IN", "INOUT", "UNKNOWN") or passed_in:
+                # Under the every-array buffer convention an OUT array is
+                # passed in as storage, which the translation spells as an
+                # argument -- a read of the name.
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)
