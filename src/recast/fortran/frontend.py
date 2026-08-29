@@ -425,7 +425,12 @@ class FortranFrontend(Frontend):
             callgraph[sub_uid] = [f"{module_uid}/{c}" for c in sub["calls"]] + _external_calls(
                 nodes[sub_name], plain_names
             )
-            scope = scope_for(record, sub_name, externals=externals)
+            scope = scope_for(
+                record,
+                sub_name,
+                externals=externals,
+                companions=tuple(c["record"] for c in companions),
+            )
             effects[sub_uid] = {
                 "reads": sub["module_state_read"],
                 "writes": sub["module_state_written"],
