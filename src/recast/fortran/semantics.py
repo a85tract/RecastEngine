@@ -42,14 +42,107 @@ candidate it might have matched."""
 
 ARITHMETIC = frozenset({"+", "-", "*", "/", "**"})
 
-INTEGER_RESULT_INTRINSICS = frozenset({"int", "nint", "mod"})
-"""Intrinsics whose result is integer whatever the argument is.
+INTEGER_RESULT_INTRINSICS = frozenset(
+    {
+        "int",
+        "nint",
+        "ifix",
+        "idint",
+        "idnint",
+        "floor",
+        "ceiling",
+        "size",
+        "len",
+        "len_trim",
+        "index",
+        "scan",
+        "verify",
+        "ichar",
+        "iachar",
+        "count",
+        "lbound",
+        "ubound",
+        "kind",
+        "selected_real_kind",
+        "selected_int_kind",
+        "bit_size",
+        "digits",
+        "exponent",
+        "radix",
+        "range",
+        "precision",
+        "maxexponent",
+        "minexponent",
+        "popcnt",
+        "leadz",
+        "trailz",
+        "storage_size",
+        "shape",
+    }
+)
+"""Intrinsics whose result is INTEGER whatever the argument was."""
 
-Short because it only has to be right, not complete: a name missing from it is
-reported as non-integer, and the rule it feeds -- Fortran's ``/`` truncates
-between two integers -- then keeps the safer real division.
+INTEGER_WITH_INTEGER_ARGUMENTS = frozenset(
+    {
+        "abs",
+        "max",
+        "min",
+        "sign",
+        "dim",
+        "mod",
+        "modulo",
+        "sum",
+        "product",
+        "maxval",
+        "minval",
+        "iand",
+        "ior",
+        "ieor",
+        "ishft",
+        "ishftc",
+        "ibset",
+        "ibclr",
+        "ibits",
+        "not",
+        "huge",
+        "tiny",
+        "max0",
+        "min0",
+        "iabs",
+        "isign",
+        "idim",
+    }
+)
+"""Intrinsics whose result is INTEGER exactly when their arguments are.
+
+``mod`` is here rather than in the table above, which is where this
+repository had it: ``mod`` of two REALs is REAL, and calling it INTEGER made
+a division by it truncate.
 """
 
+SAME_TYPE_ARGUMENTS = frozenset(
+    {
+        "max",
+        "min",
+        "mod",
+        "modulo",
+        "dim",
+        "sign",
+        "iand",
+        "ior",
+        "ieor",
+        "max0",
+        "min0",
+        "isign",
+        "idim",
+    }
+)
+"""Of the above, those Fortran requires to share one type across arguments.
+
+One provably-INTEGER argument therefore types the whole call: a sibling this
+analysis cannot type cannot make the result REAL, so ``any`` is the correct
+quantifier and ``all`` would lose the answer to the weakest argument.
+"""
 DERIVED_TYPE_MARKER = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 """How ``interface.dtype_of`` spells a type it will not reduce to a dtype.
 
@@ -321,13 +414,45 @@ class Semantics:
             return False
         if isinstance(node, f03.Name):
             declared = self.declaration(str(node))
-            return declared is not None and declared.get("dtype") in INTEGER_DTYPES
+            if declared is not None:
+                return declared.get("dtype") in INTEGER_DTYPES
+            if self.subprogram.get("result") == str(node).lower():
+                # A scalar result has no declaration record -- ``declaration``
+                # synthesises one only for an array result, whose shape it
+                # needs -- so the result name would otherwise answer False in
+                # its own function.
+                return self.subprogram.get("result_dtype") in INTEGER_DTYPES
+            return False
         if isinstance(node, f03.Parenthesis):
             return self.is_integer(node.children[1])
-        if isinstance(node, (f03.Part_Ref, f03.Intrinsic_Function_Reference)):
+        if isinstance(node, f03.Data_Ref):
+            component = self._dataref_component(node)
+            return component is not None and component.get("dtype") in INTEGER_DTYPES
+        if isinstance(
+            node,
+            (
+                f03.Part_Ref,
+                f03.Intrinsic_Function_Reference,
+                f03.Function_Reference,
+                f03.Structure_Constructor,
+            ),
+        ):
+            # fparser spells an unknown zero-or-keyword-argument call as a
+            # Structure_Constructor, so a call can arrive under any of these.
             name = str(node.children[0]).lower()
+            if self.is_array(name):
+                # Subscripted array: an element or a section, typed by the
+                # array, not by whatever intrinsic shares its name.
+                declared = self.declaration(name)
+                return declared is not None and declared.get("dtype") in INTEGER_DTYPES
             if name in INTEGER_RESULT_INTRINSICS:
                 return True
+            if name in INTEGER_WITH_INTEGER_ARGUMENTS:
+                return self._arguments_are_integer(name, self._arguments(node))
+            if name in self.statement_functions:
+                # Its type lives in the execution part, which this class does
+                # not read. Unsure answers False.
+                return False
             record = self.procedures.get(name)
             return record is not None and record.get("result_dtype") in INTEGER_DTYPES
         children = getattr(node, "children", None)
@@ -336,6 +461,110 @@ class Semantics:
         if children and len(children) == 3 and _is_operator(children[1], ARITHMETIC):
             return self.is_integer(children[0]) and self.is_integer(children[2])
         return False
+
+    def _arguments_are_integer(self, name: str, items: list[Any]) -> bool:
+        """Whether an argument-typed intrinsic call is INTEGER here."""
+        values = [
+            argument.children[1]
+            if isinstance(argument, (f03.Actual_Arg_Spec, f03.Component_Spec))
+            else argument
+            for argument in items
+        ]
+        if name in ("sum", "product", "maxval", "minval"):
+            # DIM and MASK follow the array and say nothing about its type.
+            values = values[:1]
+        if name in SAME_TYPE_ARGUMENTS and len(values) > 1:
+            return any(self.is_integer(value) for value in values)
+        return bool(values) and all(self.is_integer(value) for value in values)
+
+    def _dataref_component(self, node: Any) -> dict[str, Any] | None:
+        """``root%comp``, ``root(i)%comp`` and ``root%comp(i)`` -> comp's record."""
+        if len(node.children) != 2:
+            return None
+        root, last = node.children
+        root_name = (
+            root
+            if isinstance(root, f03.Name)
+            else root.children[0]
+            if isinstance(root, f03.Part_Ref)
+            else None
+        )
+        component = (
+            last
+            if isinstance(last, f03.Name)
+            else last.children[0]
+            if isinstance(last, f03.Part_Ref)
+            else None
+        )
+        if root_name is None or component is None:
+            return None
+        return self.component(str(root_name), str(component))
+
+    def is_scalar_integer_target(self, node: Any) -> bool:
+        """Whether an assignment target is an INTEGER *scalar*.
+
+        Fortran converts on assignment, so a REAL expression stored into an
+        INTEGER truncates toward zero. Only scalars are asked about: an
+        integer array element or section is stored through numpy, which
+        truncates on store by itself, and wrapping those would change the
+        emitted text without changing what it computes.
+        """
+        if isinstance(node, f03.Name):
+            name = str(node).lower()
+            declared = self.declaration(name)
+            if declared is not None:
+                return not declared.get("dims") and declared.get("dtype") in INTEGER_DTYPES
+            if self.subprogram.get("result") == name and not self.subprogram.get("result_dims"):
+                return self.subprogram.get("result_dtype") in INTEGER_DTYPES
+            return False
+        if isinstance(node, f03.Data_Ref) and isinstance(node.children[-1], f03.Name):
+            component = self._dataref_component(node)
+            return (
+                component is not None
+                and not component.get("dims")
+                and component.get("dtype") in INTEGER_DTYPES
+            )
+        return False
+
+    def is_logical_or_character(self, node: Any) -> bool:
+        """Whether an expression is LOGICAL or CHARACTER valued.
+
+        Neither converts to INTEGER on assignment, so neither takes the
+        truncation the integer-assignment rule applies.
+        """
+        if isinstance(node, (f03.Logical_Literal_Constant, f03.Char_Literal_Constant)):
+            return True
+        if isinstance(node, f03.Name):
+            declared = self.declaration(str(node))
+            return declared is not None and declared.get("dtype") in ("bool", "str")
+        children = getattr(node, "children", None)
+        if (
+            children
+            and len(children) == 3
+            and isinstance(children[1], str)
+            and children[1]
+            in (
+                ".and.",
+                ".or.",
+                ".eqv.",
+                ".neqv.",
+                "==",
+                "/=",
+                "<",
+                "<=",
+                ">",
+                ">=",
+                ".eq.",
+                ".ne.",
+                ".lt.",
+                ".le.",
+                ".gt.",
+                ".ge.",
+                "//",
+            )
+        ):
+            return True
+        return isinstance(node, f03.And_Operand)
 
     def is_character(self, node: Any) -> bool:
         if isinstance(node, f03.Char_Literal_Constant):
