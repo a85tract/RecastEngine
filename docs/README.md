@@ -4,6 +4,7 @@
 |---|---|
 | [`cli.md`](cli.md) | every command, the four recipes, config keys, `run` flags, exit codes |
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
+| [`corpus-lapack-example.md`](corpus-lapack-example.md) | the one corpus unit whose Python does not import -- a library over LAPACK -- why that is the right outcome, and what an externals shim would change |
 | [`architecture.md`](architecture.md) | the spine, the ten interfaces, where the boundaries fall |
 | [`writing-a-plugin.md`](writing-a-plugin.md) | how to extend the engine, and the conformance suite a plugin must satisfy |
 | [`roadmap.md`](roadmap.md) | phases P0–P6, where each recipe stands, and how far each claim's evidence reaches |
