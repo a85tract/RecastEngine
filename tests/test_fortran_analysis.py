@@ -1469,3 +1469,30 @@ def test_a_component_allocated_from_zero_carries_its_lower_bound(tmp_path: Path)
     # the unit origin; the ``0:`` beside it is still recorded (CLM-ml's
     # ``tbi_profile(begp:endp, 0:nlevmlcan)`` was read one layer off).
     assert comps["tbi"]["allocated_dims"] == [{"lb": "1", "ub": "endp"}, {"lb": "0", "ub": "mxpft"}]
+
+
+def test_a_subscript_reads_the_names_in_its_declared_lower_bound(tmp_path: Path) -> None:
+    """``rho(bounds%begp:bounds%endp)`` then ``rho(p)``: the address is
+    ``p - bounds%begp``, which the translation spells out and the source
+    computes silently; both sides read ``bounds`` (CLM-ml's SolarRadiation)."""
+    from recast.fortran import rwset
+
+    source = REBASED_COMPONENT.replace(
+        "  subroutine init(this, begp, endp)\n",
+        "  subroutine use_it(b, p, v)\n    type(con_t), intent(in) :: b\n"
+        "    integer, intent(in) :: p\n    real(r8), intent(out) :: v\n"
+        "    real(r8) :: rho(b%mxpft:2*b%mxpft)\n    rho(p) = 1._r8\n    v = rho(p)\n"
+        "  end subroutine use_it\n\n  subroutine init(this, begp, endp)\n",
+    ).replace(
+        "    real(r8), allocatable :: slatop(:)\n",
+        "    real(r8), allocatable :: slatop(:)\n    integer :: mxpft\n",
+    )
+    src = _write(tmp_path, "lb.f90", source)
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == "use_it"
+    )
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "use_it"))
+    assert all("b" in b["reads"] for b in blocks), blocks
