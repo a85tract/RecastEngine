@@ -237,6 +237,7 @@ class FortranFrontend(Frontend):
         externals: dict[str, dict[str, Any]] | None = None,
         stub_modules: Iterable[str] = (),
         exclude: Iterable[str] = (),
+        buffer_out_arrays: str = "unsizable",
     ) -> None:
         """
         ``kind_assumptions`` maps kind parameters this tree use-imports from
@@ -266,6 +267,9 @@ class FortranFrontend(Frontend):
         self.externals = dict(externals or {})
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
         self.exclude = tuple(Path(d) for d in exclude)
+        self.buffer_out_arrays = buffer_out_arrays
+        """``"unsizable"`` (the default) or ``"all"``: which intent(out) arrays
+        are the caller's buffer -- see ``interface._mark_buffer_out_arrays``."""
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._analyzed: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -353,6 +357,7 @@ class FortranFrontend(Frontend):
                 **self.kind_assumptions,
             },
             intent_overrides=self.intent_overrides,
+            buffer_out_arrays=self.buffer_out_arrays,
         )
         consts = constants_mod.extract(path, extern_names=set(self.extern_constants))
 
@@ -618,7 +623,11 @@ class FortranFrontend(Frontend):
         cached = self._analyzed.get(key)
         if cached is None:
             if kind == "interface":
-                cached = extract(source, kind_assumptions=self.kind_assumptions)
+                cached = extract(
+                    source,
+                    kind_assumptions=self.kind_assumptions,
+                    buffer_out_arrays=self.buffer_out_arrays,
+                )
             else:
                 cached = extract(source, extern_names=set(self.extern_constants))
             self._analyzed[key] = cached

@@ -906,6 +906,7 @@ def extract(
     *,
     kind_assumptions: dict[str, str] | None = None,
     intent_overrides: dict[str, Any] | None = None,
+    buffer_out_arrays: str = "unsizable",
 ) -> dict[str, Any]:
     """Full interface record for one Fortran source file.
 
@@ -1005,7 +1006,7 @@ def extract(
     _infer_write_only_intents(subs, subprograms)
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
-    _mark_buffer_out_arrays(subprograms)
+    _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
     _host_associate(subs, subprograms, sub_names, state_names)
     for record in subprograms:
         record["public"] = is_public(record["name"])
@@ -1143,8 +1144,16 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
             argument["intent_inferred"] = True
 
 
-def _mark_buffer_out_arrays(records: list[dict[str, Any]]) -> None:
+def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) -> None:
     """Mark an intent(out) ARRAY dummy the callee cannot size as the caller's.
+
+    ``every`` marks every intent(out) array so, sizable or not: Fortran
+    passes the caller's storage in every case, and a callee that writes
+    only ``t(1:n)`` of its ``t(nlev)`` leaves the rest as the caller had it
+    -- which a fresh buffer returned whole cannot do (CLM-ml's
+    ``tridiag_2eq`` into ``tair(p,:)``, the layers above the canopy). The
+    default keeps the narrower convention the engine's emitted corpus was
+    differenced under; a frontend that wants the faithful one asks.
 
     Fortran passes array storage, so an ``intent(out)`` array whose extent
     this subprogram cannot derive was allocated by the caller and has to stay
@@ -1168,7 +1177,7 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]]) -> None:
             ):
                 continue
             dims = argument["dims"]
-            if any(d.get("assumed_size") for d in dims):
+            if every or any(d.get("assumed_size") for d in dims):
                 argument["buffer"] = True
                 continue
             if not all(d.get("ub") is None for d in dims):
