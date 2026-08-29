@@ -23,6 +23,7 @@ allowed to under-report one.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -152,6 +153,26 @@ def scope_for(
     )
 
 
+def lower_bound_reads(name: str, scope: Scope) -> set[str]:
+    """The names a subscript of ``name`` reads through its declared lower
+    bounds. ``rho(bounds%begp:bounds%endp, ...)`` then ``rho(p, ic)``: the
+    element's address is ``p - bounds%begp``, which the translation spells
+    out and the source computes silently. Both sides read ``bounds``."""
+    semantics = scope.semantics
+    if semantics is None:
+        return set()
+    declared = semantics.declaration(name) or {}
+    found: set[str] = set()
+    for dim in declared.get("dims") or ():
+        lower = str(dim.get("lb") or "").strip()
+        if not lower or re.fullmatch(r"-?\d+", lower):
+            continue
+        for token in re.findall(r"[A-Za-z_]\w*", lower.split("%", 1)[0]):
+            if token.lower() in scope.ranks or semantics.declaration(token.lower()):
+                found.add(token.lower())
+    return found
+
+
 def expr_reads(node: Any, scope: Scope) -> set[str]:
     """Every symbol an expression reads.
 
@@ -192,6 +213,7 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
             # bare-Name branch applies. zm_conv declares `gamma(pcols,pver)`,
             # and reading `gamma(i,k)` is dataflow, not a call to GAMMA.
             reads.add(fname)
+            reads |= lower_bound_reads(fname, scope)
             return reads
         known = (
             fname in scope.subprograms
@@ -290,7 +312,9 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
                     reads.update(expr_reads(comp.children[1], scope))
         else:
-            writes.add(str(target.children[0]).lower())
+            root = str(target.children[0]).lower()
+            writes.add(root)
+            reads.update(lower_bound_reads(root, scope))
             for child in target.children[1:]:
                 reads.update(expr_reads(child, scope))
 
