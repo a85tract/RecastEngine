@@ -116,7 +116,7 @@ def test_the_anchor_still_carries_its_own_deferrals(tmp_path: Path) -> None:
         "    integer :: i", "    integer :: i\n    character(len=32) :: tag"
     ).replace(
         "      mass(i) = rho(i) * dz(i)",
-        "      mass(i) = rho(i) * dz(i)\n      write(tag, '(F8.2)') mass(i)",
+        "      mass(i) = rho(i) * dz(i)\n      write(tag, '(D8.2)') mass(i)",
     )
     candidate = port(tmp_path, refused, "port_demo")
     assert any("formatted internal write" in entry for entry in candidate.deferred)
