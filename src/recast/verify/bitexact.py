@@ -447,8 +447,11 @@ class BitexactVerifier(Verifier):
             else:
                 inputs = {}
                 for argument in required:
-                    if argument["intent"] == "OUT":
+                    if argument["intent"] == "OUT" and not argument.get("buffer"):
                         continue
+                    # An intent(out) buffer is the caller's storage: generated
+                    # like an input, handed to the candidate, and compared
+                    # after the call the way any output is.
                     lowered = argument["name"].lower()
                     if not argument.get("dims") and (lowered in dimension_names or lowered in dims):
                         inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
@@ -478,7 +481,9 @@ class BitexactVerifier(Verifier):
             # scalars into trailing keywords, so positional order is not a
             # shared vocabulary -- names are.
             translated_kwargs = {
-                pysafe(a["name"]): inputs[a["name"]] for a in required if a["intent"] != "OUT"
+                pysafe(a["name"]): inputs[a["name"]]
+                for a in required
+                if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
             }
             # How the reference spells an argument is the reference's business,
             # and it declares which on its handle. f2py lowercases every dummy
