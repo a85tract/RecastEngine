@@ -59,7 +59,7 @@ EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*
 
 DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
 
-BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*|\d+|[()+\-*/ ]")
+BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()+\-*/ ]")
 """What a declared bound is allowed to be made of. Bound texts are simple by
 construction; anything richer refuses the statement that needed the bound."""
 
@@ -520,7 +520,12 @@ class Expressions:
                 raise NoRule(f"dim expr {text!r}")
             position = match.end()
             token = match.group(0)
-            if re.match(r"[A-Za-z_]", token):
+            if "%" in token:
+                # ``bounds%begp`` sizing a local: the component of a dummy,
+                # which is an attribute of the same name on this side.
+                root, component = (t.strip() for t in token.split("%", 1))
+                rendered.append(f"{self.names.symbol(root)}.{pysafe(component.lower())}")
+            elif re.match(r"[A-Za-z_]", token):
                 rendered.append(self.names.symbol(token))
             elif token.isdigit() and token not in ("0", "1", "2"):
                 hoisted = self.names.literals.get(token)
