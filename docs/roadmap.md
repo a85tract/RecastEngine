@@ -409,6 +409,20 @@ left it at 5 and 250. The runtime is in the header, so #15 moves no
 differential; the corpus table is unchanged by either, and its baseline
 is not re-recorded.
 
+**One relay the differentials could not see, 2026-08-29.** Triaging the
+corpus's read/write-set failures found `INDEX(letters, s(i:i))` emitted
+as `index[LETTERS - 1, ...]`: a substring actual ranks as a section, the
+reference went to the array table, which has no `index`, and fell
+through to the subscript fallback -- runnable, wrong, scored mechanical.
+The pipeline's rank>0 branch falls back to its scalar map before it
+considers indexing, and the engine's `_over_arrays` did not; it does
+now. CAM has no such site, so `emit_diff`, `numba_diff` and
+`cuda_diff` are unmoved; the corpus's read/write check goes
+5187 -> 5203 blocks matched; fortran-utils/linalg 206->208, fortran-utils/utils 34->36, numfor/array_utils 65->66, numfor/fitpack 104->106, numfor/mt95 179->180, numfor/strings 88->95, roots/root_module 231->232. The same triage filed
+translator #43 -- an internal function's result variable counted as
+host-associated, which both sides share -- and left the rest of the
+failing blocks catalogued for a later pass.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.

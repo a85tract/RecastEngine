@@ -1039,3 +1039,33 @@ def test_a_type_bound_call_with_arguments_is_refused_and_without_is_a_no_op(
     assert statements.render(nodes[0], 1) == ["    pass  # b%reset (OOP method stub)"]
     with pytest.raises(NoRule, match="type-bound call b%store with arguments"):
         statements.render(nodes[1], 1)
+
+
+# --- an intrinsic over a substring actual --------------------------------------
+
+
+def test_an_intrinsic_with_a_substring_actual_stays_a_call(tmp_path: Path) -> None:
+    """``INDEX(letters, s(i:i))``: the substring ranks as a section, so the
+    reference went to the array table, which has no ``index``, and fell
+    through to the subscript fallback -- ``index[LETTERS - 1, ...]``,
+    runnable, wrong, and scored mechanical (numfor/strings, 17 blocks). The
+    pipeline's rank>0 branch falls back to its scalar map before it ever
+    considers indexing; so does this now."""
+    source = """\
+module m
+implicit none
+character(len=3), parameter :: letters = 'abc'
+contains
+subroutine up(s, n, m, k)
+  character(len=*), intent(in) :: s
+  integer, intent(out) :: n, m, k
+  n = INDEX(letters, s(1:1))
+  m = index(letters, s)
+  k = len_trim(s(2:3))
+end subroutine
+end module
+"""
+    statements, nodes = build(_write(tmp_path, "idx", source), "up")
+    assert statements.render(nodes[0], 0) == ["n = _f_index(LETTERS, s[0:1])"]
+    assert statements.render(nodes[1], 0) == ["m = _f_index(LETTERS, s)"]
+    assert statements.render(nodes[2], 0) == ["k = _f_len_trim(s[1:I_3])"]
