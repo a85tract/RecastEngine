@@ -156,6 +156,9 @@ class Statements:
     poison_integers: bool = False
     """The integer arm of the above, and off even when it is on."""
 
+    buffer_out_arrays: bool = False
+    """Apply the caller-buffer convention at call sites; see ``Subprograms``."""
+
     masks: list[str] = field(default_factory=list)
     """Enclosing WHERE masks. Fortran ANDs a nested WHERE into its outer one."""
 
@@ -1600,9 +1603,13 @@ class Statements:
                 continue
             if self.is_optional_output(formal):
                 inputs.append(f"want_{formal['name']}=True")
-            if formal["intent"] in ("IN", "INOUT", "UNKNOWN") and not self.is_optional_output(
-                formal
-            ):
+            passes = formal["intent"] in ("IN", "INOUT", "UNKNOWN") or bool(
+                formal.get("buffer") and self.buffer_out_arrays
+            )
+            if passes and not self.is_optional_output(formal):
+                # A buffer formal is a parameter of the callee as well as one
+                # of its returns: the callee writes into the storage this
+                # caller owns, so the actual has to be passed in too.
                 inputs.append(self._input_argument(formal, actual, substitutions, inputs))
             if formal["intent"] in ("OUT", "INOUT"):
                 outputs.append(self._output_target(actual))

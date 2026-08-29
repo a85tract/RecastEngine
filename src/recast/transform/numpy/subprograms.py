@@ -133,6 +133,21 @@ class Subprograms:
     call_transforms: dict[str, Any] = field(default_factory=dict)
     function_transforms: dict[str, Any] = field(default_factory=dict)
     handle_producers: frozenset[str] = frozenset()
+
+    buffer_out_arrays: bool = True
+    """Apply the caller-buffer convention to intent(out) arrays (#36).
+
+    An ``intent(out)`` array the callee cannot size is the caller's storage,
+    so it stays a parameter and is returned like an INOUT. Off, a rank-3
+    assumed-shape OUT with no donor is bound to ``None`` and the first write
+    into it raises -- ``ndrop.dropmixnuc``'s ``factnum`` is that case.
+
+    Upstream defaults this on and turns it off only for its own CESM project,
+    where the validated slots and their post-patches were built on the older
+    convention. That carve-out is about a patch baseline this repository does
+    not carry, so it belongs to whoever has one -- set the field, as upstream
+    sets it from its CLI -- rather than to the default here.
+    """
     type_bound_procedures: frozenset[str] = frozenset()
 
     poison_undefined: bool = False
@@ -295,6 +310,7 @@ class Subprograms:
             stubs=dict(self.statement_stubs),
             call_transforms=dict(self.call_transforms),
             poison_undefined=self.poison_undefined,
+            buffer_out_arrays=self.buffer_out_arrays,
             poison_integers=self.poison_integers,
         )
 
@@ -478,15 +494,28 @@ class Subprograms:
         lines.append("")
         return lines, report
 
+    def _is_caller_buffer(self, argument: dict[str, Any]) -> bool:
+        """Whether this formal is an OUT array the caller supplies (#36)."""
+        return bool(argument.get("buffer") and self.buffer_out_arrays)
+
+    def _passes(self, argument: dict[str, Any]) -> bool:
+        """Whether this formal is a Python parameter of the emitted def."""
+        return argument["intent"] in ("IN", "INOUT", "UNKNOWN") or self._is_caller_buffer(argument)
+
     def signature(self, subprogram: dict[str, Any]) -> str:
         """The ``def`` line: in-arguments positionally, optionals as
-        keywords, optional outputs as their ``want_<name>`` sentinels."""
+        keywords, optional outputs as their ``want_<name>`` sentinels.
+
+        An intent(out) array marked ``buffer`` is a parameter too, when the
+        caller-buffer convention is on: the caller owns its storage, and this
+        subprogram cannot size it.
+        """
         positional: list[str] = []
         keyword: list[str] = []
         for argument in subprogram["args"]:
             if Statements.is_optional_output(argument):
                 keyword.append(f"want_{argument['name']}=False")
-            elif argument["intent"] in ("IN", "INOUT", "UNKNOWN"):
+            elif self._passes(argument):
                 (keyword if argument["optional"] else positional).append(
                     pysafe(argument["name"]) + ("=None" if argument["optional"] else "")
                 )
@@ -536,7 +565,10 @@ class Subprograms:
         # the function owns their buffers. Arrays get np.empty -- contents
         # undefined, exactly like Fortran -- and scalars the UB-guard zero.
         for argument in subprogram["args"]:
-            if argument["intent"] != "OUT":
+            if argument["intent"] != "OUT" or self._is_caller_buffer(argument):
+                # A buffer argument arrives already allocated; allocating a
+                # fresh one here would write the caller's result into an array
+                # the caller never sees.
                 continue
             lines.extend(self._out_argument(argument, subprogram, semantics, statements))
         # Local PARAMETERs, as local assignments (matches Fortran scope).
