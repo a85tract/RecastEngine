@@ -159,6 +159,12 @@ class Statements:
     masks: list[str] = field(default_factory=list)
     """Enclosing WHERE masks. Fortran ANDs a nested WHERE into its outer one."""
 
+    assigned_names: set[str] = field(default_factory=set)
+    """Names this subprogram's body assigns to. Filled by ``scan``."""
+
+    called_names: set[str] = field(default_factory=set)
+    """Names this subprogram's body calls or subscripts. Filled by ``scan``."""
+
     exit_labels: dict[int, str] = field(default_factory=dict)
     """``id(do-construct)`` -> the label that means ``exit`` inside it."""
 
@@ -189,11 +195,33 @@ class Statements:
     # -- entry points ---------------------------------------------------------
 
     def scan(self, subprogram: Any) -> None:
-        """Pair every do-construct with an immediately-following labeled
+        """One pass over the body for the facts a later statement needs.
+
+        Pairs every do-construct with an immediately-following labeled
         CONTINUE anywhere in the nesting tree -- inside such a loop, ``goto``
-        to that label is exactly ``exit``."""
+        to that label is exactly ``exit`` -- and records which names the body
+        assigns and which it calls, which is what tells an F77 intrinsic
+        declaration apart from a real local.
+        """
         self.exit_labels = {}
         self.consumed_labels = set()
+        self.assigned_names = {
+            str(a.children[0]).lower()
+            for a in walk(subprogram, f03.Assignment_Stmt)
+            if isinstance(a.children[0], f03.Name)
+        }
+        self.called_names = {
+            str(c.children[0]).lower()
+            for c in walk(
+                subprogram,
+                (
+                    f03.Part_Ref,
+                    f03.Function_Reference,
+                    f03.Intrinsic_Function_Reference,
+                    f03.Structure_Constructor,
+                ),
+            )
+        }
 
         def targeted_from_outside(do_node: Any, label: str) -> bool:
             inside = {id(g) for g in walk(do_node, f03.Goto_Stmt)}

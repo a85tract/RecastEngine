@@ -168,6 +168,65 @@ def for_subprogram(
     )
 
 
+INTRINSIC_MODULE_NAMES: dict[str, tuple[str, ...]] = {
+    "iso_fortran_env": (
+        "real32",
+        "real64",
+        "real128",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "input_unit",
+        "output_unit",
+        "error_unit",
+        "iostat_end",
+        "iostat_eor",
+        "character_storage_size",
+        "numeric_storage_size",
+        "file_storage_size",
+    ),
+    "iso_c_binding": (
+        "c_int",
+        "c_short",
+        "c_long",
+        "c_long_long",
+        "c_size_t",
+        "c_int8_t",
+        "c_int16_t",
+        "c_int32_t",
+        "c_int64_t",
+        "c_float",
+        "c_double",
+        "c_long_double",
+        "c_float_complex",
+        "c_double_complex",
+        "c_bool",
+        "c_char",
+        "c_null_char",
+        "c_new_line",
+        "c_null_ptr",
+    ),
+    "ieee_arithmetic": (
+        "ieee_is_nan",
+        "ieee_is_finite",
+        "ieee_is_normal",
+        "ieee_is_negative",
+        "ieee_positive_inf",
+        "ieee_negative_inf",
+        "ieee_quiet_nan",
+        "ieee_signaling_nan",
+        "ieee_value",
+    ),
+    "omp_lib": (
+        "omp_get_num_threads",
+        "omp_get_thread_num",
+        "omp_get_max_threads",
+        "omp_get_wtime",
+    ),
+}
+"""The names each intrinsic-module namespace provides on a bare USE."""
+
 USE_STATEMENT = re.compile(
     r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)(?:\s*,\s*ONLY\s*:\s*(.+))?", re.I
 )
@@ -223,6 +282,13 @@ def bind_use_statements(
             else:
                 stub_modules[module] = alias
         if not match.group(2):
+            if module in INTRINSIC_MODULES:
+                # A bare ``use ieee_arithmetic``: every name of the namespace
+                # is in scope. Bound to nothing, ``ieee_is_nan(x)`` fell
+                # through to the subscript rule and came out as an array.
+                for name in INTRINSIC_MODULE_NAMES.get(module, ()):
+                    if name not in parameters and name not in state:
+                        bindings.setdefault(name, f"{alias}.{name}")
             continue
         for item in match.group(2).split(","):
             item = item.strip()
