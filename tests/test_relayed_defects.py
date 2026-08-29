@@ -601,3 +601,106 @@ def test_the_axis_only_narrows(tmp_path: Path) -> None:
     # argument matches neither, and the dtype axis does not invent a match.
     with pytest.raises(Exception, match="no match"):
         sem.dispatch("distance", list(Actual_Arg_Spec_List("p").children))
+
+
+# --- #37, #38: what a call reads ----------------------------------------------
+
+KIND_AND_BUFFER = """\
+module rw_mod
+implicit none
+integer, parameter :: wp = selected_real_kind(12)
+contains
+subroutine callee(a, x)
+  real(wp), intent(in) :: a
+  real(wp), intent(out) :: x(:)
+  x(1) = a
+end subroutine
+subroutine drive(pd, a, x, z, n)
+  real(wp), intent(in) :: pd, a
+  real(wp), intent(inout) :: x(10)
+  complex(wp), intent(out) :: z
+  integer, intent(out) :: n
+  z = cmplx(pd, 0.0_wp, wp)
+  n = int(a, kind=8)
+  call callee(a, x)
+end subroutine
+end module
+"""
+
+
+def _rwsets(tmp_path: Path, name: str, text: str, subprogram: str) -> dict[str, Any]:
+    from recast.fortran import rwset
+    from recast.fortran._parse import f03, parse, walk
+
+    src = _write(tmp_path, name, text)
+    record = interface.extract(src)
+    node = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == subprogram
+    )
+    return {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, subprogram))}
+
+
+def test_a_kind_name_is_not_a_read_wherever_a_conversion_puts_it(tmp_path: Path) -> None:
+    """The exclusion stopped at the two-argument conversions, so ``cmplx(x,
+    y, wp)`` reported ``wp`` as a read and disagreed with the emission, which
+    drops the KIND wherever it sits (#37). The rule is the emitter's: a
+    ``kind=`` keyword anywhere, the second positional of a two-argument
+    conversion -- except ``cmplx``, whose second is the imaginary part --
+    and ``cmplx``'s third positional."""
+    blocks = _rwsets(tmp_path, "rw", KIND_AND_BUFFER, "drive")
+    assert blocks["B001"]["reads"] == ["pd"], "cmplx's third positional is the kind"
+    assert blocks["B002"]["reads"] == ["a"], "a kind= keyword is not a read"
+
+
+def test_a_two_argument_cmplx_reads_both(tmp_path: Path) -> None:
+    """The one conversion whose second positional is a value, not a kind."""
+    text = KIND_AND_BUFFER.replace(
+        "  complex(wp), intent(out) :: z\n",
+        "  complex(wp), intent(out) :: z, z2, z3\n  real(wp), intent(out) :: r\n",
+    ).replace(
+        "  call callee(a, x)\n",
+        "  z2 = cmplx(a, pd)\n  z3 = cmplx(a, pd, kind=wp)\n  r = real(a, wp)\n"
+        "  call callee(a, x)\n",
+    )
+    blocks = _rwsets(tmp_path, "rw2", text, "drive")
+    assert blocks["B003"]["reads"] == ["a", "pd"], "two positionals are both values"
+    assert blocks["B004"]["reads"] == ["a", "pd"], "kind= is a keyword wherever it sits"
+    assert blocks["B005"]["reads"] == ["a"], "the second positional of real() is the kind"
+
+
+def test_a_buffer_out_actual_is_read_as_well_as_written(tmp_path: Path) -> None:
+    """``x(:)`` is an intent(out) the callee cannot size, so it is the
+    caller's buffer (#36): the emitter passes the actual in *and* unpacks the
+    return into it, and the source side has to say the same or every such
+    call fails the read/write check (#38)."""
+    blocks = _rwsets(tmp_path, "rw", KIND_AND_BUFFER, "drive")
+    assert blocks["B003"]["reads"] == ["a", "x"]
+    assert blocks["B003"]["writes"] == ["x"]
+
+
+# --- #20: the target side of a copy-out --------------------------------------
+
+
+def test_a_copy_out_destination_is_a_write_not_a_read() -> None:
+    """``_f_copy_out(dst, src)`` writes into ``dst``. The AST has ``dst`` in
+    Load context, so the visitor recorded a read of it and disagreed with
+    the Fortran side, which marks the intent(OUT) actual a write (#20). The
+    subscripts inside the destination stay reads."""
+    import ast
+
+    from recast.verify.rwset import Protocol, span_rwset
+
+    emitted = (
+        "_f_copy_out(phis[:, :, ie - 1], fill(a, b))\n"
+        "_out = fill(a, b)\n"
+        "_f_copy_out(dst, _out[0])\n"
+        "wa[0] = _out[1]\n"
+    )
+    protocol = Protocol(
+        procedures=frozenset({"fill"}), scaffolding=frozenset({"_f_copy_out", "_out"})
+    )
+    reads, writes = span_rwset(ast.parse(emitted), 1, 4, protocol)
+    assert writes == {"phis", "dst", "wa"}
+    assert reads == {"ie", "a", "b"}
