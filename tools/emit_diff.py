@@ -591,6 +591,14 @@ def main() -> int:
                                 print(f"  pipeline |{a}")
                                 print(f"  engine   |{b}")
                                 break
+                    if ns.verbose and want_sigs != got_sigs:
+                        # A signature table that disagrees: name the entries.
+                        want_table = eval(want_sigs.split(" = ", 1)[1])  # noqa: S307
+                        got_table = eval(got_sigs.split(" = ", 1)[1])  # noqa: S307
+                        for key in sorted(set(want_table) | set(got_table)):
+                            if want_table.get(key) != got_table.get(key):
+                                print(f"  pipeline |{key}: {want_table.get(key)!r}")
+                                print(f"  engine   |{key}: {got_table.get(key)!r}")
                     if ns.verbose and same_body and not same_report:
                         # The emitted Python agrees line for line and only the
                         # block bookkeeping does not. Printing nothing here --

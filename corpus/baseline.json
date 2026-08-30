@@ -1902,11 +1902,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/234 blocks disagree: root_scalar_by_type/B001, bracket/B004",
+       "detail": "1/234 blocks disagree: root_scalar_by_type/B001",
        "metrics": {
         "blocks_checked": 234,
         "blocks_deferred": 4,
-        "blocks_matched": 232,
+        "blocks_matched": 233,
         "blocks_waived": 0
        },
        "passed": false
@@ -1941,11 +1941,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "15/68 blocks disagree: bvls/B001, bvls/B002, bvls/B003, initialize/B019, select_another_coeff_to_solve_for/B002 (+10 more)",
+       "detail": "12/68 blocks disagree: bvls/B001, bvls/B002, bvls/B003, initialize/B019, select_another_coeff_to_solve_for/B002 (+7 more)",
        "metrics": {
         "blocks_checked": 68,
         "blocks_deferred": 0,
-        "blocks_matched": 53,
+        "blocks_matched": 56,
         "blocks_waived": 0
        },
        "passed": false

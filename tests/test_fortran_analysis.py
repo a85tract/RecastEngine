@@ -1579,3 +1579,36 @@ def test_a_format_statement_does_not_stop_the_read_write_analysis(tmp_path: Path
     node = next(iter(walk(parse(source), f03.Subroutine_Subprogram)))
     blocks = block_rwsets(node, scope_for(record, "stamp"))
     assert any("text" in b["writes"] for b in blocks)
+
+
+def test_an_internal_functions_result_is_not_host_associated(tmp_path: Path) -> None:
+    """``get_tolerance(b) result(tol)`` inside a host that declares its own
+    ``tol``: the result variable shadows the host's, so it is not
+    host-associated -- reported as such, it was passed as a trailing actual
+    the Fortran does not have (translator #43). A host variable the function
+    really reads stays reported."""
+    source = tmp_path / "shadow.f90"
+    source.write_text(
+        "module shadow\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine bracket(b, outv)\n"
+        "    real(8), intent(in) :: b\n"
+        "    real(8), intent(out) :: outv\n"
+        "    real(8) :: tol, scale\n"
+        "    scale = 2.0d0\n"
+        "    tol = get_tolerance(b)\n"
+        "    outv = tol\n"
+        "  contains\n"
+        "    pure function get_tolerance(b) result(tol)\n"
+        "      real(8), intent(in) :: b\n"
+        "      real(8) :: tol\n"
+        "      tol = scale * abs(b)\n"
+        "    end function get_tolerance\n"
+        "  end subroutine bracket\n"
+        "end module shadow\n"
+    )
+    record = interface.extract(source)
+    inner = next(s for s in record["subprograms"] if s["name"] == "get_tolerance")
+    assert inner["host"] == "bracket"
+    assert inner.get("host_vars") == ["scale"]

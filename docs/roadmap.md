@@ -461,6 +461,60 @@ Over the units the two recordings share, the read/write check is
 unchanged at 5,209 blocks matched. CAM has no submodule, so the
 differentials are unmoved.
 
+### The third relay, 2026-08-30: #43, and four issues that closed without one
+
+The translator went from `11d794b3f` to `840c3f2b3` in three commits,
+closing #40, #41, #42, #43 and #44 -- again every one filed from here.
+Re-run before any of it was relayed, against the new revision:
+
+| | before | after |
+|---|---|---|
+| `emit_diff` | `different=8` over 273 subprograms, 17,943 lines | `different=8`, the same eight |
+| `numba_diff` | `different=2` | `different=2` |
+| `cuda_diff` | `different=0 crashed=0`, 171 device functions | `different=0`, 171 |
+| `golden_diff --live` | clean | clean |
+| corpus read/write check | 5,247 blocks matched | 5,251 |
+
+**`cuda_diff` reached zero before this repository changed a line.** The
+two rows the section above said could not reach zero from here -- #40
+and #41, the engine on the correct side -- closed when upstream's fix
+arrived at the spelling the engine already used; #42 was never a
+difference. #44 is the same story on `emit_diff`: the engine has
+rendered a `case (lo:hi)` as a closed interval on the selector since
+before the relay, and upstream now does too, so the range rows the
+corpus's `slsqp` case would have shown never appeared on either side.
+Four issues closed, nothing to carry.
+
+**#43 is the one relay, and it is one line.** The host-association pass
+subtracted an internal procedure's arguments, locals and parameters from
+the host names it used, and a function's result variable is in none of
+those sets: `get_tolerance(b) result(tol)` inside a host that declares
+its own `tol` was reported as reaching the host's, and the emitter passed
+it as a trailing actual the Fortran does not have -- both sides shared
+it, as the triage of the 29th recorded. The result is now the function's
+own, as upstream. The differentials are unmoved because no CAM slot has
+the collision (upstream's tiers said the same); the corpus is where it
+shows: `roots`' `root_module` goes 232 to 233 blocks matched -- the
+`bracket/B004` block, which is the collision upstream cites -- and
+`slsqp`'s `bvls_module` 53 to 56. No case changes verdict, so the table
+is as it was and the baseline is re-recorded for the block counts only.
+
+**`emit_diff` reads 8 where the second relay left it at 2, and the six
+are this repository's, not upstream's.** The record above never said so,
+and should have. Two classes, both deliberate: a local's declared
+initializer is emitted where the pipeline emits the guard zero
+(`tol = 1.0E-13` against `tol = 0.0`, `derivative_mod` and
+`hetfrz_classnuc`, the two `numba_diff` rows as well), which the commit
+that did it justified on CLM-ml's SoilResistance and is the faithful
+side; and the `buffer: True` the engine's signature table carries for an
+unsizable OUT array (`mg2`, `ndrop`, `seasalt_model`), which the pipeline's
+table has no slot for. `emit_diff -v` now prints a signature table's
+disagreeing entries, which is how the second class became readable; the
+first was already printed. Neither is a difference the pipeline should
+be asked to close, and the comparison should learn to excuse both rather
+than count them -- that is the next change to the tool, not to the
+engine.
+
 ### The replay oracle, and the direction it made the gate run
 
 `dump-replay` was the last declared slot the translator had source for.
