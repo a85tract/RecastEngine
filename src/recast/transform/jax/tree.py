@@ -618,6 +618,12 @@ class _Rewrite(ast.NodeTransformer):
         # anchor spells with a Python or NumPy constructor is ``jnp``'s here.
         # ``jnp.int32`` truncates toward zero the way ``int`` does.
         if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
+            if _static_expression(node.args[0], self.statics):
+                # ``int(dtime_clm / dtime_ml)`` over static scalars: a Python
+                # int at trace time, so the loop it bounds lowers to a scan
+                # reverse mode can transpose. A jnp cast -- even concrete --
+                # would make the loop a while_loop.
+                return node
             return ast.copy_location(_jnp("int32", node.args), node)
         if (
             isinstance(node.func, ast.Attribute)
@@ -664,6 +670,7 @@ class _Rewrite(ast.NodeTransformer):
             and node.func.attr in CASTS
             and len(node.args) == 1
             and not isinstance(node.args[0], ast.Constant)
+            and not _static_expression(node.args[0], frozenset(self.statics))
         ):
             return ast.copy_location(_jnp(node.func.attr, node.args), node)
         return self._companion_call(node)
@@ -1208,9 +1215,84 @@ def _associates(fn: ast.FunctionDef) -> frozenset[str]:
     return frozenset(name for name in top if counts.get(name) == 1)
 
 
+def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
+    """Locals that hold a trace-time value: assigned only at the body's top
+    level, from arithmetic over statics/constants/other concrete locals,
+    casts of those, or a companion scalar kernel called on them
+    (``dtime_clm = get_step_size()`` reading the static ``dtstep``). A name
+    also stored under a branch or loop is a carried value, not a constant."""
+    nested: set[str] = set()
+    for stmt in fn.body:
+        if isinstance(stmt, ast.Assign):
+            continue
+        for inner in ast.walk(stmt):
+            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                nested.add(inner.id)
+    concrete: set[str] = set()
+
+    def scalar_port_call(call: ast.Call) -> bool:
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return False
+        module = rewrite.spelling.modules.get(func.value.id)
+        port = rewrite.ports.get(module) if module is not None else None
+        record = (port or {}).get("records", {}).get(func.attr)
+        if record is None or func.attr not in (port or {}).get("kernels", ()):
+            return False
+        if any(a.get("dims") for a in record["args"]) or record.get("result_dtype") is None:
+            return False
+        if (port.get("write_closures") or {}).get(func.attr):
+            return False
+        closure_static = all(
+            f"{module}__{state}" in rewrite.statics
+            for state in (port.get("closures") or {}).get(func.attr, [])
+        )
+        return closure_static and all(ok(a) for a in call.args)
+
+    def ok(node: ast.expr) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.Name):
+            return node.id.isupper() or node.id in rewrite.statics or node.id in concrete
+        if isinstance(node, ast.Attribute):
+            flat = rewrite.spelling.of(node)
+            return flat is not None and flat in rewrite.statics
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
+        ):
+            return ok(node.left) and ok(node.right)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return ok(node.operand)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
+                return ok(node.args[0])
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "np"
+                and node.func.attr in ("float64", "float32", "int32", "int64")
+                and len(node.args) == 1
+            ):
+                return ok(node.args[0])
+            return scalar_port_call(node)
+        return False
+
+    for stmt in fn.body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id not in nested
+            and ok(stmt.value)
+        ):
+            concrete.add(stmt.targets[0].id)
+    return frozenset(concrete)
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
+    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
     lowered: list[ast.stmt] = []
     # Single exit first, on the anchor's own returns: the flat return that
     # replaces them is one statement at the end.
@@ -1800,6 +1882,22 @@ def _table_read(node: ast.expr) -> bool:
     )
 
 
+def _static_expression(node: ast.expr, statics: frozenset[str]) -> bool:
+    """Arithmetic over numeric literals, upper-case constants, static scalar
+    dummies and concrete locals only: a Python value at trace time."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+    if isinstance(node, ast.Name):
+        return node.id.isupper() or node.id in statics
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
+    ):
+        return _static_expression(node.left, statics) and _static_expression(node.right, statics)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _static_expression(node.operand, statics)
+    return False
+
+
 def _constant_expression(node: ast.expr, loop_vars: set[str] | None = None) -> bool:
     """Numeric literals, upper-case constants and (given) loop counters under
     arithmetic only -- what a Python int or an int64 counter would type
@@ -1965,7 +2063,7 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
         for a in args
-        if a["dtype"] == "int32" and not a.get("dims") and a["intent"] == "IN"
+        if a["dtype"] in ("int32", "int64", "float64") and not a.get("dims") and a["intent"] == "IN"
     )
 
 

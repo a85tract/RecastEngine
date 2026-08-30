@@ -702,7 +702,16 @@ def static_spec(fn_src, sub):
     nums = []
     for pos, p in enumerate(req):
         r = recs.get(p)
-        if r and r["dtype"] in ("int32", "str") and not r.get("dims") and r["intent"] == "IN":
+        if (
+            r
+            and r["dtype"] in ("int32", "int64", "float64", "str")
+            and not r.get("dims")
+            and r["intent"] == "IN"
+        ):
+            # A scalar IN dummy is a run constant at the adapter boundary
+            # (a filter count, a timestep, a calendar kind): static, so a
+            # loop bound derived from it stays a Python value and
+            # ``fori_loop`` lowers to a scan reverse mode can transpose.
             nums.append(pos)
     names = tuple(p for p in opt if p.startswith("want_"))
     return tuple(nums), names
