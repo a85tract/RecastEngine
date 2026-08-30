@@ -160,6 +160,10 @@ class _Rewrite(ast.NodeTransformer):
     ) -> None:
         self.statics = statics  # scalar integer arguments the kernel takes static
         self.dim_sources = dim_sources or {}  # dummy extent name -> (array dummy, axis)
+        self.own: dict[str, Any] = {}
+        """This module's ``fns`` and ``records``."""
+        self.specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
+        """Root finders and the like, specialized per callback -- emitted beside the flat functions."""
         self.plan = plan
         self.spelling = spelling
         self.plans = plans
@@ -411,7 +415,9 @@ class _Rewrite(ast.NodeTransformer):
                 self.aborts.append(ast.unparse(node.test))
                 return [self.visit(s) for s in node.orelse] if node.orelse else None
         self.generic_visit(node)
-        if not node.body:
+        if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
+            # ``if cond: write(iulog, ...)`` -- a log line the anchor already
+            # left as ``pass``; nothing to carry.
             return [*node.orelse] if node.orelse else None
         return node
 
@@ -533,13 +539,22 @@ class _Rewrite(ast.NodeTransformer):
 
     def _flat_callee(self, call: ast.Call) -> FlatPlan | None:
         callee: FlatPlan | None = None
+        source: dict[str, Any] = self.own
         if isinstance(call.func, ast.Name):
             callee = self.plans.get(call.func.id.lower())
+            name = call.func.id.lower()
         elif isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
             module = self.spelling.modules.get(call.func.value.id)
             port = self.ports.get(module or "")
-            if port is not None:
-                callee = port["plans"].get(call.func.attr.lower())
+            if port is None:
+                return None
+            callee = port["plans"].get(call.func.attr.lower())
+            source = port
+            name = call.func.attr.lower()
+        else:
+            return None
+        if callee is None:
+            callee = self._specialize(name, call, source)
         if callee is None:
             return None
         if any(self.spelling.object_of(a) is not None for a in call.args) or any(
@@ -547,6 +562,99 @@ class _Rewrite(ast.NodeTransformer):
         ):
             return callee
         return None
+
+    def _specialize(self, name: str, call: ast.Call, source: dict[str, Any]) -> FlatPlan | None:
+        """``hybrid(msg, p, ic, il, inst, cifunc, xa, xb, tol)``: a subprogram
+        taking the object *and a procedure* has no plan of its own -- what
+        it touches is the callback's business. Specialized per callback,
+        it is the callback's plan on the root finder's body: the procedure
+        dummy is the callback's flat function, the object is the
+        callback's components, and the specialization is emitted beside the
+        flat functions as ``<callee>__<callback>_flat``."""
+        record = (source.get("records") or {}).get(name)
+        fn = (source.get("fns") or {}).get(name)
+        if record is None or fn is None:
+            return None
+        procedure = [a["name"].lower() for a in record["args"] if str(a["dtype"]) == "PROCEDURE"]
+        if len(procedure) != 1:
+            return None
+        dummies = [a["name"].lower() for a in record["args"]]
+        actual_by_dummy: dict[str, ast.expr] = {}
+        for at, given in enumerate(call.args):
+            if at < len(dummies):
+                actual_by_dummy[dummies[at]] = given
+        for keyword_ in call.keywords:
+            if keyword_.arg:
+                actual_by_dummy[keyword_.arg.lower()] = keyword_.value
+        passed = actual_by_dummy.get(procedure[0])
+        if not isinstance(passed, ast.Name):
+            return None
+        callback = self.plans.get(passed.id.lower())
+        if callback is None:
+            return None
+        spec_name = f"{name}__{callback.subprogram['name']}"
+        if spec_name in self.specialized:
+            return self.specialized[spec_name][1]
+        if spec_name.lower() in self.plans:
+            return self.plans[spec_name.lower()]
+        objects = copy.deepcopy(callback.objects)
+        derived = [a["name"].lower() for a in record["args"] if "UNKNOWN(TYPE" in str(a["dtype"])]
+        # The object is called by the root finder's own dummy name.
+        for obj, own_name in zip((o for o in objects if o.kind == "dummy"), derived, strict=False):
+            for component in obj.components:
+                component.owner = own_name
+            obj.name = own_name
+        plan = FlatPlan(
+            subprogram={
+                **record,
+                "name": spec_name,
+                "public": True,
+                "args": list(record["args"]),
+            },
+            objects=objects,
+            states=copy.deepcopy(callback.states),
+            patch_count=callback.patch_count,
+            counter_prefix=callback.counter_prefix,
+        )
+        plans = {**self.plans, procedure[0]: callback, spec_name.lower(): plan}
+        inner = _Rewrite(
+            plan,
+            _Spelling(plan, self.spelling.modules),
+            plans,
+            self.ports,
+            self.bundled,
+            _static_names(plan.flat_args),
+            _dim_sources(plan.flat_args),
+        )
+        inner.own = source
+        inner.specialized = self.specialized
+        body = _rewritten_body(fn, inner)
+        if not body or not isinstance(body[-1], ast.Return):
+            body.append(ast.Return(value=_tuple(_outputs(plan))))
+        taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+        flat = ast.FunctionDef(
+            name=plan.name,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg=n) for n in taken],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[],
+            ),
+            body=body,
+            decorator_list=[],
+            returns=None,
+        )
+        ast.fix_missing_locations(flat)
+        self.specialized[spec_name] = (flat, plan, inner.calls)
+        if source.get("module"):
+            self.companions.add(f"module:{source['module']}")
+        self.aborts.extend(f"{spec_name}: {a}" for a in inner.aborts)
+        self.companions |= inner.companions
+        self.plans[spec_name.lower()] = plan
+        return plan
 
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
@@ -601,7 +709,9 @@ class _Rewrite(ast.NodeTransformer):
                 rewritten: Any = self.visit(copy.deepcopy(actual))
                 args.append(rewritten)
         func: ast.expr = ast.Name(id=callee.name, ctx=ast.Load())
-        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+        if callee.name[: -len("_flat")] in self.specialized:
+            self.calls.append(callee.name)
+        elif isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
             # A companion's flat function: its port's kernel, or nothing.
             module = self.spelling.modules[call.func.value.id]
             if callee.name not in self.ports[module]["kernels"]:
@@ -732,11 +842,14 @@ def _associates(fn: ast.FunctionDef) -> frozenset[str]:
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
     lowered: list[ast.stmt] = []
-    for statement in [copy.deepcopy(s) for s in fn.body]:
+    # Single exit first, on the anchor's own returns: the flat return that
+    # replaces them is one statement at the end.
+    for statement in _single_exit([copy.deepcopy(s) for s in fn.body]):
         result = rewrite.visit(statement)
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
+    lowered = _WhileLoops().visit_block(lowered)
     for statement in lowered:
         for node in ast.walk(statement):
             if (
@@ -760,6 +873,213 @@ def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return sources
 
 
+def _has_return(stmts: list[ast.stmt]) -> bool:
+    return any(isinstance(n, ast.Return) for s in stmts for n in ast.walk(s))
+
+
+def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Early returns -- ``if f0 == 0: root = x0; return root`` -- become a
+    flag and a value, every later statement runs under ``if not _ret``, and
+    the one return at the end merges: the backend refuses a return inside a
+    branch, and a kernel has one exit."""
+    early = [s for s in body[:-1] if _has_return([s])]
+    if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
+        return body
+
+    class Returns(ast.NodeTransformer):
+        def visit_Return(self, node: ast.Return) -> Any:
+            value = node.value if node.value is not None else ast.Constant(None)
+            return [
+                ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
+                ast.Assign(
+                    targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
+                ),
+            ]
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            return node  # a nested function's returns are its own
+
+    out: list[ast.stmt] = [
+        ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
+        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0)),
+    ]
+    exited = False
+    for statement in body[:-1]:
+        rewritten: Any = Returns().visit(statement)
+        rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
+        if exited:
+            out.append(
+                ast.If(
+                    test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
+                    body=rewritten,
+                    orelse=[],
+                )
+            )
+        else:
+            out.extend(rewritten)
+        if _has_return([statement]):
+            exited = True
+    final = body[-1]
+    assert isinstance(final, ast.Return) and final.value is not None
+    merged = _jnp(
+        "where",
+        [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],
+    )
+    out.append(ast.Return(value=merged))
+    return out
+
+
+class _WhileLoops(ast.NodeTransformer):
+    """``while True: ... break`` as ``lax.while_loop``: every ``break``
+    sets a flag, every later statement of the body runs under ``if not
+    flag``, the body is lowered the way the backend lowers a kernel, and
+    the loop carries what the body assigns."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
+        out: list[ast.stmt] = []
+        for statement in stmts:
+            result: Any = self.visit(statement)
+            if result is None:
+                continue
+            out.extend(result if isinstance(result, list) else [result])
+        return out
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        return node  # nested (already lowered) bodies stay as they are
+
+    def visit_While(self, node: ast.While) -> Any:
+        from recast.transform.jax.backend import KernelLowerer, _assigned_names
+
+        self.generic_visit(node)
+        if node.orelse:
+            return node
+        self.n += 1
+        done = f"_done_{self.n}"
+        forever = isinstance(node.test, ast.Constant) and node.test.value is True
+
+        class Breaks(ast.NodeTransformer):
+            def visit_Break(self, node: ast.Break) -> ast.AST:
+                return ast.Assign(
+                    targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(True)
+                )
+
+            def visit_For(self, node: ast.For) -> ast.AST:
+                return node  # a break inside an inner loop is that loop's
+
+            def visit_While(self, node: ast.While) -> ast.AST:
+                return node
+
+        guarded: list[ast.stmt] = []
+        exited = False
+        for statement in node.body:
+            has_break = any(isinstance(n, ast.Break) for n in ast.walk(statement))
+            rewritten: Any = Breaks().visit(statement)
+            if exited:
+                guarded.append(
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=done, ctx=ast.Load())),
+                        body=[rewritten],
+                        orelse=[],
+                    )
+                )
+            else:
+                guarded.append(rewritten)
+            if has_break:
+                exited = True
+        carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
+        state = [*carried, done]
+        lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
+        unpack = ast.Assign(
+            targets=[
+                ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Store()) for n in state], ctx=ast.Store())
+            ],
+            value=ast.Name(id="_c", ctx=ast.Load()),
+        )
+        pack = ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Load()) for n in state], ctx=ast.Load())
+        arguments = ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg="_c")],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        )
+        going: ast.expr = _jnp("logical_not", [ast.Name(id=done, ctx=ast.Load())])
+        if not forever:
+            # ``while cond:`` -- the condition over the carried state, and
+            # not after a break either.
+            going = _jnp("logical_and", [going, copy.deepcopy(node.test)])
+        cond_fn = ast.FunctionDef(
+            name=f"_wcond_{self.n}",
+            args=arguments,
+            body=[unpack, ast.Return(value=going)],
+            decorator_list=[],
+            returns=None,
+        )
+        body_fn = ast.FunctionDef(
+            name=f"_wbody_{self.n}",
+            args=copy.deepcopy(arguments),
+            body=[copy.deepcopy(unpack), *lowered, ast.Return(value=pack)],
+            decorator_list=[],
+            returns=None,
+        )
+        loop = ast.Assign(
+            targets=[copy.deepcopy(unpack.targets[0])],
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="lax", ctx=ast.Load()), attr="while_loop", ctx=ast.Load()
+                ),
+                args=[
+                    ast.Name(id=cond_fn.name, ctx=ast.Load()),
+                    ast.Name(id=body_fn.name, ctx=ast.Load()),
+                    copy.deepcopy(pack),
+                ],
+                keywords=[],
+            ),
+        )
+        init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
+        return [init, cond_fn, body_fn, loop]
+
+
+def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
+    """The host wrapper of a flat kernel sets the module state its plan
+    carries before the call, the way the NumPy adapter does: a helper the
+    kernel calls (a lookup over a grid the run filled) reads that state
+    through its module at trace time, and the value has to be there. Read
+    at trace time, it is a constant of the compiled kernel -- right for a
+    table the run set once, and the reason such state is not differentiated.
+    """
+    for plan in plans:
+        head = f"def {plan.name}("
+        if not piece.startswith(head):
+            continue
+        lines = piece.split("\n")
+        binds: list[str] = []
+        for obj in plan.objects:
+            if obj.kind == "state" and obj.module:
+                binds.append(f"    import {obj.module}_numpy as _{obj.module}")
+                binds.append(
+                    f"    if not hasattr(getattr(_{obj.module}, {obj.name!r}, None), '__dict__'):"
+                )
+                binds.append(f"        _{obj.module}.{obj.name} = _host._Record()")
+                for comp in obj.components:
+                    binds.append(
+                        f"    _{obj.module}.{obj.name}.{comp.name} = jnp.asarray({comp.flat})"
+                    )
+        for state in plan.states:
+            binds.append(f"    import {state.module}_numpy as _{state.module}")
+            binds.append(f"    _{state.module}.{state.name} = jnp.asarray({state.flat})")
+        if not binds:
+            return piece
+        # def line, docstring line, then the binds, then the return.
+        return "\n".join([*lines[:2], *binds, *lines[2:]])
+    return piece
+
+
 def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
@@ -775,6 +1095,8 @@ def flat_function(
     aliases: dict[str, str],
     ports: dict[str, dict[str, Any]],
     bundled: frozenset[str] = frozenset(),
+    own: dict[str, Any] | None = None,
+    specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] | None = None,
 ) -> tuple[ast.FunctionDef, _Rewrite]:
     """The anchor's function on the flat signature, and the rewrite that
     made it (its callees, dropped aborts, companions used)."""
@@ -787,6 +1109,9 @@ def flat_function(
         _static_names(plan.flat_args),
         _dim_sources(plan.flat_args),
     )
+    rewrite.own = own or {}
+    if specialized is not None:
+        rewrite.specialized = specialized
     body = _rewritten_body(fn, rewrite)
     if not body or not isinstance(body[-1], ast.Return):
         body.append(ast.Return(value=_tuple(_outputs(plan))))
@@ -817,9 +1142,14 @@ def scrubbed_function(
     bundled: frozenset[str] = frozenset(),
     statics: frozenset[str] = frozenset(),
     dim_sources: dict[str, tuple[str, int]] | None = None,
+    own: dict[str, Any] | None = None,
+    specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] | None = None,
 ) -> tuple[ast.FunctionDef, _Rewrite]:
     """A function with no plan, scrubbed the same way."""
     rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports, bundled, statics, dim_sources)
+    rewrite.own = own or {}
+    if specialized is not None:
+        rewrite.specialized = specialized
     scrubbed = copy.deepcopy(fn)
     scrubbed.body = _rewritten_body(fn, rewrite)
     ast.fix_missing_locations(scrubbed)
@@ -864,6 +1194,8 @@ def flattened_module(
     rewritten: dict[str, ast.FunctionDef] = {}
     entries: list[dict[str, Any]] = []
     refused: dict[str, str] = {}
+    own = {"fns": fns, "records": {s["name"]: s for s in interface["subprograms"]}}
+    specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
     aborts: dict[str, list[str]] = {}
     masked: dict[str, list[str]] = {}
     static_loops: dict[str, list[str]] = {}
@@ -875,7 +1207,9 @@ def flattened_module(
             refused[plan.name] = "no python function in the anchor"
             continue
         try:
-            flat, rewrite = flat_function(fn, plan, by_name, aliases, ports, bundled)
+            flat, rewrite = flat_function(
+                fn, plan, by_name, aliases, ports, bundled, own, specialized
+            )
         except NotFlat as why:
             refused[plan.name] = str(why)
             entries.append(_entry(plan, []))  # known, unlowered: callers delegate by name
@@ -896,7 +1230,9 @@ def flattened_module(
             record = next((s for s in interface["subprograms"] if s["name"] == name), None)
             statics = _static_names(record["args"]) if record else frozenset()
             sources = _dim_sources(record["args"]) if record else {}
-            scrubbed, rewrite = scrubbed_function(fn, aliases, ports, bundled, statics, sources)
+            scrubbed, rewrite = scrubbed_function(
+                fn, aliases, ports, bundled, statics, sources, own, specialized
+            )
         except NotFlat as why:
             refused[name] = str(why)
             continue
@@ -915,6 +1251,9 @@ def flattened_module(
         else:
             body.append(node)
     body.extend(rewritten.values())  # plans without a NumPy wrapper (private, functions)
+    for spec_fn, spec_plan, spec_calls in specialized.values():
+        body.append(spec_fn)
+        entries.append(_entry(spec_plan, spec_calls))
     module = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(module)
     notes = {
@@ -958,11 +1297,16 @@ class TreeToJax(KernelToJax):
         # private subprogram's or a function's flat form has none, and a line
         # binding it to a host attribute that does not exist would break the
         # import; its callers were delegated with it, so nothing needs it.
+        pieces = [_bind_state(piece, plans) for piece in pieces]
         hosted = {f.name for f in tree.body if isinstance(f, ast.FunctionDef)}
         pieces = [
             piece
             for piece in pieces
-            if not (" = _host." in piece and piece.split(" = _host.")[0] not in hosted)
+            if not (
+                "\n" not in piece
+                and " = _host." in piece
+                and piece.split(" = _host.")[0] not in hosted
+            )
         ]
         # The anchor's own imports: its use-constants, the stand-ins a kernel
         # may still read a resolved constant through, and the ported
@@ -977,6 +1321,14 @@ class TreeToJax(KernelToJax):
             ):
                 extra_imports += ast.unparse(node) + "\n"
         for alias in flat_notes["companions"]:
+            if alias.startswith("module:"):
+                # A specialized root finder's body is a companion's: it
+                # reads the companion's constants.
+                other = alias.split(":", 1)[1]
+                extra_imports += f"from {other}_constants import *  # noqa: F401,F403\n"
+                if Path(f"{other}_use_constants.py") in {**anchor.files, **files}:
+                    extra_imports += f"from {other}_use_constants import *  # noqa: F401,F403\n"
+                continue
             extra_imports += f"import {aliases[alias]}_jax as {alias}_jax\n"
         emitted = (
             HEADER.format(module=module, constants=constants_stem, runtime=runtime_stem)
@@ -1046,8 +1398,12 @@ class TreeToJax(KernelToJax):
             subs = {s["name"]: s for s in companion_facts.interface["subprograms"]}
             kernels = set(inner.notes["jax"]["kernels"])
             memo: dict[str, set[str]] = {}
+            anchor_tree = ast.parse(inner.files[Path(f"{module}_numpy.py")].decode())
             ports[module] = {
+                "module": module,
                 "kernels": sorted(kernels),
+                "fns": {n.name: n for n in anchor_tree.body if isinstance(n, ast.FunctionDef)},
+                "records": dict(subs),
                 "plans": {
                     p.subprogram["name"].lower(): p
                     for p in plans_from_facts(companion_facts, gated=False)

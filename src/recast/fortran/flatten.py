@@ -193,6 +193,8 @@ class FlatPlan:
         args: list[dict[str, Any]] = []
         names = {a["name"].lower() for a in self.subprogram["args"]}
         for argument in self.subprogram["args"]:
+            if str(argument["dtype"]) in ("PROCEDURE", "str"):
+                continue  # never flat: a callback is specialized, a message dropped
             if DERIVED.match(str(argument["dtype"])) or argument.get("optional"):
                 # The object is what the adapter exists to replace; an optional
                 # is left absent on both sides, the way the engine's own
