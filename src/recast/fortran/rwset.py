@@ -216,6 +216,14 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
     with an intrinsic -- Fortran lets a variable named ``sum`` shadow the
     function, and treating that as a call loses a real dataflow edge.
     """
+    if isinstance(node, type):
+        # fparser hangs the *class* ``Int_Literal_Constant`` under a
+        # ``Data_Edit_Desc`` (``I4.4`` in a FORMAT statement); it is not a
+        # node, and iterating its ``children`` property raised a TypeError
+        # that stopped the read/write analysis of every module with such a
+        # format (ELM's histFileMod).
+        return set()
+
     reads: set[str] = set()
     if node is None or isinstance(node, str):
         return reads

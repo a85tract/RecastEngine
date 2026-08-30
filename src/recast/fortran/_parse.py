@@ -92,5 +92,13 @@ def parse(path: Path, *, std: str = STD) -> Any:
     key = (digest(path), std)
     tree = _trees.get(key)
     if tree is None:
-        tree = _trees[key] = parser(std)(FortranFileReader(str(path)))
+        reader = FortranFileReader(str(path))
+        # fparser's reader answers a malformed line -- ``end subroutine`` naming
+        # the wrong procedure, say -- by logging it and calling ``sys.exit(1)``,
+        # which took the whole discovery of a tree down with the one file
+        # (E3SM's ``external_models/emi/.../clm_varctl.F90``). Told not to
+        # exit, it logs the same message, ignores the line, and the parse
+        # goes on to raise or succeed on its own terms.
+        reader.exit_on_error = False
+        tree = _trees[key] = parser(std)(reader)
     return tree
