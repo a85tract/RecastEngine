@@ -390,6 +390,14 @@ class _Rewrite(ast.NodeTransformer):
             self.loop_vars.add(node.target.id)  # before the body: its stores cast
         self.generic_visit(node)
         it = node.iter
+        if (
+            isinstance(it, ast.Call)
+            and isinstance(it.func, ast.Name)
+            and it.func.id == "range"
+            and isinstance(node.target, ast.Name)
+            and len(it.args) == 3
+        ):
+            return self._static_descending(node)
         if not (
             isinstance(it, ast.Call)
             and isinstance(it.func, ast.Name)
@@ -400,7 +408,13 @@ class _Rewrite(ast.NodeTransformer):
             return node
         stop = it.args[-1]
         self.loop_vars.add(node.target.id)
-        if not self._is_dynamic(stop):
+        # A bound over a dummy extent (``do i = 2, n`` beside ``a(n)``) is
+        # static in the kernel's own trace and traced when the kernel is
+        # inlined into another; the array's static shape serves both.
+        sized = any(
+            isinstance(n, ast.Name) and n.id.lower() in self.dim_sources for n in ast.walk(stop)
+        )
+        if not (self._is_dynamic(stop) or sized):
             return self._strong_bounds(node)
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
         # whose count is traced has no reverse-mode rule. The body indexes
@@ -423,6 +437,54 @@ class _Rewrite(ast.NodeTransformer):
         it.args[-1] = extent
         node.body = [guard]
         return self._strong_bounds(node)
+
+    def _static_descending(self, node: ast.For) -> Any:
+        """``do ic = ntop(p), nbot(p), -1``: the anchor's ``range(a, b - 1,
+        -1)`` with a traced ``a`` or ``b``. The loop runs the indexed axis's
+        whole extent downward and ``if b - 1 < ic <= a`` keeps the iterations
+        the source meant -- static, so reverse mode has a rule."""
+        it = node.iter
+        assert isinstance(it, ast.Call) and isinstance(node.target, ast.Name)
+        start, stop, step = it.args
+        if not (
+            isinstance(step, ast.UnaryOp)
+            and isinstance(step.op, ast.USub)
+            and isinstance(step.operand, ast.Constant)
+            and step.operand.value == 1
+        ):
+            return node
+        if not (self._is_dynamic(start) or self._is_dynamic(stop)):
+            return node
+        var = node.target.id
+        extent = _indexed_extent(node.body, var)
+        if extent is None:
+            return node
+        # ``extent`` is ``shape[k] + 1`` for a 1-based index: the highest
+        # value the variable can take is one less.
+        top: ast.expr = (
+            extent.left
+            if isinstance(extent, ast.BinOp) and isinstance(extent.op, ast.Add)
+            else extent
+        )
+        guard = ast.If(
+            test=ast.BoolOp(
+                op=ast.And(),
+                values=[
+                    ast.Compare(
+                        left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.LtE()], comparators=[start]
+                    ),
+                    ast.Compare(
+                        left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Gt()], comparators=[stop]
+                    ),
+                ],
+            ),
+            body=node.body,
+            orelse=[],
+        )
+        self.static_loops.append(f"{var}: {ast.unparse(start)} down to {ast.unparse(stop)}")
+        it.args = [top, ast.Constant(0), step]
+        node.body = [guard]
+        return node
 
     @staticmethod
     def _strong_bounds(node: ast.For) -> ast.For:
