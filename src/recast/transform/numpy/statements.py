@@ -1188,10 +1188,24 @@ class Statements:
                         if hasattr(value_list, "children")
                         else [value_list]
                     )
-                    if any(isinstance(v, f03.Case_Value_Range) for v in items):
-                        raise NoRule("case value range")
                     conditions = []
                     for value in items:
+                        if isinstance(value, f03.Case_Value_Range):
+                            # ``case (lo:hi)``, either end open: the selector
+                            # is inside the closed range. Rendering the leaves
+                            # read ``1:2`` as the two values 1 and 2 -- right
+                            # by accident there, wrong for ``case (1:3)``.
+                            low, high = value.children
+                            bounds = [
+                                f"{self.expressions.render(low)} <= {selector}"
+                                if low is not None
+                                else "",
+                                f"{selector} <= {self.expressions.render(high)}"
+                                if high is not None
+                                else "",
+                            ]
+                            conditions.append(f"({' and '.join(b for b in bounds if b)})")
+                            continue
                         is_text = character or bool(walk(value, f03.Char_Literal_Constant))
                         if is_text:
                             conditions.append(
