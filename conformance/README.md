@@ -3,9 +3,9 @@
 What a plugin must satisfy to be usable, and what an out-of-tree extension must
 pass to be an extension rather than a fork.
 
-**Status: seven kinds — `Frontend`, `Transform`, `Oracle`, `Verifier`,
-`Executor`, `EvidenceStore`, `FindingStore` — and the cross-cutting rules run;
-three kinds are still specification.** The tables below are the whole contract,
+**Status: eight kinds — `Frontend`, `Transform`, `Oracle`, `Verifier`,
+`Executor`, `EvidenceStore`, `FindingStore`, `TranslationEngine` — and the
+cross-cutting rules run; three executable kinds are still specification.** The tables below are the whole contract,
 and each row says
 whether it is executable yet. Where a check exists, a plugin that fails it fails
 the suite. Where one does not, the row is a claim nothing verifies -- which is
@@ -84,6 +84,7 @@ the SemVer promise everything out-of-tree rests on.
 | `EvidenceStore` | append-only: one URI never comes to denote two different documents, whether by addressing altered content separately or by refusing to write it; output validates against CC-Test `evidence-manifest.v1` | `test_evidence_store.py` |
 | `FindingStore` | `guard` rejects above `max_access`, and `put` calls it; storage is not group- or world-readable | `test_finding_store.py` |
 | `AgentProvider` | `AgentResult.model` reports the model that actually answered, including after a fallback | not yet |
+| `TranslationEngine` | immutable canonical manifest; registered id matches identity; default recipe/config resolve back to the engine; required gates exist in that plan | `test_engines.py` |
 
 `Scanner`, `Adjudicator` and `AgentProvider` are what remain, and none of them
 has an implementation anywhere -- in this repository or the domain extension.

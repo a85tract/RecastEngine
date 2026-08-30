@@ -3,29 +3,39 @@
 ```console
 $ recast doctor
 recast 0.0.1.dev0  python 3.11.16
-21 plugin(s) registered across 10 kinds
 ```
+
+`doctor` then prints the live plugin count and registry inventory. The count is
+intentionally not fixed here: installing an out-of-tree frontend, engine, or
+other plugin changes it without changing RecastEngine.
 
 | | |
 |---|---|
 | `recast doctor` | version, interpreter, how much is registered |
-| `recast recipes` | the four workloads |
+| `recast recipes` | the six shipped recipes |
+| `recast engines [--json]` | translation engine manifests for people or an outer pipeline builder |
 | `recast plugins` | what is registered, by kind |
 | `recast plan <recipe>` | the stages a run would walk, and which slots nothing fills |
 | `recast run <recipe> <tree>` | walk them over a source tree |
 | `recast version` | the version alone |
 
-## The four recipes
+`recast engines --json` emits the canonical catalog and its digest. Engine
+manifests describe artifact contracts and select a default recipe; they do not
+run work themselves. See [translation-engines.md](translation-engines.md).
+
+## The six recipes
 
 ```console
 $ recast recipes
 audit      Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does.
 port       Retarget a kernel to an accelerator; gate on captured production dumps.
+python-to-jax    Lower Python/NumPy functions to JAX and verify against the source.
+python-to-numba  Compile Python/NumPy functions with Numba and verify against the source.
 refactor   Restructure architecture without touching numerics; gate on a full run.
 translate  Translate a source language to a target language, gated bit-exact.
 ```
 
-Four workloads, one spine — every recipe is the same five steps
+Six recipes, one spine — every recipe is the same five steps
 (`discover → analyze → transform → verify → record`) with different plugins in
 the slots, which is [architecture.md](architecture.md)'s subject.
 
@@ -84,9 +94,12 @@ a path to a `.json` or `.toml` file. Same object either way, and
 | `port` | `backend` — `jax` (default), `numba` or `cuda`. `oracle` — what to gate against, `numpy-anchor` by default; `dump-replay` also requires `dumps` |
 | `refactor` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
 | `audit` | none |
+| `python-to-numba` | fixed `target=numba`, `frontend=python-numpy`; local executor |
+| `python-to-jax` | fixed `target=jax`, `frontend=python-numpy`; local executor |
 
-All four also read `executor` and `frontend`, defaulting to `local` and
-`fortran`.
+The four legacy recipes also read `executor` and `frontend`, defaulting to
+`local` and `fortran`. The two Python accelerator engine manifests pin both
+values so an outer launcher cannot silently change their artifact contract.
 
 `plan` reports a value a recipe rejects and a required key that is absent,
 before anything runs. A key no recipe knows is ignored rather than flagged, so

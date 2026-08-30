@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from recast.conformance import PluginSet, load_plugin_set
+from recast.engines import TranslationEngine
 from recast.model import Access, Confidence, Evidence, Finding, Verdict
 from recast.plugins.executor import Executor, Job
 from recast.plugins.recipe import Recipe
@@ -32,6 +33,7 @@ _CASE_FIXTURES = {
     "finding_store_case": "finding_stores",
     "scanner_case": "scanners",
     "recipe_case": "recipes",
+    "engine_case": "engines",
 }
 
 _LOADED: dict[str, PluginSet] = {}
@@ -97,6 +99,17 @@ def build_recipe() -> Any:
             return case.build()
         recipe: Recipe = REGISTRY.get("recipe", case.name)()
         return recipe
+
+    return build
+
+
+@pytest.fixture
+def build_engine() -> Any:
+    def build(case: Any) -> TranslationEngine:
+        if case.build is not None:
+            return case.build()
+        engine: TranslationEngine = REGISTRY.get("engine", case.name)()
+        return engine
 
     return build
 

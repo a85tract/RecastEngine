@@ -14,6 +14,7 @@ import sys
 from collections.abc import Sequence
 
 from recast import __version__
+from recast.engines import catalog_document, engines
 from recast.errors import RecastError
 from recast.plugins.recipe import Recipe
 from recast.recipes import BUILTIN
@@ -65,6 +66,23 @@ def _cmd_recipes(_args: argparse.Namespace) -> int:
         if name not in BUILTIN:
             summary = getattr(REGISTRY.get("recipe", name), "summary", "")
             print(f"{name:10s} {summary} (plugin)")
+    return 0
+
+
+def _cmd_engines(args: argparse.Namespace) -> int:
+    """List the immutable engine catalog for people or outer orchestrators."""
+    if args.json:
+        print(json.dumps(catalog_document(), indent=2, sort_keys=True))
+        return 0
+    for engine in engines():
+        source = engine.input_artifact_contract
+        target = engine.output_artifact_contract
+        source_label = source.language + (f"/{source.profile}" if source.profile else "")
+        target_label = target.language + (f"/{target.profile}" if target.profile else "")
+        print(
+            f"{engine.id}  v{engine.version}  {source_label} -> {target_label}  "
+            f"recipe={engine.default_recipe}  {engine.digest()}"
+        )
     return 0
 
 
@@ -208,6 +226,10 @@ def build_parser() -> argparse.ArgumentParser:
     plugins.set_defaults(func=_cmd_plugins)
 
     sub.add_parser("recipes", help="list available recipes").set_defaults(func=_cmd_recipes)
+
+    engine_catalog = sub.add_parser("engines", help="list translation engine manifests")
+    engine_catalog.add_argument("--json", action="store_true", help="export the catalog as JSON")
+    engine_catalog.set_defaults(func=_cmd_engines)
 
     plan = sub.add_parser("plan", help="show a recipe's stages without running it")
     plan.add_argument("recipe")

@@ -8,8 +8,10 @@ entry point under `recast.<kind>s`, and `recast plugins` shows it.
 ## 1. Pick a kind
 
 `frontend` `transform` `oracle` `verifier` `scanner` `adjudicator` `executor`
-`store` `agent` `recipe` — see [architecture.md](architecture.md) for what each
-one may and may not do.
+`store` `agent` `recipe` `engine` — see [architecture.md](architecture.md) for
+what each one may and may not do. An `engine` is an immutable declaration, not
+an ABC or runnable Stage; its separate contract is documented in
+[translation-engines.md](translation-engines.md).
 
 ## 2. Implement the ABC
 
@@ -48,8 +50,46 @@ Two rules that are easy to get wrong:
 ```
 
 Group name is `recast.<kind>s`. Install the package and `recast plugins` shows
-it. For tests and in-process use, `recast.registry.register(kind, name, factory)`
-is equivalent.
+it. The registry records a stable, path-free origin for each installed plugin:
+the normalized distribution name/version and exact entry-point group, name and
+value. These fields identify installed metadata; they are not a package
+signature or a safety verdict.
+
+For tests and deliberately in-process extensions,
+`recast.registry.register(kind, name, factory)` remains available, but it is not
+allowed to impersonate an installed package. Its origin is explicitly
+`source="local"`, `verification="unverified"`, with no distribution or
+entry-point value:
+
+```python
+from recast.registry import Registry
+
+registry = Registry(discover_installed=False)  # isolated unit-test inventory
+registry.register("transform", "example.fake", FakeTransform)
+assert registry.origin("transform", "example.fake").as_dict() == {
+    "schema": "recast.plugin-origin.v1",
+    "source": "local",
+    "verification": "unverified",
+    "distribution_name": None,
+    "distribution_version": None,
+    "group": "recast.transforms",
+    "name": "example.fake",
+    "value": None,
+}
+```
+
+Use `registry.origin(kind, name)` for one immutable record or
+`registry.origins(kind)` for a defensive name-to-origin snapshot. The
+process-wide equivalents are `recast.registry.origin` and
+`recast.registry.origins`.
+
+Plugin addresses are unique, not ordered preferences. If two installed
+distributions publish the same `(kind, entry-point name)`, discovery raises
+before loading either. Discovery also raises when an installed address collides
+with a plugin explicitly registered earlier in the process. `replace=True`
+remains an explicit in-process override *after* discovery, and changes the
+recorded origin to local/unverified; package installation order and
+`setdefault()` are never used to select a winner.
 
 Registration is also all `recast plan` checks. A slot reads `[MISS]` when no
 plugin is registered under the name the recipe asked for -- a typo in the
@@ -169,6 +209,53 @@ leaves its site deferred with the reason recorded on the block. One block's
 handler failing is not the run's death, and not a silence either.
 
 See `recast/transform/numpy/agentic.py` for the full contract.
+
+## Gating a candidate for promotion
+
+A populated `Candidate.deferred` is a successful discovery result, not a
+complete deliverable. The shipped `translate` recipe deliberately preserves
+that distinction: it remains useful for discovering and measuring unsupported
+sites and does **not** include a completeness gate by default.
+
+A domain or promotion recipe that intends to merge its output should put the
+in-tree `static.complete` verifier immediately after its transform, before an
+expensive oracle:
+
+```python
+from recast.plugins.recipe import Recipe, Stage
+
+
+class PromoteTranslation(Recipe):
+    name = "yourpkg.promote"
+
+    def stages(self, config):
+        return [
+            Stage("executor", config.get("executor", "local")),
+            Stage("frontend", config.get("frontend", "fortran")),
+            Stage("transform", "yourpkg.translate"),
+            Stage("verifier", "static.complete", gate=True),
+            Stage("verifier", "static.rwset", gate=True),
+            Stage("oracle", "yourpkg.golden"),
+            Stage("verifier", "yourpkg.differential", gate=True),
+            Stage("store", "fs-evidence"),
+        ]
+```
+
+`static.complete` fails when even one entry remains in the deferred ledger the
+Transform returned, and it has no waiver configuration. Its Evidence records
+the entry count and a canonical digest of that ordered ledger, not the entries
+themselves; the full queue may contain private symbol names and stays in the
+project's access-controlled store or workspace rather than public Evidence.
+
+The scope of that claim is deliberately precise: **the Transform declared no
+deferred work**. The verifier does not rediscover source sites independently,
+so it cannot catch a Transform that forgot to put one in the ledger. A
+promotion policy still needs an independently derived coverage gate from its
+project specification, plus behavioural/numerical gates. Likewise, a project
+that proves an untranslated boundary unreachable expresses that different
+claim through a separately named project verifier with its own coverage
+evidence; it must not make `static.complete` mean “no declared work except for
+this project.”
 
 ## Scanners specifically
 

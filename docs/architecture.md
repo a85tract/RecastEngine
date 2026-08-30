@@ -92,9 +92,37 @@ Ten kinds, in [`src/recast/plugins/`](../src/recast/plugins/):
 `Recipe` composes the rest. It contains no logic — it declares which plugin
 fills each slot, which is why adding a workload does not change the core.
 
+`TranslationEngine` sits one level above a recipe as immutable catalog
+metadata: input/output artifact contracts, implementation digest, default
+recipe/config and required gates. It is registered under `recast.engines` but
+is not a Stage and the runner never schedules it. This is the boundary an outer
+pipeline builder uses to compose translators; see
+[translation-engines.md](translation-engines.md).
+
+An outer runner may also place a durable boundary between the two halves of a
+recipe. `transform_recipe` produces a canonical `CandidateBundle` containing
+the exact Facts, candidate blobs and a frozen declarative verification plan;
+`verify_recipe_candidates` consumes only that plan and never executes the
+caller's `Recipe` hooks. It canonical-round-trips the bundle, locks the original
+candidate digests and rejects any plugin mutation of the bundle object graph.
+The verification registry facade cannot resolve a Transform. Its
+`VerificationReport` joins engine-required gates with project-required gates,
+subprogram coverage and the deferred ledger without copying source bytes or
+machine paths. See [phased-execution.md](phased-execution.md).
+
 Registration is `importlib.metadata` entry points, one group per kind
-(`recast.transforms`, `recast.oracles`, …). Discovery is failure-isolated: a
-broken third-party plugin becomes unavailable, it does not break `recast --help`.
+(`recast.transforms`, `recast.oracles`, …). Every registry address retains a
+path-free `PluginOrigin` (`recast.plugin-origin.v1`): normalized installed
+distribution name/version plus the exact entry-point group/name/value. Direct
+Python `register()` calls are instead marked `source=local`,
+`verification=unverified`; they carry no implied installed-package provenance.
+
+Discovery isolates a distinct third-party import failure by leaving only that
+plugin unavailable. Identity ambiguity is different and fails closed for the
+kind: two installed entry points with the same `(kind, name)`, or an installed
+entry point colliding with an explicit in-process registration, raise before
+any candidate under that ambiguous address is selected. Installation order is
+therefore never an identity tiebreaker.
 
 ### Execution is passed in, not reached for
 

@@ -2,9 +2,12 @@
 
 | | |
 |---|---|
-| [`cli.md`](cli.md) | every command, the four recipes, config keys, `run` flags, exit codes |
+| [`cli.md`](cli.md) | every command, the six recipes, config keys, `run` flags, exit codes |
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
 | [`architecture.md`](architecture.md) | the spine, the ten interfaces, where the boundaries fall |
+| [`translation-engines.md`](translation-engines.md) | immutable engine manifests and the JSON catalog used by outer pipeline builders |
+| [`phased-execution.md`](phased-execution.md) | canonical CandidateBundle boundary and transform-independent verification reports |
+| [`observing-a-run.md`](observing-a-run.md) | the read-only run event boundary for UIs, audit stores, and outer orchestration |
 | [`writing-a-plugin.md`](writing-a-plugin.md) | how to extend the engine, and the conformance suite a plugin must satisfy |
 | [`roadmap.md`](roadmap.md) | phases P0–P6, where each recipe stands, and how far each claim's evidence reaches |
 | [`disclosure-ledger.md`](disclosure-ledger.md) | what stays private, case by case, with the reason and the mechanism holding it |

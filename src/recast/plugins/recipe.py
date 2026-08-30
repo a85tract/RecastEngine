@@ -75,6 +75,14 @@ class Recipe(ABC):
 
     name: str
     summary: str = ""
+    engine_id: str | None = None
+    """Catalog engine selected by the recipe's default configuration, if any.
+
+    A recipe may be broader than one catalog engine.  Override
+    :meth:`resolved_engine_id` when configuration changes its artifact
+    contract; returning ``None`` is more accurate than assigning the wrong
+    engine to a legacy variant.
+    """
 
     @abstractmethod
     def stages(self, config: dict[str, Any]) -> list[Stage]:
@@ -92,3 +100,8 @@ class Recipe(ABC):
         scheduler is reported in a second rather than three hours in.
         """
         return []
+
+    def resolved_engine_id(self, config: dict[str, Any]) -> str | None:
+        """Engine represented by this concrete configuration, if declared."""
+        del config
+        return self.engine_id

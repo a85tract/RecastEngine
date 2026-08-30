@@ -14,14 +14,16 @@ its own ``validate`` refuses ``local``: its gate is a pinned multi-rank run,
 so a plan produced under the default config is a plan that can never execute,
 and checking that plan would check nothing.
 
-The three verifier cases are compiler-free on purpose, ``differential.bitexact``
-included. Its oracle here is a handful of Python rather than a compiled Fortran
-module, which it accepts because an ``Oracle`` hands over an opaque handle and
-this gate only ever calls what is on it. That is enough to exercise every rule
-in the table -- a good candidate earns its verdict, a broken one fails, an
-absent oracle fails closed -- without a toolchain, which matters because a
-conformance run that silently skips on a machine without gfortran is a
-conformance run that told you nothing. The real Fortran spine is not skipped
+The seven verifier cases are compiler-free on purpose,
+``differential.bitexact`` included. Its oracle here is a handful of Python
+rather than a compiled Fortran module, which it accepts because an ``Oracle``
+hands over an opaque handle and this gate only ever calls what is on it. The
+Numba/JAX cases instead plant an inert source handle and exercise their two
+isolated Executor jobs. Together those fixtures cover every rule in the table
+-- a good candidate earns its verdict, a broken one fails, an absent oracle or
+refusing executor fails closed -- without a Fortran toolchain. That matters
+because a conformance run that silently skips on a machine without gfortran is
+a conformance run that told you nothing. The real Fortran spine is not skipped
 either; it is held by ``tests/test_f2py_oracle.py`` in CI's compiler job, and
 that is the right place for it, because a compiled oracle is what *that* test
 is about and not what this one is.
@@ -37,6 +39,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from recast.conformance import (
+    EngineCase,
     EvidenceStoreCase,
     ExecutorCase,
     FindingStoreCase,
@@ -71,6 +74,25 @@ def _finding_store(root: Path) -> FilesystemFindingStore:
     # own mode. Handing it one that already exists would test the caller's
     # umask rather than the store.
     return FilesystemFindingStore(root=root / "findings")
+
+
+# --- static.complete ---------------------------------------------------------
+
+
+def _complete_candidate(workspace: Path) -> Candidate:
+    del workspace
+    return Candidate(
+        unit="conformance:demo/fill",
+        transform="conformance.translate",
+        files={Path("translated.py"): b"def fill():\n    return 1\n"},
+    )
+
+
+def _complete_break(candidate: Candidate) -> Candidate:
+    # This verifier judges the completeness ledger itself.  Adding an
+    # unresolved refusal is therefore the broken subject, not a corruption of
+    # the bookkeeping that describes some other comparison.
+    return replace(candidate, deferred=["fill/B001: conformance refusal"])
 
 
 # --- composition -------------------------------------------------------------
@@ -187,6 +209,7 @@ _SIGNATURES = {
     "blend": {
         "kind": "function",
         "result": "value",
+        "result_dtype": "float64",
         "args": [
             {"name": "x", "intent": "IN", "dtype": "float64"},
             {"name": "y", "intent": "IN", "dtype": "float64"},
@@ -243,6 +266,7 @@ _SIGNATURES = {{
     "decay": {{
         "kind": "function",
         "result": "y",
+        "result_dtype": "float64",
         "args": [{{"name": "x", "intent": "IN", "dtype": "float64"}}],
     }}
 }}
@@ -363,6 +387,150 @@ def _different_source(facts: Facts) -> Facts:
     return replace(facts, provenance={**facts.provenance, "digest": "0" * 64})
 
 
+# --- python-numpy accelerator engines ---------------------------------------
+
+_PYTHON_NUMPY = f"""\
+from __future__ import annotations
+
+{"import"} numpy as np
+
+__all__ = ["blend"]
+
+def _square(x: np.ndarray) -> np.ndarray:
+    return x * x
+
+def blend(x: np.ndarray, scale: float) -> np.ndarray:
+    return np.sin(x) * scale + _square(x)
+"""
+
+
+def _plant_python_numpy(root: Path) -> None:
+    (root / "kernel.py").write_text(_PYTHON_NUMPY)
+
+
+def _plant_python_workspace_artifact(workspace: Path) -> None:
+    (workspace / "generated.py").write_text(_PYTHON_NUMPY)
+
+
+def _python_subject(scratch: Path) -> TransformSubject:
+    root = scratch / "python-source"
+    root.mkdir(parents=True, exist_ok=True)
+    _plant_python_numpy(root)
+    frontend = REGISTRY.get("frontend", "python-numpy")()
+    unit = next(iter(frontend.discover(root)))
+    return TransformSubject(
+        unit=unit,
+        facts=frontend.analyze(unit, root),
+        config={"root": str(root)},
+    )
+
+
+def _python_numba_defers(scratch: Path) -> TransformSubject:
+    root = scratch / "python-numba-defers"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "kernel.py").write_text(
+        "import numpy as np\n\n"
+        "def dynamic(x: np.ndarray) -> np.ndarray:\n"
+        "    open('runtime.txt')\n"
+        "    return x\n"
+    )
+    frontend = REGISTRY.get("frontend", "python-numpy")()
+    unit = next(iter(frontend.discover(root)))
+    return TransformSubject(unit, frontend.analyze(unit, root), {"root": str(root)})
+
+
+def _python_jax_defers(scratch: Path) -> TransformSubject:
+    root = scratch / "python-jax-defers"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "kernel.py").write_text(
+        "import numpy as np\n\n"
+        "def mutate(x: np.ndarray) -> np.ndarray:\n"
+        "    x[0] = 0.0\n"
+        "    return x\n"
+    )
+    frontend = REGISTRY.get("frontend", "python-numpy")()
+    unit = next(iter(frontend.discover(root)))
+    return TransformSubject(unit, frontend.analyze(unit, root), {"root": str(root)})
+
+
+def _python_oracle_facts() -> Facts:
+    return Facts(
+        unit="python:kernel.py",
+        interface={"module": "kernel", "source": "kernel.py", "exports": ["blend"]},
+        provenance={"digest": "1" * 64, "source": "kernel.py", "frontend": "python-numpy"},
+    )
+
+
+_NUMBA_CANDIDATE = f"""\
+{"import"} numpy as np
+{"from"} numba import njit
+
+@njit(cache=False, fastmath=False)
+def blend(x, scale):
+    return np.sin(x) * scale + x * x
+
+__recast_backend__ = "numba"
+__recast_compiled_functions__ = ["blend"]
+"""
+
+_JAX_CANDIDATE = f"""\
+{"import"} jax.numpy as jnp
+{"from"} jax import config, jit
+config.update("jax_enable_x64", True)
+
+@jit
+def blend(x, scale):
+    return jnp.sin(x) * scale + x * x
+
+__recast_backend__ = "jax"
+__recast_compiled_functions__ = ["blend"]
+"""
+
+
+def _accelerator_candidate(backend: str, source: str) -> Candidate:
+    return Candidate(
+        unit="python:kernel.py",
+        transform=f"recast.translate.python-numpy-to-{backend}",
+        files={Path(f"kernel_{backend}.py"): source.encode()},
+        notes={"backend": backend, "exports": ["blend"]},
+    )
+
+
+def _numba_candidate(workspace: Path) -> Candidate:
+    del workspace
+    return _accelerator_candidate("numba", _NUMBA_CANDIDATE)
+
+
+def _jax_candidate(workspace: Path) -> Candidate:
+    del workspace
+    return _accelerator_candidate("jax", _JAX_CANDIDATE)
+
+
+def _break_accelerator(candidate: Candidate) -> Candidate:
+    path, content = next(iter(candidate.files.items()))
+    broken = content.decode().replace("+ x * x", "+ x * x + 1.0")
+    return replace(candidate, files={path: broken.encode()})
+
+
+def _python_accelerator_oracle(workspace: Path, executor: Executor) -> OracleRef:
+    del executor
+    _plant_python_numpy(workspace)
+    root = workspace.resolve()
+
+    return OracleRef(
+        unit="python:kernel.py",
+        oracle="python-source",
+        key="python-source:conformance",
+        handle={
+            "root": str(root),
+            "source": "kernel.py",
+            "module_name": "kernel",
+            "functions": ("blend",),
+        },
+        cost="cheap",
+    )
+
+
 # --- fortran, translate.numpy ------------------------------------------------
 #
 # Both read source, so both get a copy of the example planted in a scratch
@@ -441,6 +609,12 @@ PLUGIN_SET = PluginSet(
             plant_workspace_artifact=_plant_workspace_artifact,
             requires=("fparser",),
         ),
+        FrontendCase(
+            name="python-numpy",
+            plant_tree=_plant_python_numpy,
+            expect_uids=("python:kernel.py",),
+            plant_workspace_artifact=_plant_python_workspace_artifact,
+        ),
     ),
     transforms=(
         TransformCase(
@@ -449,8 +623,26 @@ PLUGIN_SET = PluginSet(
             defers=_with_a_refused_block,
             requires=("fparser", "numpy"),
         ),
+        TransformCase(
+            name="translate.python-numba",
+            subject=_python_subject,
+            defers=_python_numba_defers,
+        ),
+        TransformCase(
+            name="translate.python-jax",
+            subject=_python_subject,
+            defers=_python_jax_defers,
+        ),
     ),
     oracles=(
+        OracleCase(
+            name="python-source",
+            unit=Unit(uid="python:kernel.py", kind="python-module", sources=(Path("kernel.py"),)),
+            facts=_python_oracle_facts,
+            move_the_source=_different_source,
+            materializes=False,
+            submits_jobs=False,
+        ),
         OracleCase(
             # The one oracle here that needs no toolchain: it derives its
             # reference by running the engine's own transform, so the Oracle
@@ -528,6 +720,12 @@ PLUGIN_SET = PluginSet(
     ),
     verifiers=(
         VerifierCase(
+            name="static.complete",
+            candidate=_complete_candidate,
+            break_candidate=_complete_break,
+            expect=Confidence.SAMPLED,
+        ),
+        VerifierCase(
             name="static.rwset",
             candidate=_rwset_candidate,
             break_candidate=_rwset_break,
@@ -549,6 +747,22 @@ PLUGIN_SET = PluginSet(
             expect=Confidence.ULP_BOUNDED,
             submits_jobs=False,
             requires=("numpy",),
+        ),
+        VerifierCase(
+            name="differential.python-numba",
+            candidate=_numba_candidate,
+            break_candidate=_break_accelerator,
+            oracle=_python_accelerator_oracle,
+            submits_jobs=True,
+            requires=("numpy", "numba"),
+        ),
+        VerifierCase(
+            name="differential.python-jax",
+            candidate=_jax_candidate,
+            break_candidate=_break_accelerator,
+            oracle=_python_accelerator_oracle,
+            submits_jobs=True,
+            requires=("numpy", "jax"),
         ),
         VerifierCase(
             name="differential.bitexact",
@@ -582,5 +796,18 @@ PLUGIN_SET = PluginSet(
         ),
         RecipeCase(name="port", config={"dumps": ["reference.nc"]}),
         RecipeCase(name="audit"),
+        RecipeCase(
+            name="python-to-numba",
+            config={"target": "numba", "frontend": "python-numpy", "executor": "local"},
+        ),
+        RecipeCase(
+            name="python-to-jax",
+            config={"target": "jax", "frontend": "python-numpy", "executor": "local"},
+        ),
+    ),
+    engines=(
+        EngineCase(name="recast.fortran-python.numpy"),
+        EngineCase(name="recast.python-numpy.numba"),
+        EngineCase(name="recast.python-numpy.jax"),
     ),
 )
