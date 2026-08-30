@@ -614,11 +614,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "21/229 blocks disagree: deig/B011, deig/B012, deig/B013, zeig/B012, deigvals/B010 (+16 more)",
+       "detail": "13/229 blocks disagree: deig/B011, zeig/B012, deigvals/B010, zeigvals/B011, deigh_simple/B009 (+8 more)",
        "metrics": {
         "blocks_checked": 229,
         "blocks_deferred": 65,
-        "blocks_matched": 208,
+        "blocks_matched": 216,
         "blocks_waived": 0
        },
        "passed": false
@@ -740,11 +740,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "15/95 blocks disagree: besselyv_real/B001, hankel1n_real/B001, hankel1v_complex/B004, hankel2n_real/B001, hankel2v_complex/B004 (+10 more)",
+       "detail": "2/95 blocks disagree: bessel_j0_zeros/B001, spherical_bessel_jn_zeros/B001",
        "metrics": {
         "blocks_checked": 95,
         "blocks_deferred": 16,
-        "blocks_matched": 80,
+        "blocks_matched": 93,
         "blocks_waived": 0
        },
        "passed": false
@@ -1035,11 +1035,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "10/66 blocks disagree: cspl_interp/B002, spline_coeff/B004, cspleps/B003, csplint/B006, csplint/B012 (+5 more)",
+       "detail": "7/66 blocks disagree: cspl_interp/B002, cspleps/B003, csplint/B006, csplint/B012, csplint/B016 (+2 more)",
        "metrics": {
         "blocks_checked": 66,
         "blocks_deferred": 10,
-        "blocks_matched": 56,
+        "blocks_matched": 59,
         "blocks_waived": 0
        },
        "passed": false
@@ -1718,7 +1718,7 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "10 subprogram(s) could not be compared: dchfdv: candidate raised: TypeError: dchfdv() missing 2 required positional arguments: 'fe' and 'de'; dchfev: candidate ",
+       "detail": "10 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
        "metrics": {
         "bit_exact": 44,
         "max_rel": Infinity,
@@ -1727,13 +1727,13 @@
         "points": 100,
         "subprograms": {
          "dchfdv": {
-          "error": "candidate raised: TypeError: dchfdv() missing 2 required positional arguments: 'fe' and 'de'"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
          },
          "dchfev": {
-          "error": "candidate raised: TypeError: dchfev() missing 1 required positional argument: 'fe'"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
          },
          "dpchbs": {
-          "error": "candidate raised: TypeError: dpchbs() missing 1 required positional argument: 'bcoef'"
+          "error": "candidate raised: IndexError: index 8 is out of bounds for axis 0 with size 8"
          },
          "dpchcm": {
           "bit_exact": 44,
@@ -1743,25 +1743,25 @@
           "points": 100
          },
          "dpchfd": {
-          "error": "candidate raised: TypeError: dpchfd() missing 2 required positional arguments: 'fe' and 'de'"
+          "error": "candidate raised: IndexError: invalid index to scalar variable."
          },
          "dpchfe": {
-          "error": "candidate raised: TypeError: dpchfe() missing 1 required positional argument: 'fe'"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
          },
          "dpchia": {
           "error": "candidate raised: TypeError: dpchid() takes 8 positional arguments but 9 were given"
          },
          "dpchic": {
-          "error": "candidate raised: TypeError: dpchic() missing 1 required positional argument: 'd'"
+          "error": "oracle raised: TypeError: ref_pchip_module.w_dpchic() missing required argument 'switch_bn' (pos 3)"
          },
          "dpchid": {
           "error": "value: shape () vs (2,)"
          },
          "dpchim": {
-          "error": "candidate raised: TypeError: dpchim() missing 1 required positional argument: 'd'"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (8,-1,)"
          },
          "dpchsp": {
-          "error": "candidate raised: TypeError: dpchsp() missing 1 required positional argument: 'd'"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (8,-1,)"
          }
         },
         "trials": 10
