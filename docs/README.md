@@ -6,6 +6,7 @@
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
 | [`corpus-lapack-example.md`](corpus-lapack-example.md) | the one corpus unit whose Python does not import -- a library over LAPACK -- why that is the right outcome, and what an externals shim would change |
 | [`architecture.md`](architecture.md) | the spine, the ten interfaces, where the boundaries fall |
+| [`tree-units.md`](tree-units.md) | a unit of a model tree: use-constants, stand-ins, bundled companions, derived-type interfaces flattened, a real run recorded -- and the extension's half of it |
 | [`writing-a-plugin.md`](writing-a-plugin.md) | how to extend the engine, and the conformance suite a plugin must satisfy |
 | [`roadmap.md`](roadmap.md) | phases P0–P6, where each recipe stands, and how far each claim's evidence reaches |
 | [`disclosure-ledger.md`](disclosure-ledger.md) | what stays private, case by case, with the reason and the mechanism holding it |
