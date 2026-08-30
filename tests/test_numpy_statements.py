@@ -955,20 +955,50 @@ def test_a_character_case_compares_with_blank_padding(sources: dict[str, Path]) 
     assert "    else:" in lines
 
 
-def test_a_case_value_range_is_refused(sources: dict[str, Path]) -> None:
-    """Was ``test_a_case_value_range_slips_past_the_refusal``: the pipeline
-    meant to refuse ``case (1:2)`` but looked at the wrong node, so the
-    range's endpoints came out as equality tests -- right for ``(1:2)`` by
-    luck, wrong for any wider range -- and this test recorded the inherited
-    behaviour. Reading the value list item by item, which is what keeps a
-    negative literal's sign, also makes the refusal fire; a refusal is the
-    right answer for a range, and the emitted-text differential against the
-    pipeline moves by exactly this construct."""
-    from recast.transform.rules import NoRule
-
+def test_a_case_value_range_is_a_closed_interval(sources: dict[str, Path]) -> None:
+    """Was ``test_a_case_value_range_is_refused``, and before that
+    ``..._slips_past_the_refusal``: the pipeline looked at the wrong node,
+    so ``case (1:2)`` came out as two equality tests -- right there by
+    luck, wrong for any wider range. Reading the value list item by item
+    made the refusal fire on slsqp's ``bvls_wrapper``; a range is a closed
+    interval on the selector, and either end may be open."""
     statements, nodes = build(sources["emit_mod"], "switch")
-    with pytest.raises(NoRule, match="case value range"):
-        statements.render(pick(nodes, f03.Case_Construct, 1), 1)
+    lines = statements.render(pick(nodes, f03.Case_Construct, 1), 1)
+    assert lines[0].startswith("    if (1 <= n and n <= ")
+
+
+def test_an_open_ended_case_range_tests_one_side(tmp_path: Path) -> None:
+    from recast.fortran import constants, interface
+    from recast.fortran._parse import f03, parse, walk
+    from recast.transform.numpy.subprograms import Subprograms
+    from recast.transform.profiles import PROFILES
+
+    source = Path(tmp_path) / "rng.f90"
+    source.write_text(
+        "module rng_mod\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine pick(n, v)\n"
+        "    integer, intent(in) :: n\n"
+        "    real(8), intent(out) :: v\n"
+        "    select case (n)\n"
+        "    case (:0, 7:)\n"
+        "      v = 2d0\n"
+        "    case default\n"
+        "      v = 0d0\n"
+        "    end select\n"
+        "  end subroutine pick\n"
+        "end module rng_mod\n"
+    )
+    assembler = Subprograms(
+        record=interface.extract(source),
+        constants=constants.extract(source),
+        profile=PROFILES["gfortran"],
+    )
+    node = next(iter(walk(parse(source), f03.Subroutine_Subprogram)))
+    lines, _ = assembler.render(node, "pick")
+    branch = next(line for line in lines if line.lstrip().startswith("if "))
+    assert "(n <= 0) or (" in branch and "<= n)" in branch
 
 
 def test_a_stub_answers_only_where_the_pipeline_answers(sources: dict[str, Path]) -> None:
@@ -1141,6 +1171,33 @@ def test_a_negative_case_value_keeps_its_sign(tmp_path):
     branch = next(line for line in lines if line.strip().startswith("if"))
     assert "-1" in branch.replace("- 1", "-1") or "(-1)" in branch, branch
     assert "== 1)" not in branch or "(k == -1)" in branch.replace("- 1", "-1"), branch
+
+
+def test_a_function_interface_body_is_read_as_a_function(tmp_path):
+    """The body of ``interface / function f(x) ... end function`` is a
+    ``Function_Body``, not a ``Function_Subprogram``; read as a subroutine
+    it had no ``Subroutine_Stmt`` to index, and every module that declares
+    one -- fftpack, fortran-utils, a submodule's parent -- stopped at the
+    frontend with an IndexError."""
+    from pathlib import Path
+
+    from recast.fortran import interface
+
+    source = Path(tmp_path) / "fn.f90"
+    source.write_text(
+        "module fn_mod\n"
+        "  implicit none\n"
+        "  interface\n"
+        "    function fdum(x) result(y)\n"
+        "    real(8), intent(in) :: x\n"
+        "    real(8) :: y\n"
+        "    end function fdum\n"
+        "  end interface\n"
+        "end module fn_mod\n"
+    )
+    record = interface.extract(source)
+    assert record["interfaces"]["fdum"]["result"] == "y"
+    assert [a["name"] for a in record["interfaces"]["fdum"]["args"]] == ["x"]
 
 
 def test_a_call_through_a_procedure_dummy_binds_to_its_interface(tmp_path):

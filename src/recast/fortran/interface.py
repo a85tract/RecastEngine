@@ -533,7 +533,11 @@ def extract_subprogram(
     ``intent_overrides`` maps this subprogram's argument names to ``IN``,
     ``OUT`` or ``INOUT``. See ``apply_intent_override``.
     """
-    is_function = isinstance(sub, f03.Function_Subprogram)
+    # An interface body (``Function_Body``) has the same shape as a
+    # subprogram and arrives here from ``_interfaces``; a function's body
+    # under ``isinstance(sub, Function_Subprogram)`` alone was read as a
+    # subroutine, and ``walk`` found no ``Subroutine_Stmt`` to index.
+    is_function = isinstance(sub, (f03.Function_Subprogram, f03.Function_Body))
     stmt_cls = f03.Function_Stmt if is_function else f03.Subroutine_Stmt
     stmt = walk(sub, stmt_cls)[0]
 
@@ -832,9 +836,7 @@ def _only_names(statement: str) -> set[str]:
     if not match:
         return set()
     return {
-        item.split("=>", 1)[0].strip().lower()
-        for item in match.group(1).split(",")
-        if item.strip()
+        item.split("=>", 1)[0].strip().lower() for item in match.group(1).split(",") if item.strip()
     }
 
 
