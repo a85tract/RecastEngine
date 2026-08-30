@@ -111,6 +111,16 @@ contains
 50  continue
     s = s * 2.0_r8
   end subroutine escape
+  subroutine climb(k)
+    integer, intent(inout) :: k
+ 10 continue
+    if (k > 12) then
+       k = k - 12
+       go to 10
+    end if
+    k = k + 1
+  end subroutine climb
+
 end module asm_mod
 """
 
@@ -482,3 +492,20 @@ def test_a_local_with_a_declared_initializer_starts_from_it(tmp_path: Path) -> N
     lines, _ = build(path).render(node_of(path, "pick"), "pick")
     assert any(line.strip().startswith("floor_ = ") and "-2" in line for line in lines), lines
     assert not any(line.strip() == "floor_ = 0.0" for line in lines)
+
+
+def test_a_top_level_backward_goto_becomes_a_loop_region(source: Path) -> None:
+    """``10 continue ... if (cond) ... go to 10`` at the subprogram's top
+    level is a loop: the span from the label to the last such goto runs
+    under ``while True``, the goto restarts it through ``_FGoto``, and
+    falling off the end breaks."""
+    lines, report = build(source).render(node_of(source, "climb"), "climb")
+    assert "    while True:  # backward-goto region (label 10)" in lines
+    assert any(line.lstrip() == "raise _FGoto('10')  # goto 10" for line in lines)
+    assert "            break  # natural exit" in lines
+    assert "        except _FGoto as _g:" in lines
+    assert all(entry["status"] == "mechanical" for entry in report)
+    opened = lines.index("    while True:  # backward-goto region (label 10)")
+    closed = lines.index("        except _FGoto as _g:")
+    inside = [line for line in lines[opened + 1 : closed] if line.lstrip().startswith("# B")]
+    assert inside and all(line.startswith("            # B") for line in inside), inside

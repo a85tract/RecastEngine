@@ -938,6 +938,9 @@ def test_selected_int_kind_is_a_value_not_a_skip() -> None:
     assert classify_init("selected_int_kind(6)", set()) == ("int", 4)
     assert classify_init("selected_int_kind(18)", set()) == ("int", 8)
     assert classify_init("kind(1.0d0)", set())[0] == "skip"
+    assert classify_init("'GREGORIAN'", set()) == ("str", "GREGORIAN")
+    assert classify_init("'isn''t'", set()) == ("str", "isn't")
+    assert classify_init('"a b"', set()) == ("str", "a b")
 
 
 INTERNALS = """\

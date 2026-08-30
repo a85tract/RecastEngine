@@ -130,6 +130,8 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
         return f"{name} = {spelled}  {where}{note}"
     if kind == "logical":
         return f"{name} = {'True' if payload else 'False'}  {where}"
+    if kind == "str":
+        return f"{name} = {payload!r}  {where}"
     if kind == "ref":
         return f"{name} = {payload.upper()}  {where}"
     if kind == "expr":
@@ -154,6 +156,8 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
         return f"{constant} = {spelled}  {about}{note}"
     if kind == "logical":
         return f"{constant} = {'True' if payload else 'False'}  {about}"
+    if kind == "str":
+        return f"{constant} = {payload!r}  {about}"
     if kind in ("ref", "expr"):
         value = payload.upper() if kind == "ref" else _expression(payload)
         # The F77 PARAMETER-statement form historically emitted these bare;

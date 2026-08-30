@@ -283,6 +283,17 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     if m:  # a bare BOZ literal, without the int() wrapper
         return "int", int(m.group(1), 16)
 
+    m = re.fullmatch(r"'((?:[^']|'')*)'|\"((?:[^\"]|\"\")*)\"", e)
+    if m:
+        # A character parameter: the literal's text, with the doubled quote
+        # of its own delimiter undone. ``calkindflag = 'GREGORIAN'`` is a
+        # value the source compares at runtime, not a kind to skip.
+        return "str", (
+            m.group(1).replace("''", "'")
+            if m.group(1) is not None
+            else m.group(2).replace('""', '"')
+        )
+
     compact = e.replace(" ", "")
     if compact.lower() in (".true.", ".false."):
         return "logical", compact.lower() == ".true."
