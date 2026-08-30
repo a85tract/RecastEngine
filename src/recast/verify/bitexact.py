@@ -310,6 +310,8 @@ class BitexactVerifier(Verifier):
                 ranges,
                 prepare=getattr(translated, "_PREPARE_INPUTS", None),
                 dominant_at=config.get("dominant_at", self.dominant_at),
+                dominant_axis=config.get("dominant_axis", -1),
+                rel_scale=str(config.get("rel_scale", "element")),
                 arg_naming=str(handle.get("arg_naming", "lower")),
                 convention=str(handle.get("return_convention", "f2py")),
                 samples=by_subprogram.get(name) if recorded else None,
@@ -445,6 +447,8 @@ class BitexactVerifier(Verifier):
         ranges: dict[str, tuple[float, float]],
         prepare: Any = None,
         dominant_at: float | None = None,
+        dominant_axis: Any = -1,
+        rel_scale: str = "element",
         arg_naming: str = "lower",
         convention: str = "f2py",
         samples: list[dict[str, Any]] | None = None,
@@ -580,7 +584,7 @@ class BitexactVerifier(Verifier):
                 audit = ulp_audit(
                     a.tolist(),
                     b.tolist(),
-                    dominant=self._dominance(np, shaped_theirs, dominant_at),
+                    dominant=self._dominance(np, shaped_theirs, dominant_at, dominant_axis),
                 )
                 points += audit["total_points"]
                 bit_exact += audit["bit_exact"]
@@ -590,7 +594,15 @@ class BitexactVerifier(Verifier):
                     max_ulp_dominant = max(max_ulp_dominant, audit["max_ulp_dominant"])
                     dominant_points += audit["dominant_points"]
                 if audit["bit_exact"] != audit["total_points"]:
-                    scale = np.maximum(np.abs(b), 1e-300)
+                    # ``rel_scale``: each element against itself (the default),
+                    # or ``"array"`` -- against the array's largest magnitude,
+                    # for a layout where a cancellation residual of 1e-17 sits
+                    # beside values of order one and its own relative error
+                    # says nothing about the translation.
+                    if rel_scale == "array":
+                        scale = np.maximum(float(np.abs(b).max()) if b.size else 0.0, 1e-300)
+                    else:
+                        scale = np.maximum(np.abs(b), 1e-300)
                     with np.errstate(invalid="ignore"):
                         rel = float(np.nanmax(np.abs(a - b) / scale))
                     max_rel = max(max_rel, rel)
@@ -629,7 +641,9 @@ class BitexactVerifier(Verifier):
         return {name: str(value) for name, value in found.items() if value}
 
     @staticmethod
-    def _dominance(np: Any, reference: Any, dominant_at: float | None) -> list[bool] | None:
+    def _dominance(
+        np: Any, reference: Any, dominant_at: float | None, axis: Any = -1
+    ) -> list[bool] | None:
         """Which elements a ULP bound is allowed to be held to.
 
         ``|v| >= fraction * the maximum along the last axis``, so an element is
@@ -637,11 +651,20 @@ class BitexactVerifier(Verifier):
         a large value somewhere else in the array. The *reference* side decides,
         because whether an element matters is a fact about what it should have
         been, not about the candidate being judged.
+
+        ``axis`` is the operator's (``dominant_axis``): the last axis by
+        default, or ``"all"`` for the whole array -- for a layout whose last
+        axis is not a row of comparable values (a two-element sun/shade pair,
+        say), where a cancellation residual of 1e-17 would otherwise be the
+        maximum of its own row and judged at the ULP tier.
         """
         if dominant_at is None:
             return None
         magnitude = np.abs(reference)
-        scale = magnitude.max(axis=-1, keepdims=True) if magnitude.ndim > 1 else magnitude.max()
+        if axis in ("all", None) or magnitude.ndim <= 1:
+            scale = magnitude.max()
+        else:
+            scale = magnitude.max(axis=int(axis), keepdims=True)
         mask: list[bool] = (magnitude >= dominant_at * scale).ravel().tolist()
         return mask
 

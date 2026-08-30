@@ -109,11 +109,26 @@ def _signatures_of(anchor: ast.Module) -> str:
     Lifted from the anchor rather than re-rendered, so the two modules cannot
     drift into disagreeing about the interface they share.
     """
+    table = None
+    updates: list[str] = []
     for node in anchor.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "_SIGNATURES" for target in node.targets
         ):
-            return ast.unparse(node) + "\n\n\n"
+            table = ast.unparse(node)
+        elif (
+            # ``_SIGNATURES.update({...})``: the flat adapters' entries, added
+            # after the table by ``recast.transform.numpy.flat``.
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "update"
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "_SIGNATURES"
+        ):
+            updates.append(ast.unparse(node))
+    if table is not None:
+        return "\n".join([table, *updates]) + "\n\n\n"
     raise ConfigError(
         "the NumPy anchor carries no _SIGNATURES table, so the ported module "
         "would have nothing for a differential gate to generate inputs from"

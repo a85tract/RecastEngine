@@ -1496,3 +1496,34 @@ def test_a_subscript_reads_the_names_in_its_declared_lower_bound(tmp_path: Path)
     )
     blocks = rwset.block_rwsets(node, rwset.scope_for(record, "use_it"))
     assert all("b" in b["reads"] for b in blocks), blocks
+
+
+def test_an_interface_bodys_dummies_are_not_module_state(tmp_path):
+    """``interface / subroutine func(x, val)`` declares the interface's
+    dummies, not module variables; a subprogram with its own dummy ``x``
+    reads no module state through it."""
+    from recast.fortran import interface
+
+    src = tmp_path / "solver_mod.f90"
+    src.write_text(
+        "module solver_mod\n"
+        "  implicit none\n"
+        "  real(8) :: shared = 1.0d0\n"
+        "  interface\n"
+        "    subroutine func(x, val)\n"
+        "      real(8), intent(in) :: x\n"
+        "      real(8), intent(out) :: val\n"
+        "    end subroutine func\n"
+        "  end interface\n"
+        "contains\n"
+        "  function twice(x) result(y)\n"
+        "    real(8), intent(in) :: x\n"
+        "    real(8) :: y\n"
+        "    y = 2.0d0 * x * shared\n"
+        "  end function twice\n"
+        "end module solver_mod\n"
+    )
+    record = interface.extract(src)
+    assert [m["name"] for m in record["module_state"]] == ["shared"]
+    (twice,) = record["subprograms"]
+    assert twice["module_state_read"] == ["shared"]

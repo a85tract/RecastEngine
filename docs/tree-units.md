@@ -82,3 +82,39 @@ components surviving, which every compiler in practice allows) and
 `buffer_out_arrays="all"` (every `intent(out)` array is the caller's
 storage). `static.rwset` takes `waive_stub_blocks` to waive, by name in the
 verdict, a block whose every emitted statement is a framework-stub marker.
+
+## To JAX: the flat function as the kernel
+
+The JAX backend's eligibility rule excludes a subprogram that takes a
+derived-type dummy, and the backend is not widened for it: `tools/jax_diff.py`
+holds its emitted bytes to the script it came from. `port.tree-jax`
+(`recast.transform.jax.tree`) puts the plan to a third use instead. From the
+validated NumPy anchor it derives a **flat function** per plan -- the
+anchor's body with every `alias = obj.comp` dropped and the alias spelled as
+the flat argument, every `obj.comp` / `_mod.var` / `_mod.obj.comp` spelled
+the same way, a call to another planned subprogram rewritten to *its* flat
+function with the outputs assigned back on the caller's names, and the
+`return` replaced by the flat signature's outputs in `_SIGNATURES` order.
+That function has numeric arguments only, no module state and no object,
+so `build_module` lowers it as it lowers any kernel, and `<name>_flat` in
+the ported module is a `lax.fori_loop`/`lax.cond` kernel rather than a
+wrapper around a host-delegated original.
+
+Three rewrites go beyond spelling, and each is named on the candidate:
+
+* an abort check (`if bad: raise`, the anchor's `endrun`) is dropped --
+  a kernel cannot raise under tracing, and the recorded run it is gated on
+  never did (`notes["jax"]["aborts_dropped"]`);
+* `int(x)` and `np.float64(x)` on a traced value become `jnp` casts;
+* a plan the rewrite cannot spell -- a function taking the object called
+  inside an expression, a call into another module's physics -- keeps its
+  NumPy wrapper and is host-delegated (`notes["jax"]["flat_refused"]`).
+
+The gate is `dump-replay` plus `differential.tolerance` on the same
+recording the NumPy translation was held bit-exact against;
+`dominant_axis: "all"` judges dominance over the whole array where the last
+axis is not a row of comparable values. Reverse-mode differentiation of a
+kernel whose loop trip count is traced (`do ic = 1, ncan(p)`) is refused by
+JAX -- `lax.fori_loop` with dynamic bounds lowers to `while_loop` -- so
+forward mode (`jax.jvp`) is what a ported kernel offers today; a static
+trip count with a mask is the known next step.
