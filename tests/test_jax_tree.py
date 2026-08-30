@@ -49,7 +49,10 @@ def test_the_flat_function_spells_components_state_and_outputs(tree: Path) -> No
     flat, interface, notes = flattened_module(
         module, facts.interface, plans_from_facts(facts, gated=False)
     )
-    assert notes == {"refused": {}, "aborts_dropped": {}, "companions": []}
+    assert notes["refused"] == {} and notes["aborts_dropped"] == {}
+    # ``do ic = 1, ncan(p)``: a static trip count over the component's axis,
+    # the iterations the source meant kept by a guard.
+    assert notes["static_loops"] == {"warm_flat": ["ic: inst__ncan[p - 1] + 1"]}
     fns = {n.name: n for n in flat.body if isinstance(n, ast.FunctionDef)}
     warm = ast.unparse(fns["warm_flat"])
     assert warm.startswith(

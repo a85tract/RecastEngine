@@ -229,7 +229,12 @@ class TreeTranslation(Transform):
             if unit is None:
                 continue
             try:
-                inner = self.apply(unit, frontend.analyze(unit, root), {**config, "_bundled": seen})
+                # The companion resolves its own use-constants: the caller's
+                # table is the caller's, and handing it down would write the
+                # companion's ``<module>_use_constants.py`` with the wrong
+                # names in it.
+                own = {k: v for k, v in config.items() if k != "use_constants"}
+                inner = self.apply(unit, frontend.analyze(unit, root), {**own, "_bundled": seen})
             except Exception as error:  # a companion that will not translate is not our failure
                 self._note(candidate).setdefault("not_bundled", {})[module] = (
                     f"{type(error).__name__}: {error}"[:200]

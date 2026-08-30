@@ -64,6 +64,8 @@ from recast.transform.numpy.tree import TreeConventions, TreeTranslation
 __all__ = ["TreeToJax", "factory", "flattened_module"]
 
 CASTS = ("float64", "float32", "int32", "int64")
+WIDENED = ast.Name(id="_widened_", ctx=ast.Load())
+"""A placeholder upper bound marking a slice this pass widened."""
 
 
 class NotFlat(Exception):
@@ -152,16 +154,125 @@ class _Rewrite(ast.NodeTransformer):
         spelling: _Spelling,
         plans: dict[str, FlatPlan],
         ports: dict[str, dict[str, Any]],
+        bundled: frozenset[str] = frozenset(),
+        statics: frozenset[str] = frozenset(),
     ) -> None:
+        self.statics = statics  # scalar integer arguments the kernel takes static
         self.plan = plan
         self.spelling = spelling
         self.plans = plans
-        self.ports = ports  # companion module -> {"kernels", "closures"}
+        self.ports = ports  # companion module -> {"kernels", "closures", "plans"}
+        self.bundled = bundled  # companions the anchor carries a translation of
         self.aliases: dict[str, str] = {}  # alias -> flat name, from dropped assignments
         self.calls: list[str] = []
         self.aborts: list[str] = []
         self.companions: set[str] = set()  # ``_alias`` names whose ported module is called
         self.temps = 0
+        self.associates: frozenset[str] = frozenset()  # names an alias drop may claim
+        self.masked: list[str] = []  # statements whose dynamic slices became masks
+        self.static_loops: list[str] = []  # loops whose trip count became static
+
+    # -- what is static under jit ---------------------------------------------
+
+    def _is_dynamic(self, expr: ast.expr) -> bool:
+        """A bound that is not a literal, a constant, a static argument or an
+        array's static shape."""
+
+        def visit(node: ast.AST) -> bool:
+            if isinstance(node, ast.Attribute) and node.attr == "shape":
+                return False  # ``x.shape[k]`` is static under jit
+            if isinstance(node, ast.Subscript) and not (
+                isinstance(node.value, ast.Attribute) and node.value.attr == "shape"
+            ):
+                return True
+            if isinstance(node, ast.Name) and not node.id.isupper() and node.id not in self.statics:
+                return True
+            return any(visit(child) for child in ast.iter_child_nodes(node))
+
+        return visit(expr)
+
+    def _mask_slices(self, expr: ast.expr) -> tuple[ast.expr, ast.expr | None]:
+        """Every ``x[i, lo:hi]`` with a traced ``hi`` becomes ``x[i, lo:]`` --
+        the axis's whole static extent -- and the mask ``arange(lo, extent) <
+        hi`` says which of it the statement meant. One bound per statement,
+        or the rewrite refuses."""
+        found: list[tuple[ast.expr, int, ast.expr | None, ast.expr, int]] = []
+        rewrite = self
+
+        class Widen(ast.NodeTransformer):
+            def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+                self.generic_visit(node)
+                elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+                widened: list[ast.expr] = []
+                for axis, element in enumerate(elts):
+                    if (
+                        isinstance(element, ast.Slice)
+                        and element.upper is not None
+                        and rewrite._is_dynamic(element.upper)
+                    ):
+                        trailing = sum(isinstance(e, ast.Slice) for e in elts[axis + 1 :])
+                        found.append((node.value, axis, element.lower, element.upper, trailing))
+                        widened.append(ast.Slice(lower=element.lower, upper=WIDENED, step=None))
+                    else:
+                        widened.append(element)
+                if isinstance(node.slice, ast.Tuple):
+                    node.slice = ast.Tuple(elts=widened, ctx=ast.Load())
+                else:
+                    node.slice = widened[0]
+                return node
+
+        widened_expr: Any = Widen().visit(copy.deepcopy(expr))
+        if not found:
+            return expr, None
+        keys = {(ast.unparse(lo) if lo else "0", ast.unparse(hi)) for _, _, lo, hi, _ in found}
+        if len(keys) != 1:
+            raise NotFlat("dynamic slices with different bounds in one statement")
+        base, axis, lo, hi, trailing = found[0]
+        # One static length for every widened slice -- the first array's
+        # axis from its lower bound -- so ``x[i, 0:n] * y[i, 0:n]`` stays
+        # conformable when ``x`` and ``y`` are not allocated alike.
+        extent = ast.Subscript(
+            value=ast.Attribute(value=copy.deepcopy(base), attr="shape", ctx=ast.Load()),
+            slice=ast.Constant(axis),
+            ctx=ast.Load(),
+        )
+        low: ast.expr = copy.deepcopy(lo) if lo else ast.Constant(0)
+        length = ast.BinOp(left=extent, op=ast.Sub(), right=copy.deepcopy(low))
+
+        class Bound(ast.NodeTransformer):
+            def visit_Slice(self, node: ast.Slice) -> ast.AST:
+                if node.upper is WIDENED:
+                    start: ast.expr = copy.deepcopy(node.lower) if node.lower else ast.Constant(0)
+                    return ast.Slice(
+                        lower=node.lower,
+                        upper=ast.BinOp(left=start, op=ast.Add(), right=copy.deepcopy(length)),
+                        step=None,
+                    )
+                return node
+
+        mask: ast.expr = ast.Compare(
+            left=_jnp(
+                "arange",
+                [
+                    low,
+                    ast.BinOp(left=copy.deepcopy(low), op=ast.Add(), right=copy.deepcopy(length)),
+                ],
+            ),
+            ops=[ast.Lt()],
+            comparators=[copy.deepcopy(hi)],
+        )
+        if trailing:
+            # ``x[i, 0:n, 0:m]``: the mask is along one axis and the slice
+            # has more; ``mask[:, None]`` broadcasts it over the rest.
+            mask = ast.Subscript(
+                value=mask,
+                slice=ast.Tuple(
+                    elts=[ast.Slice(), *[ast.Constant(None) for _ in range(trailing)]],
+                    ctx=ast.Load(),
+                ),
+                ctx=ast.Load(),
+            )
+        return Bound().visit(widened_expr), mask
 
     # -- names and attributes -------------------------------------------------
 
@@ -181,10 +292,14 @@ class _Rewrite(ast.NodeTransformer):
     # -- statements -----------------------------------------------------------
 
     def visit_Assign(self, node: ast.Assign) -> Any:
-        # ``alias = obj.comp`` -> dropped; the alias is the component from here.
+        # ``alias = obj.comp`` -> dropped; the alias is the component from
+        # here. Only an *associate*-style alias: assigned once, at the top of
+        # the body. ``kn = _mod.kn_val`` in one branch of an ``if`` is a
+        # value, and dropping it would make every branch read that one.
         if (
             len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in self.associates
             and self.spelling.of(node.value) is not None
         ):
             self.aliases[node.targets[0].id] = self.spelling.of(node.value) or ""
@@ -192,9 +307,26 @@ class _Rewrite(ast.NodeTransformer):
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
         self.generic_visit(node)
+        target = node.targets[0]
+        if len(node.targets) == 1 and isinstance(target, ast.Subscript):
+            # ``x[i, lo:hi] = v`` with a traced ``hi``: the whole axis, masked.
+            pair: Any
+            pair, mask = self._mask_slices(ast.Tuple(elts=[target, node.value], ctx=ast.Load()))
+            if mask is not None:
+                full_target, full_value = pair.elts
+                keep = copy.deepcopy(full_target)
+                keep.ctx = ast.Load()
+                full_target.ctx = ast.Store()
+                self.masked.append(ast.unparse(node))
+                return ast.copy_location(
+                    ast.Assign(
+                        targets=[full_target],
+                        value=_jnp("where", [mask, full_value, keep]),
+                    ),
+                    node,
+                )
         # ``x[p - 1, :], y = f(...)``: the backend lowers a subscript store on
         # its own statement, not inside a tuple target.
-        target = node.targets[0]
         if (
             len(node.targets) == 1
             and isinstance(target, ast.Tuple)
@@ -230,6 +362,41 @@ class _Rewrite(ast.NodeTransformer):
             dst, src = call.args
             return self.visit(ast.copy_location(ast.Assign(targets=[dst], value=src), node))
         self.generic_visit(node)
+        return node
+
+    def visit_For(self, node: ast.For) -> Any:
+        self.generic_visit(node)
+        it = node.iter
+        if not (
+            isinstance(it, ast.Call)
+            and isinstance(it.func, ast.Name)
+            and it.func.id == "range"
+            and isinstance(node.target, ast.Name)
+            and 1 <= len(it.args) <= 2
+        ):
+            return node
+        stop = it.args[-1]
+        if not self._is_dynamic(stop):
+            return node
+        # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
+        # whose count is traced has no reverse-mode rule. The body indexes
+        # some array by ``ic - 1``; that axis's static extent is the count
+        # the loop runs to, and ``if ic < stop`` keeps the iterations the
+        # source meant -- a ``lax.cond`` with the identity as its other arm.
+        var = node.target.id
+        extent = _indexed_extent(node.body, var)
+        if extent is None:
+            return node
+        guard = ast.If(
+            test=ast.Compare(
+                left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
+            ),
+            body=node.body,
+            orelse=[],
+        )
+        self.static_loops.append(f"{var}: {ast.unparse(stop)}")
+        it.args[-1] = extent
+        node.body = [guard]
         return node
 
     def visit_If(self, node: ast.If) -> Any:
@@ -275,6 +442,20 @@ class _Rewrite(ast.NodeTransformer):
         if (
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ("np", "jnp")
+            and node.func.attr == "sum"
+            and len(node.args) == 1
+        ):
+            # ``sum(x[i, lo:hi] * y[i, lo:hi])`` over a traced ``hi``: the
+            # whole axis, the rest zeroed.
+            full, mask = self._mask_slices(node.args[0])
+            if mask is not None:
+                self.masked.append(ast.unparse(node))
+                node.args = [_jnp("where", [mask, full, ast.Constant(0.0)])]
+                return node
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "np"
             and node.func.attr in CASTS
             and len(node.args) == 1
@@ -295,8 +476,10 @@ class _Rewrite(ast.NodeTransformer):
             return node
         port = self.ports.get(module)
         if port is None:
-            # Not a ported companion: a stand-in. Its functions are the
-            # framework's answers, not physics, and are left as they are.
+            if module in self.bundled:
+                raise NotFlat(f"calls {module}.{func.attr}, and {module} was not ported")
+            # Not a companion: a stand-in. Its functions are the framework's
+            # answers, not physics, and are left as they are.
             return node
         if func.attr not in port["kernels"]:
             raise NotFlat(f"calls {module}.{func.attr}, which its port did not lower")
@@ -456,6 +639,34 @@ class _Rewrite(ast.NodeTransformer):
         return [assign, *follow] if follow else assign
 
 
+def _indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
+    """``base.shape[k] + 1`` for the first ``base[..., var - 1, ...]`` in the
+    body (the loop is 1-based and the index 0-based), or ``base.shape[k]``
+    for a bare ``var``; None when nothing is indexed by the variable."""
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Subscript):
+            continue
+        elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        for axis, element in enumerate(elts):
+            shape = ast.Subscript(
+                value=ast.Attribute(value=copy.deepcopy(node.value), attr="shape", ctx=ast.Load()),
+                slice=ast.Constant(axis),
+                ctx=ast.Load(),
+            )
+            if (
+                isinstance(element, ast.BinOp)
+                and isinstance(element.op, ast.Sub)
+                and isinstance(element.left, ast.Name)
+                and element.left.id == var
+                and isinstance(element.right, ast.Constant)
+                and element.right.value == 1
+            ):
+                return ast.BinOp(left=shape, op=ast.Add(), right=ast.Constant(1))
+            if isinstance(element, ast.Name) and element.id == var:
+                return shape
+    return None
+
+
 def _jnp(attr: str, args: list[ast.expr]) -> ast.Call:
     return ast.Call(
         func=ast.Attribute(value=ast.Name(id="jnp", ctx=ast.Load()), attr=attr, ctx=ast.Load()),
@@ -470,14 +681,53 @@ def _tuple(names: list[str]) -> ast.expr:
     return ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Load()) for n in names], ctx=ast.Load())
 
 
+def _associates(fn: ast.FunctionDef) -> frozenset[str]:
+    """Names assigned exactly once in the body, by a top-level statement."""
+    counts: dict[str, int] = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    counts[target.id] = counts.get(target.id, 0) + 1
+                elif isinstance(target, ast.Tuple):
+                    for element in target.elts:
+                        if isinstance(element, ast.Name):
+                            counts[element.id] = counts.get(element.id, 0) + 1
+        elif isinstance(node, (ast.For, ast.AugAssign)) and isinstance(node.target, ast.Name):
+            counts[node.target.id] = counts.get(node.target.id, 0) + 1
+    top = {
+        s.targets[0].id
+        for s in fn.body
+        if isinstance(s, ast.Assign) and len(s.targets) == 1 and isinstance(s.targets[0], ast.Name)
+    }
+    return frozenset(name for name in top if counts.get(name) == 1)
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
+    rewrite.associates = _associates(fn)
     lowered: list[ast.stmt] = []
     for statement in [copy.deepcopy(s) for s in fn.body]:
         result = rewrite.visit(statement)
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
+    for statement in lowered:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Slice)
+                and node.upper is not None
+                and rewrite._is_dynamic(node.upper)
+            ):
+                raise NotFlat(f"a dynamic slice outside a store or a sum: {ast.unparse(node)}")
     return lowered
+
+
+def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
+    return frozenset(
+        _py(a["name"])
+        for a in args
+        if a["dtype"] == "int32" and not a.get("dims") and a["intent"] == "IN"
+    )
 
 
 def flat_function(
@@ -486,10 +736,13 @@ def flat_function(
     plans: dict[str, FlatPlan],
     aliases: dict[str, str],
     ports: dict[str, dict[str, Any]],
+    bundled: frozenset[str] = frozenset(),
 ) -> tuple[ast.FunctionDef, _Rewrite]:
     """The anchor's function on the flat signature, and the rewrite that
     made it (its callees, dropped aborts, companions used)."""
-    rewrite = _Rewrite(plan, _Spelling(plan, aliases), plans, ports)
+    rewrite = _Rewrite(
+        plan, _Spelling(plan, aliases), plans, ports, bundled, _static_names(plan.flat_args)
+    )
     body = _rewritten_body(fn, rewrite)
     if not body or not isinstance(body[-1], ast.Return):
         body.append(ast.Return(value=_tuple(_outputs(plan))))
@@ -514,10 +767,14 @@ def flat_function(
 
 
 def scrubbed_function(
-    fn: ast.FunctionDef, aliases: dict[str, str], ports: dict[str, dict[str, Any]]
+    fn: ast.FunctionDef,
+    aliases: dict[str, str],
+    ports: dict[str, dict[str, Any]],
+    bundled: frozenset[str] = frozenset(),
+    statics: frozenset[str] = frozenset(),
 ) -> tuple[ast.FunctionDef, _Rewrite]:
     """A function with no plan, scrubbed the same way."""
-    rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports)
+    rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports, bundled, statics)
     scrubbed = copy.deepcopy(fn)
     scrubbed.body = _rewritten_body(fn, rewrite)
     ast.fix_missing_locations(scrubbed)
@@ -546,6 +803,7 @@ def flattened_module(
     interface: dict[str, Any],
     plans: list[FlatPlan],
     ports: dict[str, dict[str, Any]] | None = None,
+    bundled: frozenset[str] = frozenset(),
 ) -> tuple[ast.Module, dict[str, Any], dict[str, Any]]:
     """The anchor with each planned subprogram's flat function in place of
     its ``_flat`` wrapper, every other function scrubbed, and the interface
@@ -562,6 +820,8 @@ def flattened_module(
     entries: list[dict[str, Any]] = []
     refused: dict[str, str] = {}
     aborts: dict[str, list[str]] = {}
+    masked: dict[str, list[str]] = {}
+    static_loops: dict[str, list[str]] = {}
     companions: set[str] = set()
     planned = {p.subprogram["name"] for p in plans}
     for plan in plans:
@@ -570,13 +830,17 @@ def flattened_module(
             refused[plan.name] = "no python function in the anchor"
             continue
         try:
-            flat, rewrite = flat_function(fn, plan, by_name, aliases, ports)
+            flat, rewrite = flat_function(fn, plan, by_name, aliases, ports, bundled)
         except NotFlat as why:
             refused[plan.name] = str(why)
             entries.append(_entry(plan, []))  # known, unlowered: callers delegate by name
             continue
         if rewrite.aborts:
             aborts[plan.name] = rewrite.aborts
+        if rewrite.masked:
+            masked[plan.name] = rewrite.masked
+        if rewrite.static_loops:
+            static_loops[plan.name] = rewrite.static_loops
         companions |= rewrite.companions
         rewritten[plan.name] = flat
         entries.append(_entry(plan, rewrite.calls))
@@ -584,12 +848,18 @@ def flattened_module(
         if name in planned or name.endswith("_flat") or name.startswith("_"):
             continue
         try:
-            scrubbed, rewrite = scrubbed_function(fn, aliases, ports)
+            record = next((s for s in interface["subprograms"] if s["name"] == name), None)
+            statics = _static_names(record["args"]) if record else frozenset()
+            scrubbed, rewrite = scrubbed_function(fn, aliases, ports, bundled, statics)
         except NotFlat as why:
             refused[name] = str(why)
             continue
         if rewrite.aborts:
             aborts[name] = rewrite.aborts
+        if rewrite.masked:
+            masked[name] = rewrite.masked
+        if rewrite.static_loops:
+            static_loops[name] = rewrite.static_loops
         companions |= rewrite.companions
         rewritten[name] = scrubbed
     body: list[ast.stmt] = []
@@ -601,7 +871,13 @@ def flattened_module(
     body.extend(rewritten.values())  # plans without a NumPy wrapper (private, functions)
     module = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(module)
-    notes = {"refused": refused, "aborts_dropped": aborts, "companions": sorted(companions)}
+    notes = {
+        "refused": refused,
+        "aborts_dropped": aborts,
+        "masked": masked,
+        "static_loops": static_loops,
+        "companions": sorted(companions),
+    }
     return module, {**interface, "subprograms": [*interface["subprograms"], *entries]}, notes
 
 
@@ -626,7 +902,10 @@ class TreeToJax(KernelToJax):
         ported, files = self._port_companions(anchor, facts, config)
         tree = ast.parse(anchor.files[Path(f"{module}_numpy.py")].decode())
         plans = plans_from_facts(facts, gated=False)
-        flat_tree, interface, flat_notes = flattened_module(tree, facts.interface, plans, ported)
+        bundled = frozenset(anchor.notes.get(self._tree.notes_key, {}).get("bundled") or [])
+        flat_tree, interface, flat_notes = flattened_module(
+            tree, facts.interface, plans, ported, bundled
+        )
         pieces, jitted, delegated = build_module(interface, flat_tree)
         # A flat function the backend delegated has a host to fall back on
         # only if the NumPy module carries its wrapper -- the gated ones. A
@@ -678,6 +957,8 @@ class TreeToJax(KernelToJax):
                     "delegated": dict(sorted(delegated.items())),
                     "flat_refused": dict(sorted(flat_notes["refused"].items())),
                     "aborts_dropped": dict(sorted(flat_notes["aborts_dropped"].items())),
+                    "masked": dict(sorted(flat_notes["masked"].items())),
+                    "static_loops": dict(sorted(flat_notes["static_loops"].items())),
                     "companions": sorted(ported),
                     "runtime": f"{runtime_stem}.py",
                     "_ports": ported,
@@ -697,7 +978,10 @@ class TreeToJax(KernelToJax):
         bundled = list(anchor.notes.get(self._tree.notes_key, {}).get("bundled") or [])
         done: set[str] = set(config.get("_ported") or ())
         done.add(str(facts.interface.get("module", "")).lower())
-        ports: dict[str, dict[str, Any]] = {}
+        # Ports the caller already made are reused: a companion of a
+        # companion is the caller's companion too, and its kernels are what
+        # the inner rewrite has to spell.
+        ports: dict[str, dict[str, Any]] = dict(config.get("_ports") or {})
         files: dict[Path, bytes] = {}
         if not bundled:
             return ports, files
@@ -712,7 +996,7 @@ class TreeToJax(KernelToJax):
             if unit is None:
                 continue
             companion_facts = frontend.analyze(unit, root)
-            inner = self.apply(unit, companion_facts, {**config, "_ported": done})
+            inner = self.apply(unit, companion_facts, {**config, "_ported": done, "_ports": ports})
             subs = {s["name"]: s for s in companion_facts.interface["subprograms"]}
             kernels = set(inner.notes["jax"]["kernels"])
             memo: dict[str, set[str]] = {}
