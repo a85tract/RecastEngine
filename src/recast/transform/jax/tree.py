@@ -163,7 +163,7 @@ class _Rewrite(ast.NodeTransformer):
         self.own: dict[str, Any] = {}
         """This module's ``fns`` and ``records``."""
         self.specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
-        """Root finders and the like, specialized per callback -- emitted beside the flat functions."""
+        """Root finders specialized per callback, emitted beside the flat functions."""
         self.plan = plan
         self.spelling = spelling
         self.plans = plans
@@ -175,6 +175,7 @@ class _Rewrite(ast.NodeTransformer):
         self.companions: set[str] = set()  # ``_alias`` names whose ported module is called
         self.temps = 0
         self.associates: frozenset[str] = frozenset()  # names an alias drop may claim
+        self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -314,6 +315,19 @@ class _Rewrite(ast.NodeTransformer):
             return self._rewrite_call(node.targets[0], node.value)
         self.generic_visit(node)
         target = node.targets[0]
+        if (
+            len(node.targets) == 1
+            and isinstance(target, ast.Name)
+            and target.id in self.inits
+            and not isinstance(node.value, ast.Constant)
+            and _constant_expression(node.value)
+        ):
+            # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
+            # ``lax.cond`` arm that assigns it beside one that keeps an
+            # int32 has a different output type. The variable's guard init
+            # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is.
+            node.value = _jnp(self.inits[target.id], [node.value])
+
         if len(node.targets) == 1 and isinstance(target, ast.Subscript):
             # ``x[i, lo:hi] = v`` with a traced ``hi``: the whole axis, masked.
             pair: Any
@@ -383,7 +397,7 @@ class _Rewrite(ast.NodeTransformer):
             return node
         stop = it.args[-1]
         if not self._is_dynamic(stop):
-            return node
+            return self._strong_bounds(node)
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
         # whose count is traced has no reverse-mode rule. The body indexes
         # some array by ``ic - 1``; that axis's static extent is the count
@@ -392,7 +406,7 @@ class _Rewrite(ast.NodeTransformer):
         var = node.target.id
         extent = _indexed_extent(node.body, var)
         if extent is None:
-            return node
+            return self._strong_bounds(node)
         guard = ast.If(
             test=ast.Compare(
                 left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
@@ -403,6 +417,26 @@ class _Rewrite(ast.NodeTransformer):
         self.static_loops.append(f"{var}: {ast.unparse(stop)}")
         it.args[-1] = extent
         node.body = [guard]
+        return self._strong_bounds(node)
+
+    @staticmethod
+    def _strong_bounds(node: ast.For) -> ast.For:
+        """``range(1, n)`` with Python ints gives ``lax.fori_loop`` a weakly
+        typed counter, and a ``lax.cond`` arm that assigns the counter to a
+        name the other arm leaves as a strong ``int32`` has a different
+        output type. Strong bounds make a strong counter."""
+        it = node.iter
+        if not (
+            isinstance(it, ast.Call)
+            and isinstance(it.func, ast.Name)
+            and it.func.id == "range"
+            and 1 <= len(it.args) <= 3
+        ):
+            return node
+        for at in range(min(2, len(it.args))):
+            arg = it.args[at]
+            if not (isinstance(arg, ast.Call) and ast.unparse(arg).startswith("jnp.int32(")):
+                it.args[at] = _jnp("int32", [arg])
         return node
 
     def visit_If(self, node: ast.If) -> Any:
@@ -707,6 +741,13 @@ class _Rewrite(ast.NodeTransformer):
                 if actual is None:
                     raise NotFlat(f"{callee.subprogram['name']}: no actual for {name}")
                 rewritten: Any = self.visit(copy.deepcopy(actual))
+                if str(entry["dtype"]).startswith("float") and _integer_constant_expression(
+                    rewritten
+                ):
+                    # ``hybrid(..., 0, 1, tol)``: an integer literal for a
+                    # real dummy is an int32 the callee's arithmetic would
+                    # carry into a ``lax.cond`` arm as the wrong dtype.
+                    rewritten = _jnp(str(entry["dtype"]), [rewritten])
                 args.append(rewritten)
         func: ast.expr = ast.Name(id=callee.name, ctx=ast.Load())
         if callee.name[: -len("_flat")] in self.specialized:
@@ -771,7 +812,13 @@ class _Rewrite(ast.NodeTransformer):
                     )
         if not targets:
             return ast.Expr(value=new_call)
-        assign = ast.Assign(targets=[ast.Tuple(elts=targets, ctx=ast.Store())], value=new_call)
+        # One output comes back bare (the flat function returns a name, not
+        # a 1-tuple); a 1-tuple target would unpack a (1,) array into its
+        # element.
+        target_node: ast.expr = (
+            targets[0] if len(targets) == 1 else ast.Tuple(elts=targets, ctx=ast.Store())
+        )
+        assign = ast.Assign(targets=[target_node], value=new_call)
         return [assign, *follow] if follow else assign
 
 
@@ -841,6 +888,7 @@ def _associates(fn: ast.FunctionDef) -> frozenset[str]:
 
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
+    rewrite.inits = _guard_inits(fn)
     lowered: list[ast.stmt] = []
     # Single exit first, on the anchor's own returns: the flat return that
     # replaces them is one statement at the end.
@@ -1080,6 +1128,55 @@ def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
     return piece
 
 
+def _constant_expression(node: ast.expr) -> bool:
+    """Numeric literals and upper-case constants under arithmetic only."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+    if isinstance(node, ast.Name):
+        return node.id.isupper()
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
+    ):
+        return _constant_expression(node.left) and _constant_expression(node.right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _constant_expression(node.operand)
+    return False
+
+
+def _integer_constant_expression(node: ast.expr) -> bool:
+    """Integer literals under arithmetic only -- no names, whose type is
+    not known here."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and not isinstance(node.value, bool)
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv)
+    ):
+        return _integer_constant_expression(node.left) and _integer_constant_expression(node.right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _integer_constant_expression(node.operand)
+    return False
+
+
+def _guard_inits(fn: ast.FunctionDef) -> dict[str, str]:
+    """The strong type of each local from its guard init at the top of the
+    body: ``x = 0`` is an int32, ``x = 0.0`` a float64."""
+    inits: dict[str, str] = {}
+    for statement in fn.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, (int, float))
+            and not isinstance(statement.value.value, bool)
+        ):
+            inits.setdefault(
+                statement.targets[0].id,
+                "float64" if isinstance(statement.value.value, float) else "int32",
+            )
+    return inits
+
+
 def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
@@ -1257,6 +1354,7 @@ def flattened_module(
     module = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(module)
     notes = {
+        "specialized_plans": [spec_plan for _, spec_plan, _ in specialized.values()],
         "refused": refused,
         "aborts_dropped": aborts,
         "masked": masked,
@@ -1297,7 +1395,9 @@ class TreeToJax(KernelToJax):
         # private subprogram's or a function's flat form has none, and a line
         # binding it to a host attribute that does not exist would break the
         # import; its callers were delegated with it, so nothing needs it.
-        pieces = [_bind_state(piece, plans) for piece in pieces]
+        pieces = [
+            _bind_state(piece, [*plans, *flat_notes["specialized_plans"]]) for piece in pieces
+        ]
         hosted = {f.name for f in tree.body if isinstance(f, ast.FunctionDef)}
         pieces = [
             piece
