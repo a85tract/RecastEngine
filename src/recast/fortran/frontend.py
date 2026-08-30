@@ -227,6 +227,29 @@ def _external_calls(sub: Any, known: set[str]) -> list[str]:
     )
 
 
+DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.IGNORECASE)
+
+
+def _derived_out_as_inout(records: list[dict[str, Any]]) -> list[str]:
+    """Re-declare every derived-type ``intent(out)`` (or intent-less) dummy
+    in these records as ``INOUT`` -- subprograms and interface bodies alike,
+    because a call through an interface is spelled from the interface's
+    intents and the two have to agree. Returns what was changed."""
+    corrected: list[str] = []
+    for record in records:
+        entries = [*record.get("subprograms", ()), *record.get("interfaces", {}).values()]
+        for sub in entries:
+            for argument in sub.get("args", ()):
+                if argument.get("intent") in ("OUT", "UNKNOWN") and DERIVED.match(
+                    str(argument.get("dtype"))
+                ):
+                    argument["intent"] = "INOUT"
+                    corrected.append(
+                        f"{record.get('module', '?')}/{sub['name']}/{argument['name']}"
+                    )
+    return corrected
+
+
 class FortranFrontend(Frontend):
     """Fortran 2008 as parsed by fparser2.
 
@@ -250,6 +273,9 @@ class FortranFrontend(Frontend):
         stub_modules: Iterable[str] = (),
         exclude: Iterable[str] = (),
         buffer_out_arrays: str = "unsizable",
+        constant_modules: Iterable[str] = (),
+        derived_intent_out_as_inout: bool = False,
+        flatten: bool | dict[str, Any] = False,
     ) -> None:
         """
         ``kind_assumptions`` maps kind parameters this tree use-imports from
@@ -282,6 +308,25 @@ class FortranFrontend(Frontend):
         self.buffer_out_arrays = buffer_out_arrays
         """``"unsizable"`` (the default) or ``"all"``: which intent(out) arrays
         are the caller's buffer -- see ``interface._mark_buffer_out_arrays``."""
+        self.constant_modules = frozenset(m.lower() for m in constant_modules)
+        """Modules whose parameters size things in this tree; the integer
+        value of every name that spells a dummy's extent is looked up there
+        and stored on ``Facts.extra["dim_parameters"]``."""
+        self.derived_intent_out_as_inout = derived_intent_out_as_inout
+        """Re-declare a derived-type ``intent(out)`` dummy as ``inout``.
+
+        By the standard an ``intent(out)`` dummy is undefined on entry; a
+        tree that reads such an object's components on entry works only
+        because the components are pointers, whose association every
+        compiler in practice leaves alone. The translation follows the
+        standard and hands such a routine a fresh object, which then has no
+        components; this option says the program relies on the other thing,
+        and ``Facts.provenance`` records every dummy it changed."""
+        self.flatten = flatten
+        """Plan a flat adapter for every subroutine that takes a derived-type
+        dummy (``recast.fortran.flatten``) and store the plans on
+        ``Facts.extra["flat_plans"]``. ``True``, or a dict of
+        ``FlatConventions`` fields the tree spells differently."""
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._submodule_parents: dict[Path, dict[str, str]] = {}
         self._analyzed: dict[tuple[str, str], dict[str, Any]] = {}
@@ -408,6 +453,11 @@ class FortranFrontend(Frontend):
                     submodules[name] = exported
         if submodules:
             record = {**record, "submodules": submodules}
+        corrected = (
+            _derived_out_as_inout([record, *(c["record"] for c in companions)])
+            if self.derived_intent_out_as_inout
+            else []
+        )
         externals = dict(self.externals)
         for companion in companions:
             table = companion_externals(companion["record"])
@@ -441,7 +491,7 @@ class FortranFrontend(Frontend):
                 "blocks": block_rwsets(nodes[sub_name], scope),
             }
 
-        return Facts(
+        facts = Facts(
             unit=unit.uid,
             interface={**record, "subprograms": subprograms},
             constants=self._narrow_constants(consts, wanted),
@@ -472,8 +522,39 @@ class FortranFrontend(Frontend):
                 # A module the tree defines and this one uses, that could not
                 # be read. Its calls will refuse; this says why.
                 "companions_unresolved": unresolved,
+                **({"derived_intent_out_as_inout": corrected} if corrected else {}),
             },
         )
+        self._tree_facts(facts, Path(root), path)
+        return facts
+
+    def _tree_facts(self, facts: Facts, root: Path, path: Path) -> None:
+        """What the tree says about this unit's interface, on ``Facts.extra``:
+        the integer value of every name that sizes a dummy array, and the
+        flat-adapter plans -- computed once here, read by the oracle, the
+        transform and the recorder."""
+        from recast.fortran.tree import integer_parameters, named_extents
+
+        if self.constant_modules:
+            names = named_extents(facts.interface.get("subprograms", []))
+            values = integer_parameters(
+                names, root, self.constant_modules, (path,), self.kind_assumptions
+            )
+            if values:
+                facts.extra["dim_parameters"] = values
+        if self.flatten:
+            from recast.fortran.flatten import FlatConventions, plans_for
+
+            spelled = self.flatten if isinstance(self.flatten, dict) else {}
+            conventions = FlatConventions(
+                kind_assumptions=dict(self.kind_assumptions),
+                constant_modules=self.constant_modules,
+                stub_modules=self.stub_modules,
+                **spelled,
+            )
+            plans = plans_for(facts, root, conventions)
+            if plans:
+                facts.extra["flat_plans"] = [p.to_dict() for p in plans]
 
     def _tree_kinds(self, path: Path, root: Path) -> dict[str, dict[str, str]]:
         """Kind parameters this file ``use``s that another file in the tree defines.
