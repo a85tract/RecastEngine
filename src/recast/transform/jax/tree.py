@@ -1173,14 +1173,21 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
         had_return = _has_return([statement])  # before the visit rewrites it away
         rewritten: Any = Returns().visit(statement)
         rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
-        if exited:
-            out.append(
-                ast.If(
-                    test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
-                    body=rewritten,
-                    orelse=[],
-                )
+        not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
+        if exited and len(rewritten) == 1 and isinstance(rewritten[0], ast.While):
+            # A loop is not wrapped -- its done flag is the loop's own carry
+            # and must not become an enclosing branch's -- but its condition
+            # takes the flag: a loop after a return does not run.
+            loop = rewritten[0]
+            forever = isinstance(loop.test, ast.Constant) and loop.test.value is True
+            loop.test = (
+                not_returned
+                if forever
+                else ast.BoolOp(op=ast.And(), values=[loop.test, copy.deepcopy(not_returned)])
             )
+            out.append(loop)
+        elif exited:
+            out.append(ast.If(test=not_returned, body=rewritten, orelse=[]))
         else:
             out.extend(rewritten)
         if had_return:
@@ -1241,7 +1248,7 @@ class _WhileLoops(ast.NodeTransformer):
         return None
 
     def visit_While(self, node: ast.While) -> Any:
-        from recast.transform.jax.backend import KernelLowerer, _assigned_names
+        from recast.transform.jax.backend import JaxQueue, KernelLowerer, _assigned_names
 
         self.generic_visit(node)
         if node.orelse:
@@ -1296,7 +1303,10 @@ class _WhileLoops(ast.NodeTransformer):
             ast.fix_missing_locations(statement)
         carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
         state = [*carried, done]
-        lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
+        try:
+            lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
+        except JaxQueue as why:
+            raise NotFlat(f"while loop body: {why}") from why
         unpack = ast.Assign(
             targets=[
                 ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Store()) for n in state], ctx=ast.Store())
