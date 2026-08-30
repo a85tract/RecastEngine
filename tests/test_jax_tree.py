@@ -155,3 +155,60 @@ def test_counted_while_needs_the_counter_advanced_every_pass() -> None:
     lowered = _WhileLoops({"nmax": 50}).visit_block(aug)
     text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
     assert text.startswith("for _w1 in range(0, 51):")
+
+
+def test_a_backward_goto_region_lowers_as_a_while_loop() -> None:
+    from recast.transform.jax.tree import _WhileLoops
+
+    region = ast.parse(
+        "while True:\n"
+        "    try:\n"
+        "        if isleap(mcyear):\n"
+        "            dpm = mdayleap[mcmnth - 1]\n"
+        "        else:\n"
+        "            dpm = mday[mcmnth - 1]\n"
+        "        if mcday > dpm:\n"
+        "            mcday = mcday - dpm\n"
+        "            mcmnth = mcmnth + 1\n"
+        "            raise _FGoto('10')\n"
+        "        break\n"
+        "    except _FGoto as _g:\n"
+        "        if _g.args[0] != '10':\n"
+        "            raise\n"
+        "        pass\n"
+    ).body
+    lowered = _WhileLoops().visit_block(region)
+    text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
+    assert "lax.while_loop" in text
+    assert "_FGoto" not in text and "raise" not in text
+    assert "_restart_1 = True" in text
+
+
+def test_two_spellings_of_one_dynamic_bound_compare_equal() -> None:
+    from recast.transform.jax.tree import _fold
+
+    assert ast.unparse(_fold(ast.parse("(0) - (0)", mode="eval").body)) == "0"
+    assert (
+        ast.unparse(_fold(ast.parse("ncan[p - 1] - 0 + 1", mode="eval").body)) == "ncan[p - 1] + 1"
+    )
+    assert ast.unparse(_fold(ast.parse("n + 0", mode="eval").body)) == "n"
+
+
+def test_a_forward_goto_region_becomes_a_skip_flag() -> None:
+    from recast.transform.jax.tree import _WhileLoops
+
+    region = ast.parse(
+        "try:\n"
+        "    a = 1.0\n"
+        "    raise _FGoto('100')\n"
+        "    b = dead_write()\n"
+        "except _FGoto as _g:\n"
+        "    if _g.args[0] != '100':\n"
+        "        raise\n"
+        "    pass\n"
+    ).body
+    lowered = _WhileLoops().visit_block(region)
+    text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
+    assert "_FGoto" not in text and "try" not in text
+    assert "_skip_1 = True" in text
+    assert "if not _skip_1:" in text and "dead_write" in text

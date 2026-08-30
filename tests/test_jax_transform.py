@@ -37,9 +37,11 @@ contains
 end module port_demo
 """
 
-# A module-state write makes a subprogram ineligible for a kernel, by the same
-# eligibility rule the Numba backend uses. It is host-delegated, not deferred:
-# the emitted module still calls it, through the NumPy anchor.
+# A character output has no flat spelling, so the subprogram is ineligible
+# for a kernel. It is host-delegated, not deferred: the emitted module still
+# calls it, through the NumPy anchor. (A module-state write no longer
+# delegates -- the state threads through the closure and the wrapper writes
+# it back on the host.)
 DELEGATES = """\
 module port_state
   implicit none
@@ -50,6 +52,16 @@ contains
     real(r8), intent(in) :: x
     cached = x
   end subroutine remember
+
+  subroutine name_of(kind, label)
+    integer, intent(in) :: kind
+    character(len=8), intent(out) :: label
+    if (kind == 1) then
+      label = 'first'
+    else
+      label = 'other'
+    end if
+  end subroutine name_of
 
   subroutine scale(x, y)
     real(r8), intent(in)  :: x
@@ -104,9 +116,13 @@ def test_host_delegation_is_not_a_deferral(tmp_path: Path) -> None:
     """
     candidate = port(tmp_path, DELEGATES, "port_state")
     delegated = candidate.notes["jax"]["delegated"]
-    assert "remember" in delegated
-    assert "module-state write" in delegated["remember"]
+    assert "name_of" in delegated
+    assert "str arg" in delegated["name_of"]
     assert candidate.deferred == [], "nothing was deferred; one thing was delegated"
+    # The state writer is a kernel now: the write threads through the
+    # closure and the host wrapper stores it back.
+    assert "remember" in candidate.notes["jax"]["kernels"]
+    assert "_host.cached = _res[0]" in candidate.files[Path("port_state_jax.py")].decode()
 
 
 def test_the_anchor_still_carries_its_own_deferrals(tmp_path: Path) -> None:
@@ -149,3 +165,65 @@ def test_the_runtime_is_written_beside_the_module(tmp_path: Path) -> None:
     candidate = port(tmp_path, PORTABLE, "port_demo")
     runtime = candidate.files[Path("port_demo_jax_runtime.py")].decode()
     assert "_f_min" in runtime and "jax_enable_x64" in runtime
+
+
+def test_a_module_state_write_threads_through_the_closure() -> None:
+    """A kernel that stores module state takes its current value through the
+    closure, returns the new one, and the host wrapper writes it back; a
+    caller binds the write and carries it onward -- nothing stores to a
+    module under tracing."""
+    import ast as _ast
+
+    from recast.transform.jax.backend import build_module
+
+    tree = _ast.parse(
+        "def tick(step):\n"
+        "    global cache\n"
+        "    cache = cache + step\n"
+        "    return\n"
+        "\n"
+        "def use_tick(x):\n"
+        "    tick(x)\n"
+        "    return x + cache\n"
+    )
+    interface = {
+        "subprograms": [
+            {
+                "name": "tick",
+                "kind": "subroutine",
+                "args": [{"name": "step", "dtype": "float64", "intent": "IN", "dims": None}],
+                "module_state_read": [],
+                "module_state_written": ["cache"],
+                "calls": [],
+            },
+            {
+                "name": "use_tick",
+                "kind": "function",
+                "args": [{"name": "x", "dtype": "float64", "intent": "IN", "dims": None}],
+                "module_state_read": ["cache"],
+                "module_state_written": [],
+                "calls": ["tick"],
+            },
+        ]
+    }
+    pieces, jitted, _delegated = build_module(interface, tree)
+    assert sorted(jitted) == ["tick", "use_tick"]
+    text = "\n\n".join(pieces)
+    assert "_host.cache = _res[0]" in text  # tick's wrapper stores the write back
+    assert "cache = _tick_k_impl(x, cache)" in text  # the caller binds the write
+    assert "global" not in text
+
+
+def test_a_guard_around_nothing_lowers_to_nothing() -> None:
+    """``if not _skip_1: pass`` -- a region guard whose block lost its log
+    lines and aborts. There is nothing to carry, and refusing would drop the
+    whole kernel for a branch with no effect."""
+    import ast as _ast
+
+    from recast.transform.jax.backend import KernelLowerer
+
+    body = _ast.parse("y = x + 1.0\nif y > 0.0:\n    pass\nz = y * 2.0\n").body
+    lowered = KernelLowerer().lower_block(body, 0)
+    text = _ast.unparse(_ast.fix_missing_locations(_ast.Module(body=lowered, type_ignores=[])))
+    assert "lax.cond" not in text and "pass" not in text
+    assert "z = y * 2.0" in text

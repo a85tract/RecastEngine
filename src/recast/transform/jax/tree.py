@@ -241,7 +241,10 @@ class _Rewrite(ast.NodeTransformer):
         widened_expr: Any = Widen().visit(copy.deepcopy(expr))
         if not found:
             return expr, None
-        keys = {(ast.unparse(lo) if lo else "0", ast.unparse(hi)) for _, _, lo, hi, _ in found}
+        keys = {
+            (ast.unparse(_fold(lo)) if lo else "0", ast.unparse(_fold(hi)))
+            for _, _, lo, hi, _ in found
+        }
         if len(keys) != 1:
             raise NotFlat("dynamic slices with different bounds in one statement")
         base, axis, lo, hi, trailing = found[0]
@@ -323,7 +326,19 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
+        if pending:
+            # A companion kernel that writes module state returns it after
+            # its own outputs; the caller binds it onto the flat names.
+            targets = (
+                list(node.targets[0].elts)
+                if isinstance(node.targets[0], ast.Tuple)
+                else list(node.targets)
+            )
+            targets += [ast.Name(id=flat, ctx=ast.Store()) for flat in pending]
+            node.targets = [ast.Tuple(elts=targets, ctx=ast.Store())]
+            return node
         target = node.targets[0]
         if (
             len(node.targets) == 1
@@ -528,7 +543,15 @@ class _Rewrite(ast.NodeTransformer):
         if node.body and all(isinstance(s, (ast.Raise, ast.Expr, ast.Pass)) for s in node.body):
             if any(isinstance(s, ast.Raise) for s in node.body):
                 self.aborts.append(ast.unparse(node.test))
-                return [self.visit(s) for s in node.orelse] if node.orelse else None
+                if not node.orelse:
+                    return None
+                replaced: list[ast.stmt] = []
+                for stmt in node.orelse:
+                    seen = self.visit(stmt)
+                    if seen is None:
+                        continue
+                    replaced.extend(seen if isinstance(seen, list) else [seen])
+                return replaced or None
         self.generic_visit(node)
         if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
             # ``if cond: write(iulog, ...)`` -- a log line the anchor already
@@ -537,6 +560,15 @@ class _Rewrite(ast.NodeTransformer):
         return node
 
     def visit_Raise(self, node: ast.Raise) -> Any:
+        if (
+            isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)
+            and node.exc.func.id == "_FGoto"
+        ):
+            # A backward-goto restart, not an abort: control flow the while
+            # lowering turns into a flag. Dropping it would silently unroll
+            # the loop to one pass.
+            return node
         self.aborts.append(ast.unparse(node))
         return None
 
@@ -610,6 +642,24 @@ class _Rewrite(ast.NodeTransformer):
         ):
             return ast.copy_location(_jnp(node.func.attr, node.args), node)
         return self._companion_call(node)
+
+    def _companion_writes(self, node: ast.Call) -> list[str]:
+        """The flat names a companion kernel call writes, for its caller's
+        statement to bind; refused if the plan does not carry one."""
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return []
+        module = self.spelling.modules.get(func.value.id)
+        port = self.ports.get(module) if module is not None else None
+        if port is None:
+            return []
+        flats = []
+        for state in (port.get("write_closures") or {}).get(func.attr, []):
+            flat = f"{module}__{state}"
+            if flat not in self.spelling.states:
+                raise NotFlat(f"{module}.{func.attr} writes {state}, which the plan does not carry")
+            flats.append(flat)
+        return flats
 
     # -- calls into companions ------------------------------------------------
 
@@ -1001,8 +1051,36 @@ class _Rewrite(ast.NodeTransformer):
         if callee.subprogram["kind"] == "function":
             original_outs = ["_result", *original_outs]
         slot = dict(zip(original_outs, anchor_targets, strict=False))
+        # ``_out = callee(...); _f_copy_out(a, _out[0]); ...`` -- the anchor's
+        # buffer convention for several array outputs: one name receives the
+        # tuple and the copies unpack it. The flat outputs bind to the actuals
+        # directly, and the buffer name is rebuilt as their tuple so the
+        # anchor's unpacking assignments stay true (each becomes ``a = a``).
+        buffered: ast.expr | None = None
+        if (
+            callee.subprogram["kind"] != "function"
+            and len(original_outs) > 1
+            and len(anchor_targets) == 1
+            and isinstance(anchor_targets[0], ast.Name)
+        ):
+            buffered = anchor_targets[0]
+            slot = {
+                name: actual_by_dummy[name.lower()]
+                for name in original_outs
+                if name.lower() in actual_by_dummy
+            }
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
+        if buffered is not None:
+            follow.append(
+                ast.Assign(
+                    targets=[ast.Name(id=buffered.id, ctx=ast.Store())],
+                    value=ast.Tuple(
+                        elts=[copy.deepcopy(slot[name]) for name in original_outs if name in slot],
+                        ctx=ast.Load(),
+                    ),
+                )
+            )
         for name in _outputs(callee):
             if "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
@@ -1214,6 +1292,33 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
+def _fold(expr: ast.expr) -> ast.expr:
+    """Trivial constant folding, so two spellings of one bound compare equal:
+    ``(0) - (0)`` is ``0`` and ``n - 0 + 1`` is ``n + 1`` -- the translation
+    spells a Fortran bound differently by context, not by value."""
+
+    class Fold(ast.NodeTransformer):
+        def visit_BinOp(self, node: ast.BinOp) -> ast.expr:
+            self.generic_visit(node)
+            left, right = node.left, node.right
+            if isinstance(left, ast.Constant) and isinstance(right, ast.Constant):
+                if isinstance(node.op, ast.Add):
+                    return ast.Constant(left.value + right.value)
+                if isinstance(node.op, ast.Sub):
+                    return ast.Constant(left.value - right.value)
+            if (
+                isinstance(right, ast.Constant)
+                and right.value == 0
+                and isinstance(node.op, (ast.Add, ast.Sub))
+            ):
+                return left
+            if isinstance(left, ast.Constant) and left.value == 0 and isinstance(node.op, ast.Add):
+                return right
+            return node
+
+    return ast.fix_missing_locations(Fold().visit(copy.deepcopy(expr)))
+
+
 def _advances(body: list[ast.stmt], name: str) -> bool:
     """Whether ``name`` is stepped by a positive integer constant at the
     body's top level -- ``name = name + c`` or ``name += c``."""
@@ -1296,9 +1401,192 @@ class _WhileLoops(ast.NodeTransformer):
                     return self.constants[bound.id]
         return None
 
+    def _unwrap_goto_region(self, node: ast.While) -> None:
+        """``while True: try: ... break; except _FGoto: pass`` -- the numpy
+        side's backward-goto region. The raise restarts the loop; spelled as
+        a flag (raise -> ``_restart = True``, later statements and the final
+        break guarded on it), the body is a plain ``while True: ... break``
+        the lowering below already takes."""
+        if not (
+            isinstance(node.test, ast.Constant)
+            and node.test.value is True
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.Try)
+        ):
+            return
+        wrapper = node.body[0]
+        if len(wrapper.handlers) != 1 or wrapper.orelse or wrapper.finalbody:
+            return
+        handler = wrapper.handlers[0]
+        if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
+            return
+        labels = {
+            n.exc.args[0].value
+            for stmt in wrapper.body
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Raise)
+            and isinstance(n.exc, ast.Call)
+            and isinstance(n.exc.func, ast.Name)
+            and n.exc.func.id == "_FGoto"
+            and n.exc.args
+            and isinstance(n.exc.args[0], ast.Constant)
+        }
+        if not labels:
+            # No restart survived (each raise sat on a dropped abort path, or
+            # the region never loops): the wrapper is the body.
+            node.body = [s for s in wrapper.body if not isinstance(s, ast.Break)] + [ast.Break()]
+            return
+        if len(labels) > 1:
+            raise NotFlat(f"one goto region, several labels: {sorted(labels)}")
+        label = labels.pop()
+        self.n += 1
+        restart = f"_restart_{self.n}"
+
+        class Restarts(ast.NodeTransformer):
+            def visit_Raise(self, raised: ast.Raise) -> Any:
+                exc = raised.exc
+                if (
+                    isinstance(exc, ast.Call)
+                    and isinstance(exc.func, ast.Name)
+                    and exc.func.id == "_FGoto"
+                    and exc.args
+                    and isinstance(exc.args[0], ast.Constant)
+                    and exc.args[0].value == label
+                ):
+                    return ast.Assign(
+                        targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                return raised
+
+            def visit_While(self, inner: ast.While) -> ast.AST:
+                return inner  # a raise crossing a nested loop is not a flag
+
+            def visit_For(self, inner: ast.For) -> ast.AST:
+                return inner
+
+            def visit_FunctionDef(self, inner: ast.FunctionDef) -> ast.AST:
+                return inner
+
+        guarded: list[ast.stmt] = [
+            ast.Assign(targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(False))
+        ]
+        restarted = False
+        for statement in wrapper.body:
+            if isinstance(statement, ast.Break):
+                continue  # the natural exit; re-emitted guarded below
+            had = any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(statement)
+            )
+            rewritten = Restarts().visit(statement)
+            if any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(rewritten)
+            ):
+                raise NotFlat(f"a goto crossing a nested loop (label {label})")
+            if restarted:
+                guarded.append(
+                    ast.If(
+                        test=ast.UnaryOp(
+                            op=ast.Not(), operand=ast.Name(id=restart, ctx=ast.Load())
+                        ),
+                        body=[rewritten],
+                        orelse=[],
+                    )
+                )
+            else:
+                guarded.append(rewritten)
+            if had:
+                restarted = True
+        guarded.append(
+            ast.If(
+                test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=restart, ctx=ast.Load())),
+                body=[ast.Break()],
+                orelse=[],
+            )
+        )
+        node.body = guarded
+
+    def visit_Try(self, node: ast.Try) -> Any:
+        """A forward-goto region -- ``try: ...; raise _FGoto('100') ...
+        except _FGoto: pass`` outside any loop: the raise skips to the end
+        of the region. As a flag: the raise sets it, every later statement
+        runs under its negation, the handler disappears."""
+        self.generic_visit(node)
+        if len(node.handlers) != 1 or node.orelse or node.finalbody:
+            return node
+        handler = node.handlers[0]
+        if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
+            return node
+
+        def restarts(stmt: ast.stmt) -> bool:
+            return any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(stmt)
+            )
+
+        self.n += 1
+        skip = f"_skip_{self.n}"
+
+        class Skips(ast.NodeTransformer):
+            def visit_Raise(self, raised: ast.Raise) -> Any:
+                if (
+                    isinstance(raised.exc, ast.Call)
+                    and isinstance(raised.exc.func, ast.Name)
+                    and raised.exc.func.id == "_FGoto"
+                ):
+                    return ast.Assign(
+                        targets=[ast.Name(id=skip, ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                return raised
+
+            def visit_While(self, inner: ast.While) -> ast.AST:
+                return inner  # a goto crossing a loop is not a flag
+
+            def visit_For(self, inner: ast.For) -> ast.AST:
+                return inner
+
+            def visit_FunctionDef(self, inner: ast.FunctionDef) -> ast.AST:
+                return inner
+
+        out: list[ast.stmt] = [
+            ast.Assign(targets=[ast.Name(id=skip, ctx=ast.Store())], value=ast.Constant(False))
+        ]
+        skipped = False
+        for statement in node.body:
+            had = restarts(statement)
+            rewritten = Skips().visit(statement)
+            if restarts(rewritten):
+                raise NotFlat("a forward goto crossing a nested loop")
+            if skipped:
+                out.append(
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=skip, ctx=ast.Load())),
+                        body=[rewritten],
+                        orelse=[],
+                    )
+                )
+            else:
+                out.append(rewritten)
+            if had:
+                skipped = True
+        for statement in out:
+            ast.fix_missing_locations(statement)
+        return out
+
     def visit_While(self, node: ast.While) -> Any:
         from recast.transform.jax.backend import JaxQueue, KernelLowerer, _assigned_names
 
+        self._unwrap_goto_region(node)
         self.generic_visit(node)
         if node.orelse:
             return node
@@ -1914,7 +2202,7 @@ class TreeToJax(KernelToJax):
         calls into one calls its kernel. Returns what each port lowered and
         the closure of each kernel (for the caller to spell), and the files."""
         from recast.registry import REGISTRY
-        from recast.transform.jax.backend import state_closure
+        from recast.transform.jax.backend import state_closure, write_closure
 
         bundled = list(anchor.notes.get(self._tree.notes_key, {}).get("bundled") or [])
         done: set[str] = set(config.get("_ported") or ())
@@ -1941,6 +2229,7 @@ class TreeToJax(KernelToJax):
             subs = {s["name"]: s for s in companion_facts.interface["subprograms"]}
             kernels = set(inner.notes["jax"]["kernels"])
             memo: dict[str, set[str]] = {}
+            wmemo: dict[str, set[str]] = {}
             anchor_tree = ast.parse(inner.files[Path(f"{module}_numpy.py")].decode())
             ports[module] = {
                 "module": module,
@@ -1952,7 +2241,15 @@ class TreeToJax(KernelToJax):
                     for p in plans_from_facts(companion_facts, gated=False)
                 },
                 "closures": {
-                    k: sorted(state_closure(subs, kernels, k, memo))  # type: ignore[no-untyped-call]
+                    k: sorted(  # type: ignore[no-untyped-call]
+                        state_closure(subs, kernels, k, memo)
+                        | write_closure(subs, kernels, k, wmemo)
+                    )
+                    for k in kernels
+                    if k in subs
+                },
+                "write_closures": {
+                    k: sorted(write_closure(subs, kernels, k, wmemo))  # type: ignore[no-untyped-call]
                     for k in kernels
                     if k in subs
                 },

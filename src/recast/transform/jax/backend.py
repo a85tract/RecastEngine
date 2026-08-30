@@ -74,10 +74,8 @@ class JaxQueue(Exception):
 
 
 def eligible(sub):
-    if sub["module_state_written"]:
-        return False
-    if any(a["dtype"] == "str" for a in sub["args"]):
-        return False
+    if any(a["dtype"] == "str" and (a.get("dims") or a["intent"] != "IN") for a in sub["args"]):
+        return False  # a scalar IN str is a static argument; the rest are not flat
     if any("UNKNOWN(TYPE" in str(a["dtype"]) for a in sub["args"]):
         return False
     rd = str(sub.get("result_dtype") or "")
@@ -87,9 +85,7 @@ def eligible(sub):
 
 
 def inelig_reason(sub):
-    if sub["module_state_written"]:
-        return "[elig] module-state write"
-    if any(a["dtype"] == "str" for a in sub["args"]):
+    if any(a["dtype"] == "str" and (a.get("dims") or a["intent"] != "IN") for a in sub["args"]):
         return "[elig] str arg"
     if any("UNKNOWN(TYPE" in str(a["dtype"]) for a in sub["args"]) or "UNKNOWN(TYPE" in str(
         sub.get("result_dtype") or ""
@@ -121,6 +117,19 @@ def state_closure(subs, kernels, name, memo):
     for c in subs[name]["calls"]:
         if c in kernels and c in subs:
             st |= state_closure(subs, kernels, c, memo)
+    memo[name] = st
+    return st
+
+
+def write_closure(subs, kernels, name, memo):
+    """Transitive module-state writes through intra-module kernel calls."""
+    if name in memo:
+        return memo[name]
+    memo[name] = set()  # cycle guard
+    st = set(subs[name].get("module_state_written") or ())
+    for c in subs[name]["calls"]:
+        if c in kernels and c in subs:
+            st |= write_closure(subs, kernels, c, memo)
     memo[name] = st
     return st
 
@@ -481,6 +490,13 @@ class KernelLowerer:
             if n not in carried:
                 carried.append(n)
         if not carried:
+            trivial = all(
+                isinstance(st, ast.Pass)
+                or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))
+                for st in [*body, *orelse]
+            )
+            if trivial:
+                return []  # a guard around dropped logs/aborts: nothing to carry
             raise JaxQueue("IF with no carried effects")
         self.n += 1
         t_name, f_name = f"_true_{self.n}", f"_false_{self.n}"
@@ -541,12 +557,17 @@ def split_params(fn_src):
     return params[:n_req], params[n_req:], fn_src.args.defaults
 
 
-def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None):
+def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None, writes=()):
     """Original numpy FunctionDef -> unparsed _<name>_k_impl source.
 
     Kernel signature: [required..., closure..., optional-with-defaults].
     Optional params keep their None/False defaults; their PRESENT/want_
-    branches stay Python ifs and resolve at trace time."""
+    branches stay Python ifs and resolve at trace time. ``writes`` are the
+    module-state names the body (or a callee) stores: the closure passes
+    their current values in, the ``global`` statement is dropped (the name
+    is a local from here), every return carries them out, and a call to a
+    writing kernel binds them back -- state threads, nothing is written to
+    a module under tracing."""
     fn = copy.deepcopy(fn_src)
     fn.name = f"_{sub['name']}_k_impl"
     fn.decorator_list = []
@@ -558,11 +579,95 @@ def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None):
     head = fn.args.args[: len(fn.args.args) - n_def]
     tail = fn.args.args[len(fn.args.args) - n_def :]
     fn.args.args = head + [ast.arg(arg=st) for st in sorted(closure)] + tail
+    write_list = sorted(writes)
+    if write_list:
+        kept = []
+        for stmt in fn.body:
+            if isinstance(stmt, ast.Global):
+                if not set(stmt.names) <= set(write_list):
+                    raise JaxQueue(f"global beyond the written closure: {stmt.names}")
+                continue
+            kept.append(stmt)
+        fn.body = kept
+
+        class Extend(ast.NodeTransformer):
+            def visit_Return(self, node):
+                elems = (
+                    list(node.value.elts)
+                    if isinstance(node.value, ast.Tuple)
+                    else ([node.value] if node.value is not None else [])
+                )
+                elems += [ast.Name(id=w, ctx=ast.Load()) for w in write_list]
+                value = elems[0] if len(elems) == 1 else ast.Tuple(elts=elems, ctx=ast.Load())
+                return ast.Return(value=value)
+
+            def visit_FunctionDef(self, node):
+                return node  # a nested function's returns are its own
+
+        for at, stmt in enumerate(fn.body):
+            fn.body[at] = Extend().visit(stmt)
+    _bind_writer_calls(fn, call_map or {})
     ExprMap().visit(fn)
     CallRewrite(call_map or {}, known_subs or set()).visit(fn)
     fn.body = KernelLowerer().lower_block(fn.body, 0)
     ast.fix_missing_locations(fn)
     return ast.unparse(fn)
+
+
+def _bind_writer_calls(fn, call_map):
+    """A statement calling a writing kernel binds the written state:
+    ``a, b = f(...)`` -> ``a, b, X = f(...)`` and a bare ``f(...)`` becomes
+    the assignment. A writer nested inside an expression has nowhere to put
+    the state and queues the caller."""
+
+    def writer(call):
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in call_map
+        ):
+            return call_map[call.func.id].get("writes") or []
+        return []
+
+    class Bind(ast.NodeTransformer):
+        def visit_FunctionDef(self, node):
+            return node
+
+        def _stmt(self, node):
+            call = node.value
+            writes = writer(call)
+            for inner in ast.walk(node):
+                if inner is not call and writer(inner):
+                    raise JaxQueue(
+                        f"a state-writing kernel inside an expression: {ast.unparse(inner)}"
+                    )
+            if not writes:
+                return node
+            targets = (
+                list(node.targets[0].elts)
+                if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Tuple)
+                else ([node.targets[0]] if isinstance(node, ast.Assign) else [])
+            )
+            targets += [ast.Name(id=w, ctx=ast.Store()) for w in writes]
+            target = targets[0] if len(targets) == 1 else ast.Tuple(elts=targets, ctx=ast.Store())
+            return ast.copy_location(ast.Assign(targets=[target], value=call), node)
+
+        def visit_Assign(self, node):
+            self.generic_visit(node)
+            if isinstance(node.value, ast.Call):
+                return self._stmt(node)
+            if any(writer(inner) for inner in ast.walk(node)):
+                raise JaxQueue("a state-writing kernel inside an expression")
+            return node
+
+        def visit_Expr(self, node):
+            self.generic_visit(node)
+            if isinstance(node.value, ast.Call):
+                return self._stmt(node)
+            return node
+
+    for at, stmt in enumerate(fn.body):
+        fn.body[at] = Bind().visit(stmt)
 
 
 def static_spec(fn_src, sub):
@@ -577,7 +682,7 @@ def static_spec(fn_src, sub):
     nums = []
     for pos, p in enumerate(req):
         r = recs.get(p)
-        if r and r["dtype"] == "int32" and not r.get("dims") and r["intent"] == "IN":
+        if r and r["dtype"] in ("int32", "str") and not r.get("dims") and r["intent"] == "IN":
             nums.append(pos)
     names = tuple(p for p in opt if p.startswith("want_"))
     return tuple(nums), names
@@ -607,7 +712,11 @@ def build_module(
             kernels.add(name)
 
     memo: dict[str, set[str]] = {}
-    closures = {n: sorted(state_closure(subs, kernels, n, memo)) for n in kernels}
+    wmemo: dict[str, set[str]] = {}
+    wclosures = {n: sorted(write_closure(subs, kernels, n, wmemo)) for n in kernels}
+    closures = {
+        n: sorted(state_closure(subs, kernels, n, memo) | set(wclosures[n])) for n in kernels
+    }
 
     # fixpoint: drop kernels that fail, re-emit (callers of dropped
     # kernels then fail their CallRewrite and drop too)
@@ -620,13 +729,16 @@ def build_module(
             req, _, _ = split_params(fns[n])
             call_map_all[n] = {
                 "closure": closures[n],
+                "writes": wclosures[n],
                 "params": [a.arg for a in fns[n].args.args],
                 "nreq": len(req),
             }
         for name in sorted(emit_set):
             call_map = {k: v for k, v in call_map_all.items() if k != name}
             try:
-                srcs[name] = emit_kernel(fns[name], subs[name], closures[name], call_map, set(subs))
+                srcs[name] = emit_kernel(
+                    fns[name], subs[name], closures[name], call_map, set(subs), wclosures[name]
+                )
             except JaxQueue as e:
                 failed[name] = f"[emit] {e}"
         if not failed:
@@ -653,15 +765,50 @@ def build_module(
         # unless a corpus module happens to have mismatched lengths.
         sig = req + [f"{p}={ast.unparse(d)}" for p, d in zip(opt, defaults, strict=False)]
         call = req + host + [f"{p}={p}" for p in opt]
-        pieces.append(
-            "\n".join(
-                [
-                    f"def {name}({', '.join(sig)}):",
-                    '    """Host wrapper: module state read from the validated numpy module."""',
-                    f"    return _{name}_k({', '.join(call)})",
-                ]
+        writes = wclosures[name]
+        if not writes:
+            pieces.append(
+                "\n".join(
+                    [
+                        f"def {name}({', '.join(sig)}):",
+                        '    """Host wrapper: state read from the validated numpy module."""',
+                        f"    return _{name}_k({', '.join(call)})",
+                    ]
+                )
             )
-        )
+        else:
+            # A writing kernel returns [original outs..., writes...]; the
+            # wrapper stores the state back on the host module and hands the
+            # caller what the numpy signature promised.
+            final = next(
+                (
+                    st
+                    for st in reversed(fns[name].body)
+                    if isinstance(st, ast.Return) and st.value is not None
+                ),
+                None,
+            )
+            n_orig = (
+                len(final.value.elts)
+                if final is not None and isinstance(final.value, ast.Tuple)
+                else (1 if final is not None else 0)
+            )
+            lines = [
+                f"def {name}({', '.join(sig)}):",
+                '    """Host wrapper: state threads through; writes land on the host."""',
+                f"    _res = _{name}_k({', '.join(call)})",
+            ]
+            if n_orig + len(writes) == 1:
+                lines.append("    _res = (_res,)")
+            for at, w in enumerate(writes):
+                lines.append(f"    _host.{w} = _res[{n_orig + at}]")
+            if n_orig == 0:
+                lines.append("    return None")
+            elif n_orig == 1:
+                lines.append("    return _res[0]")
+            else:
+                lines.append(f"    return _res[:{n_orig}]")
+            pieces.append("\n".join(lines))
         jitted.append(name)
     for rec in interface["subprograms"]:
         if rec["name"] in delegated and rec["name"] in fns:
