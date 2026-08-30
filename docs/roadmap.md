@@ -506,7 +506,9 @@ initializer is emitted where the pipeline emits the guard zero
 (`tol = 1.0E-13` against `tol = 0.0`, `derivative_mod` and
 `hetfrz_classnuc`, the two `numba_diff` rows as well), which the commit
 that did it justified on CLM-ml's SoilResistance and is the faithful
-side; and the `buffer: True` the engine's signature table carries for an
+side -- filed upstream as #45 the same day, with `derivative_mod`'s
+`maxiter = np*np-1` emitted as `0` so its limiter loop never runs as the
+headline; and the `buffer: True` the engine's signature table carries for an
 unsizable OUT array (`mg2`, `ndrop`, `seasalt_model`), which the pipeline's
 table has no slot for. `emit_diff -v` now prints a signature table's
 disagreeing entries, which is how the second class became readable; the
