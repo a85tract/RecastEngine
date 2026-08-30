@@ -877,9 +877,7 @@ class Subprograms:
         return IDENTIFIER.sub(case_of, strip_kind(text))
 
     @staticmethod
-    def _reparsed_parameter_value(
-        text: str, spelled: str, statements: Statements | None
-    ) -> str:
+    def _reparsed_parameter_value(text: str, spelled: str, statements: Statements | None) -> str:
         """What the token pass could not classify, read as an expression.
 
         Reached only once the token pass has produced something that is not
