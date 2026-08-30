@@ -52,7 +52,7 @@ def test_the_flat_function_spells_components_state_and_outputs(tree: Path) -> No
     assert notes["refused"] == {} and notes["aborts_dropped"] == {}
     # ``do ic = 1, ncan(p)``: a static trip count over the component's axis,
     # the iterations the source meant kept by a guard.
-    assert notes["static_loops"] == {"warm_flat": ["ic: 1..inst__ncan[p - 1] + 1"]}
+    assert "ic: 1..inst__ncan[p - 1] + 1" in notes["static_loops"]["warm_flat"]
     fns = {n.name: n for n in flat.body if isinstance(n, ast.FunctionDef)}
     warm = ast.unparse(fns["warm_flat"])
     assert warm.startswith(

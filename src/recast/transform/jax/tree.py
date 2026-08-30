@@ -53,6 +53,7 @@ from __future__ import annotations
 import ast
 import copy
 import keyword
+import re
 from pathlib import Path
 from typing import Any
 
@@ -420,12 +421,16 @@ class _Rewrite(ast.NodeTransformer):
         # A bound over a dummy extent (``do i = 2, n`` beside ``a(n)``) is
         # static in the kernel's own trace and traced when the kernel is
         # inlined into another; the array's static shape serves both.
+        # ... and so is any scalar integer dummy (``maxit``, ``n``): static
+        # in the kernel's own trace, a tracer when the kernel is inlined.
         sized = any(
-            isinstance(n, ast.Name) and n.id.lower() in self.dim_sources
+            isinstance(n, ast.Name) and (n.id.lower() in self.dim_sources or n.id in self.statics)
             for bound in (start, stop)
             for n in ast.walk(bound)
         )
-        dynamic_start = self._is_dynamic(start)
+        dynamic_start = self._is_dynamic(start) or any(
+            isinstance(n, ast.Name) and n.id in self.statics for n in ast.walk(start)
+        )
         if not (self._is_dynamic(stop) or dynamic_start or sized):
             return self._strong_bounds(node)
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
@@ -475,19 +480,20 @@ class _Rewrite(ast.NodeTransformer):
             and step.operand.value == 1
         ):
             return node
-        if not (self._is_dynamic(start) or self._is_dynamic(stop)):
+        traced = any(
+            isinstance(n, ast.Name) and n.id in self.statics
+            for bound in (start, stop)
+            for n in ast.walk(bound)
+        )
+        if not (self._is_dynamic(start) or self._is_dynamic(stop) or traced):
             return node
         var = node.target.id
         extent = _indexed_extent(node.body, var)
         if extent is None:
             return node
-        # ``extent`` is ``shape[k] + 1`` for a 1-based index: the highest
-        # value the variable can take is one less.
-        top: ast.expr = (
-            extent.left
-            if isinstance(extent, ast.BinOp) and isinstance(extent.op, ast.Add)
-            else extent
-        )
+        # ``extent`` is the exclusive bound of an ascending loop; the highest
+        # value the variable takes is one less.
+        top: ast.expr = ast.BinOp(left=extent, op=ast.Sub(), right=ast.Constant(1))
         guard = ast.If(
             test=ast.BoolOp(
                 op=ast.And(),
@@ -1047,9 +1053,15 @@ def _indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
                 and isinstance(element.left, ast.Name)
                 and element.left.id == var
                 and isinstance(element.right, ast.Constant)
-                and element.right.value == 1
+                and isinstance(element.right.value, int)
             ):
-                return ast.BinOp(left=shape, op=ast.Add(), right=ast.Constant(1))
+                # ``x[var - c]``: the variable runs to ``shape + c - 1``, so
+                # the exclusive bound is ``shape + c`` (``(ic) - (0)`` is a
+                # zero-based array indexed by a one-based loop).
+                offset = element.right.value
+                if offset == 0:
+                    return shape
+                return ast.BinOp(left=shape, op=ast.Add(), right=ast.Constant(offset))
             if isinstance(element, ast.Name) and element.id == var:
                 return shape
     return None
@@ -1102,7 +1114,7 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
-    lowered = _WhileLoops().visit_block(lowered)
+    lowered = _WhileLoops(_integer_inits(fn)).visit_block(lowered)
     for statement in lowered:
         for node in ast.walk(statement):
             if (
@@ -1186,10 +1198,17 @@ class _WhileLoops(ast.NodeTransformer):
     """``while True: ... break`` as ``lax.while_loop``: every ``break``
     sets a flag, every later statement of the body runs under ``if not
     flag``, the body is lowered the way the backend lowers a kernel, and
-    the loop carries what the body assigns."""
+    the loop carries what the body assigns.
 
-    def __init__(self) -> None:
+    A ``while`` whose condition bounds a counter by a constant (``n <=
+    nmax`` with ``nmax = 50`` above) becomes instead a ``for`` over that
+    constant with the condition as a guard -- a fixed trip count, which
+    ``lax.fori_loop`` lowers to a scan reverse mode can transpose; the
+    fixed-point iterations of the paper's Phase 5 are run this way."""
+
+    def __init__(self, constants: dict[str, int] | None = None) -> None:
         self.n = 0
+        self.constants = constants or {}
 
     def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
         out: list[ast.stmt] = []
@@ -1203,6 +1222,23 @@ class _WhileLoops(ast.NodeTransformer):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
         return node  # nested (already lowered) bodies stay as they are
 
+    def _counted_bound(self, test: ast.expr) -> int | None:
+        """The constant a counter is compared against in ``test`` --
+        ``n <= nmax`` or ``n < nmax`` -- when ``nmax`` is a known integer."""
+        for node in ast.walk(test):
+            if (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and isinstance(node.ops[0], (ast.Lt, ast.LtE))
+                and isinstance(node.left, ast.Name)
+            ):
+                bound = node.comparators[0]
+                if isinstance(bound, ast.Constant) and isinstance(bound.value, int):
+                    return int(bound.value)
+                if isinstance(bound, ast.Name) and bound.id in self.constants:
+                    return self.constants[bound.id]
+        return None
+
     def visit_While(self, node: ast.While) -> Any:
         from recast.transform.jax.backend import KernelLowerer, _assigned_names
 
@@ -1212,6 +1248,19 @@ class _WhileLoops(ast.NodeTransformer):
         self.n += 1
         done = f"_done_{self.n}"
         forever = isinstance(node.test, ast.Constant) and node.test.value is True
+        counted = self._counted_bound(node.test)
+        if counted is not None and not any(isinstance(n, ast.Break) for n in ast.walk(node)):
+            self.n -= 1
+            return ast.For(
+                target=ast.Name(id=f"_w{self.n + 1}", ctx=ast.Store()),
+                iter=ast.Call(
+                    func=ast.Name(id="range", ctx=ast.Load()),
+                    args=[ast.Constant(0), ast.Constant(counted + 1)],
+                    keywords=[],
+                ),
+                body=[ast.If(test=node.test, body=node.body, orelse=[])],
+                orelse=[],
+            )
 
         class Breaks(ast.NodeTransformer):
             def visit_Break(self, node: ast.Break) -> ast.AST:
@@ -1363,6 +1412,35 @@ def _integer_constant_expression(node: ast.expr) -> bool:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         return _integer_constant_expression(node.operand)
     return False
+
+
+def _integer_inits(fn: ast.FunctionDef) -> dict[str, int]:
+    """Locals assigned one integer literal at the top of the body
+    (``itmax = 40``), by value."""
+    values: dict[str, int] = {}
+    for statement in fn.body:
+        if not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            continue
+        name = statement.targets[0].id
+        value = statement.value
+        # The last assignment wins: the guard init (``nmax = 0``) comes
+        # first, the value the source gives it after -- a literal, or the
+        # emitter's ``I_<n>`` name for one; anything else is not a constant.
+        if (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, int)
+            and not isinstance(value.value, bool)
+        ):
+            values[name] = int(value.value)
+        elif isinstance(value, ast.Name) and re.fullmatch(r"I_\d+", value.id):
+            values[name] = int(value.id[2:])
+        else:
+            values.pop(name, None)
+    return values
 
 
 def _guard_inits(fn: ast.FunctionDef) -> dict[str, str]:
