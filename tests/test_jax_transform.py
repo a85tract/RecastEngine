@@ -227,3 +227,17 @@ def test_a_guard_around_nothing_lowers_to_nothing() -> None:
     text = _ast.unparse(_ast.fix_missing_locations(_ast.Module(body=lowered, type_ignores=[])))
     assert "lax.cond" not in text and "pass" not in text
     assert "z = y * 2.0" in text
+
+
+def test_a_constant_table_is_read_through_jnp() -> None:
+    """``MDAYLEAP[m - 1]`` with a traced ``m``: numpy indexing would call
+    __array__ on the tracer; the kernel reads the table as a jnp array."""
+    import ast as _ast
+
+    from recast.transform.jax.backend import ExprMap
+
+    node = _ast.parse("d = MDAYLEAP[m - 1] + x[i]").body[0]
+    ExprMap().visit(node)
+    text = _ast.unparse(node)
+    assert "jnp.asarray(MDAYLEAP)[m - 1]" in text
+    assert "x[i]" in text  # a lowercase array is a traced value already

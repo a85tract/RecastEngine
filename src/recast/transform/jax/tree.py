@@ -202,7 +202,12 @@ class _Rewrite(ast.NodeTransformer):
                 isinstance(node.value, ast.Attribute) and node.value.attr == "shape"
             ):
                 return True
-            if isinstance(node, ast.Name) and not node.id.isupper() and node.id not in self.statics:
+            if (
+                isinstance(node, ast.Name)
+                and not node.id.isupper()
+                and node.id not in self.statics
+                and node.id not in ("min", "max", "len")  # static over static shapes
+            ):
                 return True
             return any(visit(child) for child in ast.iter_child_nodes(node))
 
@@ -247,14 +252,25 @@ class _Rewrite(ast.NodeTransformer):
         }
         if len(keys) != 1:
             raise NotFlat("dynamic slices with different bounds in one statement")
-        base, axis, lo, hi, trailing = found[0]
-        # One static length for every widened slice -- the first array's
-        # axis from its lower bound -- so ``x[i, 0:n] * y[i, 0:n]`` stays
-        # conformable when ``x`` and ``y`` are not allocated alike.
-        extent = ast.Subscript(
-            value=ast.Attribute(value=copy.deepcopy(base), attr="shape", ctx=ast.Load()),
-            slice=ast.Constant(axis),
-            ctx=ast.Load(),
+        _base, _axis, lo, hi, trailing = found[0]
+        # One static length for every widened slice -- the SMALLEST of the
+        # sliced arrays' axes -- so ``x[i, 0:n] + y[i, 0:n]`` stays
+        # conformable when ``x`` and ``y`` are not allocated alike (the
+        # accumulator's interface axis is nlev+1 beside a nlev profile).
+        # Shapes are Python ints under jit, so ``min`` folds at trace time.
+        seen: dict[str, ast.expr] = {}
+        for b, ax, _, _, _ in found:
+            shape_ref: ast.expr = ast.Subscript(
+                value=ast.Attribute(value=copy.deepcopy(b), attr="shape", ctx=ast.Load()),
+                slice=ast.Constant(ax),
+                ctx=ast.Load(),
+            )
+            seen.setdefault(ast.unparse(shape_ref), shape_ref)
+        refs = list(seen.values())
+        extent = (
+            refs[0]
+            if len(refs) == 1
+            else ast.Call(func=ast.Name(id="min", ctx=ast.Load()), args=refs, keywords=[])
         )
         low: ast.expr = copy.deepcopy(lo) if lo else ast.Constant(0)
         length = ast.BinOp(left=extent, op=ast.Sub(), right=copy.deepcopy(low))
@@ -345,7 +361,7 @@ class _Rewrite(ast.NodeTransformer):
             and isinstance(target, ast.Name)
             and target.id in self.inits
             and not isinstance(node.value, ast.Constant)
-            and _constant_expression(node.value, self.loop_vars)
+            and (_constant_expression(node.value, self.loop_vars) or _table_read(node.value))
         ):
             # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
             # ``lax.cond`` arm that assigns it beside one that keeps an
@@ -1197,6 +1213,28 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
     lowered = _WhileLoops(_integer_inits(fn)).visit_block(lowered)
+    # The goto-region flags are synthetic locals with no UB-guard init; an
+    # enclosing loop carries them, and the initial carry tuple needs a value
+    # before the loop. Every flag starts False at the top of the function.
+    flags = sorted(
+        {
+            n.id
+            for stmt in lowered
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Name)
+            and isinstance(n.ctx, ast.Store)
+            and re.fullmatch(r"_(?:skip|restart)_\d+", n.id)
+        }
+    )
+    lowered = [
+        *(
+            ast.fix_missing_locations(
+                ast.Assign(targets=[ast.Name(id=f, ctx=ast.Store())], value=ast.Constant(False))
+            )
+            for f in flags
+        ),
+        *lowered,
+    ]
     for statement in lowered:
         for node in ast.walk(statement):
             if (
@@ -1401,7 +1439,7 @@ class _WhileLoops(ast.NodeTransformer):
                     return self.constants[bound.id]
         return None
 
-    def _unwrap_goto_region(self, node: ast.While) -> None:
+    def _unwrap_goto_region(self, node: ast.While) -> str | None:
         """``while True: try: ... break; except _FGoto: pass`` -- the numpy
         side's backward-goto region. The raise restarts the loop; spelled as
         a flag (raise -> ``_restart = True``, later statements and the final
@@ -1413,13 +1451,13 @@ class _WhileLoops(ast.NodeTransformer):
             and len(node.body) == 1
             and isinstance(node.body[0], ast.Try)
         ):
-            return
+            return None
         wrapper = node.body[0]
         if len(wrapper.handlers) != 1 or wrapper.orelse or wrapper.finalbody:
-            return
+            return None
         handler = wrapper.handlers[0]
         if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
-            return
+            return None
         labels = {
             n.exc.args[0].value
             for stmt in wrapper.body
@@ -1435,7 +1473,7 @@ class _WhileLoops(ast.NodeTransformer):
             # No restart survived (each raise sat on a dropped abort path, or
             # the region never loops): the wrapper is the body.
             node.body = [s for s in wrapper.body if not isinstance(s, ast.Break)] + [ast.Break()]
-            return
+            return None
         if len(labels) > 1:
             raise NotFlat(f"one goto region, several labels: {sorted(labels)}")
         label = labels.pop()
@@ -1512,6 +1550,7 @@ class _WhileLoops(ast.NodeTransformer):
             )
         )
         node.body = guarded
+        return restart
 
     def visit_Try(self, node: ast.Try) -> Any:
         """A forward-goto region -- ``try: ...; raise _FGoto('100') ...
@@ -1586,7 +1625,7 @@ class _WhileLoops(ast.NodeTransformer):
     def visit_While(self, node: ast.While) -> Any:
         from recast.transform.jax.backend import JaxQueue, KernelLowerer, _assigned_names
 
-        self._unwrap_goto_region(node)
+        restart = self._unwrap_goto_region(node)
         self.generic_visit(node)
         if node.orelse:
             return node
@@ -1694,7 +1733,17 @@ class _WhileLoops(ast.NodeTransformer):
             ),
         )
         init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
-        return [init, cond_fn, body_fn, loop]
+        pre: list[ast.stmt] = [init]
+        if restart is not None:
+            # The restart flag is loop-carried; without a value before the
+            # loop the initial carry tuple cannot be built.
+            pre.insert(
+                0,
+                ast.Assign(
+                    targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(False)
+                ),
+            )
+        return [*pre, cond_fn, body_fn, loop]
 
 
 def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
@@ -1730,6 +1779,18 @@ def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
         # def line, docstring line, then the binds, then the return.
         return "\n".join([*lines[:2], *binds, *lines[2:]])
     return piece
+
+
+def _table_read(node: ast.expr) -> bool:
+    """``MDAYLEAP[mcmnth - 1]``: a module constant table read. Its dtype is
+    the table's (int64 for a spelled integer array), not the guard-typed
+    local's -- the same cast the constant-expression case needs."""
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id.isupper()
+        and len(node.value.id) > 1
+    )
 
 
 def _constant_expression(node: ast.expr, loop_vars: set[str] | None = None) -> bool:

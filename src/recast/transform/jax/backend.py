@@ -142,6 +142,26 @@ class ExprMap(ast.NodeTransformer):
     and/or/not -> jnp.logical_* (traced bools reject Python short-circuit;
     matches Fortran .AND./.OR. non-short-circuit semantics)."""
 
+    def visit_Subscript(self, node):
+        # ``MDAYLEAP[mcmnth - 1]``: a module constant is a numpy array, and
+        # numpy indexing with a traced index calls __array__ on the tracer.
+        # Read the table through jnp instead; a static index is unharmed.
+        self.generic_visit(node)
+        if (
+            isinstance(node.ctx, ast.Load)
+            and isinstance(node.value, ast.Name)
+            and node.value.id.isupper()
+            and len(node.value.id) > 1
+        ):
+            node.value = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="jnp", ctx=ast.Load()), attr="asarray", ctx=ast.Load()
+                ),
+                args=[node.value],
+                keywords=[],
+            )
+        return node
+
     def visit_Attribute(self, node):
         self.generic_visit(node)
         if isinstance(node.value, ast.Name):
