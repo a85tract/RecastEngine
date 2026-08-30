@@ -255,7 +255,7 @@ class TreeTranslation(Transform):
         if main is None or not stored:
             return
         plans = [FlatPlan.from_dict(d) for d in stored]
-        usable = [p for p in plans if p.usable]
+        usable = [p for p in plans if p.usable and p.gated]
         if usable:
             candidate.files[main] = candidate.files[main] + python_adapter(usable).encode()
         note = self._note(candidate)

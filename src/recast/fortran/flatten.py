@@ -156,6 +156,11 @@ class FlatPlan:
     def usable(self) -> bool:
         return not self.unsupported and bool(self.objects)
 
+    @property
+    def gated(self) -> bool:
+        """A public subroutine: what the oracle can wrap and the gate compare."""
+        return bool(self.subprogram.get("public", True)) and self.subprogram["kind"] == "subroutine"
+
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
@@ -263,10 +268,17 @@ def signature(plan: FlatPlan) -> dict[str, Any]:
     }
 
 
-def plans_from_facts(facts: Any) -> list[FlatPlan]:
-    """The plans the frontend stored on ``Facts.extra``, usable ones only."""
+def plans_from_facts(facts: Any, *, gated: bool = True) -> list[FlatPlan]:
+    """The plans the frontend stored on ``Facts.extra``, usable ones only.
+
+    ``gated`` (the default) keeps the public subroutines: the ones an
+    adapter can be compiled and compared for. A lowering that follows calls
+    inward wants every plan, private subprograms and functions included."""
     stored = (facts.extra or {}).get("flat_plans") or []
-    return [p for p in (FlatPlan.from_dict(d) for d in stored) if p.usable]
+    plans = [p for p in (FlatPlan.from_dict(d) for d in stored) if p.usable]
+    if gated:
+        plans = [p for p in plans if p.gated]
+    return plans
 
 
 # --- the tree ----------------------------------------------------------------
@@ -597,7 +609,10 @@ def _procedure_index(
 
 
 def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None) -> list[FlatPlan]:
-    """One plan per public subroutine that takes a derived-type dummy."""
+    """One plan per subprogram that takes a derived-type dummy -- private
+    ones and functions included, because a lowering that follows calls
+    inward needs their plans; ``FlatPlan.gated`` says which the oracle can
+    wrap."""
     from recast.fortran import interface
 
     conventions = conventions or FlatConventions()
@@ -624,7 +639,7 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
         return type_records[type_name]
 
     for sub in record["subprograms"]:
-        if not sub.get("public", True) or sub["kind"] != "subroutine":
+        if sub["kind"] not in ("subroutine", "function"):
             continue
         dummies = {
             a["name"].lower(): m.group(1).lower()

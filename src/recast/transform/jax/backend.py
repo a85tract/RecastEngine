@@ -226,7 +226,13 @@ def _assigned_names(stmts):
     for s in stmts:
         if isinstance(s, ast.Assign):
             for t in s.targets:
-                if isinstance(t, ast.Name):
+                # The hoisted bounds of a step -1 loop (``_hi_n``, ``_cnt_n``)
+                # are assigned in the body before their use and never read
+                # after it; carried, they would have to be initialized at the
+                # enclosing level, where nothing assigns them.
+                if isinstance(t, ast.Name) and not (
+                    t.id.startswith("_hi_") or t.id.startswith("_cnt_")
+                ):
                     add(t.id)
                 elif isinstance(t, ast.Tuple):
                     for e in t.elts:
