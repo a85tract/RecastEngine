@@ -25,7 +25,7 @@ compiler, a GPU, or a model provider — `fortran`, `translate`, `verify`,
 ```console
 $ recast doctor
 recast 0.0.1.dev0  python 3.11.16
-21 plugin(s) registered across 10 kinds
+23 plugin(s) registered across 10 kinds
 ```
 
 ## Your first run
