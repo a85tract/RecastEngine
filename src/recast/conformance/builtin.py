@@ -384,14 +384,18 @@ contains
   subroutine refused(x, y)
     real(r8), intent(in)  :: x
     real(r8), intent(out) :: y
-    ! A formatted internal write is refused on purpose -- an edit descriptor
-    ! is a rounding rule, and guessing one writes different digits than the
-    ! Fortran did -- so this block goes to the agent queue while the one above
-    ! still translates. The point of the case is the mixture: a Candidate that
-    ! is partial rather than absent.
+    ! A formatted internal write whose format is a variable is refused on
+    ! purpose -- an edit descriptor is a rounding rule, and one the rules
+    ! cannot read at translation time cannot be rendered -- so this block
+    ! goes to the agent queue while the one above still translates. The
+    ! point of the case is the mixture: a Candidate that is partial rather
+    ! than absent. (A literal format used to stand here; the rules grew a
+    ! rendering for it, and a defers-case is a claim about the rules.)
     character(len=32) :: buffer
+    character(len=8) :: fmt
     y = x
-    write(buffer, '(F8.2)') y
+    fmt = '(F8.2)'
+    write(buffer, fmt) y
   end subroutine refused
 
 end module conformance_defers
