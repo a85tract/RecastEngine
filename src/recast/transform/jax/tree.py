@@ -176,6 +176,7 @@ class _Rewrite(ast.NodeTransformer):
         self.temps = 0
         self.associates: frozenset[str] = frozenset()  # names an alias drop may claim
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
+        self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -320,7 +321,7 @@ class _Rewrite(ast.NodeTransformer):
             and isinstance(target, ast.Name)
             and target.id in self.inits
             and not isinstance(node.value, ast.Constant)
-            and _constant_expression(node.value)
+            and _constant_expression(node.value, self.loop_vars)
         ):
             # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
             # ``lax.cond`` arm that assigns it beside one that keeps an
@@ -385,6 +386,8 @@ class _Rewrite(ast.NodeTransformer):
         return node
 
     def visit_For(self, node: ast.For) -> Any:
+        if isinstance(node.target, ast.Name):
+            self.loop_vars.add(node.target.id)  # before the body: its stores cast
         self.generic_visit(node)
         it = node.iter
         if not (
@@ -396,6 +399,7 @@ class _Rewrite(ast.NodeTransformer):
         ):
             return node
         stop = it.args[-1]
+        self.loop_vars.add(node.target.id)
         if not self._is_dynamic(stop):
             return self._strong_bounds(node)
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
@@ -404,6 +408,7 @@ class _Rewrite(ast.NodeTransformer):
         # the loop runs to, and ``if ic < stop`` keeps the iterations the
         # source meant -- a ``lax.cond`` with the identity as its other arm.
         var = node.target.id
+        self.loop_vars.add(var)
         extent = _indexed_extent(node.body, var)
         if extent is None:
             return self._strong_bounds(node)
@@ -421,22 +426,12 @@ class _Rewrite(ast.NodeTransformer):
 
     @staticmethod
     def _strong_bounds(node: ast.For) -> ast.For:
-        """``range(1, n)`` with Python ints gives ``lax.fori_loop`` a weakly
-        typed counter, and a ``lax.cond`` arm that assigns the counter to a
-        name the other arm leaves as a strong ``int32`` has a different
-        output type. Strong bounds make a strong counter."""
-        it = node.iter
-        if not (
-            isinstance(it, ast.Call)
-            and isinstance(it.func, ast.Name)
-            and it.func.id == "range"
-            and 1 <= len(it.args) <= 3
-        ):
-            return node
-        for at in range(min(2, len(it.args))):
-            arg = it.args[at]
-            if not (isinstance(arg, ast.Call) and ast.unparse(arg).startswith("jnp.int32(")):
-                it.args[at] = _jnp("int32", [arg])
+        """Bounds stay as the anchor spells them: ``lax.fori_loop`` lowers a
+        loop whose bounds are Python ints to a ``scan``, which reverse mode
+        can transpose, and a ``jnp.int32`` bound -- even a concrete one --
+        makes it a ``while_loop``, which it cannot. A weakly typed counter
+        is fine: what the arms of a ``lax.cond`` must agree on is the dtype,
+        and the guard-typed casts keep the other arm an int32."""
         return node
 
     def visit_If(self, node: ast.If) -> Any:
@@ -778,7 +773,10 @@ class _Rewrite(ast.NodeTransformer):
         src = "\n".join(
             [
                 f"def {plan.name}({', '.join(taken)}):",
-                f"    _it = {iterate.name}({', '.join(taken)})",
+                # No tangent enters the iteration: its derivative is the
+                # residual step's, and a loop nothing differentiates through
+                # is one reverse mode never has to transpose.
+                f"    _it = {iterate.name}({', '.join(f'lax.stop_gradient({n})' for n in taken)})",
                 "    _root = lax.stop_gradient(_it[0])",
                 "",
                 "    def _residual(_x):",
@@ -1251,18 +1249,21 @@ def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
     return piece
 
 
-def _constant_expression(node: ast.expr) -> bool:
-    """Numeric literals and upper-case constants under arithmetic only."""
+def _constant_expression(node: ast.expr, loop_vars: set[str] | None = None) -> bool:
+    """Numeric literals, upper-case constants and (given) loop counters under
+    arithmetic only -- what a Python int or an int64 counter would type
+    differently from the local's own int32."""
+    names = loop_vars or set()
     if isinstance(node, ast.Constant):
         return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
     if isinstance(node, ast.Name):
-        return node.id.isupper()
+        return node.id.isupper() or node.id in names
     if isinstance(node, ast.BinOp) and isinstance(
         node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
     ):
-        return _constant_expression(node.left) and _constant_expression(node.right)
+        return _constant_expression(node.left, names) and _constant_expression(node.right, names)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        return _constant_expression(node.operand)
+        return _constant_expression(node.operand, names)
     return False
 
 
