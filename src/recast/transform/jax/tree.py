@@ -721,7 +721,8 @@ class _Rewrite(ast.NodeTransformer):
         # callback evaluation is not necessarily at the root), its tangent
         # the one at the root.
         outs_at_root = [
-            f"lax.stop_gradient(_it[{i + 1}]) + _at_root[{i + 1}] - lax.stop_gradient(_at_root[{i + 1}])"
+            f"lax.stop_gradient(_it[{i + 1}]) + _at_root[{i + 1}]"
+            f" - lax.stop_gradient(_at_root[{i + 1}])"
             for i in range(len(outs) - 1)
         ]
         # The callback call, as the root finder spells it: the first call of
