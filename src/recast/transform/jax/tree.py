@@ -682,13 +682,135 @@ class _Rewrite(ast.NodeTransformer):
             returns=None,
         )
         ast.fix_missing_locations(flat)
-        self.specialized[spec_name] = (flat, plan, inner.calls)
+        # The iteration is one function; the specialization the caller sees
+        # is the implicit-function wrapper around it.
+        iterate = copy.deepcopy(plan)
+        iterate.subprogram = {**plan.subprogram, "name": f"{spec_name}_iterate"}
+        flat.name = iterate.name
+        self.specialized[iterate.subprogram["name"]] = (flat, iterate, inner.calls)
+        wrapper = self._implicit_wrapper(plan, iterate, fn, procedure[0], callback, inner)
+        self.specialized[spec_name] = (wrapper, plan, [iterate.name, callback.name])
         if source.get("module"):
             self.companions.add(f"module:{source['module']}")
         self.aborts.extend(f"{spec_name}: {a}" for a in inner.aborts)
         self.companions |= inner.companions
         self.plans[spec_name.lower()] = plan
         return plan
+
+    def _implicit_wrapper(
+        self,
+        plan: FlatPlan,
+        iterate: FlatPlan,
+        fn: ast.FunctionDef,
+        procedure: str,
+        callback: FlatPlan,
+        inner: _Rewrite,
+    ) -> ast.FunctionDef:
+        """The implicit-function adjoint around the iteration (Blondel et al.
+        2022, as the paper applies it): the converged root is detached, one
+        Newton step on the callback's residual ``x - F(x)/sg(dF/dx)`` leaves
+        the value where it was and makes the derivative the implicit one,
+        ``dF/dtheta / dF/dx`` -- spelled ``F - sg(F)`` so the value is exactly
+        the iteration's, since the Fortran stopped on a tolerance and a
+        Newton step would move it; the components come from one last call of the
+        callback at that root, so they are differentiable through it too.
+        Reverse mode then never has to go through the loop."""
+        taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+        outs = _outputs(plan)
+        # Each component's value is the iteration's own (the Fortran's last
+        # callback evaluation is not necessarily at the root), its tangent
+        # the one at the root.
+        outs_at_root = [
+            f"lax.stop_gradient(_it[{i + 1}]) + _at_root[{i + 1}] - lax.stop_gradient(_at_root[{i + 1}])"
+            for i in range(len(outs) - 1)
+        ]
+        # The callback call, as the root finder spells it: the first call of
+        # the procedure dummy in its body, with the unknown's actual replaced.
+        template = next(
+            (
+                node
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id.lower() == procedure
+            ),
+            None,
+        )
+        if template is None:
+            raise NotFlat(f"{plan.subprogram['name']}: no call of {procedure} to invert")
+        cb_args = callback.subprogram["args"]
+        unknown = next(
+            (
+                at
+                for at, a in enumerate(cb_args)
+                if a["intent"] == "IN" and str(a["dtype"]).startswith("float") and not a.get("dims")
+            ),
+            None,
+        )
+        if unknown is None or unknown >= len(template.args):
+            raise NotFlat(f"{plan.subprogram['name']}: the callback's unknown is not a scalar real")
+
+        def callback_call(x: str) -> ast.expr:
+            call = copy.deepcopy(template)
+            call.args[unknown] = ast.Name(id=x, ctx=ast.Load())
+            probe = _Rewrite(
+                plan, _Spelling(plan, self.spelling.modules), inner.plans, self.ports, self.bundled
+            )
+            probe.own = inner.own
+            probe.specialized = self.specialized
+            # A target per output the callback declares, so the rewrite has
+            # somewhere to put them; only the call expression is kept.
+            slots = ast.Tuple(
+                elts=[
+                    ast.Name(id=f"_o{i}", ctx=ast.Store())
+                    for i, a in enumerate(cb_args)
+                    if a["intent"] in ("OUT", "INOUT") and not a.get("optional")
+                ],
+                ctx=ast.Store(),
+            )
+            rewritten = probe._rewrite_call(slots, call)
+            if isinstance(rewritten, list):
+                rewritten = rewritten[0]
+            value = rewritten if isinstance(rewritten, ast.Expr) else rewritten.value
+            return value.value if isinstance(value, ast.Expr) else value
+
+        src = "\n".join(
+            [
+                f"def {plan.name}({', '.join(taken)}):",
+                f"    _it = {iterate.name}({', '.join(taken)})",
+                "    _root = lax.stop_gradient(_it[0])",
+                "",
+                "    def _residual(_x):",
+                "        return CALLBACK_X[0]",
+                "",
+                "    _f, _dfdx = jax.jvp(_residual, (_root,), (jnp.ones_like(_root),))",
+                # The value stays the iteration's own (F - sg(F) is zero), the
+                # tangent becomes dF/dtheta / dF/dx; a flat residual (no light
+                # on the leaf, say) has no root to speak of and no derivative
+                # through it.
+                "    _slope = lax.stop_gradient(jnp.where(jnp.abs(_dfdx) > 0.0, _dfdx, 1.0))",
+                "    _root = _root - jnp.where("
+                "jnp.abs(_dfdx) > 0.0, (_f - lax.stop_gradient(_f)) / _slope, 0.0)",
+                "    _at_root = CALLBACK_ROOT",
+                "    return (" + ", ".join(["_root", *outs_at_root]) + ",)",
+            ]
+        )
+        module = ast.parse(src)
+        wrapper = module.body[0]
+        assert isinstance(wrapper, ast.FunctionDef)
+
+        class Fill(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.AST:
+                if node.id == "CALLBACK_X":
+                    return callback_call("_x")
+                if node.id == "CALLBACK_ROOT":
+                    return callback_call("_root")
+                return node
+
+        filled: Any = Fill().visit(wrapper)
+        assert isinstance(filled, ast.FunctionDef)
+        ast.fix_missing_locations(filled)
+        return filled
 
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
