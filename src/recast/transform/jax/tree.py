@@ -156,8 +156,10 @@ class _Rewrite(ast.NodeTransformer):
         ports: dict[str, dict[str, Any]],
         bundled: frozenset[str] = frozenset(),
         statics: frozenset[str] = frozenset(),
+        dim_sources: dict[str, tuple[str, int]] | None = None,
     ) -> None:
         self.statics = statics  # scalar integer arguments the kernel takes static
+        self.dim_sources = dim_sources or {}  # dummy extent name -> (array dummy, axis)
         self.plan = plan
         self.spelling = spelling
         self.plans = plans
@@ -443,6 +445,30 @@ class _Rewrite(ast.NodeTransformer):
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id in ("np", "jnp")
+            and node.func.attr in ("empty", "zeros", "ones")
+            and node.args
+            and isinstance(node.args[0], ast.Tuple)
+        ):
+            # A local sized by a dummy extent (``gam(n)`` beside ``a(n)``):
+            # the extent is the array dummy's static shape, which stays
+            # static when the kernel is inlined into another with a traced
+            # ``n``.
+            shape = node.args[0]
+            for at, element in enumerate(shape.elts):
+                if isinstance(element, ast.Name) and element.id.lower() in self.dim_sources:
+                    array, axis = self.dim_sources[element.id.lower()]
+                    shape.elts[at] = ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id=array, ctx=ast.Load()), attr="shape", ctx=ast.Load()
+                        ),
+                        slice=ast.Constant(axis),
+                        ctx=ast.Load(),
+                    )
+            return node
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ("np", "jnp")
             and node.func.attr == "sum"
             and len(node.args) == 1
         ):
@@ -722,6 +748,18 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     return lowered
 
 
+def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
+    """``{extent name: (array dummy, axis)}`` for every dummy array whose
+    declared extent is a bare name -- ``a(n)`` says ``n == a.shape[0]``."""
+    sources: dict[str, tuple[str, int]] = {}
+    for a in args:
+        for axis, dim in enumerate(a.get("dims") or []):
+            ub = str(dim.get("ub") or "").strip().lower()
+            if ub.isidentifier() and str(dim.get("lb") or "1").strip() == "1":
+                sources.setdefault(ub, (_py(a["name"]), axis))
+    return sources
+
+
 def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
@@ -741,7 +779,13 @@ def flat_function(
     """The anchor's function on the flat signature, and the rewrite that
     made it (its callees, dropped aborts, companions used)."""
     rewrite = _Rewrite(
-        plan, _Spelling(plan, aliases), plans, ports, bundled, _static_names(plan.flat_args)
+        plan,
+        _Spelling(plan, aliases),
+        plans,
+        ports,
+        bundled,
+        _static_names(plan.flat_args),
+        _dim_sources(plan.flat_args),
     )
     body = _rewritten_body(fn, rewrite)
     if not body or not isinstance(body[-1], ast.Return):
@@ -772,9 +816,10 @@ def scrubbed_function(
     ports: dict[str, dict[str, Any]],
     bundled: frozenset[str] = frozenset(),
     statics: frozenset[str] = frozenset(),
+    dim_sources: dict[str, tuple[str, int]] | None = None,
 ) -> tuple[ast.FunctionDef, _Rewrite]:
     """A function with no plan, scrubbed the same way."""
-    rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports, bundled, statics)
+    rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports, bundled, statics, dim_sources)
     scrubbed = copy.deepcopy(fn)
     scrubbed.body = _rewritten_body(fn, rewrite)
     ast.fix_missing_locations(scrubbed)
@@ -850,7 +895,8 @@ def flattened_module(
         try:
             record = next((s for s in interface["subprograms"] if s["name"] == name), None)
             statics = _static_names(record["args"]) if record else frozenset()
-            scrubbed, rewrite = scrubbed_function(fn, aliases, ports, bundled, statics)
+            sources = _dim_sources(record["args"]) if record else {}
+            scrubbed, rewrite = scrubbed_function(fn, aliases, ports, bundled, statics, sources)
         except NotFlat as why:
             refused[name] = str(why)
             continue
