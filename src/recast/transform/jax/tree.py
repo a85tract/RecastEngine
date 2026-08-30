@@ -186,6 +186,7 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
+        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -421,6 +422,14 @@ class _Rewrite(ast.NodeTransformer):
             and len(call.args) == 2
         ):
             dst, src = call.args
+            if (
+                isinstance(src, ast.Subscript)
+                and isinstance(src.value, ast.Name)
+                and src.value.id in self.buffer_outs
+            ):
+                # The buffer was elided at the call: this copy already
+                # happened when the flat outputs bound to the actuals.
+                return None
             return self.visit(ast.copy_location(ast.Assign(targets=[dst], value=src), node))
         self.generic_visit(node)
         return node
@@ -1079,24 +1088,22 @@ class _Rewrite(ast.NodeTransformer):
             and len(anchor_targets) == 1
             and isinstance(anchor_targets[0], ast.Name)
         ):
+            # ``_out = callee(...); _f_copy_out(a, _out[0]); ...`` -- the
+            # anchor's buffer for several array outputs. The flat outputs
+            # bind to the actuals directly and the buffer never exists: a
+            # name rebound with a different tuple type at another call site
+            # would poison a lax carry, and the copies are self-assignments.
             buffered = anchor_targets[0]
             slot = {
                 name: actual_by_dummy[name.lower()]
                 for name in original_outs
                 if name.lower() in actual_by_dummy
             }
+            self.buffer_outs[buffered.id] = [
+                ast.unparse(slot[name]) for name in original_outs if name in slot
+            ]
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
-        if buffered is not None:
-            follow.append(
-                ast.Assign(
-                    targets=[ast.Name(id=buffered.id, ctx=ast.Store())],
-                    value=ast.Tuple(
-                        elts=[copy.deepcopy(slot[name]) for name in original_outs if name in slot],
-                        ctx=ast.Load(),
-                    ),
-                )
-            )
         for name in _outputs(callee):
             if "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
