@@ -85,3 +85,38 @@ def test_the_port_emits_the_flat_function_as_a_kernel(tree: Path) -> None:
     assert "_SIGNATURES.update({" in ported and "'warm_flat': {'kind': 'subroutine'" in ported
     assert Path("physics_mod_numpy.py") in candidate.files
     assert Path("physics_mod_jax_runtime.py") in candidate.files
+
+
+def test_early_returns_merge_into_one_exit() -> None:
+    from recast.transform.jax.tree import _single_exit
+
+    fn = ast.parse(
+        "def f(x):\n"
+        "    if x == 0.0:\n"
+        "        root = 1.0\n"
+        "        return root\n"
+        "    y = x * 2.0\n"
+        "    return y\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = _single_exit(fn.body)
+    text = ast.unparse(ast.Module(body=body, type_ignores=[]))
+    assert "_ret = False" in text and "_r = root" in text and "_ret = True" in text
+    assert "if not _ret:\n    y = x * 2.0" in text
+    assert text.rstrip().endswith("return jnp.where(_ret, _r, y)")
+
+
+def test_while_loops_become_lax_while_or_a_counted_for() -> None:
+    from recast.transform.jax.tree import _WhileLoops
+
+    forever = ast.parse(
+        "while True:\n    n = n + 1\n    x = x * 0.5\n    if x < tol:\n        break\n    y = x\n"
+    ).body
+    lowered = _WhileLoops().visit_block(forever)
+    text = ast.unparse(ast.Module(body=lowered, type_ignores=[]))
+    assert "_done_1 = False" in text and "lax.while_loop(_wcond_1, _wbody_1" in text
+    assert "jnp.logical_not(_done_1)" in text
+    counted = ast.parse("while abs(b - a) > err and n <= nmax:\n    n = n + 1\n    a = b\n").body
+    lowered = _WhileLoops({"nmax": 50}).visit_block(counted)
+    text = ast.unparse(ast.Module(body=lowered, type_ignores=[]))
+    assert text.startswith("for _w1 in range(0, 51):\n    if abs(b - a) > err and n <= nmax:")

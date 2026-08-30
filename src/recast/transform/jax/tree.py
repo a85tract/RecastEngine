@@ -1291,6 +1291,8 @@ class _WhileLoops(ast.NodeTransformer):
                 guarded.append(rewritten)
             if has_break:
                 exited = True
+        for statement in guarded:
+            ast.fix_missing_locations(statement)
         carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
         state = [*carried, done]
         lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
