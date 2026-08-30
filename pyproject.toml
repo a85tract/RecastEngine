@@ -57,24 +57,31 @@ Ecosystem = "https://github.com/a85tract/SciRecast"
 
 [project.entry-points."recast.frontends"]
 fortran = "recast.fortran.frontend:factory"
+python-numpy = "recast.python.frontend:factory"
 
 [project.entry-points."recast.verifiers"]
 # Quoted: an unquoted dotted key would be read as a nested table.
+"static.complete" = "recast.verify.complete:factory"
 "static.rwset" = "recast.verify.rwset:factory"
 "symbolic.notary" = "recast.verify.notary:factory"
 "differential.bitexact" = "recast.verify.bitexact:factory"
 "differential.tolerance" = "recast.verify.tolerance:factory"
+"differential.python-numba" = "recast.verify.python_accelerators:numba_factory"
+"differential.python-jax" = "recast.verify.python_accelerators:jax_factory"
 
 [project.entry-points."recast.oracles"]
 f2py-golden = "recast.oracle.f2py:factory"
 numpy-anchor = "recast.oracle.numpy_anchor:factory"
 dump-replay = "recast.oracle.dump_replay:factory"
+python-source = "recast.oracle.python_source:factory"
 
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
 "translate.numba" = "recast.transform.numba.translate:factory"
 "translate.cuda" = "recast.transform.cuda.translate:factory"
+"translate.python-numba" = "recast.transform.python_accelerators:numba_factory"
+"translate.python-jax" = "recast.transform.python_accelerators:jax_factory"
 
 [project.entry-points."recast.scanners"]
 secret = "recast.scan.secret:factory"
@@ -97,6 +104,13 @@ translate = "recast.recipes:TranslateRecipe"
 refactor = "recast.recipes:RefactorRecipe"
 port = "recast.recipes:PortRecipe"
 audit = "recast.recipes:AuditRecipe"
+python-to-numba = "recast.recipes:PythonToNumbaRecipe"
+python-to-jax = "recast.recipes:PythonToJaxRecipe"
+
+[project.entry-points."recast.engines"]
+"recast.fortran-python.numpy" = "recast.engines:fortran_numpy_engine"
+"recast.python-numpy.numba" = "recast.engines:python_numba_engine"
+"recast.python-numpy.jax" = "recast.engines:python_jax_engine"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/recast"]
