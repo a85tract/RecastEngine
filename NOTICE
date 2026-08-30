@@ -151,6 +151,21 @@ and both are needed. See CONTRIBUTING.md.
      byte of output. The bit intrinsics of #15, from the same
      fortran_shims.py, are carried the same way and unchanged.
 
+  recast/fortran/interface.py's host-association pass  -- the rule that an
+     internal function's result variable is the function's own and never
+     host-associated, from the fix for issue #43 against
+     CESM-language-translator, in its pipeline/extract_interface.py. The
+     issue was found by this repository's corpus triage and filed from
+     here; the fix is Qinrun Dai's, who commits as second5t
+     <mouseisnotalwaysmouse@outlook.com>. What is theirs is the observation
+     that the result lives in the record's ``result`` and in none of the
+     sets the pass subtracted, so a host variable of the same name was
+     reported as reached and passed as a trailing actual the Fortran does
+     not have. One line here, its own test. The same upstream revision
+     closed #40, #41, #42 and #44, none of which is relayed: the engine was
+     already on the side the fixes moved the pipeline to, and the
+     differentials record the closing.
+
   recast/scan/, recast/sarif.py and recast/conformance/fake_tool.py  -- the
      cyber gate, from tools/devsecops-local.sh and tests/run.sh in CESM-CC-Test
      (hpc-devsecops). Written by Chien-Wei Huang, who commits under that name

@@ -1424,6 +1424,12 @@ def _host_associate(
         own = {a["name"] for a in rec["args"]}
         own |= {loc["name"] for loc in rec["locals"]}
         own |= {p["name"] for p in rec.get("local_parameters", [])}
+        # A function's result variable is its own, not a local: when the host
+        # declares the same name, the result shadows it, and reporting it as
+        # host-associated passed it as a trailing actual the Fortran does not
+        # have (translator #43, shared by both sides until relayed).
+        if rec.get("result"):
+            own.add(str(rec["result"]).lower())
         host_names: set[str] = set()
         parent_spec = next(
             (c for c in parent.children if isinstance(c, f03.Specification_Part)), None
