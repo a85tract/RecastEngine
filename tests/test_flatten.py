@@ -332,3 +332,38 @@ def test_stand_ins_resolve_the_trees_initializers_and_answer_the_framework(tree:
     assert report["abortutils"]["framework"] is True
     again, _ = stand_ins(emitted, tree, {"state_mod_numpy.py"}, modules=frozenset({"state_mod"}))
     assert {p.name for p in again} == {"abortutils_numpy.py"}
+
+
+def test_a_bundled_companion_resolves_its_own_use_constants(tree: Path) -> None:
+    """The companion's ``<module>_use_constants.py`` carries the names *it*
+    use-imports, not the caller's table handed down."""
+    from recast.transform.numpy.tree import TreeConventions, TreeTranslation
+
+    (tree / "consts_mod.f90").write_text(
+        "module consts_mod\n  implicit none\n  real(8), parameter :: tfrz = 273.15d0\n"
+        "  integer, parameter :: nlev2 = 3\nend module consts_mod\n"
+    )
+    (tree / "helper_mod.f90").write_text(
+        "module helper_mod\n  use consts_mod, only: tfrz\n  implicit none\ncontains\n"
+        "  function celsius(t) result(c)\n    real(8), intent(in) :: t\n    real(8) :: c\n"
+        "    c = t - tfrz\n  end function celsius\nend module helper_mod\n"
+    )
+    (tree / "caller_mod.f90").write_text(
+        "module caller_mod\n  use consts_mod, only: nlev2\n  use helper_mod, only: celsius\n"
+        "  implicit none\ncontains\n  subroutine run(t, c)\n    real(8), intent(in) :: t(nlev2)\n"
+        "    real(8), intent(out) :: c(nlev2)\n    integer :: i\n    do i = 1, nlev2\n"
+        "      c(i) = celsius(t(i))\n    end do\n  end subroutine run\nend module caller_mod\n"
+    )
+    frontend = FortranFrontend(constant_modules=["consts_mod"], stub_modules=["consts_mod"])
+    unit = next(u for u in frontend.discover(tree) if u.uid == "fortran:caller_mod")
+    conventions = TreeConventions(
+        constant_modules=frozenset({"consts_mod"}), stub_modules=frozenset({"consts_mod"})
+    )
+    candidate = TreeTranslation(conventions).apply(
+        unit, frontend.analyze(unit, tree), {"root": str(tree)}
+    )
+    assert "helper_mod" in candidate.notes["tree"]["bundled"]
+    helper = candidate.files[Path("helper_mod_use_constants.py")].decode()
+    assert "TFRZ" in helper and "NLEV2" not in helper
+    caller = candidate.files[Path("caller_mod_use_constants.py")].decode()
+    assert "NLEV2" in caller
