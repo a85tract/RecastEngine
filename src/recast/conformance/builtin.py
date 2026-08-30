@@ -449,6 +449,15 @@ PLUGIN_SET = PluginSet(
             defers=_with_a_refused_block,
             requires=("fparser", "numpy"),
         ),
+        TransformCase(
+            # The tree translation under empty conventions is the file
+            # translation: same rules, same refusals, plus the use-constants,
+            # stand-ins and adapters a flat single-file unit has none of.
+            name="translate.tree",
+            subject=_translatable,
+            defers=_with_a_refused_block,
+            requires=("fparser", "numpy"),
+        ),
     ),
     oracles=(
         OracleCase(
@@ -523,6 +532,27 @@ PLUGIN_SET = PluginSet(
             requires=("numpy", "fparser"),
             # ``key`` asks the compiler its version before anything is built,
             # so even the cheap checks need one on PATH.
+            requires_commands=("gfortran",),
+        ),
+        OracleCase(
+            # The same reference, built behind a static library and a flat
+            # adapter module; on a unit with no derived types the adapter is
+            # only a re-export, and the contract is the same as f2py-golden's
+            # plus the link flags, which change what the extension loads
+            # against.
+            name="f2py-golden-flat",
+            unit=Unit(uid=F2PY_UNIT, kind="module"),
+            facts=_toy_physics_facts,
+            config={"root": str(TOY_PHYSICS)},
+            moves_the_key={
+                "compiler flags": {"fflags": "-O2"},
+                "wrapped subprograms": {"subprograms": ["settle"]},
+                "wrapper parameters": {"wrapper_parameters": {"n": 8}},
+                "link flags": {"ldflags": "-lm"},
+            },
+            move_the_source=_different_source,
+            materializes=True,
+            requires=("numpy", "fparser"),
             requires_commands=("gfortran",),
         ),
     ),

@@ -69,9 +69,11 @@ fortran = "recast.fortran.frontend:factory"
 f2py-golden = "recast.oracle.f2py:factory"
 numpy-anchor = "recast.oracle.numpy_anchor:factory"
 dump-replay = "recast.oracle.dump_replay:factory"
+"f2py-golden-flat" = "recast.oracle.flat:factory"
 
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"
+"translate.tree" = "recast.transform.numpy.tree:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
 "translate.numba" = "recast.transform.numba.translate:factory"
 "translate.cuda" = "recast.transform.cuda.translate:factory"
