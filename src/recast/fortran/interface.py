@@ -554,6 +554,54 @@ def extract_subprogram(
             result_name = str(res[0]).lower()
 
     arg_names = [str(a).lower() for a in walk(dummy_args, f03.Name)] if dummy_args else []
+    kind = "function" if is_function else "subroutine"
+    return _record_of(
+        sub,
+        name,
+        kind,
+        arg_names,
+        result_name,
+        prefixes,
+        kind_map,
+        module_state_names,
+        module_sub_names,
+        intent_overrides,
+        prefix=prefix,
+    )
+
+
+def extract_program(
+    prog: Any,
+    name: str,
+    kind_map: dict[str, str],
+    module_state_names: set[str],
+    module_sub_names: set[str],
+) -> dict[str, Any]:
+    """A main program's body as a subprogram record of kind ``program``: no
+    dummies, no result, its declarations as locals, its calls as calls. The
+    body has the shape of a subroutine's -- a specification part and an
+    execution part -- and is read by the same code."""
+    return _record_of(
+        prog, name, "program", [], name, [], kind_map, module_state_names, module_sub_names, None
+    )
+
+
+def _record_of(
+    sub: Any,
+    name: str,
+    kind: str,
+    arg_names: list[str],
+    result_name: str,
+    prefixes: list[str],
+    kind_map: dict[str, str],
+    module_state_names: set[str],
+    module_sub_names: set[str],
+    intent_overrides: dict[str, str] | None,
+    prefix: Any = None,
+) -> dict[str, Any]:
+    """The record of one scope with a subprogram's shape -- a subroutine, a
+    function, an interface body, a program -- once its header is read."""
+    is_function = kind == "function"
 
     # Every specification part, not the first: statement functions between
     # declaration blocks make fparser split one into several. ``walk`` takes
@@ -775,7 +823,7 @@ def extract_subprogram(
 
     return {
         "name": name,
-        "kind": "function" if is_function else "subroutine",
+        "kind": kind,
         "prefixes": prefixes,
         "result": result_name if is_function else None,
         "result_dtype": result_dtype,
@@ -791,43 +839,51 @@ def extract_subprogram(
     }
 
 
-def _scope_of(ast: Any, path: Path) -> tuple[str, Any, Any]:
-    """``(module_name, specification_part, subprogram_scope)`` for a source file.
+def scopes_in(ast: Any, path: Path) -> list[tuple[str, str, Any]]:
+    """``(name, kind, node)`` for every program unit a file defines, in source
+    order: each ``module`` (kind ``module``), ``submodule`` (``submodule``)
+    and ``program`` (``program``). A file of bare subprograms has none and
+    borrows its stem, kind ``file``, with the whole tree as its scope.
+
+    One file, several units: the synthetic slicing corpus puts a module and
+    the program that uses it in one file, and a test tree puts two modules
+    in one. Reading only the first left the rest unreachable -- a ``use``
+    of the second module resolved to the file and came back with the
+    first's record."""
+    out: list[tuple[str, str, Any]] = []
+    for mod in walk(ast, f03.Module):
+        out.append((str(walk(mod, f03.Module_Stmt)[0].children[1]).lower(), "module", mod))
+    for sub in walk(ast, f08.Submodule):
+        out.append((str(walk(sub, f08.Submodule_Stmt)[0].children[1]).lower(), "submodule", sub))
+    for prog in walk(ast, f03.Main_Program):
+        stmts = walk(prog, f03.Program_Stmt)
+        name = path.stem.lower().replace("_cpp", "")
+        if stmts and stmts[0].children[1] is not None:
+            name = str(stmts[0].children[1]).lower()
+        out.append((name, "program", prog))
+    if not out:
+        out.append((path.stem.lower().replace("_cpp", ""), "file", ast))
+    return out
+
+
+def _scope_of(ast: Any, path: Path, name: str | None = None) -> tuple[str, Any, Any]:
+    """``(module_name, specification_part, subprogram_scope)`` for one program
+    unit of a source file: the one called ``name``, or the first when none
+    is named (a file with one module, which is nearly every file).
 
     Handles the three shapes this frontend meets: a module, a main program, and
     a file of bare subprograms. The last two borrow the file stem for a name so
     that every Unit still has a stable ``uid``.
     """
-    modules = walk(ast, f03.Module)
-    if modules:
-        mod = modules[0]
-        mod_name = str(walk(mod, f03.Module_Stmt)[0].children[1]).lower()
-        spec = next((c for c in mod.children if isinstance(c, f03.Specification_Part)), None)
-        return mod_name, spec, mod
-
-    submodules = walk(ast, f08.Submodule)
-    if submodules:
-        # A submodule is a module whose host is its parent (#29): its bodies
-        # see the parent's entities by host association, which the
-        # translation gets through a synthetic ``USE parent`` -- see
-        # ``submodule_parent`` and ``extract``.
-        mod = submodules[0]
-        mod_name = str(walk(mod, f08.Submodule_Stmt)[0].children[1]).lower()
-        spec = next((c for c in mod.children if isinstance(c, f03.Specification_Part)), None)
-        return mod_name, spec, mod
-
-    programs = walk(ast, f03.Main_Program)
-    stem = path.stem.lower().replace("_cpp", "")
-    mod_name = stem
-    spec = None
-    if programs:
-        prog_stmts = walk(programs[0], f03.Program_Stmt)
-        if prog_stmts and prog_stmts[0].children[1] is not None:
-            mod_name = str(prog_stmts[0].children[1]).lower()
-        spec = next(
-            (c for c in programs[0].children if isinstance(c, f03.Specification_Part)), None
-        )
-    return mod_name, spec, ast
+    scopes = scopes_in(ast, path)
+    chosen = scopes[0]
+    if name is not None:
+        chosen = next((sc for sc in scopes if sc[0] == name.lower()), None) or chosen
+    scope_name, kind, node = chosen
+    if kind == "file":
+        return scope_name, None, ast
+    spec = next((c for c in node.children if isinstance(c, f03.Specification_Part)), None)
+    return scope_name, spec, node
 
 
 def _only_names(statement: str) -> set[str]:
@@ -1005,8 +1061,12 @@ def extract(
     kind_assumptions: dict[str, str] | None = None,
     intent_overrides: dict[str, Any] | None = None,
     buffer_out_arrays: str = "unsizable",
+    scope: str | None = None,
 ) -> dict[str, Any]:
-    """Full interface record for one Fortran source file.
+    """Full interface record for one program unit of a Fortran source file:
+    the module, submodule or program called ``scope``, or the file's first
+    when none is named. A ``program``'s body is recorded as a subprogram
+    of kind ``program``, named after it, with no dummies.
 
     ``kind_assumptions`` names kind parameters this file use-imports from a
     module that is not being parsed (``{"r8": "float64"}``). The command-line
@@ -1022,7 +1082,7 @@ def extract(
     overrides = normalize_overrides(intent_overrides)
     kind_dtypes = {k.lower(): v for k, v in (kind_assumptions or {}).items()}
 
-    mod_name, mod_spec, sub_scope = _scope_of(ast, path)
+    mod_name, mod_spec, sub_scope = _scope_of(ast, path, scope)
 
     module_parameters: list[dict[str, Any]] = []
     module_state: list[dict[str, Any]] = []
@@ -1119,10 +1179,16 @@ def extract(
     # the component imports the same way; those count as visible for it.
     imported = {n for u in walk(sub_scope, f03.Use_Stmt) for n in _only_names(str(u))}
     _host_associate(subs, subprograms, sub_names, state_names)
+    if isinstance(sub_scope, f03.Main_Program):
+        # After the passes that walk ``subs`` and ``subprograms`` side by
+        # side: the program body has no node in ``subs``.
+        subprograms.insert(
+            0, extract_program(sub_scope, mod_name, kind_map, state_names, sub_names)
+        )
     for record in subprograms:
         record["public"] = is_public(record["name"])
 
-    parent = submodule_parent(ast)
+    parent = submodule_parent(sub_scope) if isinstance(sub_scope, f08.Submodule) else None
     use_statements = [str(u) for u in walk(sub_scope, f03.Use_Stmt)]
     if parent:
         # The parent's entities reach a submodule by host association; the
@@ -1135,7 +1201,7 @@ def extract(
         # A file of bare subprograms borrows its stem for a name; consumers
         # that emit `use <module>` need to know the name is borrowed. A
         # submodule is a module scope, reached through its parent's name.
-        "is_module": bool(walk(ast, f03.Module)) or parent is not None,
+        "is_module": isinstance(sub_scope, f03.Module) or parent is not None,
         **({"submodule_of": parent} if parent else {}),
         "kind_map": kind_map,
         "use_statements": use_statements,
