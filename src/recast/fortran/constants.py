@@ -441,7 +441,12 @@ def _decl_line(decl: Any) -> int | None:
     return None
 
 
-def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, Any]:
+def extract(
+    path: Path,
+    *,
+    extern_names: set[str] | None = None,
+    scope: str | None = None,
+) -> dict[str, Any]:
     """Every parameter and hoisted literal in one Fortran source file.
 
     ``extern_names`` are constants this module use-imports and that a sibling
@@ -451,7 +456,7 @@ def extract(path: Path, *, extern_names: set[str] | None = None) -> dict[str, An
     previously generated artifact being present and importable.
     """
     ast = parse(path)
-    mod_name, mod_spec, sub_scope = _scope_of(ast, path)
+    mod_name, mod_spec, sub_scope = _scope_of(ast, path, scope)
 
     known: set[str] = set(extern_names or ())
     module_parameters: list[dict[str, Any]] = []

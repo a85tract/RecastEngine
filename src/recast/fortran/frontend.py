@@ -329,7 +329,7 @@ class FortranFrontend(Frontend):
         ``FlatConventions`` fields the tree spells differently."""
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._submodule_parents: dict[Path, dict[str, str]] = {}
-        self._analyzed: dict[tuple[str, str], dict[str, Any]] = {}
+        self._analyzed: dict[tuple[str, str, str | None], dict[str, Any]] = {}
 
     # --- discovery -----------------------------------------------------------
 
@@ -349,9 +349,9 @@ class FortranFrontend(Frontend):
             yield from self._units_in(path, relative)
 
     def _units_in(self, path: Path, rel: Path) -> Iterator[Unit]:
-        from recast.fortran._parse import STD, digest, f03, f08, walk
+        from recast.fortran._parse import STD, digest
         from recast.fortran._parse import parse as parse_file
-        from recast.fortran.interface import _scope_of, node_span
+        from recast.fortran.interface import node_span, scopes_in
 
         sha = digest(path)
         try:
@@ -368,22 +368,22 @@ class FortranFrontend(Frontend):
             )
             return
 
-        mod_name, _spec, scope = _scope_of(ast, path)
-        if walk(ast, f03.Module) or walk(ast, f08.Submodule):
-            kind = "module"
-        else:
-            kind = "program" if walk(ast, f03.Main_Program) else "file"
-        module_uid = f"{UID_PREFIX}:{mod_name}"
-        yield Unit(uid=module_uid, kind=kind, sources=(rel,), attrs={"digest": sha, "std": STD})
+        # Every program unit the file defines -- a file holding two modules,
+        # or a module and the program that uses it, is two Units, each
+        # analyzed under its own name. A submodule is a module scope.
+        for mod_name, scope_kind, scope in scopes_in(ast, path):
+            kind = "module" if scope_kind in ("module", "submodule") else scope_kind
+            module_uid = f"{UID_PREFIX}:{mod_name}"
+            yield Unit(uid=module_uid, kind=kind, sources=(rel,), attrs={"digest": sha, "std": STD})
 
-        for sub_name, sub in _subprograms_of(scope):
-            yield Unit(
-                uid=f"{module_uid}/{sub_name}",
-                kind="subprogram",
-                sources=(rel,),
-                parent=module_uid,
-                attrs={"digest": sha, "line_span": list(node_span(sub))},
-            )
+            for sub_name, sub in _subprograms_of(scope):
+                yield Unit(
+                    uid=f"{module_uid}/{sub_name}",
+                    kind="subprogram",
+                    sources=(rel,),
+                    parent=module_uid,
+                    attrs={"digest": sha, "line_span": list(node_span(sub))},
+                )
 
     # --- analysis ------------------------------------------------------------
 
@@ -391,7 +391,7 @@ class FortranFrontend(Frontend):
         _require_fparser()
         from recast.fortran import constants as constants_mod
         from recast.fortran import interface as interface_mod
-        from recast.fortran._parse import STD, digest
+        from recast.fortran._parse import STD, digest, f03
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
         from recast.fortran.interface import _scope_of, companion_externals, subprogram_key
@@ -407,7 +407,11 @@ class FortranFrontend(Frontend):
         # file that defines ``wp`` is evidence, and the operator's table is
         # for what no file in the tree says. The operator still wins where
         # both speak, because an override nothing can outvote is not one.
-        tree_kinds = self._tree_kinds(path, Path(root))
+        # Which program unit of the file this is: its uid names it. A file
+        # of bare subprograms borrows its stem and has one scope, the file.
+        own = (unit.parent or unit.uid).split(":", 1)[1]
+        scope_name = None if unit.kind == "file" else own
+        tree_kinds = self._tree_kinds(path, Path(root), own)
         record = interface_mod.extract(
             path,
             kind_assumptions={
@@ -416,11 +420,16 @@ class FortranFrontend(Frontend):
             },
             intent_overrides=self.intent_overrides,
             buffer_out_arrays=self.buffer_out_arrays,
+            scope=scope_name,
         )
-        consts = constants_mod.extract(path, extern_names=set(self.extern_constants))
+        consts = constants_mod.extract(
+            path, extern_names=set(self.extern_constants), scope=scope_name
+        )
 
-        _mod_name, _spec, scope = _scope_of(parse_file(path), path)
+        _mod_name, _spec, scope = _scope_of(parse_file(path), path, scope_name)
         nodes = dict(_subprograms_of(scope))
+        if isinstance(scope, f03.Main_Program):
+            nodes[own] = scope  # the program body is a subprogram of its own unit
         defined = set(nodes)
         plain_names = {key.rsplit("/", 1)[-1] for key in defined}
 
@@ -445,7 +454,7 @@ class FortranFrontend(Frontend):
         if record.get("is_module") and not record.get("submodule_of"):
             for name in self._submodules_of(str(record["module"]).lower(), Path(root)):
                 source = self._module_index(Path(root).resolve()).get(name)
-                record_of = self._readable(source, interface_mod.extract) if source else None
+                record_of = self._readable(source, interface_mod.extract, name) if source else None
                 if record_of is None:
                     continue
                 exported = [s["name"] for s in record_of["subprograms"] if not s.get("host")]
@@ -556,7 +565,9 @@ class FortranFrontend(Frontend):
             if plans:
                 facts.extra["flat_plans"] = [p.to_dict() for p in plans]
 
-    def _tree_kinds(self, path: Path, root: Path) -> dict[str, dict[str, str]]:
+    def _tree_kinds(
+        self, path: Path, root: Path, own: str | None = None
+    ) -> dict[str, dict[str, str]]:
         """Kind parameters this file ``use``s that another file in the tree defines.
 
         ``integer, parameter :: wp = real64`` in one file and ``real(wp)``
@@ -599,11 +610,11 @@ class FortranFrontend(Frontend):
                 continue
             seen.add(module)
             source = index.get(module)
-            if source is None or source.resolve() == path.resolve():
+            if source is None or module == own:
                 continue
             # A sibling that does not parse costs the kinds it would have
             # supplied and nothing else; ``_companions`` records the why.
-            record_of = self._readable(source, interface_mod.extract)
+            record_of = self._readable(source, interface_mod.extract, module)
             if record_of is None:
                 continue
             for name, dtype in sorted(record_of.get("kind_map", {}).items()):
@@ -664,7 +675,7 @@ class FortranFrontend(Frontend):
             if module in INTRINSIC_MODULES or module in self.stub_modules:
                 continue
             source = index.get(module)
-            if source is None or source.resolve() == path.resolve():
+            if source is None:
                 continue
             renames = {
                 local.strip().lower(): remote.strip().lower()
@@ -675,8 +686,8 @@ class FortranFrontend(Frontend):
                 )
             }
             try:
-                record_of = self._extracted(source, "interface", interface_mod.extract)
-                constants_of = self._extracted(source, "constants", constants_mod.extract)
+                record_of = self._extracted(source, "interface", interface_mod.extract, module)
+                constants_of = self._extracted(source, "constants", constants_mod.extract, module)
             except Exception as error:  # fparser raises several unrelated types
                 # A sibling that does not parse is not this unit's failure. It
                 # drops out of the companion set, its calls refuse the way any
@@ -720,7 +731,9 @@ class FortranFrontend(Frontend):
             return True
         return bool(only_names(match.group("only")) - declared_names(record))
 
-    def _readable(self, source: Path, extract: Any) -> dict[str, Any] | None:
+    def _readable(
+        self, source: Path, extract: Any, scope: str | None = None
+    ) -> dict[str, Any] | None:
         """``_extracted`` for a file this unit only consults, not one it is.
 
         ``None`` where the extraction raised: fparser reports an unparsable
@@ -728,19 +741,24 @@ class FortranFrontend(Frontend):
         syntax is not a reason to fail the unit that merely ``use``s it.
         """
         try:
-            return self._extracted(source, "interface", extract)
+            return self._extracted(source, "interface", extract, scope)
         except Exception:
             return None
 
-    def _extracted(self, source: Path, kind: str, extract: Any) -> dict[str, Any]:
-        """One extraction per (file revision, kind), however many units want it.
+    def _extracted(
+        self, source: Path, kind: str, extract: Any, scope: str | None = None
+    ) -> dict[str, Any]:
+        """One extraction per (file revision, kind, scope), however many units
+        want it. ``scope`` names the program unit of the file -- the module a
+        ``use`` asked for -- so a file holding two modules answers for the
+        right one.
 
         A tree of forty modules is forty analyses, and without this each would
         re-extract every sibling it depends on.
         """
         from recast.fortran._parse import digest
 
-        key = (digest(source), kind)
+        key = (digest(source), kind, scope)
         cached = self._analyzed.get(key)
         if cached is None:
             if kind == "interface":
@@ -748,9 +766,10 @@ class FortranFrontend(Frontend):
                     source,
                     kind_assumptions=self.kind_assumptions,
                     buffer_out_arrays=self.buffer_out_arrays,
+                    scope=scope,
                 )
             else:
-                cached = extract(source, extern_names=set(self.extern_constants))
+                cached = extract(source, extern_names=set(self.extern_constants), scope=scope)
             self._analyzed[key] = cached
         return cached
 
