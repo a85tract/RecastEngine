@@ -1170,6 +1170,7 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     ]
     exited = False
     for statement in body[:-1]:
+        had_return = _has_return([statement])  # before the visit rewrites it away
         rewritten: Any = Returns().visit(statement)
         rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
         if exited:
@@ -1182,7 +1183,7 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             )
         else:
             out.extend(rewritten)
-        if _has_return([statement]):
+        if had_return:
             exited = True
     final = body[-1]
     assert isinstance(final, ast.Return) and final.value is not None
