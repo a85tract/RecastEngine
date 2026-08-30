@@ -1527,3 +1527,55 @@ def test_an_interface_bodys_dummies_are_not_module_state(tmp_path):
     assert [m["name"] for m in record["module_state"]] == ["shared"]
     (twice,) = record["subprograms"]
     assert twice["module_state_read"] == ["shared"]
+
+
+def test_a_malformed_end_statement_does_not_exit_the_process(tmp_path: Path) -> None:
+    """fparser's reader logs ``expected <subroutine-name> is X but got Y``
+    and then calls ``sys.exit(1)``, which ended the discovery of a whole
+    tree on one stub file (E3SM's external_models/emi/.../clm_varctl.F90).
+    The reader is told not to exit: the line is ignored, as its own message
+    says, and the parse answers for itself."""
+    source = tmp_path / "bad_end.f90"
+    source.write_text(
+        "module bad_end\n"
+        "  implicit none\n"
+        "  logical :: flag = .false.\n"
+        "contains\n"
+        "  subroutine set_flag(flag_in)\n"
+        "    logical, intent(in) :: flag_in\n"
+        "    flag = flag_in\n"
+        "  end subroutine set_other_flag\n"
+        "end module bad_end\n"
+    )
+    try:
+        parse(source)
+    except SystemExit:  # pragma: no cover - the defect
+        pytest.fail("parse called sys.exit on a malformed end statement")
+    except Exception:  # a syntax error is an acceptable answer
+        pass
+
+
+def test_a_format_statement_does_not_stop_the_read_write_analysis(tmp_path: Path) -> None:
+    """``FORMAT(I4.4, '-', I2.2)``: fparser hangs the *class*
+    ``Int_Literal_Constant`` under the ``Data_Edit_Desc``, and walking it as
+    a node raised ``TypeError: 'property' object is not iterable`` out of
+    ``expr_reads`` -- the whole module's analysis (ELM's histFileMod) with it."""
+    from recast.fortran.rwset import block_rwsets, scope_for
+
+    source = tmp_path / "fmt.f90"
+    source.write_text(
+        "module fmt_mod\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine stamp(yr, mon, day, text)\n"
+        "    integer, intent(in) :: yr, mon, day\n"
+        "    character(len=10), intent(out) :: text\n"
+        "    write(text, 10) yr, mon, day\n"
+        "10  format(I4.4, '-', I2.2, '-', I2.2)\n"
+        "  end subroutine stamp\n"
+        "end module fmt_mod\n"
+    )
+    record = interface.extract(source)
+    node = next(iter(walk(parse(source), f03.Subroutine_Subprogram)))
+    blocks = block_rwsets(node, scope_for(record, "stamp"))
+    assert any("text" in b["writes"] for b in blocks)
