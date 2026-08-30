@@ -120,3 +120,38 @@ def test_while_loops_become_lax_while_or_a_counted_for() -> None:
     lowered = _WhileLoops({"nmax": 50}).visit_block(counted)
     text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
     assert text.startswith("for _w1 in range(0, 51):\n    if abs(b - a) > err and n <= nmax:")
+
+
+def test_single_exit_refuses_a_tuple_return() -> None:
+    import pytest
+
+    from recast.transform.jax.tree import NotFlat, _single_exit
+
+    fn = ast.parse(
+        "def f(x):\n"
+        "    if x == 0.0:\n"
+        "        return (1.0, 2.0)\n"
+        "    y = x * 2.0\n"
+        "    return (y, x)\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    with pytest.raises(NotFlat, match="several outputs"):
+        _single_exit(fn.body)
+
+
+def test_counted_while_needs_the_counter_advanced_every_pass() -> None:
+    from recast.transform.jax.tree import _WhileLoops
+
+    # The counter steps under a branch: the trip count is not nmax + 1, so
+    # the loop stays a lax.while_loop.
+    branched = ast.parse(
+        "while abs(b - a) > err and n <= nmax:\n    if a > 0.0:\n        n = n + 1\n    a = b\n"
+    ).body
+    lowered = _WhileLoops({"nmax": 50}).visit_block(branched)
+    text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
+    assert "lax.while_loop" in text and "range(0, 51)" not in text
+    # ``n += 1`` at the top level counts too.
+    aug = ast.parse("while n < nmax:\n    n += 2\n    a = b\n").body
+    lowered = _WhileLoops({"nmax": 50}).visit_block(aug)
+    text = ast.unparse(ast.fix_missing_locations(ast.Module(body=lowered, type_ignores=[])))
+    assert text.startswith("for _w1 in range(0, 51):")

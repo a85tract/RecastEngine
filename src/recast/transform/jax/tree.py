@@ -431,8 +431,14 @@ class _Rewrite(ast.NodeTransformer):
         dynamic_start = self._is_dynamic(start) or any(
             isinstance(n, ast.Name) and n.id in self.statics for n in ast.walk(start)
         )
+        # Bounds stay as the anchor spells them: ``lax.fori_loop`` lowers a
+        # loop whose bounds are Python ints to a ``scan``, which reverse
+        # mode can transpose, and a ``jnp.int32`` bound -- even a concrete
+        # one -- makes it a ``while_loop``, which it cannot. A weakly typed
+        # counter is fine: what the arms of a ``lax.cond`` must agree on is
+        # the dtype, and the guard-typed casts keep the other arm an int32.
         if not (self._is_dynamic(stop) or dynamic_start or sized):
-            return self._strong_bounds(node)
+            return node
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
         # whose count is traced has no reverse-mode rule. The body indexes
         # some array by ``ic - 1``; that axis's static extent is the count
@@ -442,7 +448,7 @@ class _Rewrite(ast.NodeTransformer):
         self.loop_vars.add(var)
         extent = _indexed_extent(node.body, var)
         if extent is None:
-            return self._strong_bounds(node)
+            return node
         test: ast.expr = ast.Compare(
             left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
         )
@@ -463,7 +469,7 @@ class _Rewrite(ast.NodeTransformer):
         self.static_loops.append(f"{var}: {ast.unparse(start)}..{ast.unparse(stop)}")
         it.args[-1] = extent
         node.body = [guard]
-        return self._strong_bounds(node)
+        return node
 
     def _static_descending(self, node: ast.For) -> Any:
         """``do ic = ntop(p), nbot(p), -1``: the anchor's ``range(a, b - 1,
@@ -512,16 +518,6 @@ class _Rewrite(ast.NodeTransformer):
         self.static_loops.append(f"{var}: {ast.unparse(start)} down to {ast.unparse(stop)}")
         it.args = [top, ast.Constant(0), step]
         node.body = [guard]
-        return node
-
-    @staticmethod
-    def _strong_bounds(node: ast.For) -> ast.For:
-        """Bounds stay as the anchor spells them: ``lax.fori_loop`` lowers a
-        loop whose bounds are Python ints to a ``scan``, which reverse mode
-        can transpose, and a ``jnp.int32`` bound -- even a concrete one --
-        makes it a ``while_loop``, which it cannot. A weakly typed counter
-        is fine: what the arms of a ``lax.cond`` must agree on is the dtype,
-        and the guard-typed casts keep the other arm an int32."""
         return node
 
     def visit_If(self, node: ast.If) -> Any:
@@ -718,8 +714,16 @@ class _Rewrite(ast.NodeTransformer):
             return self.plans[spec_name.lower()]
         objects = copy.deepcopy(callback.objects)
         derived = [a["name"].lower() for a in record["args"] if "UNKNOWN(TYPE" in str(a["dtype"])]
-        # The object is called by the root finder's own dummy name.
-        for obj, own_name in zip((o for o in objects if o.kind == "dummy"), derived, strict=False):
+        dummy_objects = [o for o in objects if o.kind == "dummy"]
+        # The object is called by the root finder's own dummy name. One
+        # derived dummy pairs with the callback's one object; more would
+        # pair by position, which is a guess.
+        if len(derived) != 1 or len(dummy_objects) != 1:
+            raise NotFlat(
+                f"{name}: {len(derived)} derived dummies against {len(dummy_objects)} "
+                f"objects of {callback.subprogram['name']}; the pairing is not by position"
+            )
+        for obj, own_name in zip(dummy_objects, derived, strict=True):
             for component in obj.components:
                 component.owner = own_name
             obj.name = own_name
@@ -1150,6 +1154,14 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     early = [s for s in body[:-1] if _has_return([s])]
     if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return body
+    # The merge is one ``jnp.where`` over one value: a function with several
+    # outputs returns a tuple, which ``where`` cannot select.
+    for statement in body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+                raise NotFlat(
+                    f"an early return in a function with several outputs: {ast.unparse(node)}"
+                )
 
     class Returns(ast.NodeTransformer):
         def visit_Return(self, node: ast.Return) -> Any:
@@ -1202,6 +1214,38 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
+def _advances(body: list[ast.stmt], name: str) -> bool:
+    """Whether ``name`` is stepped by a positive integer constant at the
+    body's top level -- ``name = name + c`` or ``name += c``."""
+
+    def positive(value: ast.expr) -> bool:
+        return isinstance(value, ast.Constant) and isinstance(value.value, int) and value.value > 0
+
+    for statement in body:
+        if (
+            isinstance(statement, ast.AugAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == name
+            and isinstance(statement.op, ast.Add)
+            and positive(statement.value)
+        ):
+            return True
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == name
+            and isinstance(statement.value, ast.BinOp)
+            and isinstance(statement.value.op, ast.Add)
+        ):
+            left, right = statement.value.left, statement.value.right
+            if (isinstance(left, ast.Name) and left.id == name and positive(right)) or (
+                isinstance(right, ast.Name) and right.id == name and positive(left)
+            ):
+                return True
+    return False
+
+
 class _WhileLoops(ast.NodeTransformer):
     """``while True: ... break`` as ``lax.while_loop``: every ``break``
     sets a flag, every later statement of the body runs under ``if not
@@ -1230,9 +1274,12 @@ class _WhileLoops(ast.NodeTransformer):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
         return node  # nested (already lowered) bodies stay as they are
 
-    def _counted_bound(self, test: ast.expr) -> int | None:
+    def _counted_bound(self, test: ast.expr, body: list[ast.stmt]) -> int | None:
         """The constant a counter is compared against in ``test`` --
-        ``n <= nmax`` or ``n < nmax`` -- when ``nmax`` is a known integer."""
+        ``n <= nmax`` or ``n < nmax`` -- when ``nmax`` is a known integer
+        and the body advances ``n`` by a positive constant on every pass
+        (``n = n + 1`` or ``n += 1`` at the body's top level, outside any
+        branch): only then is ``nmax + 1`` the trip count."""
         for node in ast.walk(test):
             if (
                 isinstance(node, ast.Compare)
@@ -1241,6 +1288,8 @@ class _WhileLoops(ast.NodeTransformer):
                 and isinstance(node.left, ast.Name)
             ):
                 bound = node.comparators[0]
+                if not _advances(body, node.left.id):
+                    continue
                 if isinstance(bound, ast.Constant) and isinstance(bound.value, int):
                     return int(bound.value)
                 if isinstance(bound, ast.Name) and bound.id in self.constants:
@@ -1256,7 +1305,7 @@ class _WhileLoops(ast.NodeTransformer):
         self.n += 1
         done = f"_done_{self.n}"
         forever = isinstance(node.test, ast.Constant) and node.test.value is True
-        counted = self._counted_bound(node.test)
+        counted = self._counted_bound(node.test, node.body)
         if counted is not None and not any(isinstance(n, ast.Break) for n in ast.walk(node)):
             self.n -= 1
             return ast.For(
