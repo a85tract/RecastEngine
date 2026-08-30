@@ -367,3 +367,31 @@ def test_a_bundled_companion_resolves_its_own_use_constants(tree: Path) -> None:
     assert "TFRZ" in helper and "NLEV2" not in helper
     caller = candidate.files[Path("caller_mod_use_constants.py")].decode()
     assert "NLEV2" in caller
+
+
+def test_a_component_written_through_a_companion_call_is_written(tree: Path) -> None:
+    """``call scale_in_place(inst%gs)`` into a sibling module writes the
+    component; the plan must return it, or a functional lowering loses the
+    write the NumPy adapter's in-place arrays hide."""
+    (tree / "ops_mod.f90").write_text(
+        "module ops_mod\n  implicit none\ncontains\n"
+        "  subroutine scale_in_place(x, f)\n    real(8), intent(inout) :: x(:)\n"
+        "    real(8), intent(in) :: f\n    x = x * f\n  end subroutine scale_in_place\n"
+        "  subroutine fill(y, v)\n    real(8), intent(out) :: y(:)\n"
+        "    real(8), intent(in) :: v\n    y = v\n  end subroutine fill\nend module ops_mod\n"
+    )
+    (tree / "physics_mod.f90").write_text(
+        PHYSICS.replace(
+            "  use state_mod, only: scale\n",
+            "  use state_mod, only: scale\n  use ops_mod, only: scale_in_place, fill\n",
+        ).replace(
+            "    end associate\n  end subroutine Warm\n",
+            "    call scale_in_place(gs(1:num), dt)\n"
+            "    end associate\n"
+            "    call fill(inst%ncan, 1.0d0)\n  end subroutine Warm\n",
+        )
+    )
+    facts = _facts(tree, constant_modules=["types_mod"], flatten=True)
+    warm = next(p for p in plans_from_facts(facts) if p.subprogram["name"] == "warm")
+    written = {c.name for c in warm.objects[0].components if c.written}
+    assert written == {"tleaf", "gs", "ncan"}
