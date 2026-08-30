@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from recast.errors import OracleUnavailable
+from recast.errors import OracleUnavailable, RecastError
 from recast.fortran.flatten import FORTRAN_TYPES, FlatPlan, plans_from_facts, signature
 from recast.fortran.tree import MODULE_DEFINITION, sources
 from recast.model import Facts, OracleRef, Unit
@@ -301,8 +301,12 @@ class F2pyFlatOracle(F2pyGoldenOracle):
         # Paths are keyed by content below, not by name.
         handed_facts, handed = self._handed(facts, config, plan, Path("<lib>"), Path("<adapter>"))
         base = super().key(unit, handed_facts, handed)
+        # The unit's own digest as well: the library is keyed by the files'
+        # content, and Facts that say the source moved have to move the key
+        # even before the file on disk does.
         digest = hashlib.sha256(
-            f"{base}|{plan['library_key']}|{plan['adapter_key']}|{plan['ldflags']}".encode()
+            f"{base}|{facts.provenance.get('digest')}|{plan['library_key']}|"
+            f"{plan['adapter_key']}|{plan['ldflags']}".encode()
         ).hexdigest()[:16]
         return f"f2py:{facts.interface['module']}:{digest}"
 
@@ -337,7 +341,16 @@ class F2pyFlatOracle(F2pyGoldenOracle):
             timeout_s=float(config.get("build_timeout", 600)),
             label="reference library",
         )
-        result = executor.run(job)
+        try:
+            result = executor.run(job)
+        except RecastError:
+            raise
+        except Exception as error:
+            # An executor that refuses is the case ``OracleUnavailable`` exists
+            # for, and it has to arrive as one -- see ``F2pyGoldenOracle``.
+            raise OracleUnavailable(
+                f"the reference library could not be built: the executor refused: {error}"
+            ) from error
         if not result.ok:
             (lib_dir / "build.log").write_text(result.stdout + "\n" + result.stderr)
             raise OracleUnavailable(

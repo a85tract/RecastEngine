@@ -37,7 +37,7 @@ from recast.plugins.transform import Transform
 if TYPE_CHECKING:
     from recast.model import Candidate, Facts, Unit
 
-__all__ = ["TreeConventions", "TreeTranslation"]
+__all__ = ["TreeConventions", "TreeTranslation", "factory"]
 
 
 @dataclass(frozen=True)
@@ -331,3 +331,20 @@ class TreeTranslation(Transform):
                 candidate.files[path] = ("\n".join(lines) + "\n").encode()
         if applied:
             self._note(candidate)["constant_overrides"] = applied
+
+
+def factory(**config: Any) -> TreeTranslation:
+    """``translate.tree``: the conventions from config, an extension's
+    factory typically passing its own tables here instead."""
+    return TreeTranslation(
+        TreeConventions(
+            kind_assumptions=dict(config.get("kind_assumptions") or {}),
+            constant_modules=frozenset(m.lower() for m in config.get("constant_modules") or ()),
+            stub_modules=frozenset(m.lower() for m in config.get("stub_modules") or ()),
+            function_stubs=dict(config.get("function_stubs") or {}),
+            statement_stubs=dict(config.get("statement_stubs") or {}),
+            framework=dict(config.get("framework") or {}),
+            profile=str(config.get("profile", "gfortran")),
+            frontend=str(config.get("frontend", "fortran")),
+        )
+    )
