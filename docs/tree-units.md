@@ -118,3 +118,27 @@ kernel whose loop trip count is traced (`do ic = 1, ncan(p)`) is refused by
 JAX -- `lax.fori_loop` with dynamic bounds lowers to `while_loop` -- so
 forward mode (`jax.jvp`) is what a ported kernel offers today; a static
 trip count with a mask is the known next step.
+
+What the rewrite does beyond spelling, each named on the candidate:
+
+* a root finder that takes the object *and a procedure* (`hybrid`,
+  `zbrent`, `bisection`) is **specialized per callback** -- the callback's
+  plan on the root finder's body, emitted as `<callee>__<callback>_flat`
+  beside the flat functions, nested root finders recursively;
+* `while True: ... break` and `while cond:` become `lax.while_loop` with
+  a done flag; early returns become a flag and one merged exit;
+* `do ic = 1, ncan(p)` runs to the indexed axis's static extent under an
+  `if ic < stop` guard, so reverse mode has a rule; a dynamic slice in a
+  store or a sum is widened and masked; a local sized by a dummy extent
+  takes the array dummy's static shape;
+* an abort check is dropped, a log-only `if` is dropped, casts on traced
+  values become `jnp` casts, a local keeps the strong type its guard init
+  declares, an integer literal for a real dummy is cast;
+* a flat kernel's host wrapper binds the plan's module state before the
+  call, as the NumPy adapter does, for a helper that reads a run-filled
+  table through its module (a trace-time constant, so not differentiated).
+
+On the CLM-ml recording every one of the 15 multilayer-canopy modules'
+physics lowers this way, LeafPhotosynthesis with its root finders
+included; the residual under jit is XLA's fusion, and the same code with
+jit disabled reproduces the recording bit for bit.
