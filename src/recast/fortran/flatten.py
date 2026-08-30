@@ -390,6 +390,8 @@ def _accesses(
     depth: int = 0,
     visited: set[tuple[str, str]] | None = None,
     globals_out: set[str] | None = None,
+    externals: dict[str, dict[str, Any]] | None = None,
+    companions: tuple[dict[str, Any], ...] = (),
 ) -> tuple[dict[str, str], set[str], set[str]]:
     """``(alias -> "root%comp", reads, writes)`` over the subprogram's body,
     with the association statements themselves left out of the sets.
@@ -414,7 +416,13 @@ def _accesses(
                 if isinstance(comp, f03.Part_Ref):
                     comp = comp.children[0]
                 aliases[str(alias).lower()] = f"{str(root).lower()}%{str(comp).lower()}"
-    scope = rw.scope_for(record, name)
+    # With the companions' procedures in scope: a call into a sibling
+    # module writes its intent(out) actuals, and ``call tridiag(..., t(p,:))``
+    # is how a component gets written here. Without them every call scores
+    # as reads of its actuals and the component is planned read-only --
+    # which the NumPy adapter hides (the record's arrays are written in
+    # place) and a functional lowering does not.
+    scope = rw.scope_for(record, name, externals=externals or {}, companions=companions)
     reads: set[str] = set()
     writes: set[str] = set()
     execution = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
@@ -456,6 +464,40 @@ def _accesses(
                     for token in re.findall(r"[A-Za-z_]\w*", str(bound or "").split("%", 1)[0]):
                         if token.lower() not in declared_here:
                             globals_out.add("r:" + token.lower())
+    # An OUT actual of a call: ``call fill(inst%ncan, v)`` writes the
+    # component, whether the callee is this module's or a companion's. The
+    # sets record the actual by its root only, so the component is named
+    # here from the callee's out positions.
+    for call in walk(node, f03.Call_Stmt):
+        callee = str(call.children[0]).lower()
+        actuals = call.children[1].children if call.children[1] is not None else []
+        positions: list[int] = []
+        dummies: list[str] = []
+        if procedures and callee in procedures:
+            args = procedures[callee][2]["args"]
+            dummies = [a["name"].lower() for a in args]
+            positions = [i for i, a in enumerate(args) if a.get("intent") in ("OUT", "INOUT")]
+        elif externals and callee in externals:
+            positions = [int(i) for i in externals[callee].get("out_positions", [])]
+        for at, actual in enumerate(actuals):
+            value = actual
+            where = at
+            if isinstance(actual, f03.Actual_Arg_Spec):
+                keyword, value = actual.children
+                if str(keyword).lower() in dummies:
+                    where = dummies.index(str(keyword).lower())
+            if where not in positions:
+                continue
+            if isinstance(value, f03.Data_Ref) and len(value.children) == 2:
+                root, comp = value.children
+                if isinstance(comp, f03.Part_Ref):
+                    comp = comp.children[0]
+                writes.add(f"{str(root).lower()}%{str(comp).lower()}")
+            elif isinstance(value, f03.Name):
+                writes.add(str(value).lower())
+            elif isinstance(value, f03.Part_Ref):
+                # ``tair(p,:)``: a section of an alias, or of a plain array.
+                writes.add(str(value.children[0]).lower())
     # An alias written in this body is its selector's component written --
     # spelled that way here, so a caller following a call into this
     # subprogram sees ``inst%flux`` and not the alias.
@@ -547,6 +589,8 @@ def _accesses(
                                 depth + 1,
                                 visited,
                                 globals_out,
+                                externals,
+                                companions,
                             )
                             p_dummies = {a["name"].lower() for a in p_record["args"]}
                             for inner, target in ((p_reads, reads), (p_writes, writes)):
@@ -576,6 +620,8 @@ def _accesses(
                 depth + 1,
                 visited,
                 globals_out,
+                externals,
+                companions,
             )
             callee_dummies = {a["name"].lower() for a in callee_record["args"]}
             for inner, target in ((inner_reads, reads), (inner_writes, writes)):
@@ -590,6 +636,28 @@ def _accesses(
                         # everywhere, and the callee's reads are ours.
                         target.add(item)
     return aliases, reads, writes
+
+
+def _companion_scope(facts: Any) -> tuple[dict[str, dict[str, Any]], tuple[dict[str, Any], ...]]:
+    """The companions' procedures the way the frontend puts them in scope:
+    which names are calls and which positions they write, use-renames
+    looked up under the local spelling."""
+    from recast.fortran.interface import companion_externals
+
+    externals: dict[str, dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
+    for companion in facts.provenance.get("companions") or []:
+        record = companion.get("record")
+        if not record:
+            continue
+        records.append(record)
+        table = companion_externals(record)
+        for local, remote in (companion.get("renames") or {}).items():
+            if remote in table:
+                table[local] = table[remote]
+        for name, entry in table.items():
+            externals.setdefault(name, entry)
+    return externals, tuple(records)
 
 
 def _procedure_index(
@@ -623,6 +691,7 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
     plans: list[FlatPlan] = []
     type_records: dict[str, tuple[dict[str, Any], dict[str, list[str]]]] = {}
     type_files: dict[str, Path] = {}
+    externals, companions = _companion_scope(facts)
 
     def type_info(type_name: str) -> tuple[dict[str, Any], dict[str, list[str]]] | None:
         if type_name not in type_records:
@@ -664,7 +733,16 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
         procedures = _procedure_index(facts, root, source)
         globals_touched: set[str] = set()
         aliases, reads, writes = _accesses(
-            node, record, sub["name"], procedures, frozenset(dummies), 0, set(), globals_touched
+            node,
+            record,
+            sub["name"],
+            procedures,
+            frozenset(dummies),
+            0,
+            set(),
+            globals_touched,
+            externals,
+            companions,
         )
         touched: dict[str, dict[str, bool]] = {}  # root -> comp -> written
         for name in reads | writes:
