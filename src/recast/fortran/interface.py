@@ -1027,7 +1027,15 @@ def extract(
     module_parameters: list[dict[str, Any]] = []
     module_state: list[dict[str, Any]] = []
     if mod_spec is not None:
+        # An interface body's dummies are declared inside the module's
+        # specification part, and they are the interface's, not the module's:
+        # ``subroutine func(p, x, val)`` in an ``interface`` block declares no
+        # module variable ``x``, and a subprogram whose own dummy is ``x``
+        # shadows nothing.
+        within_interfaces = [node_span(ib) for ib in walk(mod_spec, f03.Interface_Block)]
         for d in collect_decls(mod_spec):
+            if any(lo <= d["line"] <= hi for lo, hi in within_interfaces):
+                continue
             for e in d["entities"]:
                 rec = {
                     "name": e["name"],

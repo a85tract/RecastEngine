@@ -75,6 +75,7 @@ dump-replay = "recast.oracle.dump_replay:factory"
 "translate.numpy" = "recast.transform.numpy.translate:factory"
 "translate.tree" = "recast.transform.numpy.tree:factory"
 "port.jax" = "recast.transform.jax.translate:factory"
+"port.tree-jax" = "recast.transform.jax.tree:factory"
 "translate.numba" = "recast.transform.numba.translate:factory"
 "translate.cuda" = "recast.transform.cuda.translate:factory"
 
