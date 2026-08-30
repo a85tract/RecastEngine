@@ -134,6 +134,35 @@ class BitexactVerifier(Verifier):
         executor: Executor,
         config: dict[str, Any],
     ) -> Verdict:
+        verdict = self._compare_all(unit, candidate, oracle, workspace, executor, config)
+        # An oracle that could not spell every subprogram lists the rest on
+        # its handle; a module that passes with three of its eleven
+        # subprograms compared must say so where the evidence is read. This
+        # neither weakens the verdict for what was compared nor strengthens
+        # it for what was not.
+        handle = oracle.handle if isinstance(oracle.handle, dict) else {}
+        ungated = dict(handle.get("ungated") or {})
+        if not ungated:
+            return verdict
+        return Verdict(
+            unit=verdict.unit,
+            candidate=verdict.candidate,
+            verifier=verdict.verifier,
+            confidence=verdict.confidence,
+            metrics={**verdict.metrics, "ungated": ungated},
+            detail=f"{verdict.detail}; {len(ungated)} subprogram(s) ungated, no reference: "
+            + ", ".join(f"{name} ({why})" for name, why in sorted(ungated.items())),
+        )
+
+    def _compare_all(
+        self,
+        unit: Unit,
+        candidate: Candidate,
+        oracle: OracleRef,
+        workspace: Path,
+        executor: Executor,
+        config: dict[str, Any],
+    ) -> Verdict:
         try:
             import numpy as np
         except ImportError:
@@ -189,6 +218,18 @@ class BitexactVerifier(Verifier):
             )
 
         deferred_subprograms = {entry.split("/", 1)[0] for entry in candidate.deferred}
+        if recorded:
+            # A recording is text and parses as float64 throughout; the
+            # signature says which of its inputs are integers.
+            self._type_recorded(np, samples, table)
+
+        def judged(name: str) -> bool:
+            """Not deferred -- and not a flat adapter around a subprogram
+            that is, since the adapter would call into a NotImplementedError
+            and the skip has to map the adapter's name back to its own."""
+            if name in deferred_subprograms:
+                return False
+            return not (name.endswith("_flat") and name[: -len("_flat")] in deferred_subprograms)
 
         def generable(name: str) -> bool:
             """Whether this harness can produce every required input.
@@ -214,20 +255,21 @@ class BitexactVerifier(Verifier):
                 by_subprogram.setdefault(str(sample.get("subprogram", "")), []).append(sample)
             offered = sorted(by_subprogram)
             wanted = config.get("subprograms") or [
-                name for name in offered if name in table and name not in deferred_subprograms
+                name for name in offered if name in table and judged(name)
             ]
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
             wanted = config.get("subprograms") or [
-                name
-                for name in wrappers
-                if name in table and name not in deferred_subprograms and generable(name)
+                name for name in wrappers if name in table and judged(name) and generable(name)
             ]
             skipped = sorted(set(wrappers) - set(wanted))
 
         trials = int(config.get("trials", 10))
-        dims = dict(config.get("dims", {}))
+        # The transform may have read the tree for the value of every name
+        # that sizes a dummy array (``Candidate.notes["dims"]``); the
+        # operator's table wins where both speak.
+        dims = {**(candidate.notes.get("dims") or {}), **dict(config.get("dims", {}))}
         ranges = {str(k).lower(): tuple(v) for k, v in (config.get("ranges") or {}).items()}
 
         # Module state first: the emitted header says "call <init> before
@@ -602,6 +644,48 @@ class BitexactVerifier(Verifier):
         scale = magnitude.max(axis=-1, keepdims=True) if magnitude.ndim > 1 else magnitude.max()
         mask: list[bool] = (magnitude >= dominant_at * scale).ravel().tolist()
         return mask
+
+    @staticmethod
+    def _type_recorded(np: Any, samples: list[dict[str, Any]], table: dict[str, Any]) -> int:
+        """Cast each recorded sample's inputs to the dtypes its signature declares.
+
+        The cast changes no value -- an integer written as ``3`` is 3 -- and
+        a scalar recorded as a one-element array is shaped back to a scalar,
+        on the output side as well, so it compares against a scalar."""
+        kinds = {
+            "int32": np.int32,
+            "int64": np.int64,
+            "bool": np.bool_,
+            "float32": np.float32,
+            "float64": np.float64,
+        }
+        cast = 0
+        for sample in samples:
+            sig = table.get(str(sample.get("subprogram", "")))
+            if not sig:
+                continue
+            for argument in sig["args"]:
+                key = argument["name"].lower()
+                value = sample.get("outputs", {}).get(key)
+                if isinstance(value, np.ndarray) and not argument.get("dims") and value.size == 1:
+                    sample["outputs"][key] = value.reshape(-1)[0]
+            for argument in sig["args"]:
+                key = argument["name"].lower()
+                dtype = kinds.get(str(argument["dtype"]))
+                if key not in sample.get("inputs", {}) or dtype is None:
+                    continue
+                value = sample["inputs"][key]
+                if isinstance(value, np.ndarray) and not argument.get("dims") and value.size == 1:
+                    sample["inputs"][key] = dtype(value.reshape(-1)[0])
+                    cast += 1
+                elif isinstance(value, np.ndarray):
+                    if value.dtype != dtype:
+                        sample["inputs"][key] = np.asfortranarray(value.astype(dtype))
+                        cast += 1
+                elif not isinstance(value, dtype):
+                    sample["inputs"][key] = dtype(value)
+                    cast += 1
+        return cast
 
     @staticmethod
     def _recorded_inputs(

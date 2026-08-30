@@ -360,6 +360,45 @@ def span_rwset(
     return visitor.reads, visitor.writes
 
 
+STUB_LINE = re.compile(r"^\s*(?:pass\s*#.*\(infra stub\)|#.*)$")
+
+
+def stubbed_blocks(candidate: Candidate) -> dict[str, str]:
+    """``"sub/Bnnn" -> reason`` for every block emitted as stub markers only.
+
+    A ``call ncd_pio_openfile(ncid, locfn)`` reads two names on the source
+    side and is a ``pass`` on the target side, because the framework is
+    stubbed, not translated. The check is right to call that a disagreement
+    -- the translation does not do what the source does there -- and its
+    answer for a block an operator has looked at is a *waiver*, named in
+    the verdict. These are the waivers the transform's own output justifies:
+    a block whose every emitted statement is a stub marker. A block that
+    mixes physics with a stub is not among them; it fails, and that is the
+    right answer for it.
+    """
+    protocol = candidate.notes.get("rwset") or {}
+    emitted = protocol.get("file")
+    if not emitted:
+        return {}
+    text = next((c.decode() for p, c in candidate.files.items() if p.name == emitted), None)
+    if text is None:
+        return {}
+    lines = text.splitlines()
+    waived: dict[str, str] = {}
+    for block in protocol.get("blocks") or []:
+        span = block.get("lines") or []
+        if len(span) != 2:
+            continue
+        body = [ln for ln in lines[span[0] - 1 : span[1]] if ln.strip()]
+        stubs = [ln for ln in body if "(infra stub)" in ln]
+        if stubs and all(STUB_LINE.match(ln) for ln in body):
+            calls = sorted({ln.split("#", 1)[1].split("(")[0].strip() for ln in stubs})
+            waived[f"{block['subprogram']}/{block['block']}"] = "framework stub: " + ", ".join(
+                calls
+            )
+    return waived
+
+
 class ReadWriteSetVerifier(StaticVerifier):
     """Fail any block whose translation reads or writes a different set."""
 
@@ -405,6 +444,9 @@ class ReadWriteSetVerifier(StaticVerifier):
             )
 
         waivers = {str(k): str(v) for k, v in (config.get("waivers") or {}).items()}
+        if config.get("waive_stub_blocks"):
+            # Every waiver still lands in the verdict's detail, by name.
+            waivers = {**stubbed_blocks(candidate), **waivers}
         deferred = set(candidate.deferred)
 
         checked = 0
