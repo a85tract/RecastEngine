@@ -95,6 +95,7 @@ class _Spelling:
         self.state_objects: dict[tuple[str, str], dict[str, str]] = {}
         self.state_vars: dict[tuple[str, str], str] = {}
         self.states: set[str] = set()
+        self.used: set[str] = set()  # the flat state names a body actually spelled
         if plan is not None:
             for obj in plan.objects:
                 table = {c.name: c.flat for c in obj.components}
@@ -109,6 +110,12 @@ class _Spelling:
 
     def of(self, node: ast.expr) -> str | None:
         """The flat name an attribute chain spells, or None."""
+        found = self._of(node)
+        if found is not None:
+            self.used.add(found)
+        return found
+
+    def _of(self, node: ast.expr) -> str | None:
         if not isinstance(node, ast.Attribute):
             return None
         base = node.value
@@ -177,6 +184,7 @@ class _Rewrite(ast.NodeTransformer):
         self.associates: frozenset[str] = frozenset()  # names an alias drop may claim
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
+        self.state_params: list[str] = []  # a helper's module state, taken as parameters
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -407,14 +415,18 @@ class _Rewrite(ast.NodeTransformer):
         ):
             return node
         stop = it.args[-1]
+        start: ast.expr = it.args[0] if len(it.args) == 2 else ast.Constant(0)
         self.loop_vars.add(node.target.id)
         # A bound over a dummy extent (``do i = 2, n`` beside ``a(n)``) is
         # static in the kernel's own trace and traced when the kernel is
         # inlined into another; the array's static shape serves both.
         sized = any(
-            isinstance(n, ast.Name) and n.id.lower() in self.dim_sources for n in ast.walk(stop)
+            isinstance(n, ast.Name) and n.id.lower() in self.dim_sources
+            for bound in (start, stop)
+            for n in ast.walk(bound)
         )
-        if not (self._is_dynamic(stop) or sized):
+        dynamic_start = self._is_dynamic(start)
+        if not (self._is_dynamic(stop) or dynamic_start or sized):
             return self._strong_bounds(node)
         # ``do ic = 1, ncan(p)``: the trip count is the run's, and a loop
         # whose count is traced has no reverse-mode rule. The body indexes
@@ -426,14 +438,24 @@ class _Rewrite(ast.NodeTransformer):
         extent = _indexed_extent(node.body, var)
         if extent is None:
             return self._strong_bounds(node)
-        guard = ast.If(
-            test=ast.Compare(
-                left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
-            ),
-            body=node.body,
-            orelse=[],
+        test: ast.expr = ast.Compare(
+            left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
         )
-        self.static_loops.append(f"{var}: {ast.unparse(stop)}")
+        if dynamic_start:
+            # ``do ic = nbot(p), ntop(p)``: from the axis's first index, the
+            # start a guard as well.
+            test = ast.BoolOp(
+                op=ast.And(),
+                values=[
+                    ast.Compare(
+                        left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.GtE()], comparators=[start]
+                    ),
+                    test,
+                ],
+            )
+            it.args[0] = ast.Constant(1)
+        guard = ast.If(test=test, body=node.body, orelse=[])
+        self.static_loops.append(f"{var}: {ast.unparse(start)}..{ast.unparse(stop)}")
         it.args[-1] = extent
         node.body = [guard]
         return self._strong_bounds(node)
@@ -1363,6 +1385,86 @@ def _guard_inits(fn: ast.FunctionDef) -> dict[str, str]:
     return inits
 
 
+def _union_states(plans: list[FlatPlan]) -> FlatPlan | None:
+    """One plan carrying every module-state variable and object any plan
+    in the module carries, for the helpers to spell theirs by."""
+    if not plans:
+        return None
+    seen_vars: dict[str, Any] = {}
+    seen_objs: dict[str, Any] = {}
+    for plan in plans:
+        for state in plan.states:
+            seen_vars.setdefault(state.flat, state)
+        for obj in plan.objects:
+            if obj.kind == "state":
+                held = seen_objs.setdefault(obj.name, copy.deepcopy(obj))
+                have = {c.name for c in held.components}
+                held.components.extend(c for c in obj.components if c.name not in have)
+    union = copy.deepcopy(plans[0])
+    union.objects = list(seen_objs.values())
+    union.states = list(seen_vars.values())
+    return union
+
+
+def _pass_helper_state(
+    rewritten: dict[str, ast.FunctionDef],
+    specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]],
+    helper_state: dict[str, list[str]],
+    refused: dict[str, str],
+) -> None:
+    """Every call of a helper that took module state as parameters passes
+    it, and a helper that calls such a helper takes those parameters too --
+    to a fixpoint. A flat function has them as its own arguments; one that
+    does not (its plan never reached that state) is refused."""
+    if not helper_state:
+        return
+    functions = {**rewritten, **{n: f for n, (f, _, _) in specialized.items()}}
+    changed = True
+    while changed:
+        changed = False
+        for name, fn in functions.items():
+            own_params = {a.arg for a in fn.args.args}
+            needed: list[str] = []
+            for node in ast.walk(fn):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in helper_state
+                ):
+                    for state in helper_state[node.func.id]:
+                        if state not in needed:
+                            needed.append(state)
+            if not needed:
+                continue
+            missing = [n for n in needed if n not in own_params]
+            if (missing and name in helper_state) or (missing and name not in specialized):
+                if name in helper_state:
+                    helper_state[name] = [*helper_state[name], *missing]
+                    fn.args.args.extend(ast.arg(arg=n) for n in missing)
+                    changed = True
+                elif name.endswith("_flat"):
+                    refused[name] = f"a helper needs {missing[0]}, which this plan does not carry"
+                    continue
+                else:
+                    helper_state[name] = missing
+                    fn.args.args.extend(ast.arg(arg=n) for n in missing)
+                    changed = True
+
+    class Pass(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if isinstance(node.func, ast.Name) and node.func.id in helper_state:
+                have = {ast.unparse(a) for a in node.args}
+                for state in helper_state[node.func.id]:
+                    if state not in have:
+                        node.args.append(ast.Name(id=state, ctx=ast.Load()))
+            return node
+
+    for fn in functions.values():
+        Pass().visit(fn)
+        ast.fix_missing_locations(fn)
+
+
 def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
@@ -1427,14 +1529,24 @@ def scrubbed_function(
     dim_sources: dict[str, tuple[str, int]] | None = None,
     own: dict[str, Any] | None = None,
     specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] | None = None,
+    states: FlatPlan | None = None,
 ) -> tuple[ast.FunctionDef, _Rewrite]:
-    """A function with no plan, scrubbed the same way."""
-    rewrite = _Rewrite(None, _Spelling(None, aliases), {}, ports, bundled, statics, dim_sources)
+    """A function with no plan, scrubbed the same way. ``states`` is a plan
+    of every module-state variable and object the module's plans carry: a
+    helper that reads one through its module (``_mlcl.zdtgridm``, a grid
+    the run filled) gets it as a parameter instead, so nothing is read from
+    a module at trace time -- the callers pass their own flat argument."""
+    spelling = _Spelling(states, aliases)
+    spelling.dummies = {}  # only module state: a helper has no object dummy
+    rewrite = _Rewrite(None, spelling, {}, ports, bundled, statics, dim_sources)
     rewrite.own = own or {}
     if specialized is not None:
         rewrite.specialized = specialized
     scrubbed = copy.deepcopy(fn)
     scrubbed.body = _rewritten_body(fn, rewrite)
+    for name in sorted(spelling.used):
+        scrubbed.args.args.append(ast.arg(arg=name))
+    rewrite.state_params = sorted(spelling.used)
     ast.fix_missing_locations(scrubbed)
     return scrubbed, rewrite
 
@@ -1477,6 +1589,7 @@ def flattened_module(
     rewritten: dict[str, ast.FunctionDef] = {}
     entries: list[dict[str, Any]] = []
     refused: dict[str, str] = {}
+    helper_state: dict[str, list[str]] = {}  # helper -> the state parameters it took
     own = {"fns": fns, "records": {s["name"]: s for s in interface["subprograms"]}}
     specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
     aborts: dict[str, list[str]] = {}
@@ -1484,6 +1597,7 @@ def flattened_module(
     static_loops: dict[str, list[str]] = {}
     companions: set[str] = set()
     planned = {p.subprogram["name"] for p in plans}
+    states = _union_states(plans)
     for plan in plans:
         fn = fns.get(plan.subprogram["name"])
         if fn is None:
@@ -1514,7 +1628,7 @@ def flattened_module(
             statics = _static_names(record["args"]) if record else frozenset()
             sources = _dim_sources(record["args"]) if record else {}
             scrubbed, rewrite = scrubbed_function(
-                fn, aliases, ports, bundled, statics, sources, own, specialized
+                fn, aliases, ports, bundled, statics, sources, own, specialized, states
             )
         except NotFlat as why:
             refused[name] = str(why)
@@ -1525,8 +1639,11 @@ def flattened_module(
             masked[name] = rewrite.masked
         if rewrite.static_loops:
             static_loops[name] = rewrite.static_loops
+        if rewrite.state_params:
+            helper_state[name] = list(rewrite.state_params)
         companions |= rewrite.companions
         rewritten[name] = scrubbed
+    _pass_helper_state(rewritten, specialized, helper_state, refused)
     body: list[ast.stmt] = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in rewritten:
