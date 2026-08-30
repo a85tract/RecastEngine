@@ -469,3 +469,62 @@ def test_a_vendored_tree_can_be_left_out_of_discovery(tmp_path: Path) -> None:
 
     narrowed = [u.uid for u in factory(exclude=["vendor"]).discover(tmp_path)]
     assert narrowed == ["fortran:own"]
+
+
+def test_every_program_unit_of_a_file_is_a_unit_analyzed_under_its_own_name(tmp_path: Path) -> None:
+    """One file, two modules and the program that uses the second: the
+    frontend read only the first module, so ``use second`` resolved to the
+    file and came back with ``first``'s record, and the program was a Unit
+    of kind ``program`` whose body no record described."""
+    (tmp_path / "pair.f90").write_text(
+        "module first\n"
+        "  implicit none\n"
+        "  real :: a = 1.0\n"
+        "contains\n"
+        "  subroutine one(x)\n"
+        "    real, intent(out) :: x\n"
+        "    x = a\n"
+        "  end subroutine one\n"
+        "end module first\n"
+        "\n"
+        "module second\n"
+        "  implicit none\n"
+        "  real :: b = 2.0\n"
+        "contains\n"
+        "  subroutine two(y)\n"
+        "    real, intent(out) :: y\n"
+        "    y = b\n"
+        "  end subroutine two\n"
+        "end module second\n"
+        "\n"
+        "program driver\n"
+        "  use second, only: two\n"
+        "  implicit none\n"
+        "  real :: out\n"
+        "  call two(out)\n"
+        "end program driver\n"
+    )
+    from recast.fortran.frontend import FortranFrontend
+
+    frontend = FortranFrontend()
+    units = {u.uid: u for u in frontend.discover(tmp_path)}
+    assert {"fortran:first", "fortran:second", "fortran:driver"} <= set(units)
+    assert units["fortran:second"].kind == "module"
+    assert units["fortran:driver"].kind == "program"
+    assert "fortran:second/two" in units and units["fortran:second/two"].parent == "fortran:second"
+
+    second = frontend.analyze(units["fortran:second"], tmp_path)
+    assert second.interface["module"] == "second"
+    assert [s["name"] for s in second.interface["subprograms"]] == ["two"]
+    assert [s["name"] for s in second.interface["module_state"]] == ["b"]
+
+    driver = frontend.analyze(units["fortran:driver"], tmp_path)
+    body = driver.interface["subprograms"][0]
+    assert body["name"] == "driver" and body["kind"] == "program"
+    assert body["args"] == [] and [entry["name"] for entry in body["locals"]] == ["out"]
+    # the call resolves through the companion: the module the program asked
+    # for, in the same file, under its own record
+    assert [c["module"] for c in driver.provenance["companions"]] == ["second"]
+    companion = driver.provenance["companions"][0]["record"]
+    assert [s["name"] for s in companion["subprograms"]] == ["two"]
+    assert any(c.endswith("two") for c in driver.callgraph["fortran:driver/driver"])
