@@ -110,11 +110,11 @@ else in the module is translated, and checked.
 section is the general picture: of the 59 units the twelve cases hold, it is
 the only one that currently reaches the bit-exact gate.
 
-[`docs/corpus-numfor-example.md`](../docs/corpus-numfor-example.md) stays
+[`docs/corpus-numfor-example.ipynb`](../docs/corpus-numfor-example.ipynb) stays
 with this same unit at length -- the refusals, the evidence manifest, a unit
 of the same case that fails beside it, and what the passing run does not
 establish.
-[`docs/corpus-lapack-example.md`](../docs/corpus-lapack-example.md) does the
+[`docs/corpus-lapack-example.ipynb`](../docs/corpus-lapack-example.ipynb) does the
 same for the one unit whose Python does not import, `fortran-utils`'
 `linalg`: a library over LAPACK, whose import is a real dependency the
 header rule rightly keeps, and what an externals shim would change.
