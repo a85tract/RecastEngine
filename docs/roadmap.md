@@ -380,7 +380,7 @@ recorded before it:
 | pchip | rwset | 0/1 | 1/1 | the read/write-set rules (#20, #37, #38): the four blocks that disagreed match, and the unit now reaches the oracle gate |
 | minpack | rwset | 0/1 | 1/1 | the same three rules: the six blocks that disagreed match |
 
-Every other column is unchanged, and `docs/corpus-numfor-example.md` now
+Every other column is unchanged, and `docs/corpus-numfor-example.ipynb` now
 shows the three deferred blocks rather than the five.
 
 Two upstream commits are relayed as findings only. #19, a DO with no loop
