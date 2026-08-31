@@ -498,6 +498,8 @@ class _Rewrite(ast.NodeTransformer):
         self.loop_vars.add(var)
         extent = _indexed_extent(node.body, var)
         if extent is None:
+            extent = self._callee_extent(node.body, var)
+        if extent is None:
             return node
         test: ast.expr = ast.Compare(
             left=ast.Name(id=var, ctx=ast.Load()), ops=[ast.Lt()], comparators=[stop]
@@ -520,6 +522,40 @@ class _Rewrite(ast.NodeTransformer):
         it.args[-1] = extent
         node.body = [guard]
         return node
+
+    def _callee_extent(self, body: list[ast.stmt], var: str) -> ast.expr | None:
+        """The loop counter is not an index here -- it rides into a companion
+        kernel (``LeafFluxes(p, ic, il, inst)``) and the indexing lives in
+        the callee. The flat spelling is the same on both sides, so the
+        extent the callee's body reads is valid in the caller."""
+        for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith("_")
+                and node.func.attr.endswith("_k_impl")
+                and isinstance(node.func.value, ast.Name)
+            ):
+                continue
+            at = next(
+                (i for i, a in enumerate(node.args) if isinstance(a, ast.Name) and a.id == var),
+                None,
+            )
+            if at is None:
+                continue
+            kernel = node.func.attr[1 : -len("_k_impl")]
+            module_alias = node.func.value.id[: -len("_jax")]
+            module = self.spelling.modules.get(module_alias)
+            port = self.ports.get(module) if module is not None else None
+            fn = (port or {}).get("fns", {}).get(kernel)
+            record = (port or {}).get("records", {}).get(kernel)
+            if fn is None or record is None or at >= len(record["args"]):
+                continue
+            dummy = _py(record["args"][at]["name"])
+            found = _indexed_extent(fn.body, dummy)
+            if found is not None:
+                return found
+        return None
 
     def _static_descending(self, node: ast.For) -> Any:
         """``do ic = ntop(p), nbot(p), -1``: the anchor's ``range(a, b - 1,
