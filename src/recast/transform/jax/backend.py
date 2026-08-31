@@ -142,6 +142,49 @@ class ExprMap(ast.NodeTransformer):
     and/or/not -> jnp.logical_* (traced bools reject Python short-circuit;
     matches Fortran .AND./.OR. non-short-circuit semantics)."""
 
+    def visit_BinOp(self, node):
+        # ``x ** 0.67`` -- a fractional constant exponent has an infinite
+        # derivative at x == 0 (fwet from a dry canopy), and a linearized
+        # graph turns inf * 0 into NaN that poisons every tangent downstream.
+        # For x > 0 the value is untouched to the bit; at x == 0 the primal
+        # is the same 0 and the subgradient taken is 0; a negative base was
+        # NaN in Fortran already.
+        self.generic_visit(node)
+        fractional = (
+            isinstance(node.right, ast.Constant)
+            and isinstance(node.right.value, float)
+            and not float(node.right.value).is_integer()
+        ) or isinstance(node.right, ast.Name)  # a run-set exponent (fwet_exponent)
+        if isinstance(node.op, ast.Pow) and fractional:
+            base = node.left
+            positive = ast.Compare(
+                left=copy.deepcopy(base), ops=[ast.Gt()], comparators=[ast.Constant(0.0)]
+            )
+            safe = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="jnp", ctx=ast.Load()), attr="where", ctx=ast.Load()
+                ),
+                args=[positive, base, ast.Constant(1.0)],
+                keywords=[],
+            )
+            return ast.copy_location(
+                ast.BinOp(
+                    left=ast.BinOp(left=safe, op=ast.Pow(), right=node.right),
+                    op=ast.Mult(),
+                    right=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id="jnp", ctx=ast.Load()),
+                            attr="where",
+                            ctx=ast.Load(),
+                        ),
+                        args=[copy.deepcopy(positive), ast.Constant(1.0), ast.Constant(0.0)],
+                        keywords=[],
+                    ),
+                ),
+                node,
+            )
+        return node
+
     def visit_Subscript(self, node):
         # ``MDAYLEAP[mcmnth - 1]``: a module constant is a numpy array, and
         # numpy indexing with a traced index calls __array__ on the tracer.
