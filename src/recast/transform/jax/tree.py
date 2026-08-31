@@ -69,6 +69,12 @@ WIDENED = ast.Name(id="_widened_", ctx=ast.Load())
 """A placeholder upper bound marking a slice this pass widened."""
 
 
+TRACED_SCALARS: frozenset[str] = frozenset()
+"""Scalar dummies the operator declares per-call-varying (config
+``traced_scalars``): kept traced so the kernel does not recompile per
+call -- the step counter ``itim`` above all."""
+
+
 class NotFlat(Exception):
     """This subprogram's body cannot be spelled on the flat signature."""
 
@@ -314,6 +320,10 @@ class _Rewrite(ast.NodeTransformer):
     # -- names and attributes -------------------------------------------------
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id in self.buffer_outs:
+            raise NotFlat(
+                f"the buffer {node.id} was elided at its call; this later use has no value"
+            )
         flat = self.aliases.get(node.id)
         if flat is not None:
             return ast.copy_location(ast.Name(id=flat, ctx=node.ctx), node)
@@ -1278,14 +1288,27 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         return False
 
     for stmt in fn.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        target = stmt.targets[0]
+        names = [
+            t.id
+            for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
+            if isinstance(t, ast.Name)
+        ]
         if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and stmt.targets[0].id not in nested
+            len(stmt.targets) == 1
+            and isinstance(target, ast.Name)
+            and target.id not in nested
             and ok(stmt.value)
         ):
-            concrete.add(stmt.targets[0].id)
+            concrete.add(target.id)
+        else:
+            # A later store that is not a concrete scalar (a tuple from a
+            # kernel call, a traced expression) un-makes the name: the
+            # UB-guard ``day = 0`` alone does not a constant make.
+            for name in names:
+                concrete.discard(name)
     return frozenset(concrete)
 
 
@@ -1301,7 +1324,10 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
-    lowered = _WhileLoops(_integer_inits(fn)).visit_block(lowered)
+    int_locals = frozenset(_integer_inits(fn)) | frozenset(
+        n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
+    )
+    lowered = _WhileLoops(_integer_inits(fn), int_locals).visit_block(lowered)
     # The goto-region flags are synthetic locals with no UB-guard init; an
     # enclosing loop carries them, and the initial carry tuple needs a value
     # before the loop. Every flag starts False at the top of the function.
@@ -1419,6 +1445,38 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
+def _require_trailing_raises(body: list[ast.stmt], label: str | None) -> None:
+    """The flag rewrite guards statements AFTER the statement containing a
+    raise, not statements after the raise inside its own block: a matching
+    ``raise _FGoto`` must be the last statement of whatever block holds it,
+    or the rewrite would run its trailing siblings."""
+
+    def matching(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Raise)
+            and isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)
+            and node.exc.func.id == "_FGoto"
+            and (
+                label is None
+                or (
+                    node.exc.args
+                    and isinstance(node.exc.args[0], ast.Constant)
+                    and node.exc.args[0].value == label
+                )
+            )
+        )
+
+    for stmt in body:
+        for node in ast.walk(stmt):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if isinstance(block, list):
+                    for at, inner in enumerate(block):
+                        if matching(inner) and at != len(block) - 1:
+                            raise NotFlat("a goto that is not the last statement of its branch")
+
+
 def _fold(expr: ast.expr) -> ast.expr:
     """Trivial constant folding, so two spellings of one bound compare equal:
     ``(0) - (0)`` is ``0`` and ``n - 0 + 1`` is ``n + 1`` -- the translation
@@ -1490,9 +1548,14 @@ class _WhileLoops(ast.NodeTransformer):
     ``lax.fori_loop`` lowers to a scan reverse mode can transpose; the
     fixed-point iterations of the paper's Phase 5 are run this way."""
 
-    def __init__(self, constants: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        constants: dict[str, int] | None = None,
+        int_locals: frozenset[str] | None = None,
+    ) -> None:
         self.n = 0
         self.constants = constants or {}
+        self.int_locals = int_locals or frozenset()
 
     def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
         out: list[ast.stmt] = []
@@ -1505,6 +1568,9 @@ class _WhileLoops(ast.NodeTransformer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
         return node  # nested (already lowered) bodies stay as they are
+
+    def _int_typed(self, name: str) -> bool:
+        return name in self.int_locals
 
     def _counted_bound(self, test: ast.expr, body: list[ast.stmt]) -> int | None:
         """The constant a counter is compared against in ``test`` --
@@ -1568,6 +1634,8 @@ class _WhileLoops(ast.NodeTransformer):
         label = labels.pop()
         self.n += 1
         restart = f"_restart_{self.n}"
+
+        _require_trailing_raises(wrapper.body, label)
 
         class Restarts(ast.NodeTransformer):
             def visit_Raise(self, raised: ast.Raise) -> Any:
@@ -1662,8 +1730,18 @@ class _WhileLoops(ast.NodeTransformer):
                 for n in ast.walk(stmt)
             )
 
+        label = next(
+            (
+                n.value
+                for stmt in handler.body
+                for n in ast.walk(stmt)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ),
+            None,
+        )
         self.n += 1
         skip = f"_skip_{self.n}"
+        _require_trailing_raises(node.body, label)
 
         class Skips(ast.NodeTransformer):
             def visit_Raise(self, raised: ast.Raise) -> Any:
@@ -1671,6 +1749,14 @@ class _WhileLoops(ast.NodeTransformer):
                     isinstance(raised.exc, ast.Call)
                     and isinstance(raised.exc.func, ast.Name)
                     and raised.exc.func.id == "_FGoto"
+                    and (
+                        label is None
+                        or (
+                            raised.exc.args
+                            and isinstance(raised.exc.args[0], ast.Constant)
+                            and raised.exc.args[0].value == label
+                        )
+                    )
                 ):
                     return ast.Assign(
                         targets=[ast.Name(id=skip, ctx=ast.Store())], value=ast.Constant(True)
@@ -1821,6 +1907,21 @@ class _WhileLoops(ast.NodeTransformer):
                 keywords=[],
             ),
         )
+        if all(
+            n == done or n.startswith(("_restart_", "_skip_")) or self._int_typed(n) for n in state
+        ):
+            # A loop over integers alone (the calendar normalization): its
+            # outputs are piecewise-constant in every real input, the
+            # cotangent is zero, and reverse mode need not transpose it.
+            loop.value = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="lax", ctx=ast.Load()),
+                    attr="stop_gradient",
+                    ctx=ast.Load(),
+                ),
+                args=[loop.value],
+                keywords=[],
+            )
         init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
         pre: list[ast.stmt] = [init]
         if restart is not None:
@@ -2063,7 +2164,10 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
         for a in args
-        if a["dtype"] in ("int32", "int64", "float64") and not a.get("dims") and a["intent"] == "IN"
+        if not a.get("dims")
+        and a["intent"] == "IN"
+        and _py(a["name"]) not in TRACED_SCALARS
+        and (a["dtype"] == "int32" or (a["dtype"] in ("int64", "float64") and "__" in a["name"]))
     )
 
 
@@ -2279,6 +2383,8 @@ class TreeToJax(KernelToJax):
         constants_stem = config.get("constants_stem", f"{module}_constants")
         runtime_stem = config.get("jax_runtime_stem", f"{module}_jax_runtime")
 
+        global TRACED_SCALARS
+        TRACED_SCALARS = frozenset(config.get("traced_scalars") or ())
         ported, files = self._port_companions(anchor, facts, config)
         tree = ast.parse(anchor.files[Path(f"{module}_numpy.py")].decode())
         plans = plans_from_facts(facts, gated=False)
@@ -2286,7 +2392,7 @@ class TreeToJax(KernelToJax):
         flat_tree, interface, flat_notes = flattened_module(
             tree, facts.interface, plans, ported, bundled
         )
-        pieces, jitted, delegated = build_module(interface, flat_tree)
+        pieces, jitted, delegated = build_module(interface, flat_tree, TRACED_SCALARS)
         # A flat function the backend delegated has a host to fall back on
         # only if the NumPy module carries its wrapper -- the gated ones. A
         # private subprogram's or a function's flat form has none, and a line

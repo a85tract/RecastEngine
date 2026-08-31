@@ -285,11 +285,90 @@ def _static_test(test):
         return True
     if isinstance(test, ast.Name) and test.id.startswith("want_"):
         return True
+
+    def constant(node):
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.Name):
+            return node.id.isupper() and len(node.id) > 1
+        if isinstance(node, ast.BinOp):
+            return constant(node.left) and constant(node.right)
+        if isinstance(node, ast.UnaryOp):
+            return constant(node.operand)
+        return False
+
+    # ``RUNGE_KUTTA_TYPE == I_10``: a comparison over module constants
+    # decides at trace time; lowering it to lax.cond would put a Python-int
+    # assignment in one arm of a traced carry.
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        return constant(test.left) and all(constant(c) for c in test.comparators)
+    if isinstance(test, ast.BoolOp):
+        return all(_static_test(v) for v in test.values)
     return False
 
 
 def _names(ids, ctx):
     return [ast.Name(id=i, ctx=ctx()) for i in ids]
+
+
+def _trace_constant_stores(stmts):
+    """Names whose every store is a trace-time constant (a literal, an
+    upper-case constant expression, or ``int()`` of one): re-established
+    identically on every pass, so carrying them through a loop or cond
+    would only force a Python value into a traced carry slot --
+    ``nrk_steps = int(RUNGE_KUTTA_TYPE / I_10)`` inside the substep loop."""
+
+    def const(node):
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.Name):
+            return node.id.isupper() and len(node.id) > 1
+        if isinstance(node, ast.BinOp):
+            return const(node.left) and const(node.right)
+        if isinstance(node, ast.UnaryOp):
+            return const(node.operand)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("int", "float")
+            and len(node.args) == 1
+        ):
+            return const(node.args[0])
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ("np", "jnp")
+            and node.func.attr in ("int32", "int64", "float32", "float64")
+            and len(node.args) == 1
+        ):
+            # A dtype-ctor around a constant (the guard-init spelling of a
+            # zero) is still a trace-time constant store.
+            return const(node.args[0])
+        return False
+
+    verdicts = {}
+
+    def note(name, good):
+        verdicts[name] = verdicts.get(name, True) and good
+
+    for stmt in stmts:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Assign):
+                targets = (
+                    node.targets[0].elts
+                    if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple)
+                    else node.targets
+                )
+                single = len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                for t in targets:
+                    if isinstance(t, ast.Name):
+                        note(t.id, single and const(node.value))
+            elif isinstance(node, (ast.AugAssign, ast.For)) and isinstance(
+                getattr(node, "target", None), ast.Name
+            ):
+                note(node.target.id, False)
+    return {n for n, good in verdicts.items() if good}
 
 
 def _const_int(node):
@@ -440,7 +519,8 @@ class KernelLowerer:
             raise JaxQueue("malformed range")
 
         body = self.lower_block(s.body, depth + 1)
-        carried = [n for n in _assigned_names(body) if n != s.target.id]
+        settled = _trace_constant_stores(body)
+        carried = [n for n in _assigned_names(body) if n != s.target.id and n not in settled]
         if not carried:
             raise JaxQueue("loop with no carried effects")
         self.n += 1
@@ -690,7 +770,7 @@ def _bind_writer_calls(fn, call_map):
         fn.body[at] = Bind().visit(stmt)
 
 
-def static_spec(fn_src, sub):
+def static_spec(fn_src, sub, traced_scalars=frozenset()):
     """(static_argnums, static_argnames) for the jitted kernel.
 
     argnums: scalar int32 IN args among the REQUIRED params — their
@@ -702,23 +782,22 @@ def static_spec(fn_src, sub):
     nums = []
     for pos, p in enumerate(req):
         r = recs.get(p)
-        if (
-            r
-            and r["dtype"] in ("int32", "int64", "float64", "str")
-            and not r.get("dims")
-            and r["intent"] == "IN"
-        ):
-            # A scalar IN dummy is a run constant at the adapter boundary
-            # (a filter count, a timestep, a calendar kind): static, so a
-            # loop bound derived from it stays a Python value and
-            # ``fori_loop`` lowers to a scan reverse mode can transpose.
-            nums.append(pos)
+        if r and not r.get("dims") and r["intent"] == "IN" and p not in traced_scalars:
+            # int32 scalars and character dummies are run constants (filter
+            # counts, calendar kinds). A float/int64 scalar is static ONLY
+            # when it is module state (the ``__`` spelling: dtime_ml, dtstep
+            # -- namelist configuration): an ordinary real dummy (xa, xb,
+            # tol) must stay traced, or jvp/grad against it breaks.
+            if r["dtype"] in ("int32", "str") or (
+                r["dtype"] in ("int64", "float64") and "__" in r["name"]
+            ):
+                nums.append(pos)
     names = tuple(p for p in opt if p.startswith("want_"))
     return tuple(nums), names
 
 
 def build_module(
-    interface: dict[str, Any], tree: ast.Module
+    interface: dict[str, Any], tree: ast.Module, traced_scalars: frozenset = frozenset()
 ) -> tuple[list[str], list[str], dict[str, str]]:
     """Emit all kernels of one module to a fixpoint.
 
@@ -781,7 +860,7 @@ def build_module(
         name = rec["name"]
         if name not in srcs:
             continue
-        sa, sn = static_spec(fns[name], rec)
+        sa, sn = static_spec(fns[name], rec, traced_scalars)
         req, opt, defaults = split_params(fns[name])
         pieces.append(srcs[name])
         jit_kw = f"static_argnums={sa!r}"
