@@ -961,10 +961,11 @@ def test_a_case_value_range_is_a_closed_interval(sources: dict[str, Path]) -> No
     so ``case (1:2)`` came out as two equality tests -- right there by
     luck, wrong for any wider range. Reading the value list item by item
     made the refusal fire on slsqp's ``bvls_wrapper``; a range is a closed
-    interval on the selector, and either end may be open."""
+    interval on the selector, and either end may be open. The spelling is
+    the pipeline's #44 fix (840c3f2): each comparison parenthesized."""
     statements, nodes = build(sources["emit_mod"], "switch")
     lines = statements.render(pick(nodes, f03.Case_Construct, 1), 1)
-    assert lines[0].startswith("    if (1 <= n and n <= ")
+    assert lines[0].startswith("    if ((1 <= n) and (n <= ")
 
 
 def test_an_open_ended_case_range_tests_one_side(tmp_path: Path) -> None:
@@ -998,7 +999,43 @@ def test_an_open_ended_case_range_tests_one_side(tmp_path: Path) -> None:
     node = next(iter(walk(parse(source), f03.Subroutine_Subprogram)))
     lines, _ = assembler.render(node, "pick")
     branch = next(line for line in lines if line.lstrip().startswith("if "))
-    assert "(n <= 0) or (" in branch and "<= n)" in branch
+    assert "((n <= 0)) or (" in branch and "<= n))" in branch
+
+
+def test_a_character_case_range_is_refused(tmp_path: Path) -> None:
+    """``case ('a':'m')`` stays a queue, as the pipeline keeps it (840c3f2):
+    Python's collation is not Fortran's."""
+    from recast.fortran import constants, interface
+    from recast.fortran._parse import f03, parse, walk
+    from recast.transform.numpy.subprograms import Subprograms
+    from recast.transform.profiles import PROFILES
+
+    source = Path(tmp_path) / "chr.f90"
+    source.write_text(
+        "module chr_mod\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine pick(c, v)\n"
+        "    character(len=1), intent(in) :: c\n"
+        "    real(8), intent(out) :: v\n"
+        "    select case (c)\n"
+        "    case ('a':'m')\n"
+        "      v = 2d0\n"
+        "    case default\n"
+        "      v = 0d0\n"
+        "    end select\n"
+        "  end subroutine pick\n"
+        "end module chr_mod\n"
+    )
+    assembler = Subprograms(
+        record=interface.extract(source),
+        constants=constants.extract(source),
+        profile=PROFILES["gfortran"],
+    )
+    node = next(iter(walk(parse(source), f03.Subroutine_Subprogram)))
+    lines, _ = assembler.render(node, "pick")
+    queued = next(line for line in lines if "AGENT_QUEUE" in line)
+    assert "case value range (character)" in queued
 
 
 def test_a_stub_answers_only_where_the_pipeline_answers(sources: dict[str, Path]) -> None:
