@@ -1195,19 +1195,26 @@ class Statements:
                             # is inside the closed range. Rendering the leaves
                             # read ``1:2`` as the two values 1 and 2 -- right
                             # by accident there, wrong for ``case (1:3)``.
+                            # Spelling and refusals follow the pipeline's #44
+                            # fix (840c3f2): a character range queues there --
+                            # Python's collation is not Fortran's -- and each
+                            # comparison keeps its own parentheses.
                             low, high = value.children
-                            bounds = [
-                                f"{self.expressions.render(low)} <= {selector}"
-                                if low is not None
-                                else "",
-                                f"{selector} <= {self.expressions.render(high)}"
-                                if high is not None
-                                else "",
-                            ]
-                            conditions.append(f"({' and '.join(b for b in bounds if b)})")
+                            ends = [e for e in (low, high) if e is not None]
+                            if character or any(
+                                isinstance(e, f03.Char_Literal_Constant) for e in ends
+                            ):
+                                raise NoRule("case value range (character)")
+                            bounds = []
+                            if low is not None:
+                                bounds.append(f"({self.expressions.render(low)} <= {selector})")
+                            if high is not None:
+                                bounds.append(f"({selector} <= {self.expressions.render(high)})")
+                            if not bounds:
+                                raise NoRule("case value range (unbounded)")
+                            conditions.append("(" + " and ".join(bounds) + ")")
                             continue
-                        is_text = character or bool(walk(value, f03.Char_Literal_Constant))
-                        if is_text:
+                        if character or isinstance(value, f03.Char_Literal_Constant):
                             conditions.append(
                                 f"_fstr_eq({selector}, {self.expressions.render(value)})"
                             )
