@@ -29,31 +29,26 @@ This backend cannot be bit-exact and does not pretend to be: ``math.*`` lowers
 to CUDA's libdevice, which is one to two ULP from libm, so the gate is a
 tolerance one -- the same ceiling, and for the same reason, as the JAX backend.
 
-**Two places this does not follow upstream, both reported rather than copied.**
-``cudaize.py`` was only ever run on one module, and ``tools/cuda_diff.py``
-points it at twenty-seven:
+**Two places this once did not follow upstream, both reported rather than
+copied -- and both since fixed there.** ``cudaize.py`` was only ever run on
+one module, and ``tools/cuda_diff.py`` points it at twenty-seven:
 
-1. *It raises on any module with an ``allocate``.* ``emit_kernel_variant``
-   omits the per-subprogram state its ``emit_kernel`` sibling sets up --
-   ``alloc_lb``, ``stmt_funcs``, ``cur_elemental``, the break-label scan --
-   and the first subscript of a module allocatable then reads an attribute
-   that does not exist. Reproduced from their own command line:
-   ``python pipeline/cudaize.py src_fortran/mo_airmas.F90`` ends in
-   ``AttributeError: 'CudaEmitter' object has no attribute 'alloc_lb'``. The
-   differential counts these apart from differences, because a crash is not
-   something an emitter can disagree with. Here the state is per-subprogram by
-   construction, so there is nothing to omit.
+1. *It raised on any module with an ``allocate``* (their #13):
+   ``emit_kernel_variant`` omitted the per-subprogram state its
+   ``emit_kernel`` sibling sets up -- ``alloc_lb``, ``stmt_funcs``,
+   ``cur_elemental``, the break-label scan -- and the first subscript of a
+   module allocatable read an attribute that does not exist. Here the state
+   is per-subprogram by construction, so there was nothing to omit.
 
-2. *A generic call inside a device function emits a name the file does not
-   define.* ``CudaEmitter.funcref`` tests the *generic* name against the
-   kernel set, which never holds it, and falls through to a base branch that
-   formats ``f"{name}(...)"`` directly instead of going through
-   ``emit_local_fncall`` -- so ``rising_factorial(x, n)`` comes out as
-   ``rising_factorial_r8(x, n)`` while the only thing emitted is
-   ``_rising_factorial_r8_k``. Checked against their own output: the file
-   defines ``_<name>_k*``, ``k_<name>_k*`` and ``<name>_v``, and never a bare
-   ``<name>``. This is the shape of their open issue #4, and the resolution
-   here is the same -- resolve the generic first, then call the kernel.
+2. *A generic call inside a device function emitted a name the file does not
+   define* (their #14, the shape of their #4): ``CudaEmitter.funcref``
+   tested the *generic* name against the kernel set, which never holds it,
+   and fell through to a base branch formatting ``f"{name}(...)"`` directly.
+   The resolution upstream took is the one here -- resolve the generic
+   first, then call the kernel -- with a constructor-shaped twin (#40): a
+   kind-suffixed literal actual parses as a Structure_Constructor and
+   reaches the constructor branch, which their ``CudaEmitter.expr`` override
+   now routes back through ``funcref``.
 """
 
 from __future__ import annotations
@@ -190,10 +185,11 @@ class CudaSubprograms(NumbaSubprograms):
 
         lines = ["@cuda.jit(device=True, inline=True)", self.signature(subprogram)]
         lines.extend(self._result_initializer(subprogram, statements.semantics, statements))
-        # The Numba kernel zeroes each error code before the body; upstream's
-        # device variant does not, so a subprogram that assigns its character
-        # OUT only on an error path returns an unbound name. Deliberately not
-        # byte-identical: the pipeline's spelling is the defect.
+        # The Numba kernel zeroes each error code before the body, so a
+        # subprogram that assigns its character OUT only on an error path
+        # does not return an unbound name. Upstream's device variant did not
+        # zero them; reported as #41 and fixed there (68abad5), so the two
+        # spellings now agree.
         for argument in sorted(self.emission.error_args):
             lines.append(f"    _errflag_{argument} = 0")
 

@@ -370,6 +370,25 @@ def comparable(report: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def comparable_signatures(sigs_line: str) -> dict[str, Any]:
+    """The ``_SIGNATURES`` table, minus the engine-only ``buffer`` key.
+
+    The engine spells its caller-buffer convention into the table because its
+    verify harness reads it back (``verify.bitexact`` generates the caller's
+    storage for a buffer OUT from exactly this entry). The pipeline adopted
+    the convention itself (their ``intent_infer.mark_buffer_out_arrays``,
+    issue #36) and both sides emit the same *body* for a buffered argument --
+    but their signature table never carries the key, with the convention on
+    or off. So the key is one side's harness bookkeeping, not a fact about
+    the translation, and is dropped the way ``key``/``py_lines`` are above.
+    """
+    table = eval(sigs_line.split(" = ", 1)[1])  # noqa: S307 -- our own emitted repr
+    for entry in table.values():
+        for argument in entry["args"]:
+            argument.pop("buffer", None)
+    return table
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
@@ -573,14 +592,15 @@ def main() -> int:
                     normalized(l_) for l_ in got_body.splitlines()
                 ]
                 same_report = comparable(want_report) == comparable(got_report)
-                if same_body and want_sigs == got_sigs and same_report:
+                same_sigs = comparable_signatures(want_sigs) == comparable_signatures(got_sigs)
+                if same_body and same_sigs and same_report:
                     counts["modules"] += 1
                 else:
                     counts["different"] += 1
                     print(
                         f"MODULE DIFFERENT {name}"
                         + ("" if same_body else " (body)")
-                        + ("" if want_sigs == got_sigs else " (signatures)")
+                        + ("" if same_sigs else " (signatures)")
                         + ("" if same_report else " (report)")
                     )
                     if ns.verbose and not same_body:
@@ -591,10 +611,10 @@ def main() -> int:
                                 print(f"  pipeline |{a}")
                                 print(f"  engine   |{b}")
                                 break
-                    if ns.verbose and want_sigs != got_sigs:
+                    if ns.verbose and not same_sigs:
                         # A signature table that disagrees: name the entries.
-                        want_table = eval(want_sigs.split(" = ", 1)[1])  # noqa: S307
-                        got_table = eval(got_sigs.split(" = ", 1)[1])  # noqa: S307
+                        want_table = comparable_signatures(want_sigs)
+                        got_table = comparable_signatures(got_sigs)
                         for key in sorted(set(want_table) | set(got_table)):
                             if want_table.get(key) != got_table.get(key):
                                 print(f"  pipeline |{key}: {want_table.get(key)!r}")
