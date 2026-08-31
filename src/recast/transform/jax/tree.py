@@ -560,7 +560,7 @@ class _Rewrite(ast.NodeTransformer):
             if fn is None or record is None or at >= len(record["args"]):
                 continue
             dummy = _py(record["args"][at]["name"])
-            found = _flat_indexed_extent(fn.body, dummy)
+            found = _callee_component_extent(fn.body, dummy, node.args)
             if found is not None:
                 return found
         return None
@@ -1199,15 +1199,50 @@ class _Rewrite(ast.NodeTransformer):
         return [assign, *follow] if follow else assign
 
 
-def _flat_indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
-    """Like ``_indexed_extent``, but only over arrays spelled flat
-    (``mlcanopy_inst__tleaf_leaf``): a callee-side associate alias (``dtg``)
-    would be a NameError in the caller's scope."""
+def _callee_component_extent(
+    body: list[ast.stmt], var: str, call_args: list[ast.expr]
+) -> ast.expr | None:
+    """The callee's body subscripts ``inst.comp[..., ic - 1, ...]`` (the
+    anchor's record-attribute spelling); the caller passed the same
+    component flat as ``<obj>__<comp>``, whose static axis is the extent.
+    Also takes plain flat-Name subscripts, which spell the same on both
+    sides."""
+
+    def caller_array(comp: str) -> ast.expr | None:
+        for given in call_args:
+            if isinstance(given, ast.Name) and given.id.endswith(f"__{comp}"):
+                return ast.Name(id=given.id, ctx=ast.Load())
+        return None
+
+    # The anchor keeps the associate bindings (``tleaf =
+    # mlcanopy_inst.tleaf_leaf``) and subscripts the bare alias after; the
+    # alias table routes those to the component the caller passed flat.
+    aliases: dict[str, str] = {}
+    for stmt in body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Attribute)
+            and isinstance(stmt.value.value, ast.Name)
+        ):
+            aliases[stmt.targets[0].id] = stmt.value.attr
+
     for node in ast.walk(ast.Module(body=body, type_ignores=[])):
         if not isinstance(node, ast.Subscript):
             continue
-        base = node.value
-        if not (isinstance(base, ast.Name) and "__" in base.id):
+        base: ast.expr | None = node.value
+        if (
+            isinstance(base, ast.Attribute)
+            and isinstance(base.value, ast.Name)
+            and not base.value.id.startswith("_")
+        ):
+            base = caller_array(base.attr)
+        elif isinstance(base, ast.Name) and base.id in aliases:
+            base = caller_array(aliases[base.id])
+        elif not (isinstance(base, ast.Name) and "__" in base.id):
+            base = None
+        if base is None:
             continue
         elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
         for axis, element in enumerate(elts):
