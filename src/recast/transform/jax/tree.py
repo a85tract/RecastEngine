@@ -549,10 +549,18 @@ class _Rewrite(ast.NodeTransformer):
             port = self.ports.get(module) if module is not None else None
             fn = (port or {}).get("fns", {}).get(kernel)
             record = (port or {}).get("records", {}).get(kernel)
+            if (fn is None or record is None) and kernel.endswith("_flat"):
+                # The port's records and anchor functions are keyed by the
+                # ORIGINAL subprogram; the flat call's leading scalars keep
+                # the original order, and the original body carries the
+                # subscripts the flat rewrite respelled.
+                base = kernel[: -len("_flat")]
+                fn = (port or {}).get("fns", {}).get(base)
+                record = (port or {}).get("records", {}).get(base)
             if fn is None or record is None or at >= len(record["args"]):
                 continue
             dummy = _py(record["args"][at]["name"])
-            found = _indexed_extent(fn.body, dummy)
+            found = _flat_indexed_extent(fn.body, dummy)
             if found is not None:
                 return found
         return None
@@ -1189,6 +1197,37 @@ class _Rewrite(ast.NodeTransformer):
         )
         assign = ast.Assign(targets=[target_node], value=new_call)
         return [assign, *follow] if follow else assign
+
+
+def _flat_indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
+    """Like ``_indexed_extent``, but only over arrays spelled flat
+    (``mlcanopy_inst__tleaf_leaf``): a callee-side associate alias (``dtg``)
+    would be a NameError in the caller's scope."""
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Subscript):
+            continue
+        base = node.value
+        if not (isinstance(base, ast.Name) and "__" in base.id):
+            continue
+        elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        for axis, element in enumerate(elts):
+            shape = ast.Subscript(
+                value=ast.Attribute(value=copy.deepcopy(base), attr="shape", ctx=ast.Load()),
+                slice=ast.Constant(axis),
+                ctx=ast.Load(),
+            )
+            if (
+                isinstance(element, ast.BinOp)
+                and isinstance(element.op, ast.Sub)
+                and isinstance(element.left, ast.Name)
+                and element.left.id == var
+                and isinstance(element.right, ast.Constant)
+                and element.right.value == 1
+            ):
+                return ast.BinOp(left=shape, op=ast.Add(), right=ast.Constant(1))
+            if isinstance(element, ast.Name) and element.id == var:
+                return shape
+    return None
 
 
 def _indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
