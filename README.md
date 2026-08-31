@@ -65,7 +65,7 @@ directory each.
 For the same thing on code this project did not write, [`corpus/`](corpus/)
 pins twelve open-source Fortran libraries and runs the engine over them with no
 domain extension installed.
-[`docs/corpus-numfor-example.ipynb`](docs/corpus-numfor-example.ipynb) walks one of
+[`docs/corpus-numfor-example.md`](docs/corpus-numfor-example.md) walks one of
 those units through the same eight stages, and says how far its passing run
 reaches.
 
