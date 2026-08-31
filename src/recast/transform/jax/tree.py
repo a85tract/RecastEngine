@@ -497,7 +497,12 @@ class _Rewrite(ast.NodeTransformer):
         var = node.target.id
         self.loop_vars.add(var)
         extent = _indexed_extent(node.body, var)
-        if extent is None:
+        if extent is None and any(isinstance(n, ast.Subscript) for n in ast.walk(stop)):
+            # Only a subscripted per-patch count (``ncan[p - 1] + 1``) may
+            # take its extent from the callee's indexing: a scalar bound
+            # (``nrk_steps + 1 + 1``) can legitimately run PAST the axis the
+            # callee indexes (the RK combine pass), and a too-short range is
+            # a wrong answer no guard can widen.
             extent = self._callee_extent(node.body, var)
         if extent is None:
             return node
