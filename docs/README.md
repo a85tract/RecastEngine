@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | [`cli.md`](cli.md) | every command, the four recipes, config keys, `run` flags, exit codes |
-| [`corpus-numfor-example.ipynb`](corpus-numfor-example.ipynb) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
-| [`corpus-lapack-example.ipynb`](corpus-lapack-example.ipynb) | the one corpus unit whose Python does not import -- a library over LAPACK -- why that is the right outcome, and what an externals shim would change |
+| [`corpus-numfor-example.md`](corpus-numfor-example.md) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
+| [`corpus-lapack-example.md`](corpus-lapack-example.md) | the one corpus unit whose Python does not import -- a library over LAPACK -- why that is the right outcome, and what an externals shim would change |
 | [`architecture.md`](architecture.md) | the spine, the ten interfaces, where the boundaries fall |
 | [`tree-units.md`](tree-units.md) | a unit of a model tree: use-constants, stand-ins, bundled companions, derived-type interfaces flattened, a real run recorded -- and the extension's half of it |
 | [`writing-a-plugin.md`](writing-a-plugin.md) | how to extend the engine, and the conformance suite a plugin must satisfy |
