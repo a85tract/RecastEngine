@@ -9,7 +9,7 @@ exist and run end to end — Fortran in, verified NumPy and evidence manifests
 out, gated bit-exact against the compiled original.
 
 The other three are not one story. `port` and `audit` plan clean on the
-plugins shipped here. `refactor` declares four slots nothing fills —
+plugins shipped here. `refactor-todo` declares four slots nothing fills —
 `refactor.carve`, `static.no-numerics-moved`, `pinned-run`,
 `fullmodel.bitwise` — and is what P3–P4 are for. Planning clean is a weaker
 claim than the one `translate` can make, for the reason *The other two
@@ -731,7 +731,7 @@ that nobody migrates them, not that the repository holding them is frozen.
 
 Build the CESM extension as its own repository and move every CESM-specific
 rule, catalog, and golden set into it. Bring freeCAM and CESM-jax-kernels onto the
-`refactor` and `port` recipes.
+`refactor-todo` and `port` recipes.
 
 A separate repository rather than a directory under SciRecast's `cesm/`,
 because this phase's check is that the engine passes with that extension

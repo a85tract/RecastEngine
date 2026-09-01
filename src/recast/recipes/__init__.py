@@ -56,9 +56,14 @@ class RefactorRecipe(Recipe):
     Note the gate is a ``batch`` oracle. This recipe cannot complete on the local
     executor, and that is a property of the work, not a limitation to route
     around.
+
+    The ``-todo`` suffix is the incompleteness made visible: all four of its
+    workload slots -- ``refactor.carve``, ``static.no-numerics-moved``,
+    ``pinned-run``, ``fullmodel.bitwise`` -- name plugins nothing ships yet.
+    The suffix comes off when they land.
     """
 
-    name = "refactor"
+    name = "refactor-todo"
     summary = "Restructure architecture without touching numerics; gate on a full run."
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
@@ -80,12 +85,14 @@ class RefactorRecipe(Recipe):
     def validate(self, config: dict[str, Any]) -> list[str]:
         problems = []
         if not config.get("reference_commit"):
-            problems.append("refactor requires 'reference_commit': the pinned upstream revision")
+            problems.append(
+                "refactor-todo requires 'reference_commit': the pinned upstream revision"
+            )
         # The gate is a batch oracle, so the default executor cannot finish this
         # run. Saying so here costs a second; finding out costs the build.
         if config.get("executor", "local") == "local":
             problems.append(
-                "refactor gates on a pinned multi-rank run; set 'executor' to a batch executor"
+                "refactor-todo gates on a pinned multi-rank run; set 'executor' to a batch executor"
             )
         return problems
 
@@ -190,7 +197,7 @@ class AuditRecipe(Recipe):
 
 BUILTIN: dict[str, type[Recipe]] = {
     "translate": TranslateRecipe,
-    "refactor": RefactorRecipe,
+    "refactor-todo": RefactorRecipe,
     "port": PortRecipe,
     "audit": AuditRecipe,
 }

@@ -59,12 +59,14 @@ def _cmd_plugins(args: argparse.Namespace) -> int:
 
 
 def _cmd_recipes(_args: argparse.Namespace) -> int:
+    names = set(BUILTIN) | set(REGISTRY.names("recipe"))
+    width = max(map(len, names), default=0)
     for name, cls in sorted(BUILTIN.items()):
-        print(f"{name:10s} {cls.summary}")
+        print(f"{name:{width}s} {cls.summary}")
     for name in REGISTRY.names("recipe"):
         if name not in BUILTIN:
             summary = getattr(REGISTRY.get("recipe", name), "summary", "")
-            print(f"{name:10s} {summary} (plugin)")
+            print(f"{name:{width}s} {summary} (plugin)")
     return 0
 
 

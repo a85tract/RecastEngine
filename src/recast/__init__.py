@@ -6,7 +6,7 @@ which plugin fills each slot; the spine does not change.
 
     >>> from recast.recipes import BUILTIN
     >>> sorted(BUILTIN)
-    ['audit', 'port', 'refactor', 'translate']
+    ['audit', 'port', 'refactor-todo', 'translate']
 """
 
 from __future__ import annotations
