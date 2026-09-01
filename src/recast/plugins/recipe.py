@@ -8,11 +8,11 @@ changing shape.
 
 The four shipped recipes and where they came from:
 
-    translate   Fortran -> NumPy/Numba/CUDA, gated on f2py golden
-    refactor    carve a Python control plane into a Fortran monolith,
-                gated on a pinned full-model run
-    port        retarget a kernel to an accelerator, gated on captured dumps
-    audit       cyber gate only: scan -> adjudicate -> Sec-Track
+    translate      Fortran -> NumPy/Numba/CUDA, gated on f2py golden
+    refactor-todo  carve a Python control plane into a Fortran monolith,
+                   gated on a pinned full-model run
+    port           retarget a kernel to an accelerator, gated on captured dumps
+    audit          cyber gate only: scan -> adjudicate -> Sec-Track
 """
 
 from __future__ import annotations

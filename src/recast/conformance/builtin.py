@@ -9,7 +9,7 @@ what the store wrote, and reports the manifest check as unexercised rather than
 passing it -- a store that writes garbage and a store nobody can read back are
 indistinguishable from outside, and only one of them is acceptable.
 
-The recipes carry a config each. ``refactor`` names a batch executor because
+The recipes carry a config each. ``refactor-todo`` names a batch executor because
 its own ``validate`` refuses ``local``: its gate is a pinned multi-rank run,
 so a plan produced under the default config is a plan that can never execute,
 and checking that plan would check nothing.
@@ -611,7 +611,7 @@ PLUGIN_SET = PluginSet(
     recipes=(
         RecipeCase(name="translate"),
         RecipeCase(
-            name="refactor",
+            name="refactor-todo",
             config={"reference_commit": "0" * 40, "executor": "conformance-batch"},
         ),
         RecipeCase(name="port", config={"dumps": ["reference.nc"]}),

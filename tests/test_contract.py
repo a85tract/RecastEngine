@@ -186,7 +186,7 @@ def test_recipe_executor_is_not_hardcoded() -> None:
 
 def test_refactor_rejects_the_default_executor() -> None:
     """Its gate is a batch oracle; ``local`` cannot finish the run at all."""
-    refactor = BUILTIN["refactor"]()
+    refactor = BUILTIN["refactor-todo"]()
     problems = refactor.validate({"reference_commit": "x"})
     assert any("batch executor" in p for p in problems)
     assert refactor.validate({"reference_commit": "x", "executor": "pbs-stub"}) == []

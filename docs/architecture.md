@@ -9,7 +9,7 @@ modernization at all:
 | Project | What it actually does | Recipe | Product |
 |---|---|---|---|
 | the Fortran translator | rule-driven Fortran → NumPy/Numba/CUDA, gated bit-exact against f2py | `translate` | [PyCAM5](https://github.com/a85tract/PyCAM5) |
-| freeCAM | generates C-interop adapters + 16 ordered source patches that carve a Python control plane into iCESM1.3.1, gated on a 512-rank 50-step bit-for-bit run | `refactor` | [freeCAM](https://github.com/a85tract/freeCAM) |
+| freeCAM | generates C-interop adapters + 16 ordered source patches that carve a Python control plane into iCESM1.3.1, gated on a 512-rank 50-step bit-for-bit run | `refactor-todo` | [freeCAM](https://github.com/a85tract/freeCAM) |
 | CESM-jax-kernels | rewrites CLUBB/MG/Kessler/RTE-RRTMGP kernels for JAX, gated against captured Fortran dumps | `port` | [JaxCAM6](https://github.com/a85tract/CESM-jax-kernels) |
 | CC-Test (cyber half) | secret scan, SBOM+CVE+VEX, LLM source audit, ASan — findings to Sec-Track | `audit` | CC-Test (restricted access) |
 
@@ -119,7 +119,7 @@ inherits, so a recipe that declares an oracle, a verifier, a scanner or an
 adjudicator has to name one. Scanners joined that list late: the in-tree
 gitleaks wrapper spent a day calling `subprocess` because the contract handed
 it nothing else, and that was the contract's defect rather than the wrapper's. It names it *through config*, never literally: `pbs-<site>` is site
-knowledge and the four shipped recipes have to stay publishable. `refactor`
+knowledge and the four shipped recipes have to stay publishable. `refactor-todo`
 goes further and rejects the default outright, because its gate is a pinned
 multi-rank run that `local` cannot finish — better a failed `recast plan` in a
 second than a failed build an hour in.
@@ -156,7 +156,7 @@ Candidate gets overfitted to the sample that was supposed to judge it. The wall
 between Transform and Verifier is load-bearing precisely because the Transform
 cannot see through it.
 
-Two further costs, if the temptation ever returns. `refactor` gates on a
+Two further costs, if the temptation ever returns. `refactor-todo` gates on a
 512-rank pinned run, so a loop around that gate is priced in node-hours. And
 `Evidence` records no attempt count, so a bit-exact claim reached on attempt 47
 would be indistinguishable from one reached on attempt 1 — a multiple-comparisons
@@ -327,7 +327,7 @@ effort needs and the source it is modernizing:
 + recast-fortran      language knowledge -- the reference frontend, in-tree
 + a CESM extension    domain knowledge -- CESM rules, catalogs, golden sets
 + a PBS executor      site knowledge -- private, never public
-+ refactor + config   which recipe, which reference commit, how many ranks
++ refactor-todo + config   which recipe, which reference commit, how many ranks
 + CAM's source        the thing being modernized
 --------------------------------------------------------------------------
 = freeCAM             a product

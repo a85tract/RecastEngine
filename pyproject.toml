@@ -97,7 +97,7 @@ recast = "recast.conformance.builtin:PLUGIN_SET"
 
 [project.entry-points."recast.recipes"]
 translate = "recast.recipes:TranslateRecipe"
-refactor = "recast.recipes:RefactorRecipe"
+refactor-todo = "recast.recipes:RefactorRecipe"
 port = "recast.recipes:PortRecipe"
 audit = "recast.recipes:AuditRecipe"
 

@@ -19,10 +19,10 @@ recast 0.0.1.dev0  python 3.11.16
 
 ```console
 $ recast recipes
-audit      Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does.
-port       Retarget a kernel to an accelerator; gate on captured production dumps.
-refactor   Restructure architecture without touching numerics; gate on a full run.
-translate  Translate a source language to a target language, gated bit-exact.
+audit         Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does.
+port          Retarget a kernel to an accelerator; gate on captured production dumps.
+refactor-todo Restructure architecture without touching numerics; gate on a full run.
+translate     Translate a source language to a target language, gated bit-exact.
 ```
 
 Four workloads, one spine — every recipe is the same five steps
@@ -30,7 +30,7 @@ Four workloads, one spine — every recipe is the same five steps
 the slots, which is [architecture.md](architecture.md)'s subject.
 
 They are not equally far along. `translate` runs end to end, gated bit-exact.
-`port` and `audit` plan clean on the plugins shipped here. `refactor` declares
+`port` and `audit` plan clean on the plugins shipped here. `refactor-todo` declares
 four slots nothing fills yet. [`roadmap.md`](roadmap.md) is where each is
 going.
 
@@ -82,7 +82,7 @@ a path to a `.json` or `.toml` file. Same object either way, and
 |---|---|
 | `translate` | `target` — `numpy` (default), `numba` or `cuda` |
 | `port` | `backend` — `jax` (default), `numba` or `cuda`. `oracle` — what to gate against, `numpy-anchor` by default; `dump-replay` also requires `dumps` |
-| `refactor` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
+| `refactor-todo` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
 | `audit` | none |
 
 All four also read `executor` and `frontend`, defaulting to `local` and
