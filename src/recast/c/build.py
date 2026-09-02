@@ -15,8 +15,9 @@ A build spec is data a frontend puts in ``Unit.attrs``::
 (``{"cc": "nvc++", "sm": "cc80", ...}``) plus ``{staging}`` and ``{dir}``,
 which the engine supplies. An element spelled ``@{flags}`` is split into
 as many arguments as the rendered value has words (a flag table is several
-flags), where ``{flags}`` alone stays one argument (a ``make`` variable). The table is free-form: a key the operator adds
-is a placeholder a spec may use. Its ``env`` entry is merged into every
+flags), where ``{flags}`` alone stays one argument (a ``make`` variable).
+The table is free-form: a key the operator adds is a placeholder a spec may
+use. Its ``env`` entry is merged into every
 run's environment, which is where ``OMP_TARGET_OFFLOAD=MANDATORY`` goes.
 ``identity()`` -- the compiler's own ``--version`` line -- is what an oracle
 folds into its key, because a different compiler is a different reference.
