@@ -19,8 +19,10 @@ by a reading of the code.
 
 Two things are not public yet, and this page names them without linking:
 the CLM-ml domain extension for the engine (`recast-clm-ml`) and the case
-directory that drives it (`clm-ml-jax`, with its `REPRODUCTION.md`, the
-record this page condenses). The upstream Fortran is public:
+directory that drives it (`clm-ml-jax-reproduction`, with its
+`REPRODUCTION.md`, the record this page condenses; not the authors' own
+translation, which is public as
+[`AyaLahlou/clm-ml-jax`](https://github.com/AyaLahlou/clm-ml-jax)). The upstream Fortran is public:
 [`gbonan/CLM-ml_v2.CHATS`](https://github.com/gbonan/CLM-ml_v2.CHATS) at
 `8d1cc40`, read and never modified. Everything ran on one laptop (Apple
 silicon, gfortran 16) between 2026-08-28 and 2026-08-31.
