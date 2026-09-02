@@ -58,6 +58,7 @@ Ecosystem = "https://github.com/a85tract/SciRecast"
 [project.entry-points."recast.frontends"]
 fortran = "recast.fortran.frontend:factory"
 python-numpy = "recast.python.frontend:factory"
+"c-kernel" = "recast.c.frontend:factory"
 
 [project.entry-points."recast.verifiers"]
 # Quoted: an unquoted dotted key would be read as a nested table.
@@ -68,6 +69,8 @@ python-numpy = "recast.python.frontend:factory"
 "differential.tolerance" = "recast.verify.tolerance:factory"
 "differential.python-numba" = "recast.verify.python_accelerators:numba_factory"
 "differential.python-jax" = "recast.verify.python_accelerators:jax_factory"
+"differential.probes" = "recast.verify.probes:factory"
+"performance.benchmark" = "recast.verify.gpu_time:factory"
 
 [project.entry-points."recast.oracles"]
 f2py-golden = "recast.oracle.f2py:factory"
@@ -75,6 +78,7 @@ numpy-anchor = "recast.oracle.numpy_anchor:factory"
 dump-replay = "recast.oracle.dump_replay:factory"
 "f2py-golden-flat" = "recast.oracle.flat:factory"
 python-source = "recast.oracle.python_source:factory"
+executable-golden = "recast.oracle.executable:factory"
 
 [project.entry-points."recast.transforms"]
 "translate.numpy" = "recast.transform.numpy.translate:factory"

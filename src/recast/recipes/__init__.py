@@ -165,7 +165,9 @@ class PortRecipe(Recipe):
                 gate=True,
                 config={"module_suffix": f"_{backend}.py"},
             ),
-            Stage("verifier", "performance.benchmark", optional=True),
+            # A measurement, opted into: it needs a build spec in the unit's
+            # attrs (``recast.c.build``), which a Fortran port has none of.
+            *([Stage("verifier", "performance.benchmark")] if config.get("benchmark") else []),
             Stage("store", "fs-evidence"),
         ]
 
