@@ -36,10 +36,12 @@ from jax import lax  # noqa: E402
 
 # A star-import from the generated module must see the underscore names.
 __all__ = [
+    "_f_adjustl",
     "_f_dim",
     "_f_epsilon",
     "_f_huge",
     "_f_int_div",
+    "_f_len_trim",
     "_f_max",
     "_f_min",
     "_f_mod",
@@ -47,6 +49,7 @@ __all__ = [
     "_f_nint",
     "_f_sign",
     "_f_tiny",
+    "_f_trim",
     "_f_vceil",
     "_f_vdot",
     "_f_vexp",
@@ -56,6 +59,7 @@ __all__ = [
     "_f_vmax",
     "_f_vmin",
     "_f_vpow",
+    "_fstr_eq",
     "jax",
     "jnp",
     "lax",
@@ -175,3 +179,22 @@ def _f_tiny(x):
 
 def _f_epsilon(x):
     return jnp.finfo(jnp.asarray(x).dtype).eps
+
+
+def _fstr_eq(a: str, b: str) -> bool:
+    """Fortran character equality: pad the shorter operand with blanks.
+    Characters are static under tracing -- plain Python strings."""
+    return a.rstrip(" ") == b.rstrip(" ")
+
+
+def _f_trim(s: str) -> str:
+    """Fortran TRIM: strip trailing blanks only."""
+    return s.rstrip(" ")
+
+
+def _f_len_trim(s: str) -> int:
+    return len(s.rstrip(" "))
+
+
+def _f_adjustl(s: str) -> str:
+    return s.lstrip(" ").ljust(len(s))

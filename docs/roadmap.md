@@ -1415,6 +1415,39 @@ already.
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 
+### The column orchestrator, 2026-08-30 to 09-02: what it forced out, and one thing landed ahead of upstream
+
+Porting CLM-ml's whole time step (`MLCanopyFluxes`: six sub-steps, five
+Runge-Kutta passes, fifteen physics companions, five call levels) as one
+JAX kernel needed eleven commits of tree rules (PR #7): character
+parameters as values, a subprogram-level backward `goto` as a loop region,
+the procedure index and state-variable search following use/call closure
+across companions of companions, goto regions lowered as flagged
+`lax.while_loop`s, module-state writes threaded through the kernel closure,
+callee extents for a loop counter that rides into a companion kernel --
+and the scalar-bound correction (`13debff`) after a callee-inherited extent
+turned five RK passes into four. The CLM-ml case's Fig. 5, 6, 8 and 9 stand
+on them; the record is `clm-ml-jax-reproduction/REPRODUCTION.md`.
+
+**One of those is ahead of the translator, deliberately.** A bare
+character-literal parameter (`calkindflag = 'GREGORIAN'`) classified as a
+value in `fortran/constants.py` and emitted by `transform/numpy/constants.py`
+is the fix for CESM-language-translator #47, filed from here on 08-31 with
+the promise to relay whatever spelling upstream lands. Upstream had not
+moved by 09-02 and the case could not wait, so the branch was merged with
+the spelling it had, and the same fix went upstream as
+[CESM-language-translator PR #48](https://github.com/a85tract/CESM-language-translator/pull/48)
+-- which also found the translator's `translate.py` upper-casing a local
+character literal in its prologue (`choice = 'MAXI'`), a defect the engine's
+constants-module path never had. When #48 lands, the differential decides:
+if upstream's spelling differs, this one follows it, as the relay rule says.
+
+Two items the PR itself marked deferred: `flatten`'s procedure index keys
+procedures by bare name, so two companions each with a private `Norman`
+could be misattributed (key by `(module, name)`); `_is_dynamic` exempts the
+names `min`, `max`, `len` everywhere rather than only in call position.
+Neither reaches CLM-ml's result.
+
 ## P6 — public
 
 Scrub → security review → archive the two source repositories read-only, with

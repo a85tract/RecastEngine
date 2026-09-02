@@ -380,7 +380,32 @@ class Subprograms:
         # and only the first such region is taken.
         region_open: dict[int, str] = {}
         region_close: dict[int, str] = {}
+        # A subprogram-level *backward* goto-region: `L continue` at block i
+        # with `goto L` in a later block j is a loop -- everything from the
+        # label to the last such goto runs again. Taken before the forward
+        # case, as the statement-level rule orders it, and only one region
+        # per subprogram either way.
+        back_open: dict[int, str] = {}
+        back_close: dict[int, str] = {}
         for at, (_, statement, _) in enumerate(blocks):
+            if isinstance(statement, f03.Continue_Stmt):
+                label = statements.label(statement)
+                if not label or label in statements.consumed_labels:
+                    continue
+                jumps = [
+                    later
+                    for later in range(at + 1, len(blocks))
+                    if any(
+                        str(goto.children[0]) == label
+                        for goto in walk(blocks[later][1], f03.Goto_Stmt)
+                    )
+                ]
+                if jumps and not back_open:
+                    back_open[at] = label
+                    back_close[jumps[-1]] = label
+        for at, (_, statement, _) in enumerate(blocks):
+            if back_open:
+                break
             if isinstance(statement, f03.Continue_Stmt):
                 label = statements.label(statement)
                 if not label or label in statements.consumed_labels:
@@ -398,7 +423,14 @@ class Subprograms:
                     region_close[at] = label
 
         in_region = None
+        in_loop_region = None
         for at, (block, statement, span) in enumerate(blocks):
+            if at in back_open:
+                label = back_open[at]
+                lines.append(f"    while True:  # backward-goto region (label {label})")
+                lines.append("        try:")
+                statements.active_labels.append(("region", label))
+                in_loop_region = label
             if at in region_open:
                 label = region_open[at]
                 lines.append(f"    try:  # forward-goto region (label {label})")
@@ -437,7 +469,8 @@ class Subprograms:
             # deeper, its marker comment included. The refusing path below
             # worked this out and the accepting one did not, so a region's
             # blocks carried their markers at the outer indent.
-            pad = "    " * (2 if in_region else 1)
+            depth = 3 if in_loop_region else (2 if in_region else 1)
+            pad = "    " * depth
             patch = self.patches.get(f"{subprogram['name']}/{block}")
             if patch is not None:
                 lines.append(
@@ -450,7 +483,7 @@ class Subprograms:
                 report.append(entry)
                 continue
             try:
-                body = statements.render(statement, 2 if in_region else 1)
+                body = statements.render(statement, depth)
                 lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]}")
                 lines.extend(body)
                 entry["status"] = "mechanical"
@@ -479,6 +512,15 @@ class Subprograms:
                         entry["handler_error"] = why_not
             entry["py_lines"] = [start + 1, len(lines)]
             report.append(entry)
+            if at in back_close:
+                label = back_close[at]
+                statements.active_labels.pop()
+                lines.append("            break  # natural exit")
+                lines.append("        except _FGoto as _g:")
+                lines.append(f"            if _g.args[0] != '{label}':")
+                lines.append("                raise")
+                lines.append(f"            pass  # {label} (loop restart)")
+                in_loop_region = None
 
         tail = statements.returned_value()
         last_code = next(

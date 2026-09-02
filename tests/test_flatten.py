@@ -369,6 +369,39 @@ def test_a_bundled_companion_resolves_its_own_use_constants(tree: Path) -> None:
     assert "NLEV2" in caller
 
 
+def test_state_read_behind_a_companion_of_a_companion_reaches_the_plan(tree: Path) -> None:
+    """``driver -> physics.Warm -> ops.amplify`` where ``ops_mod`` uses a
+    state module the driver never does: the callee closure is the unit's
+    dataflow, so ``gain`` must be an input of the driver's plan. One level
+    of companions is not enough -- the orchestrator case (``GetObu`` into
+    ``hybrid``, ``aH12`` read in the callback) is exactly this shape."""
+    (tree / "state2_mod.f90").write_text(
+        "module state2_mod\n  implicit none\n  real(8) :: gain\nend module state2_mod\n"
+    )
+    (tree / "ops_mod.f90").write_text(
+        "module ops_mod\n  use state2_mod, only: gain\n"
+        "  use types_mod, only: canopy_type\n  implicit none\ncontains\n"
+        "  subroutine amplify(inst)\n    type(canopy_type), intent(inout) :: inst\n"
+        "    inst%gs = inst%gs * gain\n  end subroutine amplify\nend module ops_mod\n"
+    )
+    (tree / "physics_mod.f90").write_text(
+        PHYSICS.replace(
+            "  use state_mod, only: scale\n",
+            "  use state_mod, only: scale\n  use ops_mod, only: amplify\n",
+        ).replace(
+            "    end associate\n  end subroutine Warm\n",
+            "    end associate\n    call amplify(inst)\n  end subroutine Warm\n",
+        )
+    )
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True)
+    unit = next(u for u in frontend.discover(tree) if u.uid == "fortran:driver_mod")
+    facts = frontend.analyze(unit, tree)
+    step = next(p for p in plans_from_facts(facts) if p.subprogram["name"] == "step")
+    names = {(s.module, s.name) for s in step.states}
+    assert ("state2_mod", "gain") in names
+    assert ("state_mod", "scale") in names
+
+
 def test_a_component_written_through_a_companion_call_is_written(tree: Path) -> None:
     """``call scale_in_place(inst%gs)`` into a sibling module writes the
     component; the plan must return it, or a functional lowering loses the

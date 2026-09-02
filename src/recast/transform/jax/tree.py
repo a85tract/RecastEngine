@@ -69,6 +69,12 @@ WIDENED = ast.Name(id="_widened_", ctx=ast.Load())
 """A placeholder upper bound marking a slice this pass widened."""
 
 
+TRACED_SCALARS: frozenset[str] = frozenset()
+"""Scalar dummies the operator declares per-call-varying (config
+``traced_scalars``): kept traced so the kernel does not recompile per
+call -- the step counter ``itim`` above all."""
+
+
 class NotFlat(Exception):
     """This subprogram's body cannot be spelled on the flat signature."""
 
@@ -186,6 +192,7 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
+        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -202,7 +209,12 @@ class _Rewrite(ast.NodeTransformer):
                 isinstance(node.value, ast.Attribute) and node.value.attr == "shape"
             ):
                 return True
-            if isinstance(node, ast.Name) and not node.id.isupper() and node.id not in self.statics:
+            if (
+                isinstance(node, ast.Name)
+                and not node.id.isupper()
+                and node.id not in self.statics
+                and node.id not in ("min", "max", "len")  # static over static shapes
+            ):
                 return True
             return any(visit(child) for child in ast.iter_child_nodes(node))
 
@@ -241,17 +253,31 @@ class _Rewrite(ast.NodeTransformer):
         widened_expr: Any = Widen().visit(copy.deepcopy(expr))
         if not found:
             return expr, None
-        keys = {(ast.unparse(lo) if lo else "0", ast.unparse(hi)) for _, _, lo, hi, _ in found}
+        keys = {
+            (ast.unparse(_fold(lo)) if lo else "0", ast.unparse(_fold(hi)))
+            for _, _, lo, hi, _ in found
+        }
         if len(keys) != 1:
             raise NotFlat("dynamic slices with different bounds in one statement")
-        base, axis, lo, hi, trailing = found[0]
-        # One static length for every widened slice -- the first array's
-        # axis from its lower bound -- so ``x[i, 0:n] * y[i, 0:n]`` stays
-        # conformable when ``x`` and ``y`` are not allocated alike.
-        extent = ast.Subscript(
-            value=ast.Attribute(value=copy.deepcopy(base), attr="shape", ctx=ast.Load()),
-            slice=ast.Constant(axis),
-            ctx=ast.Load(),
+        _base, _axis, lo, hi, trailing = found[0]
+        # One static length for every widened slice -- the SMALLEST of the
+        # sliced arrays' axes -- so ``x[i, 0:n] + y[i, 0:n]`` stays
+        # conformable when ``x`` and ``y`` are not allocated alike (the
+        # accumulator's interface axis is nlev+1 beside a nlev profile).
+        # Shapes are Python ints under jit, so ``min`` folds at trace time.
+        seen: dict[str, ast.expr] = {}
+        for b, ax, _, _, _ in found:
+            shape_ref: ast.expr = ast.Subscript(
+                value=ast.Attribute(value=copy.deepcopy(b), attr="shape", ctx=ast.Load()),
+                slice=ast.Constant(ax),
+                ctx=ast.Load(),
+            )
+            seen.setdefault(ast.unparse(shape_ref), shape_ref)
+        refs = list(seen.values())
+        extent = (
+            refs[0]
+            if len(refs) == 1
+            else ast.Call(func=ast.Name(id="min", ctx=ast.Load()), args=refs, keywords=[])
         )
         low: ast.expr = copy.deepcopy(lo) if lo else ast.Constant(0)
         length = ast.BinOp(left=extent, op=ast.Sub(), right=copy.deepcopy(low))
@@ -294,6 +320,10 @@ class _Rewrite(ast.NodeTransformer):
     # -- names and attributes -------------------------------------------------
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id in self.buffer_outs:
+            raise NotFlat(
+                f"the buffer {node.id} was elided at its call; this later use has no value"
+            )
         flat = self.aliases.get(node.id)
         if flat is not None:
             return ast.copy_location(ast.Name(id=flat, ctx=node.ctx), node)
@@ -323,14 +353,26 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
+        if pending:
+            # A companion kernel that writes module state returns it after
+            # its own outputs; the caller binds it onto the flat names.
+            targets = (
+                list(node.targets[0].elts)
+                if isinstance(node.targets[0], ast.Tuple)
+                else list(node.targets)
+            )
+            targets += [ast.Name(id=flat, ctx=ast.Store()) for flat in pending]
+            node.targets = [ast.Tuple(elts=targets, ctx=ast.Store())]
+            return node
         target = node.targets[0]
         if (
             len(node.targets) == 1
             and isinstance(target, ast.Name)
             and target.id in self.inits
             and not isinstance(node.value, ast.Constant)
-            and _constant_expression(node.value, self.loop_vars)
+            and (_constant_expression(node.value, self.loop_vars) or _table_read(node.value))
         ):
             # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
             # ``lax.cond`` arm that assigns it beside one that keeps an
@@ -390,6 +432,14 @@ class _Rewrite(ast.NodeTransformer):
             and len(call.args) == 2
         ):
             dst, src = call.args
+            if (
+                isinstance(src, ast.Subscript)
+                and isinstance(src.value, ast.Name)
+                and src.value.id in self.buffer_outs
+            ):
+                # The buffer was elided at the call: this copy already
+                # happened when the flat outputs bound to the actuals.
+                return None
             return self.visit(ast.copy_location(ast.Assign(targets=[dst], value=src), node))
         self.generic_visit(node)
         return node
@@ -447,6 +497,13 @@ class _Rewrite(ast.NodeTransformer):
         var = node.target.id
         self.loop_vars.add(var)
         extent = _indexed_extent(node.body, var)
+        if extent is None and any(isinstance(n, ast.Subscript) for n in ast.walk(stop)):
+            # Only a subscripted per-patch count (``ncan[p - 1] + 1``) may
+            # take its extent from the callee's indexing: a scalar bound
+            # (``nrk_steps + 1 + 1``) can legitimately run PAST the axis the
+            # callee indexes (the RK combine pass), and a too-short range is
+            # a wrong answer no guard can widen.
+            extent = self._callee_extent(node.body, var)
         if extent is None:
             return node
         test: ast.expr = ast.Compare(
@@ -470,6 +527,48 @@ class _Rewrite(ast.NodeTransformer):
         it.args[-1] = extent
         node.body = [guard]
         return node
+
+    def _callee_extent(self, body: list[ast.stmt], var: str) -> ast.expr | None:
+        """The loop counter is not an index here -- it rides into a companion
+        kernel (``LeafFluxes(p, ic, il, inst)``) and the indexing lives in
+        the callee. The flat spelling is the same on both sides, so the
+        extent the callee's body reads is valid in the caller."""
+        for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith("_")
+                and node.func.attr.endswith("_k_impl")
+                and isinstance(node.func.value, ast.Name)
+            ):
+                continue
+            at = next(
+                (i for i, a in enumerate(node.args) if isinstance(a, ast.Name) and a.id == var),
+                None,
+            )
+            if at is None:
+                continue
+            kernel = node.func.attr[1 : -len("_k_impl")]
+            module_alias = node.func.value.id[: -len("_jax")]
+            module = self.spelling.modules.get(module_alias)
+            port = self.ports.get(module) if module is not None else None
+            fn = (port or {}).get("fns", {}).get(kernel)
+            record = (port or {}).get("records", {}).get(kernel)
+            if (fn is None or record is None) and kernel.endswith("_flat"):
+                # The port's records and anchor functions are keyed by the
+                # ORIGINAL subprogram; the flat call's leading scalars keep
+                # the original order, and the original body carries the
+                # subscripts the flat rewrite respelled.
+                base = kernel[: -len("_flat")]
+                fn = (port or {}).get("fns", {}).get(base)
+                record = (port or {}).get("records", {}).get(base)
+            if fn is None or record is None or at >= len(record["args"]):
+                continue
+            dummy = _py(record["args"][at]["name"])
+            found = _callee_component_extent(fn.body, dummy, node.args)
+            if found is not None:
+                return found
+        return None
 
     def _static_descending(self, node: ast.For) -> Any:
         """``do ic = ntop(p), nbot(p), -1``: the anchor's ``range(a, b - 1,
@@ -528,7 +627,15 @@ class _Rewrite(ast.NodeTransformer):
         if node.body and all(isinstance(s, (ast.Raise, ast.Expr, ast.Pass)) for s in node.body):
             if any(isinstance(s, ast.Raise) for s in node.body):
                 self.aborts.append(ast.unparse(node.test))
-                return [self.visit(s) for s in node.orelse] if node.orelse else None
+                if not node.orelse:
+                    return None
+                replaced: list[ast.stmt] = []
+                for stmt in node.orelse:
+                    seen = self.visit(stmt)
+                    if seen is None:
+                        continue
+                    replaced.extend(seen if isinstance(seen, list) else [seen])
+                return replaced or None
         self.generic_visit(node)
         if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
             # ``if cond: write(iulog, ...)`` -- a log line the anchor already
@@ -537,6 +644,15 @@ class _Rewrite(ast.NodeTransformer):
         return node
 
     def visit_Raise(self, node: ast.Raise) -> Any:
+        if (
+            isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)
+            and node.exc.func.id == "_FGoto"
+        ):
+            # A backward-goto restart, not an abort: control flow the while
+            # lowering turns into a flag. Dropping it would silently unroll
+            # the loop to one pass.
+            return node
         self.aborts.append(ast.unparse(node))
         return None
 
@@ -561,6 +677,12 @@ class _Rewrite(ast.NodeTransformer):
         # anchor spells with a Python or NumPy constructor is ``jnp``'s here.
         # ``jnp.int32`` truncates toward zero the way ``int`` does.
         if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
+            if _static_expression(node.args[0], self.statics):
+                # ``int(dtime_clm / dtime_ml)`` over static scalars: a Python
+                # int at trace time, so the loop it bounds lowers to a scan
+                # reverse mode can transpose. A jnp cast -- even concrete --
+                # would make the loop a while_loop.
+                return node
             return ast.copy_location(_jnp("int32", node.args), node)
         if (
             isinstance(node.func, ast.Attribute)
@@ -607,9 +729,28 @@ class _Rewrite(ast.NodeTransformer):
             and node.func.attr in CASTS
             and len(node.args) == 1
             and not isinstance(node.args[0], ast.Constant)
+            and not _static_expression(node.args[0], frozenset(self.statics))
         ):
             return ast.copy_location(_jnp(node.func.attr, node.args), node)
         return self._companion_call(node)
+
+    def _companion_writes(self, node: ast.Call) -> list[str]:
+        """The flat names a companion kernel call writes, for its caller's
+        statement to bind; refused if the plan does not carry one."""
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return []
+        module = self.spelling.modules.get(func.value.id)
+        port = self.ports.get(module) if module is not None else None
+        if port is None:
+            return []
+        flats = []
+        for state in (port.get("write_closures") or {}).get(func.attr, []):
+            flat = f"{module}__{state}"
+            if flat not in self.spelling.states:
+                raise NotFlat(f"{module}.{func.attr} writes {state}, which the plan does not carry")
+            flats.append(flat)
+        return flats
 
     # -- calls into companions ------------------------------------------------
 
@@ -1001,6 +1142,32 @@ class _Rewrite(ast.NodeTransformer):
         if callee.subprogram["kind"] == "function":
             original_outs = ["_result", *original_outs]
         slot = dict(zip(original_outs, anchor_targets, strict=False))
+        # ``_out = callee(...); _f_copy_out(a, _out[0]); ...`` -- the anchor's
+        # buffer convention for several array outputs: one name receives the
+        # tuple and the copies unpack it. The flat outputs bind to the actuals
+        # directly, and the buffer name is rebuilt as their tuple so the
+        # anchor's unpacking assignments stay true (each becomes ``a = a``).
+        buffered: ast.expr | None = None
+        if (
+            callee.subprogram["kind"] != "function"
+            and len(original_outs) > 1
+            and len(anchor_targets) == 1
+            and isinstance(anchor_targets[0], ast.Name)
+        ):
+            # ``_out = callee(...); _f_copy_out(a, _out[0]); ...`` -- the
+            # anchor's buffer for several array outputs. The flat outputs
+            # bind to the actuals directly and the buffer never exists: a
+            # name rebound with a different tuple type at another call site
+            # would poison a lax carry, and the copies are self-assignments.
+            buffered = anchor_targets[0]
+            slot = {
+                name: actual_by_dummy[name.lower()]
+                for name in original_outs
+                if name.lower() in actual_by_dummy
+            }
+            self.buffer_outs[buffered.id] = [
+                ast.unparse(slot[name]) for name in original_outs if name in slot
+            ]
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
         for name in _outputs(callee):
@@ -1035,6 +1202,72 @@ class _Rewrite(ast.NodeTransformer):
         )
         assign = ast.Assign(targets=[target_node], value=new_call)
         return [assign, *follow] if follow else assign
+
+
+def _callee_component_extent(
+    body: list[ast.stmt], var: str, call_args: list[ast.expr]
+) -> ast.expr | None:
+    """The callee's body subscripts ``inst.comp[..., ic - 1, ...]`` (the
+    anchor's record-attribute spelling); the caller passed the same
+    component flat as ``<obj>__<comp>``, whose static axis is the extent.
+    Also takes plain flat-Name subscripts, which spell the same on both
+    sides."""
+
+    def caller_array(comp: str) -> ast.expr | None:
+        for given in call_args:
+            if isinstance(given, ast.Name) and given.id.endswith(f"__{comp}"):
+                return ast.Name(id=given.id, ctx=ast.Load())
+        return None
+
+    # The anchor keeps the associate bindings (``tleaf =
+    # mlcanopy_inst.tleaf_leaf``) and subscripts the bare alias after; the
+    # alias table routes those to the component the caller passed flat.
+    aliases: dict[str, str] = {}
+    for stmt in body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Attribute)
+            and isinstance(stmt.value.value, ast.Name)
+        ):
+            aliases[stmt.targets[0].id] = stmt.value.attr
+
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Subscript):
+            continue
+        base: ast.expr | None = node.value
+        if (
+            isinstance(base, ast.Attribute)
+            and isinstance(base.value, ast.Name)
+            and not base.value.id.startswith("_")
+        ):
+            base = caller_array(base.attr)
+        elif isinstance(base, ast.Name) and base.id in aliases:
+            base = caller_array(aliases[base.id])
+        elif not (isinstance(base, ast.Name) and "__" in base.id):
+            base = None
+        if base is None:
+            continue
+        elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        for axis, element in enumerate(elts):
+            shape = ast.Subscript(
+                value=ast.Attribute(value=copy.deepcopy(base), attr="shape", ctx=ast.Load()),
+                slice=ast.Constant(axis),
+                ctx=ast.Load(),
+            )
+            if (
+                isinstance(element, ast.BinOp)
+                and isinstance(element.op, ast.Sub)
+                and isinstance(element.left, ast.Name)
+                and element.left.id == var
+                and isinstance(element.right, ast.Constant)
+                and element.right.value == 1
+            ):
+                return ast.BinOp(left=shape, op=ast.Add(), right=ast.Constant(1))
+            if isinstance(element, ast.Name) and element.id == var:
+                return shape
+    return None
 
 
 def _indexed_extent(body: list[ast.stmt], var: str) -> ast.expr | None:
@@ -1107,9 +1340,97 @@ def _associates(fn: ast.FunctionDef) -> frozenset[str]:
     return frozenset(name for name in top if counts.get(name) == 1)
 
 
+def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
+    """Locals that hold a trace-time value: assigned only at the body's top
+    level, from arithmetic over statics/constants/other concrete locals,
+    casts of those, or a companion scalar kernel called on them
+    (``dtime_clm = get_step_size()`` reading the static ``dtstep``). A name
+    also stored under a branch or loop is a carried value, not a constant."""
+    nested: set[str] = set()
+    for stmt in fn.body:
+        if isinstance(stmt, ast.Assign):
+            continue
+        for inner in ast.walk(stmt):
+            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                nested.add(inner.id)
+    concrete: set[str] = set()
+
+    def scalar_port_call(call: ast.Call) -> bool:
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return False
+        module = rewrite.spelling.modules.get(func.value.id)
+        port = rewrite.ports.get(module) if module is not None else None
+        record = (port or {}).get("records", {}).get(func.attr)
+        if record is None or func.attr not in (port or {}).get("kernels", ()):
+            return False
+        if any(a.get("dims") for a in record["args"]) or record.get("result_dtype") is None:
+            return False
+        if (port.get("write_closures") or {}).get(func.attr):
+            return False
+        closure_static = all(
+            f"{module}__{state}" in rewrite.statics
+            for state in (port.get("closures") or {}).get(func.attr, [])
+        )
+        return closure_static and all(ok(a) for a in call.args)
+
+    def ok(node: ast.expr) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        if isinstance(node, ast.Name):
+            return node.id.isupper() or node.id in rewrite.statics or node.id in concrete
+        if isinstance(node, ast.Attribute):
+            flat = rewrite.spelling.of(node)
+            return flat is not None and flat in rewrite.statics
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
+        ):
+            return ok(node.left) and ok(node.right)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return ok(node.operand)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
+                return ok(node.args[0])
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "np"
+                and node.func.attr in ("float64", "float32", "int32", "int64")
+                and len(node.args) == 1
+            ):
+                return ok(node.args[0])
+            return scalar_port_call(node)
+        return False
+
+    for stmt in fn.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        target = stmt.targets[0]
+        names = [
+            t.id
+            for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
+            if isinstance(t, ast.Name)
+        ]
+        if (
+            len(stmt.targets) == 1
+            and isinstance(target, ast.Name)
+            and target.id not in nested
+            and ok(stmt.value)
+        ):
+            concrete.add(target.id)
+        else:
+            # A later store that is not a concrete scalar (a tuple from a
+            # kernel call, a traced expression) un-makes the name: the
+            # UB-guard ``day = 0`` alone does not a constant make.
+            for name in names:
+                concrete.discard(name)
+    return frozenset(concrete)
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
+    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
     lowered: list[ast.stmt] = []
     # Single exit first, on the anchor's own returns: the flat return that
     # replaces them is one statement at the end.
@@ -1118,7 +1439,32 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
-    lowered = _WhileLoops(_integer_inits(fn)).visit_block(lowered)
+    int_locals = frozenset(_integer_inits(fn)) | frozenset(
+        n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
+    )
+    lowered = _WhileLoops(_integer_inits(fn), int_locals).visit_block(lowered)
+    # The goto-region flags are synthetic locals with no UB-guard init; an
+    # enclosing loop carries them, and the initial carry tuple needs a value
+    # before the loop. Every flag starts False at the top of the function.
+    flags = sorted(
+        {
+            n.id
+            for stmt in lowered
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Name)
+            and isinstance(n.ctx, ast.Store)
+            and re.fullmatch(r"_(?:skip|restart)_\d+", n.id)
+        }
+    )
+    lowered = [
+        *(
+            ast.fix_missing_locations(
+                ast.Assign(targets=[ast.Name(id=f, ctx=ast.Store())], value=ast.Constant(False))
+            )
+            for f in flags
+        ),
+        *lowered,
+    ]
     for statement in lowered:
         for node in ast.walk(statement):
             if (
@@ -1214,6 +1560,65 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
+def _require_trailing_raises(body: list[ast.stmt], label: str | None) -> None:
+    """The flag rewrite guards statements AFTER the statement containing a
+    raise, not statements after the raise inside its own block: a matching
+    ``raise _FGoto`` must be the last statement of whatever block holds it,
+    or the rewrite would run its trailing siblings."""
+
+    def matching(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Raise)
+            and isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)
+            and node.exc.func.id == "_FGoto"
+            and (
+                label is None
+                or (
+                    node.exc.args
+                    and isinstance(node.exc.args[0], ast.Constant)
+                    and node.exc.args[0].value == label
+                )
+            )
+        )
+
+    for stmt in body:
+        for node in ast.walk(stmt):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if isinstance(block, list):
+                    for at, inner in enumerate(block):
+                        if matching(inner) and at != len(block) - 1:
+                            raise NotFlat("a goto that is not the last statement of its branch")
+
+
+def _fold(expr: ast.expr) -> ast.expr:
+    """Trivial constant folding, so two spellings of one bound compare equal:
+    ``(0) - (0)`` is ``0`` and ``n - 0 + 1`` is ``n + 1`` -- the translation
+    spells a Fortran bound differently by context, not by value."""
+
+    class Fold(ast.NodeTransformer):
+        def visit_BinOp(self, node: ast.BinOp) -> ast.expr:
+            self.generic_visit(node)
+            left, right = node.left, node.right
+            if isinstance(left, ast.Constant) and isinstance(right, ast.Constant):
+                if isinstance(node.op, ast.Add):
+                    return ast.Constant(left.value + right.value)
+                if isinstance(node.op, ast.Sub):
+                    return ast.Constant(left.value - right.value)
+            if (
+                isinstance(right, ast.Constant)
+                and right.value == 0
+                and isinstance(node.op, (ast.Add, ast.Sub))
+            ):
+                return left
+            if isinstance(left, ast.Constant) and left.value == 0 and isinstance(node.op, ast.Add):
+                return right
+            return node
+
+    return ast.fix_missing_locations(Fold().visit(copy.deepcopy(expr)))
+
+
 def _advances(body: list[ast.stmt], name: str) -> bool:
     """Whether ``name`` is stepped by a positive integer constant at the
     body's top level -- ``name = name + c`` or ``name += c``."""
@@ -1258,9 +1663,14 @@ class _WhileLoops(ast.NodeTransformer):
     ``lax.fori_loop`` lowers to a scan reverse mode can transpose; the
     fixed-point iterations of the paper's Phase 5 are run this way."""
 
-    def __init__(self, constants: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        constants: dict[str, int] | None = None,
+        int_locals: frozenset[str] | None = None,
+    ) -> None:
         self.n = 0
         self.constants = constants or {}
+        self.int_locals = int_locals or frozenset()
 
     def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
         out: list[ast.stmt] = []
@@ -1273,6 +1683,9 @@ class _WhileLoops(ast.NodeTransformer):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
         return node  # nested (already lowered) bodies stay as they are
+
+    def _int_typed(self, name: str) -> bool:
+        return name in self.int_locals
 
     def _counted_bound(self, test: ast.expr, body: list[ast.stmt]) -> int | None:
         """The constant a counter is compared against in ``test`` --
@@ -1296,9 +1709,213 @@ class _WhileLoops(ast.NodeTransformer):
                     return self.constants[bound.id]
         return None
 
+    def _unwrap_goto_region(self, node: ast.While) -> str | None:
+        """``while True: try: ... break; except _FGoto: pass`` -- the numpy
+        side's backward-goto region. The raise restarts the loop; spelled as
+        a flag (raise -> ``_restart = True``, later statements and the final
+        break guarded on it), the body is a plain ``while True: ... break``
+        the lowering below already takes."""
+        if not (
+            isinstance(node.test, ast.Constant)
+            and node.test.value is True
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.Try)
+        ):
+            return None
+        wrapper = node.body[0]
+        if len(wrapper.handlers) != 1 or wrapper.orelse or wrapper.finalbody:
+            return None
+        handler = wrapper.handlers[0]
+        if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
+            return None
+        labels = {
+            n.exc.args[0].value
+            for stmt in wrapper.body
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Raise)
+            and isinstance(n.exc, ast.Call)
+            and isinstance(n.exc.func, ast.Name)
+            and n.exc.func.id == "_FGoto"
+            and n.exc.args
+            and isinstance(n.exc.args[0], ast.Constant)
+        }
+        if not labels:
+            # No restart survived (each raise sat on a dropped abort path, or
+            # the region never loops): the wrapper is the body.
+            node.body = [s for s in wrapper.body if not isinstance(s, ast.Break)] + [ast.Break()]
+            return None
+        if len(labels) > 1:
+            raise NotFlat(f"one goto region, several labels: {sorted(labels)}")
+        label = labels.pop()
+        self.n += 1
+        restart = f"_restart_{self.n}"
+
+        _require_trailing_raises(wrapper.body, label)
+
+        class Restarts(ast.NodeTransformer):
+            def visit_Raise(self, raised: ast.Raise) -> Any:
+                exc = raised.exc
+                if (
+                    isinstance(exc, ast.Call)
+                    and isinstance(exc.func, ast.Name)
+                    and exc.func.id == "_FGoto"
+                    and exc.args
+                    and isinstance(exc.args[0], ast.Constant)
+                    and exc.args[0].value == label
+                ):
+                    return ast.Assign(
+                        targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                return raised
+
+            def visit_While(self, inner: ast.While) -> ast.AST:
+                return inner  # a raise crossing a nested loop is not a flag
+
+            def visit_For(self, inner: ast.For) -> ast.AST:
+                return inner
+
+            def visit_FunctionDef(self, inner: ast.FunctionDef) -> ast.AST:
+                return inner
+
+        guarded: list[ast.stmt] = [
+            ast.Assign(targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(False))
+        ]
+        restarted = False
+        for statement in wrapper.body:
+            if isinstance(statement, ast.Break):
+                continue  # the natural exit; re-emitted guarded below
+            had = any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(statement)
+            )
+            rewritten = Restarts().visit(statement)
+            if any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(rewritten)
+            ):
+                raise NotFlat(f"a goto crossing a nested loop (label {label})")
+            if restarted:
+                guarded.append(
+                    ast.If(
+                        test=ast.UnaryOp(
+                            op=ast.Not(), operand=ast.Name(id=restart, ctx=ast.Load())
+                        ),
+                        body=[rewritten],
+                        orelse=[],
+                    )
+                )
+            else:
+                guarded.append(rewritten)
+            if had:
+                restarted = True
+        guarded.append(
+            ast.If(
+                test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=restart, ctx=ast.Load())),
+                body=[ast.Break()],
+                orelse=[],
+            )
+        )
+        node.body = guarded
+        return restart
+
+    def visit_Try(self, node: ast.Try) -> Any:
+        """A forward-goto region -- ``try: ...; raise _FGoto('100') ...
+        except _FGoto: pass`` outside any loop: the raise skips to the end
+        of the region. As a flag: the raise sets it, every later statement
+        runs under its negation, the handler disappears."""
+        self.generic_visit(node)
+        if len(node.handlers) != 1 or node.orelse or node.finalbody:
+            return node
+        handler = node.handlers[0]
+        if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
+            return node
+
+        def restarts(stmt: ast.stmt) -> bool:
+            return any(
+                isinstance(n, ast.Raise)
+                and isinstance(n.exc, ast.Call)
+                and isinstance(n.exc.func, ast.Name)
+                and n.exc.func.id == "_FGoto"
+                for n in ast.walk(stmt)
+            )
+
+        label = next(
+            (
+                n.value
+                for stmt in handler.body
+                for n in ast.walk(stmt)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ),
+            None,
+        )
+        self.n += 1
+        skip = f"_skip_{self.n}"
+        _require_trailing_raises(node.body, label)
+
+        class Skips(ast.NodeTransformer):
+            def visit_Raise(self, raised: ast.Raise) -> Any:
+                if (
+                    isinstance(raised.exc, ast.Call)
+                    and isinstance(raised.exc.func, ast.Name)
+                    and raised.exc.func.id == "_FGoto"
+                    and (
+                        label is None
+                        or (
+                            raised.exc.args
+                            and isinstance(raised.exc.args[0], ast.Constant)
+                            and raised.exc.args[0].value == label
+                        )
+                    )
+                ):
+                    return ast.Assign(
+                        targets=[ast.Name(id=skip, ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                return raised
+
+            def visit_While(self, inner: ast.While) -> ast.AST:
+                return inner  # a goto crossing a loop is not a flag
+
+            def visit_For(self, inner: ast.For) -> ast.AST:
+                return inner
+
+            def visit_FunctionDef(self, inner: ast.FunctionDef) -> ast.AST:
+                return inner
+
+        out: list[ast.stmt] = [
+            ast.Assign(targets=[ast.Name(id=skip, ctx=ast.Store())], value=ast.Constant(False))
+        ]
+        skipped = False
+        for statement in node.body:
+            had = restarts(statement)
+            rewritten = Skips().visit(statement)
+            if restarts(rewritten):
+                raise NotFlat("a forward goto crossing a nested loop")
+            if skipped:
+                out.append(
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=skip, ctx=ast.Load())),
+                        body=[rewritten],
+                        orelse=[],
+                    )
+                )
+            else:
+                out.append(rewritten)
+            if had:
+                skipped = True
+        for statement in out:
+            ast.fix_missing_locations(statement)
+        return out
+
     def visit_While(self, node: ast.While) -> Any:
         from recast.transform.jax.backend import JaxQueue, KernelLowerer, _assigned_names
 
+        restart = self._unwrap_goto_region(node)
         self.generic_visit(node)
         if node.orelse:
             return node
@@ -1405,8 +2022,33 @@ class _WhileLoops(ast.NodeTransformer):
                 keywords=[],
             ),
         )
+        if all(
+            n == done or n.startswith(("_restart_", "_skip_")) or self._int_typed(n) for n in state
+        ):
+            # A loop over integers alone (the calendar normalization): its
+            # outputs are piecewise-constant in every real input, the
+            # cotangent is zero, and reverse mode need not transpose it.
+            loop.value = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="lax", ctx=ast.Load()),
+                    attr="stop_gradient",
+                    ctx=ast.Load(),
+                ),
+                args=[loop.value],
+                keywords=[],
+            )
         init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
-        return [init, cond_fn, body_fn, loop]
+        pre: list[ast.stmt] = [init]
+        if restart is not None:
+            # The restart flag is loop-carried; without a value before the
+            # loop the initial carry tuple cannot be built.
+            pre.insert(
+                0,
+                ast.Assign(
+                    targets=[ast.Name(id=restart, ctx=ast.Store())], value=ast.Constant(False)
+                ),
+            )
+        return [*pre, cond_fn, body_fn, loop]
 
 
 def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
@@ -1442,6 +2084,34 @@ def _bind_state(piece: str, plans: list[FlatPlan]) -> str:
         # def line, docstring line, then the binds, then the return.
         return "\n".join([*lines[:2], *binds, *lines[2:]])
     return piece
+
+
+def _table_read(node: ast.expr) -> bool:
+    """``MDAYLEAP[mcmnth - 1]``: a module constant table read. Its dtype is
+    the table's (int64 for a spelled integer array), not the guard-typed
+    local's -- the same cast the constant-expression case needs."""
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id.isupper()
+        and len(node.value.id) > 1
+    )
+
+
+def _static_expression(node: ast.expr, statics: frozenset[str]) -> bool:
+    """Arithmetic over numeric literals, upper-case constants, static scalar
+    dummies and concrete locals only: a Python value at trace time."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+    if isinstance(node, ast.Name):
+        return node.id.isupper() or node.id in statics
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
+    ):
+        return _static_expression(node.left, statics) and _static_expression(node.right, statics)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _static_expression(node.operand, statics)
+    return False
 
 
 def _constant_expression(node: ast.expr, loop_vars: set[str] | None = None) -> bool:
@@ -1609,7 +2279,10 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         _py(a["name"])
         for a in args
-        if a["dtype"] == "int32" and not a.get("dims") and a["intent"] == "IN"
+        if not a.get("dims")
+        and a["intent"] == "IN"
+        and _py(a["name"]) not in TRACED_SCALARS
+        and (a["dtype"] == "int32" or (a["dtype"] in ("int64", "float64") and "__" in a["name"]))
     )
 
 
@@ -1825,6 +2498,8 @@ class TreeToJax(KernelToJax):
         constants_stem = config.get("constants_stem", f"{module}_constants")
         runtime_stem = config.get("jax_runtime_stem", f"{module}_jax_runtime")
 
+        global TRACED_SCALARS
+        TRACED_SCALARS = frozenset(config.get("traced_scalars") or ())
         ported, files = self._port_companions(anchor, facts, config)
         tree = ast.parse(anchor.files[Path(f"{module}_numpy.py")].decode())
         plans = plans_from_facts(facts, gated=False)
@@ -1832,7 +2507,7 @@ class TreeToJax(KernelToJax):
         flat_tree, interface, flat_notes = flattened_module(
             tree, facts.interface, plans, ported, bundled
         )
-        pieces, jitted, delegated = build_module(interface, flat_tree)
+        pieces, jitted, delegated = build_module(interface, flat_tree, TRACED_SCALARS)
         # A flat function the backend delegated has a host to fall back on
         # only if the NumPy module carries its wrapper -- the gated ones. A
         # private subprogram's or a function's flat form has none, and a line
@@ -1914,7 +2589,7 @@ class TreeToJax(KernelToJax):
         calls into one calls its kernel. Returns what each port lowered and
         the closure of each kernel (for the caller to spell), and the files."""
         from recast.registry import REGISTRY
-        from recast.transform.jax.backend import state_closure
+        from recast.transform.jax.backend import state_closure, write_closure
 
         bundled = list(anchor.notes.get(self._tree.notes_key, {}).get("bundled") or [])
         done: set[str] = set(config.get("_ported") or ())
@@ -1941,6 +2616,7 @@ class TreeToJax(KernelToJax):
             subs = {s["name"]: s for s in companion_facts.interface["subprograms"]}
             kernels = set(inner.notes["jax"]["kernels"])
             memo: dict[str, set[str]] = {}
+            wmemo: dict[str, set[str]] = {}
             anchor_tree = ast.parse(inner.files[Path(f"{module}_numpy.py")].decode())
             ports[module] = {
                 "module": module,
@@ -1952,7 +2628,15 @@ class TreeToJax(KernelToJax):
                     for p in plans_from_facts(companion_facts, gated=False)
                 },
                 "closures": {
-                    k: sorted(state_closure(subs, kernels, k, memo))  # type: ignore[no-untyped-call]
+                    k: sorted(  # type: ignore[no-untyped-call]
+                        state_closure(subs, kernels, k, memo)
+                        | write_closure(subs, kernels, k, wmemo)
+                    )
+                    for k in kernels
+                    if k in subs
+                },
+                "write_closures": {
+                    k: sorted(write_closure(subs, kernels, k, wmemo))  # type: ignore[no-untyped-call]
                     for k in kernels
                     if k in subs
                 },

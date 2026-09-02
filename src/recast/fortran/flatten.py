@@ -663,18 +663,39 @@ def _companion_scope(facts: Any) -> tuple[dict[str, dict[str, Any]], tuple[dict[
 
 
 def _procedure_index(
-    facts: Any, root: Path, source: Path
+    facts: Any, root: Path, source: Path, kinds: dict[str, str] | None = None
 ) -> dict[str, tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Callee name -> (file, module record, subprogram record) over this
-    unit and its companions."""
+    unit, its companions, and the modules those reach through ``use`` --
+    the closure a call can actually reach. The companions themselves stay
+    one level deep (a companion's own companions are its translation's
+    business); this index is for following *calls* inward, and a companion
+    procedure calling into a module the unit never uses (``GetObu`` into
+    ``hybrid``) is still this unit's dataflow."""
     index: dict[str, tuple[Path, dict[str, Any], dict[str, Any]]] = {}
     for sub in facts.interface.get("subprograms", ()):
         index[sub["name"].lower()] = (source, facts.interface, sub)
+    seen_modules = {str(facts.interface.get("module", "")).lower()}
+    pending: list[tuple[Path, dict[str, Any]]] = []
     for companion in facts.provenance.get("companions") or []:
         record = companion.get("record") or {}
         path = (root / str(companion.get("source", ""))).resolve()
+        seen_modules.add(str(record.get("module", "")).lower())
+        pending.append((path, record))
+    while pending:
+        path, record = pending.pop(0)
         for sub in record.get("subprograms", ()):
             index.setdefault(sub["name"].lower(), (path, record, sub))
+        used = set()
+        for statement in record.get("use_statements") or ():
+            match = re.match(r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)", statement.strip(), re.I)
+            if match and match.group(1).lower() not in seen_modules:
+                used.add(match.group(1).lower())
+        seen_modules |= used
+        for further in module_sources(root, frozenset(used)):
+            further_record = _module_record(further, kinds or {})
+            if further_record:
+                pending.append((further.resolve(), further_record))
     return index
 
 
@@ -732,7 +753,7 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
             plan.unsupported.append("subprogram not found in source")
             plans.append(plan)
             continue
-        procedures = _procedure_index(facts, root, source)
+        procedures = _procedure_index(facts, root, source, kinds)
         globals_touched: set[str] = set()
         aliases, reads, writes = _accesses(
             node,
@@ -871,6 +892,20 @@ def _state_vars(
         match = re.match(r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)", statement.strip(), re.I)
         if match:
             modules.add(match.group(1).lower())
+    # Transitively: a companion's callee module carries its own ``use``d
+    # state (``ops_mod`` uses ``state2_mod``); the closure a call can reach
+    # is the closure whose state the run may have set.
+    frontier = set(modules)
+    while frontier:
+        grown: set[str] = set()
+        for path in module_sources(root, frozenset(frontier)):
+            record = _module_record(path, conventions.kind_assumptions)
+            for statement in (record or {}).get("use_statements") or ():
+                match = re.match(r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)", statement.strip(), re.I)
+                if match and match.group(1).lower() not in modules:
+                    grown.add(match.group(1).lower())
+        modules |= grown
+        frontier = grown
     own_module = str(facts.interface.get("module", "")).lower()
     modules.discard(own_module)
     found: list[StateVar] = []
