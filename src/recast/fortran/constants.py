@@ -283,6 +283,15 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     if m:  # a bare BOZ literal, without the int() wrapper
         return "int", int(m.group(1), 16)
 
+    # A character *expression* is refused before the literal rule below makes
+    # its operands known names: the token route has no rule for ``//`` and
+    # would render ``A / / B`` -- a SyntaxError in a constants module every
+    # unit of the tree imports (numfor's ``strings.f90:11`` took 20 units
+    # down) -- and the character intrinsics have no NumPy spelling. The same
+    # guard is CESM-language-translator PR #48's.
+    if "//" in e or re.match(r"(achar|char|new_line|repeat|trim|adjustl|adjustr)\s*\(", e, re.I):
+        return "skip", f"character expression: {e}"
+
     m = re.fullmatch(r"'((?:[^']|'')*)'|\"((?:[^\"]|\"\")*)\"", e)
     if m:
         # A character parameter: the literal's text, with the doubled quote
