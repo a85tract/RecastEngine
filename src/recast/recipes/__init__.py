@@ -21,6 +21,15 @@ class TranslateRecipe(Recipe):
     Abstracted from the source pipeline: Fortran to NumPy, then optionally
     to Numba or CUDA, with the untouched Fortran compiled through f2py as the
     reference and bit-exactness as the acceptance bar.
+
+    ``target: tree`` is the NumPy translation for a unit that ``use``s its
+    siblings. ``translate.numpy`` emits the import of a sibling's translation
+    and carries only its own files, so the differential gate -- which stages
+    a candidate's own files and nothing else -- cannot import it and fails
+    the unit before comparing a number. ``translate.tree`` bundles the
+    siblings' translations into the candidate and needs no extension tables
+    for a tree of plain modules; the tables are for constants modules and
+    framework stubs, which such a tree does not have.
     """
 
     name = "translate"
@@ -41,7 +50,7 @@ class TranslateRecipe(Recipe):
 
     def validate(self, config: dict[str, Any]) -> list[str]:
         target = config.get("target", "numpy")
-        known = {"numpy", "numba", "cuda"}
+        known = {"numpy", "numba", "cuda", "tree"}
         return [] if target in known else [f"unknown target {target!r}; expected {sorted(known)}"]
 
 
