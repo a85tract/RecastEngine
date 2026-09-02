@@ -28,50 +28,9 @@ recast 0.0.1.dev0  python 3.11.16
 23 plugin(s) registered across 10 kinds
 ```
 
-## Your first run
-
-New to tools like this? [`docs/getting-started.md`](docs/getting-started.md)
-is the slow version of this section: every step, what it prints, and what to
-do when it does not.
-
-The shipped example, all the way through. Needs a `gfortran` on PATH — the
-reference really is compiled:
-
-```console
-$ recast run translate examples/toy_physics --config examples/toy_physics/recast.json
-fortran:toy_physics
-  [ok ] frontend   fortran
-  [ok ] transform  translate.numpy
-  [ok ] verifier   static.rwset                sampled: 4 blocks match
-  [ok ] oracle     f2py-golden                 f2py:toy_physics:3f3e0f78...
-  [ok ] verifier   differential.bitexact       bit_exact: 85 points across 2 subprogram(s), all bit-exact
-  [ok ] verifier   symbolic.notary             symbolic: no rewrites to notarize; the translation is print-order faithful
-  [ok ] store      fs-evidence                 3 verdict(s) recorded
-
-1 unit(s), 3 verdict(s), all passed
-```
-
-One command, eight stages: the module translated, its dataflow cross-checked
-against the source's, the untouched Fortran compiled as the reference, every
-output compared bit for bit. Nothing is written into the source tree — it all
-lands in `output/`, under the project's own name:
-
-| | |
-|---|---|
-| `output/toy_physics/translate/fortran_toy_physics/candidate/` | the generated Python, every block carrying the source lines it came from |
-| `output/toy_physics/evidence/fortran_toy_physics/*.json` | one manifest per verdict — artifact digest, oracle key, metrics |
-
-`toy_physics` is the project's name; `fortran_toy_physics` is the one unit it
-declares — the `fortran:toy_physics` printed at the top of the run, with the
-colon made path-safe. A tree that declares several units gets one such
-directory each.
-
-For the same thing on code this project did not write, [`corpus/`](corpus/)
-pins twelve open-source Fortran libraries and runs the engine over them with no
-domain extension installed.
-[`docs/corpus-numfor-example.md`](docs/corpus-numfor-example.md) walks one of
-those units through the same eight stages, and says how far its passing run
-reaches.
+First time? [`docs/getting-started.md`](docs/getting-started.md) walks from
+an empty machine to a verified translation of your own module, with what
+every command prints.
 
 ## The commands
 
