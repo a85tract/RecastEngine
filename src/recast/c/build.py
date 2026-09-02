@@ -13,7 +13,9 @@ A build spec is data a frontend puts in ``Unit.attrs``::
 
 ``{name}`` placeholders come from the operator's ``toolchain`` table
 (``{"cc": "nvc++", "sm": "cc80", ...}``) plus ``{staging}`` and ``{dir}``,
-which the engine supplies. The table is free-form: a key the operator adds
+which the engine supplies. An element spelled ``@{flags}`` is split into
+as many arguments as the rendered value has words (a flag table is several
+flags), where ``{flags}`` alone stays one argument (a ``make`` variable). The table is free-form: a key the operator adds
 is a placeholder a spec may use. Its ``env`` entry is merged into every
 run's environment, which is where ``OMP_TARGET_OFFLOAD=MANDATORY`` goes.
 ``identity()`` -- the compiler's own ``--version`` line -- is what an oracle
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -231,12 +234,17 @@ def build(
     result = JobResult(0, "", "")
     for i, step in enumerate(spec.steps):
         # An argument that renders empty (a flag table left blank) is dropped
-        # rather than passed as ``""``, which a compiler would read as a file.
-        argv = [
-            rendered
-            for a in step
-            if (rendered := toolchain.render(a, staging=str(staging), dir=str(kernel_dir)))
-        ]
+        # rather than passed as ``""``, which a compiler would read as a file;
+        # one spelled ``@...`` is split into the words it rendered to.
+        argv: list[str] = []
+        for a in step:
+            split = a.startswith("@")
+            rendered = toolchain.render(
+                a[1:] if split else a, staging=str(staging), dir=str(kernel_dir)
+            )
+            if not rendered:
+                continue
+            argv.extend(shlex.split(rendered) if split else [rendered])
         result = executor.run(
             Job(
                 argv=argv,

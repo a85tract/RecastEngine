@@ -165,3 +165,19 @@ def test_render_settles_nested_placeholders_and_drops_empty_args() -> None:
     tc = Toolchain({"cc": "nvc++", "sm": "cc80", "flags": "-gpu={sm}", "device_flags": ""})
     assert tc.render("{flags}") == "-gpu=cc80"
     assert tc.render("{device_flags}") == ""
+
+
+def test_a_splitting_element_becomes_several_arguments(tmp_path: Path) -> None:
+    from recast.c.build import build
+
+    (tmp_path / "k").mkdir()
+    spec = Spec.from_attrs(
+        {
+            "dir": "k",
+            "steps": [["sh", "-c", "echo $#", "sh", "@{flags}", "{flags}"]],
+            "program": "x",
+        }
+    )
+    tc = Toolchain({"cc": "cc", "flags": "-a -b -c"})
+    result = build(spec, tmp_path / "k", tmp_path, tc, LocalExecutor(), "t")
+    assert result.stdout.strip().endswith("4")  # three split words plus one whole argument
