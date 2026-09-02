@@ -2,6 +2,7 @@
 
 | | |
 |---|---|
+| [`getting-started.md`](getting-started.md) | start here if you have a Fortran file and do not live in a terminal: install, run the example, translate your own module, read a run that is not all green |
 | [`cli.md`](cli.md) | every command, the four recipes, config keys, `run` flags, exit codes |
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | two units of one corpus case walked through the recipe, one passing and one not, and how far the passing one reaches |
 | [`corpus-lapack-example.md`](corpus-lapack-example.md) | the one corpus unit whose Python does not import -- a library over LAPACK -- why that is the right outcome, and what an externals shim would change |
