@@ -61,7 +61,7 @@ mean: [`docs/cli.md`](docs/cli.md).
 |---|---|
 | Bugs, features | issues in this repository |
 | Vulnerabilities | [`SECURITY.md`](SECURITY.md) — private advisory, never a public issue |
-| Collaboration, licensing | **Yueqi Chen**, University of Colorado Boulder — <yueqi.chen@colorado.edu> |
+| Collaboration, licensing | **Yueqi Chen** — <yueqi.chen@colorado.edu> |
 
 ## License
 
