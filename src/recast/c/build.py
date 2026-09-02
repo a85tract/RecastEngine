@@ -8,8 +8,8 @@ A build spec is data a frontend puts in ``Unit.attrs``::
      "program": "main",                     # the executable the last step leaves
      "args": ["512", "input/temp_512"],     # what to run it with
      "sources": ["main.cpp"],               # the files a probe may be carried to
-     "inputs": ["golden_labels/x/data"],    # files/dirs copied into the directory
-     "stage": ["gate_sdk"]}                 # dirs copied to the same place under staging
+     "inputs": ["golden_labels/x/data"],    # copied into the directory
+     "stage": ["gate_sdk"]}                 # copied to the same place under staging
 
 ``{name}`` placeholders come from the operator's ``toolchain`` table
 (``{"cc": "nvc++", "sm": "cc80", ...}``) plus ``{staging}`` and ``{dir}``,

@@ -161,7 +161,6 @@ class ProbeVerifier(Verifier):
         rtol: float,
         atol: float,
     ) -> Verdict:
-        args = tuple(config.get("run_args") or oracle.handle.get("run_args") or ())
         spec, _staging, kernel_dir, built = stage_candidate(
             unit, candidate, root, workspace, toolchain, executor
         )
@@ -173,7 +172,9 @@ class ProbeVerifier(Verifier):
                 {"gate": "cand_build_failed", "returncode": built.returncode},
                 "candidate did not build: " + (built.stderr or built.stdout)[-400:],
             )
-        run_args = args or spec.args
+        # The candidate runs with its own spec's arguments unless the operator
+        # overrides them; the reference's may differ (it can take more).
+        run_args = tuple(config.get("run_args") or spec.args)
         outputs: list[protocol.ProbeOutput] = []
         stdouts: list[str] = []
         for i in range(runs):
