@@ -1615,3 +1615,20 @@ def test_an_internal_functions_result_is_not_host_associated(tmp_path: Path) -> 
     inner = next(s for s in record["subprograms"] if s["name"] == "get_tolerance")
     assert inner["host"] == "bracket"
     assert inner.get("host_vars") == ["scale"]
+
+
+def test_a_character_expression_stays_a_skip_once_literals_are_values() -> None:
+    """The trap behind the character-literal rule: once ``ascii_lowercase`` is a
+    known name, ``ascii_lowercase // accented_lowercase`` would reach the
+    token route, which has no rule for ``//`` and emits ``A / / B``. numfor's
+    ``strings.f90`` is the regression: one shared constants module, twenty
+    units importing it."""
+    from recast.fortran.constants import classify_init
+
+    known = {"ascii_lowercase", "accented_lowercase"}
+    assert classify_init("'abc'", known) == ("str", "abc")
+    assert classify_init("'it''s'", known) == ("str", "it's")
+    kind, why = classify_init("ascii_lowercase // accented_lowercase", known)
+    assert kind == "skip" and "character expression" in why
+    assert classify_init("' ' // achar(9)", known)[0] == "skip"
+    assert classify_init("new_line('a')", known)[0] == "skip"
