@@ -19,6 +19,7 @@ definition that both sides of a differential check can be pointed at.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -245,7 +246,159 @@ def _intrinsic_call(
     return {"t": "call", "v": name, "args": spelled}, end + 1
 
 
-def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
+_CHAR_INTRINSICS = ("achar", "char", "new_line", "repeat", "trim", "adjustl", "adjustr")
+_CHAR_TOKEN = re.compile(
+    r"\s*(?:(?P<str>'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\")|(?P<int>\d+)"
+    r"|(?P<name>[A-Za-z_]\w*)|(?P<op>//|[(),]))"
+)
+_CHAR_LITERAL = re.compile(r"'((?:[^']|'')*)'|\"((?:[^\"]|\"\")*)\"")
+
+
+def _unquote(token: str) -> str:
+    quote = token[0]
+    return token[1:-1].replace(quote * 2, quote)
+
+
+def fold_char_expr(expr: str, char_values: Mapping[str, str]) -> str | None:
+    """A character parameter initializer folded to its value at extraction time.
+
+    Literals, earlier character parameters of the scope (``char_values``),
+    ``//``, and the intrinsics with a fixed meaning -- ``achar``/``char`` of
+    an integer literal, ``new_line``, ``repeat`` by an integer literal,
+    ``trim``, ``adjustl``, ``adjustr``. Anything else is None: a skip, never
+    a rendered expression, because the token route has no rule for ``//``
+    and would emit ``A / / B``. CESM-language-translator PR #48's rule.
+    """
+    tokens: list[re.Match[str]] = []
+    pos = 0
+    while pos < len(expr):
+        m = _CHAR_TOKEN.match(expr, pos)
+        if not m or m.end() == pos:
+            if expr[pos:].strip():
+                return None
+            break
+        tokens.append(m)
+        pos = m.end()
+    at = 0
+
+    def peek(kind: str, value: str | None = None) -> bool:
+        if at >= len(tokens) or tokens[at].lastgroup != kind:
+            return False
+        return value is None or tokens[at].group(kind) == value
+
+    def primary() -> str | int:
+        nonlocal at
+        if at >= len(tokens):
+            raise ValueError("expression ends early")
+        tok = tokens[at]
+        at += 1
+        group = tok.lastgroup
+        if group == "str":
+            return _unquote(tok.group("str"))
+        if group == "op" and tok.group("op") == "(":
+            inner = concat()
+            if not peek("op", ")"):
+                raise ValueError("unbalanced")
+            at += 1
+            return inner
+        if group == "name":
+            name = tok.group("name").lower()
+            if peek("op", "("):
+                at += 1
+                args: list[str | int] = []
+                if not peek("op", ")"):
+                    args.append(argument())
+                    while peek("op", ","):
+                        at += 1
+                        args.append(argument())
+                if not peek("op", ")"):
+                    raise ValueError("unbalanced call")
+                at += 1
+                return call(name, args)
+            if name in char_values:
+                return char_values[name]
+        raise ValueError(f"not foldable: {tok.group(0)!r}")
+
+    def argument() -> str | int:
+        nonlocal at
+        if peek("int"):
+            value = int(tokens[at].group("int"))
+            at += 1
+            return value
+        return concat()
+
+    def call(name: str, args: list[str | int]) -> str:
+        if name in ("achar", "char") and len(args) == 1 and isinstance(args[0], int):
+            return chr(args[0])
+        if name == "new_line" and len(args) == 1:
+            return "\n"
+        if name == "repeat" and len(args) == 2:
+            text, count = args
+            if isinstance(text, str) and isinstance(count, int):
+                return text * count
+        if len(args) == 1 and isinstance(args[0], str):
+            text = args[0]
+            if name == "trim":
+                return text.rstrip(" ")
+            if name == "adjustl":
+                return text.lstrip(" ") + " " * (len(text) - len(text.lstrip(" ")))
+            if name == "adjustr":
+                return " " * (len(text) - len(text.rstrip(" "))) + text.rstrip(" ")
+        raise ValueError(f"no rule for {name}")
+
+    def concat() -> str:
+        nonlocal at
+        value = primary()
+        if not isinstance(value, str):
+            raise ValueError("integer where character expected")
+        while peek("op", "//"):
+            at += 1
+            right = primary()
+            if not isinstance(right, str):
+                raise ValueError("integer where character expected")
+            value = value + right
+        return value
+
+    try:
+        folded = concat()
+    except (ValueError, IndexError):
+        return None
+    return folded if at == len(tokens) else None
+
+
+def char_length(type_spec_text: str, entity_text: str = "") -> int | str | None:
+    """The declared length of a CHARACTER parameter: an int, ``"*"`` for
+    ``len=*`` (the initializer's own length), None when it is a name this
+    pass cannot evaluate. A bare ``character`` is length 1."""
+    m = re.search(r"\*\s*(\d+|\*)\s*$", entity_text)  # ``c*4`` on the entity
+    if m:
+        return "*" if m.group(1) == "*" else int(m.group(1))
+    text = type_spec_text.strip()
+    if not re.match(r"character", text, re.I):
+        return None
+    m = re.search(r"\(\s*(?:len\s*=\s*)?(\*|\d+|[A-Za-z_]\w*)", text, re.I)
+    if not m:
+        return 1
+    value = m.group(1)
+    if value == "*":
+        return "*"
+    return int(value) if value.isdigit() else None
+
+
+def fit_char(value: str, length: int | str | None) -> str:
+    """Fortran assignment to a fixed-length CHARACTER: blank-padded or
+    truncated to the declared length; ``*``/unknown leaves it as written."""
+    if isinstance(length, int):
+        return value[:length] if len(value) >= length else value + " " * (length - len(value))
+    return value
+
+
+def classify_init(
+    init_expr: str,
+    known_names: set[str],
+    char_values: Mapping[str, str] | None = None,
+    char_len: int | str | None = None,
+) -> tuple[str, Any]:
     """Classify a parameter initializer. Returns ``(kind, payload)``.
 
     ``int`` / ``int64`` -> a Python ``int``.
@@ -283,25 +436,22 @@ def classify_init(init_expr: str, known_names: set[str]) -> tuple[str, Any]:
     if m:  # a bare BOZ literal, without the int() wrapper
         return "int", int(m.group(1), 16)
 
-    # A character *expression* is refused before the literal rule below makes
-    # its operands known names: the token route has no rule for ``//`` and
-    # would render ``A / / B`` -- a SyntaxError in a constants module every
-    # unit of the tree imports (numfor's ``strings.f90:11`` took 20 units
-    # down) -- and the character intrinsics have no NumPy spelling. The same
-    # guard is CESM-language-translator PR #48's.
-    if "//" in e or re.match(r"(achar|char|new_line|repeat|trim|adjustl|adjustr)\s*\(", e, re.I):
-        return "skip", f"character expression: {e}"
-
-    m = re.fullmatch(r"'((?:[^']|'')*)'|\"((?:[^\"]|\"\")*)\"", e)
+    # A character parameter is the value the source compares at runtime
+    # (``calkindflag = 'GREGORIAN'``), fitted to its declared length as a
+    # Fortran assignment would. A bare literal is its text with the doubled
+    # quote undone; an expression is folded here or skipped -- never handed to
+    # the token route, which has no rule for ``//`` and would render
+    # ``A / / B``, a SyntaxError in a constants module every unit of the tree
+    # imports (numfor's ``strings.f90:11`` took 20 units down before the
+    # guard). CESM-language-translator PR #48's rule.
+    m = _CHAR_LITERAL.fullmatch(e)
     if m:
-        # A character parameter: the literal's text, with the doubled quote
-        # of its own delimiter undone. ``calkindflag = 'GREGORIAN'`` is a
-        # value the source compares at runtime, not a kind to skip.
-        return "str", (
-            m.group(1).replace("''", "'")
-            if m.group(1) is not None
-            else m.group(2).replace('""', '"')
-        )
+        return "str", fit_char(_unquote(m.group(0)), char_len)
+    if "//" in e or re.match(rf"({'|'.join(_CHAR_INTRINSICS)})\s*\(", e, re.I):
+        folded = fold_char_expr(e, char_values or {})
+        if folded is None:
+            return "skip", f"character expression: {e}"
+        return "str", fit_char(folded, char_len)
 
     compact = e.replace(" ", "")
     if compact.lower() in (".true.", ".false."):
@@ -480,6 +630,7 @@ def extract(
 
     known: set[str] = set(extern_names or ())
     module_parameters: list[dict[str, Any]] = []
+    char_values: dict[str, str] = {}  # every character parameter's value so far
 
     for decl in walk(mod_spec, f03.Type_Declaration_Stmt) if mod_spec is not None else []:
         type_spec, attr_list, _ = decl.children
@@ -514,7 +665,14 @@ def extract(
             if array_text is not None:
                 rec["kind"], rec["payload"] = "array", array_text
             else:
-                rec["kind"], rec["payload"] = classify_init(init or "", known)
+                rec["kind"], rec["payload"] = classify_init(
+                    init or "",
+                    known,
+                    char_values,
+                    char_length(str(type_spec), str(ent)) if base == "CHARACTER" else None,
+                )
+            if rec["kind"] == "str":
+                char_values[name] = rec["payload"]
             module_parameters.append(rec)
             if rec["kind"] != "skip":
                 # Only a parameter that got a value is a name later ones may
@@ -549,13 +707,16 @@ def extract(
         literal_map[sname] = {}
 
         spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
+        local_chars = dict(char_values)  # the module's values, then this subprogram's
         if spec is not None:
             # F77 separate form: PARAMETER (NAME = expr, ...)
             for pstmt in walk(spec, f03.Parameter_Stmt):
                 for pdef in walk(pstmt, f03.Named_Constant_Def):
                     pname = str(pdef.children[0]).lower()
                     init = str(pdef.children[1])
-                    kind, payload = classify_init(init, known)
+                    kind, payload = classify_init(init, known, local_chars)
+                    if kind == "str":
+                        local_chars[pname] = payload
                     local_parameters.append(
                         {
                             "subprogram": sname,
@@ -568,7 +729,7 @@ def extract(
                         }
                     )
             for decl in walk(spec, f03.Type_Declaration_Stmt):
-                _, attr_list, _ = decl.children
+                local_type_spec, attr_list, _ = decl.children
                 attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
                 if "PARAMETER" not in attrs:
                     continue
@@ -584,7 +745,14 @@ def extract(
                     if array_text is not None:
                         kind, payload = "array", array_text
                     else:
-                        kind, payload = classify_init(init or "", known)
+                        kind, payload = classify_init(
+                            init or "",
+                            known,
+                            local_chars,
+                            char_length(str(local_type_spec), str(ent)),
+                        )
+                    if kind == "str":
+                        local_chars[pname] = payload
                     local_parameters.append(
                         {
                             "subprogram": sname,

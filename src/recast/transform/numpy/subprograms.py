@@ -618,11 +618,30 @@ class Subprograms:
             lines.extend(self._out_argument(argument, subprogram, semantics, statements))
         # Local PARAMETERs, as local assignments (matches Fortran scope).
         own_parameters = frozenset(p["name"].lower() for p in subprogram["local_parameters"])
+        # #47: a character parameter is the value the frontend folded and
+        # fitted to its declared length, referenced from the constants module
+        # rather than re-rendered here -- the token pass below would
+        # upper-case 'maxi' and let a Fortran // through as Python's.
+        folded = {
+            (str(rec["subprogram"]).lower(), str(rec["name"]).lower()): rec
+            for rec in self.constants.get("local_parameters", ())
+        }
+        this = str(subprogram.get("name", "")).lower()
         for parameter in subprogram["local_parameters"]:
             initializer = parameter.get("init_expr", "0")
             if initializer is None:
                 continue
             name = pysafe(parameter["name"])
+            rec = folded.get((this, parameter["name"].lower()))
+            if rec is not None and rec["kind"] == "str":
+                lines.append(f"    {name} = {rec['const']}")
+                continue
+            if rec is not None and str(rec["payload"]).startswith("character expression"):
+                lines.append(
+                    f"    {name} = None  # AGENT_QUEUE: local parameter "
+                    f"{parameter['name']} ({rec['payload']})"
+                )
+                continue
             try:
                 value = self._parameter_value(initializer.strip(), own_parameters, statements)
             except REFUSED as refusal:
