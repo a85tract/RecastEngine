@@ -1361,8 +1361,10 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
             return False
         module = rewrite.spelling.modules.get(func.value.id)
         port = rewrite.ports.get(module) if module is not None else None
-        record = (port or {}).get("records", {}).get(func.attr)
-        if record is None or func.attr not in (port or {}).get("kernels", ()):
+        if port is None:
+            return False
+        record = port.get("records", {}).get(func.attr)
+        if record is None or func.attr not in port.get("kernels", ()):
             return False
         if any(a.get("dims") for a in record["args"]) or record.get("result_dtype") is None:
             return False
@@ -1560,14 +1562,14 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
-def _require_trailing_raises(body: list[ast.stmt], label: str | None) -> None:
+def _require_trailing_raises(body: list[ast.stmt], label: Any) -> None:
     """The flag rewrite guards statements AFTER the statement containing a
     raise, not statements after the raise inside its own block: a matching
     ``raise _FGoto`` must be the last statement of whatever block holds it,
     or the rewrite would run its trailing siblings."""
 
     def matching(node: ast.AST) -> bool:
-        return (
+        return bool(
             isinstance(node, ast.Raise)
             and isinstance(node.exc, ast.Call)
             and isinstance(node.exc.func, ast.Name)
@@ -1601,7 +1603,12 @@ def _fold(expr: ast.expr) -> ast.expr:
         def visit_BinOp(self, node: ast.BinOp) -> ast.expr:
             self.generic_visit(node)
             left, right = node.left, node.right
-            if isinstance(left, ast.Constant) and isinstance(right, ast.Constant):
+            if (
+                isinstance(left, ast.Constant)
+                and isinstance(right, ast.Constant)
+                and isinstance(left.value, int | float)
+                and isinstance(right.value, int | float)
+            ):
                 if isinstance(node.op, ast.Add):
                     return ast.Constant(left.value + right.value)
                 if isinstance(node.op, ast.Sub):
@@ -1616,7 +1623,8 @@ def _fold(expr: ast.expr) -> ast.expr:
                 return right
             return node
 
-    return ast.fix_missing_locations(Fold().visit(copy.deepcopy(expr)))
+    folded: ast.expr = Fold().visit(copy.deepcopy(expr))
+    return ast.fix_missing_locations(folded)
 
 
 def _advances(body: list[ast.stmt], name: str) -> bool:
@@ -1728,7 +1736,9 @@ class _WhileLoops(ast.NodeTransformer):
         handler = wrapper.handlers[0]
         if not (isinstance(handler.type, ast.Name) and handler.type.id == "_FGoto"):
             return None
-        labels = {
+        # A label is whatever constant ``_FGoto`` was raised with -- the
+        # translation spells them as it read them, so no one type is assumed.
+        labels: set[Any] = {
             n.exc.args[0].value
             for stmt in wrapper.body
             for n in ast.walk(stmt)
@@ -1745,7 +1755,7 @@ class _WhileLoops(ast.NodeTransformer):
             node.body = [s for s in wrapper.body if not isinstance(s, ast.Break)] + [ast.Break()]
             return None
         if len(labels) > 1:
-            raise NotFlat(f"one goto region, several labels: {sorted(labels)}")
+            raise NotFlat(f"one goto region, several labels: {sorted(labels, key=str)}")
         label = labels.pop()
         self.n += 1
         restart = f"_restart_{self.n}"
@@ -2628,7 +2638,7 @@ class TreeToJax(KernelToJax):
                     for p in plans_from_facts(companion_facts, gated=False)
                 },
                 "closures": {
-                    k: sorted(  # type: ignore[no-untyped-call]
+                    k: sorted(
                         state_closure(subs, kernels, k, memo)
                         | write_closure(subs, kernels, k, wmemo)
                     )
@@ -2636,9 +2646,7 @@ class TreeToJax(KernelToJax):
                     if k in subs
                 },
                 "write_closures": {
-                    k: sorted(write_closure(subs, kernels, k, wmemo))  # type: ignore[no-untyped-call]
-                    for k in kernels
-                    if k in subs
+                    k: sorted(write_closure(subs, kernels, k, wmemo)) for k in kernels if k in subs
                 },
             }
             for other, port in (inner.notes["jax"].get("_ports") or {}).items():

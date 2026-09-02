@@ -92,7 +92,7 @@ def names_in(node: Any) -> list[str]:
     return [str(n).lower() for n in walk(node, f03.Name)]
 
 
-def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
+def dims_of(spec_node: Any) -> list[dict[str, Any]] | None:
     """Array-spec node -> ``[{"lb", "ub"}, ...]``.
 
     ``ub`` of ``None`` means deferred or assumed -- an allocatable, or a dummy
@@ -101,7 +101,7 @@ def dims_of(spec_node: Any) -> list[dict[str, str | None]] | None:
     """
     if spec_node is None:
         return None
-    dims: list[dict[str, str | None]] = []
+    dims: list[dict[str, Any]] = []
     if isinstance(spec_node, f03.Assumed_Size_Spec):
         # ``x(*)`` and ``x(3,*)``. Taken here rather than in the loop below,
         # because fparser gives this node children -- the leading explicit
@@ -328,7 +328,7 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
 
     intent: str | None = None
     attrs: list[str] = []
-    attr_dims: list[dict[str, str | None]] | None = None
+    attr_dims: list[dict[str, Any]] | None = None
     if attr_list is not None:
         for a in attr_list.children:
             if isinstance(a, f03.Intent_Attr_Spec):
@@ -688,12 +688,12 @@ def _record_of(
             execution, (f03.Part_Ref, f03.Function_Reference, f03.Structure_Constructor)
         ):
             referenced = str(ref.children[0]).lower()
-            info = ent_info.get(referenced)
+            found = ent_info.get(referenced)
             if (
                 referenced in arg_names
-                and info is not None
-                and not info.get("dims")
-                and info.get("dtype") != "str"
+                and found is not None
+                and not found.get("dims")
+                and found.get("dtype") != "str"
                 and ref.children[1] is not None
             ):
                 procedure_names.add(referenced)
@@ -745,7 +745,7 @@ def _record_of(
         )
 
     result_dtype: str | None = None
-    result_dims: list[dict[str, str | None]] | None = None
+    result_dims: list[dict[str, Any]] | None = None
     if is_function:
         if result_name in ent_info:
             result_dtype = ent_info[result_name]["dtype"]

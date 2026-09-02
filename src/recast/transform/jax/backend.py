@@ -57,6 +57,7 @@ cannot gate a jaxized module and the port recipe does not ask it to.
 import ast
 import copy
 import re
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +109,9 @@ def anchor_incomplete(fn):
     return False
 
 
-def state_closure(subs, kernels, name, memo):
+def state_closure(
+    subs: Mapping[str, Any], kernels: Collection[str], name: str, memo: dict[str, set[str]]
+) -> set[str]:
     """Transitive module-state reads through intra-module kernel calls."""
     if name in memo:
         return memo[name]
@@ -121,7 +124,9 @@ def state_closure(subs, kernels, name, memo):
     return st
 
 
-def write_closure(subs, kernels, name, memo):
+def write_closure(
+    subs: Mapping[str, Any], kernels: Collection[str], name: str, memo: dict[str, set[str]]
+) -> set[str]:
     """Transitive module-state writes through intra-module kernel calls."""
     if name in memo:
         return memo[name]
@@ -390,9 +395,9 @@ def _trace_constant_stores(stmts):
             return const(node.args[0])
         return False
 
-    verdicts = {}
+    verdicts: dict[str, bool] = {}
 
-    def note(name, good):
+    def note(name: str, good: bool) -> None:
         verdicts[name] = verdicts.get(name, True) and good
 
     for stmt in stmts:
@@ -407,10 +412,10 @@ def _trace_constant_stores(stmts):
                 for t in targets:
                     if isinstance(t, ast.Name):
                         note(t.id, single and const(node.value))
-            elif isinstance(node, (ast.AugAssign, ast.For)) and isinstance(
-                getattr(node, "target", None), ast.Name
-            ):
-                note(node.target.id, False)
+            elif isinstance(node, (ast.AugAssign, ast.For)):
+                target = getattr(node, "target", None)
+                if isinstance(target, ast.Name):
+                    note(target.id, False)
     return {n for n, good in verdicts.items() if good}
 
 
@@ -840,7 +845,7 @@ def static_spec(fn_src, sub, traced_scalars=frozenset()):
 
 
 def build_module(
-    interface: dict[str, Any], tree: ast.Module, traced_scalars: frozenset = frozenset()
+    interface: dict[str, Any], tree: ast.Module, traced_scalars: frozenset[str] = frozenset()
 ) -> tuple[list[str], list[str], dict[str, str]]:
     """Emit all kernels of one module to a fixpoint.
 
