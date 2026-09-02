@@ -30,6 +30,10 @@ recast 0.0.1.dev0  python 3.11.16
 
 ## Your first run
 
+New to tools like this? [`docs/getting-started.md`](docs/getting-started.md)
+is the slow version of this section: every step, what it prints, and what to
+do when it does not.
+
 The shipped example, all the way through. Needs a `gfortran` on PATH — the
 reference really is compiled:
 
