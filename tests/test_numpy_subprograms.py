@@ -509,3 +509,48 @@ def test_a_top_level_backward_goto_becomes_a_loop_region(source: Path) -> None:
     closed = lines.index("        except _FGoto as _g:")
     inside = [line for line in lines[opened + 1 : closed] if line.lstrip().startswith("# B")]
     assert inside and all(line.startswith("            # B") for line in inside), inside
+
+
+CHARS = """\
+module chars_mod
+  implicit none
+  character(len=4), parameter :: choice_evhc = 'maxi'
+  character(len=*), parameter :: letters = choice_evhc // 'x'
+  character(len=*), parameter :: mixed = 'a' // nothere
+contains
+  function pick(x) result(y)
+    real(8), intent(in) :: x
+    real(8) :: y
+    character(len=6), parameter :: choice = 'maxi'
+    character(len=*), parameter :: tag = choice_evhc // repeat('x', 2)
+    character(len=*), parameter :: odd = 'q' // nothere
+    y = x
+    if (choice == 'maxi') y = x * 2.0d0
+  end function pick
+end module chars_mod
+"""
+
+
+def test_a_local_character_parameter_references_the_folded_constant(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """#47: the prologue binds a character parameter to the constants
+    module's folded, length-fitted value instead of re-rendering it (the
+    token pass would upper-case 'maxi' and pass // through); one the
+    frontend could not fold is queued, not emitted as Python's //."""
+    path = tmp_path_factory.mktemp("chars") / "chars_mod.f90"
+    path.write_text(CHARS)
+    record = constants.extract(path)
+    module = {p["name"]: p for p in record["module_parameters"]}
+    assert (module["choice_evhc"]["kind"], module["choice_evhc"]["payload"]) == ("str", "maxi")
+    assert module["letters"]["payload"] == "maxix"
+    assert module["mixed"]["kind"] == "skip"
+    local = {p["name"]: p for p in record["local_parameters"]}
+    assert local["choice"]["payload"] == "maxi  "
+    assert local["tag"]["payload"] == "maxixx"
+    lines, _ = build(path).render(node_of(path, "pick"), "pick")
+    assert "    choice = PICK__CHOICE" in lines
+    assert "    tag = PICK__TAG" in lines
+    assert any(
+        "odd = None  # AGENT_QUEUE" in line and "character expression" in line for line in lines
+    )
