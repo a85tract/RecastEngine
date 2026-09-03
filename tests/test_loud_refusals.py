@@ -160,13 +160,17 @@ def test_a_parameter_initializer_the_token_pass_only_uppercased_is_reparsed(
     ``'abc' // 'def'`` came out as ``'ABC' // 'DEF'`` -- floor division of
     two strings, with the literal's case changed. Python parsing the text is
     not the text meaning the Fortran; what the token pass only spelled is
-    read again as an expression, and refused if that fails."""
+    read again as an expression, and refused if that fails. A character
+    parameter never reaches that pass any more: #47 folds it in the frontend
+    and the prologue binds the constants module's length-fitted value."""
     lines, report = renderer.subprograms.render(
         _node(source, "folded_parameters"), "folded_parameters"
     )
     assert "    twist = math.sin(0.5)" in lines
     assert "    top = _f_huge(1.0)" in lines
-    assert "    tag = ('abc' + 'def')" in lines
+    assert "    tag = FOLDED_PARAMETERS__TAG" in lines
+    local = {p["name"]: p for p in constants.extract(source)["local_parameters"]}
+    assert (local["tag"]["kind"], local["tag"]["payload"]) == ("str", "abcdef")
     assert not _deferred(report)
     # The whole module still imports with those spellings. Its companions
     # (the constants module, the used precision module) are not rendered
