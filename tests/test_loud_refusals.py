@@ -330,6 +330,192 @@ def test_a_recorded_scalar_result_compares_as_the_scalar_it_is(tmp_path: Path) -
     assert verdict.metrics["subprograms"]["column_mass"]["points"] == 3
 
 
+# --- what the coverage gate does not mistake for silence ----------------------
+
+
+def _gate(tmp_path: Path, module: str, handle: dict[str, Any]) -> Any:
+    """Judge a hand-written ``cover_numpy.py`` against a faked oracle handle."""
+    from types import SimpleNamespace
+
+    from recast.executors.local import LocalExecutor
+    from recast.model import Candidate, OracleRef, Unit
+    from recast.verify.bitexact import BitexactVerifier
+
+    candidate = Candidate(
+        unit="fortran:cover",
+        transform="test.cover",
+        files={Path("cover_numpy.py"): module.encode()},
+    )
+    (tmp_path / "cover_numpy.py").write_bytes(module.encode())
+    truth = handle.pop("truth")
+    oracle = OracleRef(
+        unit=candidate.unit,
+        oracle="test.python-truth",
+        key="k",
+        handle={
+            "module": SimpleNamespace(**{f"w_{name}": fn for name, fn in truth.items()}),
+            "wrappers": {name: f"w_{name}" for name in truth},
+            **handle,
+        },
+    )
+    unit = Unit(uid=candidate.unit, kind="module")
+    return BitexactVerifier().verify(
+        unit, candidate, oracle, tmp_path, LocalExecutor(), {"trials": 3}
+    )
+
+
+SCALAR = {
+    "kind": "function",
+    "result": "r",
+    "result_dtype": "float64",
+    "args": [
+        {"name": "v", "dtype": "float64", "intent": "IN", "optional": False},
+    ],
+}
+
+COVER = """_SIGNATURES = {{
+    "scale": {scale!r},
+    "{other}": {other_signature!r},
+}}
+
+
+def twice(v):
+    return 2.0 * v
+
+
+def scale(v):
+    return twice(v)
+
+
+{other_body}
+"""
+
+
+def test_a_private_helper_is_covered_through_the_public_subprogram_that_calls_it(
+    tmp_path: Path,
+) -> None:
+    """f2py cannot wrap a private procedure -- the wrappers ``use`` the
+    module -- so no oracle will ever offer one. It is exercised through every
+    public caller, and the gate judging it "never compared" failed every
+    module with a helper."""
+    verdict = _gate(
+        tmp_path,
+        COVER.format(
+            scale=SCALAR,
+            other="twice",
+            other_signature={**SCALAR, "public": False},
+            other_body="",
+        ),
+        {"truth": {"scale": lambda v: 2.0 * v}},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["uncovered"] == []
+
+
+def test_a_subprogram_compared_through_its_flat_adapter_is_covered(tmp_path: Path) -> None:
+    """A derived-type interface is compared as ``<name>_flat`` on both sides;
+    the adapter calls the subprogram, so the comparison is of it."""
+    verdict = _gate(
+        tmp_path,
+        COVER.format(
+            scale=SCALAR,
+            other="scale_flat",
+            other_signature=SCALAR,
+            other_body="def scale_flat(v):\n    return scale(v)\n",
+        ),
+        {"truth": {"scale_flat": lambda v: 2.0 * v}, "flattened": ["scale"]},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["uncovered"] == []
+
+
+def test_an_ungated_subprogram_is_named_on_the_verdict_not_counted_as_silence(
+    tmp_path: Path,
+) -> None:
+    """The flat oracle lists what its wrapper cannot spell, with the reason,
+    and the verdict carries the list. That is the audit tag, not a gap."""
+    verdict = _gate(
+        tmp_path,
+        COVER.format(
+            scale=SCALAR,
+            other="takes_proc",
+            other_signature=SCALAR,
+            other_body="def takes_proc(v):\n    return v\n",
+        ),
+        {"truth": {"scale": lambda v: 2.0 * v}, "ungated": {"takes_proc": "procedure dummy"}},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["uncovered"] == []
+    assert verdict.metrics["ungated"] == {"takes_proc": "procedure dummy"}
+    assert "takes_proc (procedure dummy)" in verdict.detail
+
+
+def test_a_public_subprogram_no_wrapper_reached_still_fails_by_name(tmp_path: Path) -> None:
+    """The gate's purpose: a public subprogram dropped on the oracle side with
+    no reason given is exactly the narrowing it exists to refuse."""
+    verdict = _gate(
+        tmp_path,
+        COVER.format(
+            scale=SCALAR,
+            other="dropped",
+            other_signature=SCALAR,
+            other_body="def dropped(v):\n    return v\n",
+        ),
+        {"truth": {"scale": lambda v: 2.0 * v}},
+    )
+    assert verdict.confidence is Confidence.FAILED
+    assert verdict.metrics["uncovered"] == ["dropped"]
+    assert "silence is not a pass" in verdict.detail
+
+
+PRIVATE_MODULE = """\
+module privmod
+  implicit none
+  private
+  public :: scale_all
+contains
+  subroutine scale_all(n, x, y)
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: i
+    do i = 1, n
+      y(i) = twice(x(i))
+    end do
+  end subroutine scale_all
+
+  function twice(v) result(r)
+    real(8), intent(in) :: v
+    real(8) :: r
+    r = 2.0d0 * v
+  end function twice
+end module privmod
+"""
+
+
+@pytest.mark.skipif(shutil.which("gfortran") is None, reason="needs gfortran")
+def test_a_module_with_a_private_helper_is_bit_exact_end_to_end(tmp_path: Path) -> None:
+    """The transform marks the helper private in ``_SIGNATURES``, the f2py
+    oracle wraps only the public subprogram, and the gate agrees."""
+    from recast.recipes import BUILTIN
+    from recast.run import RunStatus, run_recipe
+
+    root = tmp_path / "privmod"
+    root.mkdir()
+    (root / "privmod.f90").write_text(PRIVATE_MODULE)
+    run = run_recipe(
+        BUILTIN["translate"](),
+        root,
+        {
+            "output": str(tmp_path / "out"),
+            "stages": {"differential.bitexact": {"trials": 3, "dims": {"n": 4}}},
+        },
+    )
+    assert run.status is RunStatus.PASSED, [
+        (o.plugin, o.status, o.detail) for u in run.units for o in u.outcomes
+    ]
+
+
 # --- the numba path ------------------------------------------------------------
 
 

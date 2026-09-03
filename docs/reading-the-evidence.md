@@ -112,6 +112,8 @@ its metrics deserve a closer look:
 | `nan_mismatch` | how many points where one side produced NaN and the other did not. A non-zero value here usually means a variable read before it was assigned. |
 | `integer_points` | how many of the compared values were integers (an `integer` result or out-argument). They are compared for equality, and never contribute to `max_ulp` or `max_rel`. |
 | `integer_mismatch` | how many of those integer values differed. Any non-zero value fails the check. |
+| `skipped` | public procedures the oracle offered that the check did not try: one the harness cannot generate inputs for (a `character` argument), or one left out of `subprograms` in your `recast.json`. Not a pass -- see `uncovered`. |
+| `uncovered` | translated public procedures nobody compared, by name. Any entry here fails the check: a procedure that was translated and never checked is a claim without evidence. Private helpers do not appear -- they run inside the public procedures that call them -- and a procedure the oracle listed as `ungated` (with its reason) is reported on the verdict rather than counted here. |
 
 For `static.rwset`: `blocks_checked` is how many blocks were compared,
 `blocks_matched` how many agreed, `blocks_deferred` how many were refused

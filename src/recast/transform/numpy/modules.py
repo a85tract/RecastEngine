@@ -487,6 +487,7 @@ class Modules:
                 arguments.append(entry)
             table[emit_name(subprogram)] = {
                 "kind": subprogram["kind"],
+                "public": bool(subprogram.get("public", True)),
                 "args": arguments,
                 "result": subprogram.get("result"),
                 "result_dtype": subprogram.get("result_dtype"),
