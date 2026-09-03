@@ -38,6 +38,7 @@ _SIGNATURES = {{
     "spread": {{
         "kind": "function",
         "result": "y",
+        "result_dtype": "float64",
         "args": [{{"name": "x", "intent": "IN", "dtype": "float64"}}],
     }}
 }}
@@ -136,6 +137,50 @@ def test_a_tightened_ulp_gate_catches_what_the_default_allows(judge: Any) -> Non
     verdict = judge("    y[0] = np.nextafter(y[0], np.inf)", ulp_gate=0)
     assert verdict.confidence is Confidence.FAILED
     assert "dominant element is 1 ULP out" in verdict.detail
+
+
+def test_integer_mismatch_cannot_climb_the_tolerance_ladder(tmp_path: Path) -> None:
+    """No relative or ULP gate can excuse a discrete integer disagreement."""
+    candidate = Candidate(
+        unit="tier:integer",
+        transform="test.tier",
+        files={
+            Path("integer_numpy.py"): b"""\
+_SIGNATURES = {
+    "measure": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "int64",
+        "args": [],
+    }
+}
+
+def measure():
+    return 9007199254740993
+"""
+        },
+    )
+    oracle = OracleRef(
+        unit=candidate.unit,
+        oracle="test.python-truth",
+        key="k",
+        handle={
+            "module": SimpleNamespace(w_measure=lambda: 9007199254740992),
+            "wrappers": {"measure": "w_measure"},
+        },
+    )
+    verdict = ToleranceVerifier().verify(
+        Unit(uid=candidate.unit, kind="subprogram"),
+        candidate,
+        oracle,
+        tmp_path,
+        LocalExecutor(),
+        {"rel_gate": 1e100, "ulp_gate": 2**63 - 1},
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert verdict.metrics["integer_mismatch"] == 10
+    assert "cannot be tolerance-excused" in verdict.detail
 
 
 def test_bitexact_is_unchanged_by_the_dominance_machinery() -> None:

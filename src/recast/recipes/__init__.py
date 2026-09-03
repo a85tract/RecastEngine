@@ -41,6 +41,17 @@ class TranslateRecipe(Recipe):
 
     name = "translate"
     summary = "Translate a source language to a target language, gated bit-exact."
+    engine_id = "recast.fortran-python.numpy"
+
+    def resolved_engine_id(self, config: dict[str, Any]) -> str | None:
+        # The legacy recipe also exposes direct Fortran -> Numba/CUDA variants.
+        # Those are not the future Python -> Numba/JAX engines and therefore do
+        # not borrow the NumPy engine's identity.
+        is_builtin = (
+            config.get("target", "numpy") == "numpy"
+            and config.get("frontend", "fortran") == "fortran"
+        )
+        return self.engine_id if is_builtin else None
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         target = config.get("target", "numpy")
@@ -210,9 +221,54 @@ class AuditRecipe(Recipe):
         ]
 
 
+class _PythonAcceleratorRecipe(Recipe):
+    """Shared fixed topology; concrete subclasses pin every semantic slot."""
+
+    target: str
+
+    def stages(self, config: dict[str, Any]) -> list[Stage]:
+        return [
+            Stage("executor", config.get("executor", "local")),
+            Stage("frontend", config.get("frontend", "python-numpy")),
+            Stage("transform", f"translate.python-{self.target}"),
+            Stage("verifier", "static.complete", gate=True),
+            Stage("oracle", "python-source"),
+            Stage("verifier", f"differential.python-{self.target}", gate=True),
+            Stage("store", "fs-evidence"),
+        ]
+
+    def validate(self, config: dict[str, Any]) -> list[str]:
+        problems: list[str] = []
+        if config.get("target", self.target) != self.target:
+            problems.append(f"{self.name} requires target={self.target!r}")
+        if config.get("frontend", "python-numpy") != "python-numpy":
+            problems.append(f"{self.name} requires the python-numpy frontend")
+        return problems
+
+
+class PythonToNumbaRecipe(_PythonAcceleratorRecipe):
+    """Compile a Python/NumPy numerical module with conservative Numba njit."""
+
+    name = "python-to-numba"
+    summary = "Compile Python/NumPy functions with Numba and verify against the source."
+    engine_id = "recast.python-numpy.numba"
+    target = "numba"
+
+
+class PythonToJaxRecipe(_PythonAcceleratorRecipe):
+    """Lower a pure Python/NumPy numerical subset to JAX jit."""
+
+    name = "python-to-jax"
+    summary = "Lower Python/NumPy functions to JAX and verify against the source."
+    engine_id = "recast.python-numpy.jax"
+    target = "jax"
+
+
 BUILTIN: dict[str, type[Recipe]] = {
     "translate": TranslateRecipe,
     "refactor-todo": RefactorRecipe,
     "port": PortRecipe,
     "audit": AuditRecipe,
+    "python-to-numba": PythonToNumbaRecipe,
+    "python-to-jax": PythonToJaxRecipe,
 }

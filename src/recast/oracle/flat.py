@@ -39,7 +39,7 @@ from recast.errors import OracleUnavailable, RecastError
 from recast.fortran.flatten import FORTRAN_TYPES, FlatPlan, plans_from_facts, signature
 from recast.fortran.tree import MODULE_DEFINITION, sources
 from recast.model import Facts, OracleRef, Unit
-from recast.oracle.f2py import DEFAULT_FLAGS, F2pyGoldenOracle
+from recast.oracle.f2py import DEFAULT_FLAGS, F2pyGoldenOracle, _regular_file
 from recast.plugins.executor import Executor, Job
 
 __all__ = ["F2pyFlatOracle", "factory", "fortran_adapter", "stub_sources", "unspellable"]
@@ -212,6 +212,20 @@ class F2pyFlatOracle(F2pyGoldenOracle):
     def link_flags(self, config: dict[str, Any]) -> str:
         """Linker flags the extension module needs at load time."""
         return str(config.get("ldflags") or "")
+
+    # -- the engine's root boundary -------------------------------------------
+
+    # The engine's oracle reads the unit's source under the project root. This
+    # oracle hands it the adapter it generated instead: content-hashed as
+    # ``adapter_key`` the moment it was made, so the key trusts the bytes the
+    # digest was taken from; written under the workspace by materialize,
+    # where no project root contains it.
+
+    def _main_source(self, facts: Facts, root: Path) -> Path:
+        return _regular_file(Path(facts.provenance["source"]), label="flat adapter")
+
+    def _main_source_digest(self, facts: Facts, root: Path) -> str:
+        return str(facts.provenance["digest"])
 
     # -- the build plan -------------------------------------------------------
 

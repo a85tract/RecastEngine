@@ -110,6 +110,8 @@ its metrics deserve a closer look:
 | `max_ulp` | the largest difference found, in units of the last place of the floating-point number. 0 means no difference at all. |
 | `max_rel` | the same, as a relative error |
 | `nan_mismatch` | how many points where one side produced NaN and the other did not. A non-zero value here usually means a variable read before it was assigned. |
+| `integer_points` | how many of the compared values were integers (an `integer` result or out-argument). They are compared for equality, and never contribute to `max_ulp` or `max_rel`. |
+| `integer_mismatch` | how many of those integer values differed. Any non-zero value fails the check. |
 
 For `static.rwset`: `blocks_checked` is how many blocks were compared,
 `blocks_matched` how many agreed, `blocks_deferred` how many were refused

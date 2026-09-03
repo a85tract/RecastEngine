@@ -11,6 +11,7 @@
 #
 #   tools/ci_local.sh                    # every job in every workflow
 #   tools/ci_local.sh spine secrets      # one or more jobs by name
+#   tools/ci_local.sh python-accelerators # the real Numba/JAX engine job
 #   tools/ci_local.sh --list             # what is there, and what will be skipped
 #   tools/ci_local.sh --workflow ci.yml  # one workflow's jobs
 #
@@ -202,6 +203,19 @@ ignored_now() {
 BASELINE="$WORK/ignored.baseline"
 ignored_now > "$BASELINE"
 
+# GNU and BSD spell an empty in-place backup suffix differently. Trying one
+# and falling back is unsafe: GNU sed may edit the file and still return
+# non-zero for the BSD spelling, causing the fallback to apply a rewrite twice
+# (notably producing ``uv run --isolated --isolated``). Detect the dialect
+# before touching the generated step file.
+sed_in_place() {
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
+
 failed="" ran="" unrun=""
 for job in $WANTED; do
     cond=$(field "$job" if)
@@ -219,8 +233,7 @@ for job in $WANTED; do
 
         # Before anything reads the step, so a skipped one reports the command
         # it would have been rather than the template.
-        sed -i '' "s/\${{ matrix.python }}/$MATRIX_PYTHON/g" "$step" 2>/dev/null \
-            || sed -i "s/\${{ matrix.python }}/$MATRIX_PYTHON/g" "$step"
+        sed_in_place "s/\${{ matrix.python }}/$MATRIX_PYTHON/g" "$step"
 
         tools=$(provided_tool "$step")
         if [ -n "$tools" ]; then
@@ -242,8 +255,7 @@ for job in $WANTED; do
             continue
         fi
 
-        sed -i '' -e 's|uv run |uv run --isolated |g' -e 's|^python |python3 |g' "$step" 2>/dev/null \
-            || sed -i -e 's|uv run |uv run --isolated |g' -e 's|^python |python3 |g' "$step"
+        sed_in_place -e 's|uv run |uv run --isolated |g' -e 's|^python |python3 |g' "$step"
 
         sed 's/^/  [run ] /' "$step"
         if ! bash -euo pipefail "$step"; then

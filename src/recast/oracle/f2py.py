@@ -33,8 +33,10 @@ import hashlib
 import importlib
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +65,119 @@ DEFAULT_FLAGS = "-O1 -fno-fast-math -ffp-contract=off"
 """Conservative by default. The reference must round the way the production
 build rounds, and aggressive optimization is a second variable nobody asked
 to test."""
+
+_SAFE_SOURCE_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,10}\Z")
+"""A suffix that is safe to reproduce on a canonical staging filename.
+
+f2py infers the source language and fixed/free form from the suffix, so the
+staged copy must retain it.  The original basename is deliberately *not*
+retained: NumPy's Meson backend joins and splits source arguments internally,
+which turns whitespace (or a flag-looking basename) into additional tokens.
+"""
+
+
+def _resolved_root(value: str | os.PathLike[str]) -> Path:
+    """Resolve and validate the project root before trusting provenance."""
+    try:
+        root = Path(value).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise ConfigError(
+            f"f2py project root {value!r} does not exist or cannot be resolved"
+        ) from exc
+    if not root.is_dir():
+        raise ConfigError(f"f2py project root {root} is not a directory")
+    return root
+
+
+def _regular_file(path: Path, *, label: str) -> Path:
+    """Return one canonical regular file or reject it fail-closed."""
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"{label} {path} does not exist or cannot be resolved") from exc
+    if not resolved.is_file():
+        raise ConfigError(f"{label} {resolved} is not a regular file")
+    return resolved
+
+
+def _source_under_root(root: Path, value: object, *, label: str) -> Path:
+    """Resolve a provenance path and prove its target remains in ``root``."""
+    if not isinstance(value, (str, os.PathLike)):
+        raise ConfigError(f"{label} must be a filesystem path, got {type(value).__name__}")
+    resolved = _regular_file(root / Path(value), label=label)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{label} {value!r} resolves outside the configured project root {root}"
+        ) from exc
+    return resolved
+
+
+def _extra_sources(config: dict[str, Any]) -> list[Path]:
+    """Validate explicitly configured sources (which may live outside root)."""
+    values = config.get("extra_sources", []) or []
+    if isinstance(values, (str, bytes, os.PathLike)):
+        raise ConfigError("config['extra_sources'] must be a list of filesystem paths")
+    resolved: list[Path] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, (str, os.PathLike)):
+            raise ConfigError(
+                f"extra source {index} must be a filesystem path, got {type(value).__name__}"
+            )
+        resolved.append(_regular_file(Path(value), label=f"extra source {index}"))
+    return resolved
+
+
+def _staged_suffix(source: Path) -> str:
+    suffix = source.suffix
+    if not _SAFE_SOURCE_SUFFIX.fullmatch(suffix):
+        raise ConfigError(
+            f"source {source} has suffix {suffix!r}, which cannot be represented by a safe "
+            "f2py staging filename"
+        )
+    return suffix
+
+
+def _stage_build_inputs(
+    stage: Path, sources: list[Path], wrapper_text: str
+) -> tuple[list[str], list[str]]:
+    """Copy sources and expose include directories through controlled names.
+
+    NumPy currently performs ``' '.join(...).split()`` both while parsing
+    f2py sources and while parsing include options.  Consequently *every*
+    token given to it is a short relative name we generated here.  Source
+    parents are reachable to the compiler only through ``includes/dNNNN``
+    aliases; their original spellings never enter a flags string or Meson
+    template.
+    """
+    source_dir = stage / "sources"
+    include_dir = stage / "includes"
+    backend_include_dir = stage / "f2py-build" / "includes"
+    source_dir.mkdir()
+    include_dir.mkdir()
+    backend_include_dir.mkdir(parents=True)
+
+    staged: list[str] = []
+    for index, source in enumerate(sources):
+        relative = Path("sources") / f"source_{index:04d}{_staged_suffix(source)}"
+        shutil.copyfile(source, stage / relative)
+        staged.append(relative.as_posix())
+
+    wrapper = Path("sources") / "wrappers.f90"
+    (stage / wrapper).write_text(wrapper_text)
+    staged.append(wrapper.as_posix())
+
+    include_args: list[str] = []
+    parents = dict.fromkeys(source.parent for source in sources)
+    for index, parent in enumerate(parents):
+        alias = f"d{index:04d}"
+        # One alias is used by crackfortran from the job cwd; the identical
+        # alias below f2py's explicit build directory is used by Meson.
+        (include_dir / alias).symlink_to(parent, target_is_directory=True)
+        (backend_include_dir / alias).symlink_to(parent, target_is_directory=True)
+        include_args.append(f"-Iincludes/{alias}")
+    return staged, include_args
 
 
 def _extent(dim: dict[str, Any]) -> str:
@@ -232,17 +347,33 @@ def companion_sources(facts: Facts, root: Path) -> list[Path]:
     compiler cannot read a module it has not compiled yet, and the ones that
     depend on nothing here come first.
     """
+    root = _resolved_root(root)
     companions = facts.provenance.get("companions") or []
-    by_module = {str(c.get("module", "")).lower(): c for c in companions}
+    if not isinstance(companions, list):
+        raise ConfigError("Facts.provenance['companions'] must be a list")
+    by_module: dict[str, tuple[dict[str, Any], Path]] = {}
+    for index, companion in enumerate(companions):
+        if not isinstance(companion, dict):
+            raise ConfigError(f"companion {index} must be an object")
+        module = str(companion.get("module", "")).lower()
+        if module in by_module:
+            raise ConfigError(f"duplicate companion module {module!r} in Facts provenance")
+        path = _source_under_root(
+            root,
+            companion.get("source"),
+            label=f"companion {module or index} source",
+        )
+        by_module[module] = (companion, path)
     ordered: list[Path] = []
     placed: set[str] = set()
 
     def place(name: str, stack: frozenset[str]) -> None:
-        companion = by_module.get(name)
-        if companion is None or name in placed or name in stack:
+        item = by_module.get(name)
+        if item is None or name in placed or name in stack:
             # A cycle is not this build's to resolve -- Fortran allows mutual
             # use only through submodules, and stopping keeps the order total.
             return
+        companion, path = item
         for statement in companion.get("record", {}).get("use_statements", ()):
             match = re.match(r"USE\b\s*(?:,\s*\w+\s*)?(?:::)?\s*(\w+)", statement.strip(), re.I)
             if match:
@@ -250,7 +381,7 @@ def companion_sources(facts: Facts, root: Path) -> list[Path]:
         if name in placed:
             return
         placed.add(name)
-        ordered.append((root / companion["source"]).resolve())
+        ordered.append(path)
 
     for name in sorted(by_module):
         place(name, frozenset())
@@ -285,20 +416,33 @@ class F2pyGoldenOracle(Oracle):
         compiler = config.get("fc", "gfortran")
         digest = hashlib.sha256()
         digest.update(str(facts.provenance.get("digest")).encode())
-        root = Path(config.get("root", "."))
-        extras = [str(s) for s in config.get("extra_sources", [])]
-        extras += [str(s) for s in companion_sources(facts, root)]
-        for extra in sorted(extras):
-            path = Path(extra)
-            digest.update(extra.encode())
-            if path.is_file():
-                digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+        root = _resolved_root(config.get("root", "."))
+        # Trust the bytes, not only a digest carried in mutable Facts.  This
+        # also makes the key validation exercise the same root boundary as the
+        # materializer before it queries a compiler or creates a workspace.
+        digest.update(self._main_source_digest(facts, root).encode())
+        dependencies = [*companion_sources(facts, root), *_extra_sources(config)]
+        for path in sorted(dependencies, key=str):
+            digest.update(str(path).encode())
+            digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
         digest.update(_compiler_version(compiler).encode())
         digest.update(config.get("fflags", DEFAULT_FLAGS).encode())
         digest.update(str(sorted((config.get("wrapper_parameters") or {}).items())).encode())
         digest.update(str(sorted((config.get("wrapper_dims") or {}).items())).encode())
         digest.update(",".join(self._subprograms(facts, config)).encode())
         return f"f2py:{facts.interface.get('module', unit.uid)}:{digest.hexdigest()[:16]}"
+
+    def _main_source(self, facts: Facts, root: Path) -> Path:
+        """The unit's own source, proven to lie under ``root``.
+
+        An oracle that writes the source it wraps (``F2pyFlatOracle``)
+        overrides this with the file it wrote.
+        """
+        return _source_under_root(root, facts.provenance.get("source"), label="main source")
+
+    def _main_source_digest(self, facts: Facts, root: Path) -> str:
+        """sha256 of the main source's bytes, read for the key."""
+        return hashlib.sha256(self._main_source(facts, root).read_bytes()).hexdigest()
 
     def materialize(
         self,
@@ -312,7 +456,10 @@ class F2pyGoldenOracle(Oracle):
         build = workspace / f"oracle-{key.rsplit(':', 1)[-1]}"
         build.mkdir(parents=True, exist_ok=True)
 
-        source = (Path(config.get("root", ".")) / facts.provenance["source"]).resolve()
+        root = _resolved_root(config.get("root", "."))
+        source = self._main_source(facts, root)
+        companions = companion_sources(facts, root)
+        extras = _extra_sources(config)
         subprograms = self._subprograms(facts, config)
         if not subprograms:
             # Nothing callable to wrap -- a module of kind parameters, or of
@@ -329,35 +476,30 @@ class F2pyGoldenOracle(Oracle):
             parameters=config.get("wrapper_parameters"),
             dims_override=config.get("wrapper_dims"),
         )
-        (build / "wrappers.f90").write_text(wrapper_text)
 
         compiler = config.get("fc", "gfortran")
         module_name = f"ref_{facts.interface['module']}"
         # Companions first, then whatever the operator added, then the unit's
         # own source: gfortran compiles in argument order and a ``use`` of a
         # module later in the list is a fatal "cannot open module file".
-        sources = [
-            *[str(s) for s in companion_sources(facts, Path(config.get("root", ".")))],
-            *[str(Path(s).resolve()) for s in config.get("extra_sources", [])],
-            str(source),
-            "wrappers.f90",
-        ]
-        # A Fortran ``include`` is resolved against the compiler's search path,
-        # not against the file that wrote it, and this build runs in its own
-        # directory -- so every directory a source came from goes on the path
-        # or a library that keeps its constants in a ``.inc`` beside the code
-        # cannot be compiled at all.
-        includes = " ".join(
-            f"-I{d}" for d in dict.fromkeys(str(Path(s).resolve().parent) for s in sources[:-1])
-        )
-        flags = f"{config.get('fflags', DEFAULT_FLAGS)} {includes}".strip()
+        original_sources = [*companions, *extras, source]
+        stage = Path(tempfile.mkdtemp(prefix="f2py-stage-", dir=build))
+        sources, include_args = _stage_build_inputs(stage, original_sources, wrapper_text)
+        # fflags remains the operator's compiler-flags string.  Source/include
+        # paths never join it: NumPy splits this value internally, so appending
+        # an original directory here would let whitespace and flag-looking
+        # path components become compiler options.
+        flags = config.get("fflags", DEFAULT_FLAGS)
         job = Job(
             argv=[
                 sys.executable,
                 "-m",
                 "numpy.f2py",
                 "-c",
+                "--build-dir",
+                "f2py-build",
                 *sources,
+                *include_args,
                 "-m",
                 module_name,
                 "only:",
@@ -368,7 +510,7 @@ class F2pyGoldenOracle(Oracle):
                 "--backend",
                 "meson",
             ],
-            cwd=build,
+            cwd=stage,
             # The whole environment plus the compiler overrides: f2py needs a
             # real PATH, and the local executor passes exactly what it is given.
             # The interpreter's own bin directory rides in front so the build
@@ -404,11 +546,11 @@ class F2pyGoldenOracle(Oracle):
                 f"f2py build for {unit.uid} failed (exit {result.returncode}); log at {log}"
             )
 
-        sys.path.insert(0, str(build))
+        sys.path.insert(0, str(stage))
         try:
             module = importlib.import_module(module_name)
         finally:
-            sys.path.remove(str(build))
+            sys.path.remove(str(stage))
         return OracleRef(
             unit=unit.uid,
             oracle=self.name,
@@ -416,7 +558,7 @@ class F2pyGoldenOracle(Oracle):
             handle={
                 "module": module,
                 "wrappers": dict(zip(subprograms, wrapper_names, strict=True)),
-                "build_dir": build,
+                "build_dir": stage,
             },
             cost=self.cost,
         )

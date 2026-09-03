@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "5050b52b6da46fb30db6ee47fc318aedca28a5e70c802cc652d82a2548d431f3",
+      "candidate": "47d42186e7e8501779974fff181cfd392a508c501e9519859f8245d4521418c1",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,
@@ -27,6 +27,8 @@
           "detail": "85 points across 2 subprogram(s), all bit-exact",
           "metrics": {
             "bit_exact": 85,
+            "integer_mismatch": 0,
+            "integer_points": 0,
             "max_rel": 0.0,
             "max_ulp": 0,
             "nan_mismatch": 0,

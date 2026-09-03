@@ -340,6 +340,16 @@ class NumpyTranslation(Transform):
             ],
             notes={
                 "blocks": report,
+                # Stable, source-free coverage protocol for an outer
+                # acceptance controller.  ``blocks`` remains the diagnostic
+                # ledger; callers should not have to reverse-engineer that
+                # transform-specific shape merely to prove which requested
+                # subprograms this Candidate attempted.
+                "coverage": {
+                    "subprograms": sorted(
+                        subprogram_key(record) for record in facts.interface["subprograms"]
+                    )
+                },
                 "profile": assembler.profile.name,
                 "source_digest": facts.provenance.get("digest"),
                 "companions": [c["alias"] for c in config.get("companions", [])],
