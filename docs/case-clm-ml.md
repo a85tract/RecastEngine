@@ -17,15 +17,16 @@ the engine to the same targets, with one difference in kind: every number
 below was produced by a gate that compared against compiled Fortran, not
 by a reading of the code.
 
-Two things are not public yet, and this page names them without linking:
-the CLM-ml domain extension for the engine (`recast-clm-ml`) and the case
-directory that drives it (`clm-ml-jax-reproduction`, with its
-`REPRODUCTION.md`, the record this page condenses; not the authors' own
-translation, which is public as
-[`AyaLahlou/clm-ml-jax`](https://github.com/AyaLahlou/clm-ml-jax)). The upstream Fortran is public:
+The case directory that drives this is public:
+[`a85tract/clm-ml-jax-reproduction`](https://github.com/a85tract/clm-ml-jax-reproduction),
+whose `REPRODUCTION.md` is the record this page condenses. The CLM-ml
+domain extension for the engine (`recast-clm-ml`) is not public yet, and
+this page names it without linking. The authors' own translation is public
+as [`AyaLahlou/clm-ml-jax`](https://github.com/AyaLahlou/clm-ml-jax); the
+case compares it against the same Fortran oracle, see §6. The upstream Fortran is public:
 [`gbonan/CLM-ml_v2.CHATS`](https://github.com/gbonan/CLM-ml_v2.CHATS) at
 `8d1cc40`, read and never modified. Everything ran on one laptop (Apple
-silicon, gfortran 16) between 2026-08-28 and 2026-08-31.
+silicon, gfortran 16) between 2026-08-28 and 2026-09-02.
 
 ## 1. Why this is harder than a module
 
@@ -272,9 +273,15 @@ has been edited to agree is not a reference.
 
 ## 6. Where the claim stops
 
-- The paper's own JAX code was not public when this was done, so nothing
-  here is compared to the authors' artifact, only to the Fortran and to
-  the paper's reported tolerances.
+- Nothing here is gated against the authors' artifact, only against the
+  Fortran and the paper's reported tolerances. The case did afterwards run
+  the authors' `clm-ml-jax` against the same Fortran oracle: where the
+  Fortran is closed-form both translations are exact or ULP-tier; where it
+  iterates a solver to a tolerance, theirs lands within that tolerance and
+  the engine's reproduces the iteration path bit for bit. Over the month
+  that is a sensible-heat step-RMS of 5.5e-3 against 7.4e-4, both inside
+  the 1 % band. The numbers are in the case's `REPRODUCTION.md`, section
+  "differential against the authors' own translation".
 - Soil hydrology (`SoilWater`) and the tower forcing stay recorded; the
   canopy and the soil-thermal column are closed loops, the water column is
   not. The paper's scope stops at the same place.
