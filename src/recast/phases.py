@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,11 +32,15 @@ from typing import Any, ClassVar, cast
 from recast.engines import TranslationEngine, canonical_digest, get_engine
 from recast.errors import ConfigError, PluginError
 from recast.model import Candidate, Facts, Patch, Unit, Verdict
+from recast.observe import RunEventAction, RunEventEntity, RunObserver
 from recast.plugins.recipe import Recipe, Stage
 from recast.registry import REGISTRY, Registry
 from recast.run import (
     StageOutcome,
     UnitRun,
+    _emit_unit_finished,
+    _exception_reason,
+    _RunEventEmitter,
     _walk_stage,
     output_root,
     run_recipe,
@@ -1207,6 +1212,15 @@ class UnitVerification:
     evidence_complete: bool
     stage_status: str
     gates: tuple[GateResult, ...]
+    stopped_by: str | None = None
+    """The verification stage (oracle or gate) that ended this unit early.
+
+    The plugin *name* only, as ``RecipeRun.summary()`` records it.  Its
+    failure detail may quote source or a machine path, so it is delivered to
+    the ``observer`` of :func:`verify_recipe_candidates` and never enters the
+    report.  Without this name a gate the unit never reached is reported as
+    ``missing`` with nothing to say why.
+    """
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1220,6 +1234,7 @@ class UnitVerification:
             "evidence_complete": self.evidence_complete,
             "stage_status": self.stage_status,
             "gates": [gate.to_dict() for gate in self.gates],
+            "stopped_by": self.stopped_by,
         }
 
 
@@ -1390,9 +1405,11 @@ def _verification_run(
     registry: Registry,
     output: Path | None,
     workspace: Path | None,
+    observer: RunObserver | None = None,
 ) -> dict[str, UnitRun]:
     safe_registry = _VerificationRegistry(registry)
     recipe = _VerificationPlanRecipe(bundle.recipe)
+    events = _RunEventEmitter(recipe.name, observer)
     stages = tuple(stage.to_stage() for stage in bundle.verification_plan.stages)
     verification_stages = [
         (index, stage)
@@ -1457,17 +1474,23 @@ def _verification_run(
             **stage_config(stage),
         }
 
-    for item in bundle.units:
-        unit_run = UnitRun(unit=item.unit, facts=item.facts, candidate=item.candidate)
-        results[item.unit.uid] = unit_run
-        if item.transform_status != "ok" or item.facts is None or item.candidate is None:
-            continue
-        unit_workspace = (
-            verification_workspace / hashlib.sha256(item.unit.uid.encode()).hexdigest()[:16]
+    def walk_one(
+        stage_index: int, stage: Stage, item: CandidateUnit, unit_run: UnitRun, unit_workspace: Path
+    ) -> StageOutcome:
+        """Walk one stage bracketed by the same observer lifecycle ``run_recipe`` emits."""
+        assert item.facts is not None  # walk_one is only reached for transformed units
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="stage_scheduled",
+            reason=f"{stage.kind} plugin {stage.plugin!r} scheduled",
+            unit_id=unit_run.unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
         )
-        unit_workspace.mkdir(parents=True, exist_ok=True)
-        for position, (_stage_index, stage) in enumerate(verification_stages):
-            before_verdicts = len(unit_run.verdicts)
+        try:
             try:
                 outcome = _walk_stage(
                     stage,
@@ -1481,6 +1504,8 @@ def _verification_run(
                     unit_workspace,
                     executor,
                     oracle_cache,
+                    events=events,
+                    stage_index=stage_index,
                 )
             finally:
                 _require_bundle_unchanged(
@@ -1489,6 +1514,70 @@ def _verification_run(
                     bundle_snapshot,
                     f"{stage.kind} {stage.plugin!r}",
                 )
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="stage_exception",
+                reason=_exception_reason(error),
+                unit_id=unit_run.unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+            )
+            raise
+        # ``reason`` is the plugin's raw detail -- an oracle build log, a
+        # verifier's explanation -- which is exactly what the report must not
+        # carry and exactly what an operator repairing the unit needs.
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status=outcome.status,
+            reason_code=f"stage_{outcome.status}",
+            reason=outcome.detail,
+            unit_id=unit_run.unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+        return outcome
+
+    def not_run(stage_index: int, stage: Stage, unit: Unit, stopped_by: str) -> None:
+        """Expose a declared stage suppressed by an upstream stop, bracketed
+        as ``run_recipe`` brackets it: a finish always follows a start."""
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="stage_considered",
+            reason=f"considering {stage.kind} plugin {stage.plugin!r}",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status="skipped",
+            reason_code="upstream_stop",
+            reason=f"not run because {stopped_by!r} stopped the unit",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+
+    def walk_unit(item: CandidateUnit, unit_run: UnitRun) -> None:
+        assert item.facts is not None  # checked by the caller before dispatch
+        unit_workspace = (
+            verification_workspace / hashlib.sha256(item.unit.uid.encode()).hexdigest()[:16]
+        )
+        unit_workspace.mkdir(parents=True, exist_ok=True)
+        for position, (stage_index, stage) in enumerate(verification_stages):
+            before_verdicts = len(unit_run.verdicts)
+            outcome = walk_one(stage_index, stage, item, unit_run, unit_workspace)
             unit_run.outcomes.append(outcome)
             if stage.kind == "oracle" and outcome.status == "ok":
                 unit_run.oracle = oracle_cache[outcome.detail]
@@ -1497,32 +1586,81 @@ def _verification_run(
                 _validate_verdict(stage, item, verdict, candidate_digests[item.unit.uid])
             if outcome.status == "failed" and (stage.gate or stage.kind == "oracle"):
                 unit_run.stopped_by = stage.plugin
-                for _, later in verification_stages[position + 1 :]:
+                for later_index, later in verification_stages[position + 1 :]:
                     if later.kind != "store":
+                        not_run(later_index, later, item.unit, stage.plugin)
                         continue
-                    try:
-                        later_outcome = _walk_stage(
-                            later,
-                            call_config(later),
-                            safe_registry,
-                            recipe,
-                            executor_name,
-                            item.unit,
-                            item.facts,
-                            unit_run,
-                            unit_workspace,
-                            executor,
-                            oracle_cache,
-                        )
-                    finally:
-                        _require_bundle_unchanged(
-                            original_bundle,
-                            bundle,
-                            bundle_snapshot,
-                            f"{later.kind} {later.plugin!r}",
-                        )
+                    later_outcome = walk_one(later_index, later, item, unit_run, unit_workspace)
                     unit_run.outcomes.append(later_outcome)
                 break
+
+    events.emit(
+        RunEventEntity.RUN,
+        RunEventAction.STARTED,
+        status="running",
+        reason_code="verification_requested",
+        reason=f"verification of recipe {recipe.name!r} candidates requested",
+    )
+    # What each unit's finishing event said, so the run's own says the same:
+    # a unit that was never transformed has no outcomes and would otherwise
+    # count as passed.
+    finished: list[str] = []
+    try:
+        for item in bundle.units:
+            unit_run = UnitRun(unit=item.unit, facts=item.facts, candidate=item.candidate)
+            results[item.unit.uid] = unit_run
+            events.emit(
+                RunEventEntity.UNIT,
+                RunEventAction.STARTED,
+                status="running",
+                reason_code="unit_bundled",
+                reason=f"transform status {item.transform_status!r}",
+                unit_id=item.unit.uid,
+            )
+            if item.transform_status != "ok" or item.facts is None or item.candidate is None:
+                events.emit(
+                    RunEventEntity.UNIT,
+                    RunEventAction.FINISHED,
+                    status="incomplete",
+                    reason_code="unit_not_transformed",
+                    reason=f"transform status {item.transform_status!r}: no candidate to verify",
+                    unit_id=item.unit.uid,
+                )
+                finished.append("incomplete")
+                continue
+            try:
+                walk_unit(item, unit_run)
+            except BaseException as error:
+                events.emit(
+                    RunEventEntity.UNIT,
+                    RunEventAction.FINISHED,
+                    status="aborted",
+                    reason_code="unit_exception",
+                    reason=_exception_reason(error),
+                    unit_id=item.unit.uid,
+                )
+                raise
+            _emit_unit_finished(events, unit_run)
+            finished.append(unit_run.status.value)
+    except BaseException as error:
+        events.emit(
+            RunEventEntity.RUN,
+            RunEventAction.FINISHED,
+            status="aborted",
+            reason_code="verification_exception",
+            reason=_exception_reason(error),
+        )
+        raise
+    if events.enabled:
+        tally = Counter(finished)
+        events.emit(
+            RunEventEntity.RUN,
+            RunEventAction.FINISHED,
+            status="passed" if all(status == "passed" for status in finished) else "failed",
+            reason_code="verification_walked",
+            reason=", ".join(f"{count} {status}" for status, count in sorted(tally.items()))
+            or "no units",
+        )
     return results
 
 
@@ -1619,6 +1757,7 @@ def verify_recipe_candidates(
     registry: Registry = REGISTRY,
     output: Path | None = None,
     workspace: Path | None = None,
+    observer: RunObserver | None = None,
 ) -> VerificationReport:
     """Verify a CandidateBundle without consulting executable Recipe code.
 
@@ -1626,7 +1765,11 @@ def verify_recipe_candidates(
     engine and project gate for every selected unit, recorded Evidence, the
     requested subprogram coverage, and (by default) an empty deferred ledger.
     The returned report contains digests/counts/statuses only: no source bytes,
-    verifier detail, metrics, store URI, machine root, or timestamp.
+    verifier detail, metrics, store URI, machine root, or timestamp.  A unit
+    that a failed oracle or gate stopped early names that stage in
+    ``stopped_by``; the stage's own detail -- the reason the later gates never
+    ran -- is delivered only to ``observer``, under the same ordered lifecycle
+    and embargo :func:`recast.run.run_recipe` gives it.
 
     ``recipe`` remains a positional compatibility argument, but is deliberately
     ignored.  The transform phase freezes the safe verification declaration in
@@ -1683,6 +1826,7 @@ def verify_recipe_candidates(
         registry,
         output,
         workspace,
+        observer,
     )
     unit_reports: list[UnitVerification] = []
     by_unit_gate: dict[str, dict[str, GateResult]] = {}
@@ -1720,6 +1864,7 @@ def verify_recipe_candidates(
                 evidence_complete=evidence_complete,
                 stage_status=stage_status,
                 gates=gate_results,
+                stopped_by=unit_run.stopped_by,
             )
         )
         all_transformed = all_transformed and item.transform_status == "ok"

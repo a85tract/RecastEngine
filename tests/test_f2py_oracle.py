@@ -20,11 +20,13 @@ import pytest
 pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 pytest.importorskip("numpy", reason="needs recast-engine[translate]")
 
+import recast.oracle.f2py as f2py_module
 from recast.errors import ConfigError, OracleUnavailable
 from recast.executors.local import LocalExecutor
 from recast.fortran.frontend import FortranFrontend
 from recast.model import Candidate, Confidence, OracleRef, Unit
 from recast.oracle.f2py import F2pyGoldenOracle, wrappers_for
+from recast.plugins.executor import JobResult
 from recast.transform.numpy.translate import NumpyTranslation
 from recast.verify.bitexact import BitexactVerifier
 from recast.verify.rwset import ReadWriteSetVerifier
@@ -1280,6 +1282,65 @@ def test_f2py_only_receives_canonical_source_and_include_tokens(
     assert all((capture.job.cwd / token).is_file() for token in staged_sources)
     assert (capture.job.cwd / "includes/d0000").is_dir()
     assert (capture.job.cwd / "f2py-build/includes/d0000").is_dir()
+
+
+class _FailingBuild:
+    """An executor whose f2py run fails the way crackfortran does on bad Fortran."""
+
+    name = "failing"
+
+    def __init__(self, stdout: str, stderr: str) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def run(self, job):
+        del job
+        return JobResult(1, self.stdout, self.stderr)
+
+
+def test_a_failed_build_quotes_the_end_of_its_own_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The log sits in a workspace that is gone once the run returns, so a
+    path to it explains nothing; the error carries what the tools said."""
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    monkeypatch.setattr("recast.oracle.f2py._compiler_version", lambda _compiler: "test-fc 1")
+    chatter = "\n".join(f"Reading fortran codes... line {index}" for index in range(400))
+    stderr = (
+        "Traceback (most recent call last):\n"
+        "  File crackfortran.py, line 3, in crackline\n"
+        "crackfortran: analyzeline: No name/args pattern found for line: subroutine (x\n"
+    )
+
+    with pytest.raises(ConfigError) as failure:
+        F2pyGoldenOracle().materialize(
+            unit, facts, tmp_path / "work", _FailingBuild(chatter, stderr), {"root": root}
+        )
+
+    message = str(failure.value)
+    assert message.startswith("f2py build for fortran:toy_split failed (exit 1); log at ")
+    assert message.endswith(stderr.strip())
+    assert "earlier characters of the build output omitted]" in message
+    assert "Reading fortran codes... line 0\n" not in message
+    assert len(message) < 3500
+    log = next((tmp_path / "work").rglob("f2py.log"))
+    assert log.read_text() == chatter + "\n" + stderr
+
+
+def test_log_tail_keeps_short_output_whole_and_cuts_long_output_on_a_line() -> None:
+    assert f2py_module._log_tail("  short\n") == "short"
+    lines = [f"line {index:04d}" for index in range(100)]
+    tail = f2py_module._log_tail("\n".join(lines), limit=200)
+    omitted, kept = tail.split("\n", 1)
+    assert omitted.startswith("… [") and omitted.endswith(
+        " earlier characters of the build output omitted]"
+    )
+    assert kept.splitlines()[0] in lines
+    assert kept.splitlines()[-1] == "line 0099"
+    assert len(kept) <= 200
+    assert "\n".join(lines).endswith(kept)
 
 
 @pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
