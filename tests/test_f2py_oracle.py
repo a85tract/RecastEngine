@@ -1390,6 +1390,48 @@ def test_companions_must_be_regular_files_inside_root(tmp_path: Path, bad_source
         F2pyGoldenOracle().key(unit, facts, {"root": root})
 
 
+@pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
+def test_the_flat_oracle_holds_its_plan_to_the_same_root(tmp_path: Path, bad_source: str) -> None:
+    """The flat oracle plans its library from the unit's source under the
+    project root, the way the engine's oracle reads it: the same boundary,
+    or a source outside root would be compiled by one oracle and refused by
+    the other."""
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    outside = tmp_path / "outside.f90"
+    outside.write_text(SPLIT_SOURCE)
+    if bad_source == "missing":
+        facts.provenance["source"] = "missing.f90"
+        match = "does not exist"
+    elif bad_source == "directory":
+        (root / "directory.f90").mkdir()
+        facts.provenance["source"] = "directory.f90"
+        match = "not a regular file"
+    else:
+        (root / "escape.f90").symlink_to(outside)
+        facts.provenance["source"] = "escape.f90"
+        match = "outside the configured project root"
+
+    with pytest.raises(ConfigError, match=match):
+        F2pyFlatOracle().key(unit, facts, {"root": root})
+
+
+def test_the_flat_oracle_refuses_an_extra_source_it_cannot_read(tmp_path: Path) -> None:
+    """A configured extra source that is not there used to drop out of the
+    library key without a word and fail the build later, under a message
+    about the compiler."""
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    with pytest.raises(ConfigError, match=r"extra source 0 .* does not exist"):
+        F2pyFlatOracle().key(unit, facts, {"root": root, "extra_sources": ["nowhere.f90"]})
+
+
 def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
     """The reference is only a reference if everything that can change what it
     computes is in its key. A kinds module edited from real64 to real32 is a
