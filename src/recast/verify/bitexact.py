@@ -343,14 +343,27 @@ class BitexactVerifier(Verifier):
                     totals.get("dominant_points", 0) + outcome["dominant_points"]
                 )
 
-        # Policy gate: a subprogram the module declares (its _SIGNATURES),
-        # that is not deferred, and that no comparison attempt covered, is a
-        # translation claim with no evidence. Every silent-narrowing filter --
-        # oracle-side wrapper drops, generability skips, config subsets --
-        # lands here by construction, because coverage is judged against what
-        # was TRANSLATED, not against whatever survived the filters.
+        # Policy gate: a public subprogram the module declares (its
+        # _SIGNATURES), that is not deferred, and that no comparison attempt
+        # covered, is a translation claim with no evidence. Every silent-
+        # narrowing filter -- oracle-side wrapper drops, generability skips,
+        # config subsets -- lands here by construction, because coverage is
+        # judged against what was TRANSLATED, not against whatever survived
+        # the filters. Three things are not silence: a private subprogram,
+        # which no wrapper can reach and every public caller exercises; a
+        # subprogram compared through its ``<name>_flat`` adapter, which calls
+        # it on both sides; and one the oracle listed as ungated, whose
+        # reason ``verify`` carries onto the verdict.
+        compared = set(wanted)
+        ungated = set(handle.get("ungated") or {})
         uncovered = sorted(
-            name for name in table if name not in deferred_subprograms and name not in set(wanted)
+            name
+            for name, sub in table.items()
+            if sub.get("public", True)
+            and judged(name)
+            and name not in compared
+            and f"{name}_flat" not in compared
+            and name not in ungated
         )
         metrics = {
             "subprograms": per_subprogram,
