@@ -69,6 +69,32 @@ IDENTIFIER = re.compile(r"[a-zA-Z_]\w*")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 
 
+UPPERCASED_CALL = re.compile(r"\b[A-Z_][A-Z0-9_]*\s*\(")
+"""A name the token pass spelled as a module constant, followed by ``(``.
+
+A constant is never called and an array constant is not indexed with
+parentheses in Python, so this is the token pass having uppercased an
+intrinsic (``SIN(0.5)``) or an array reference: syntactically Python, and a
+NameError or TypeError the first time the function runs."""
+
+
+def _token_pass_guessed(text: str, spelled: str) -> bool:
+    """Whether the token pass produced Python that cannot mean the Fortran.
+
+    ``_is_expression`` only asks whether Python can *parse* it. Three shapes
+    parse and are still wrong: a call or array reference of an uppercased
+    name; a ``//`` concatenation, which Python reads as floor division; and an
+    array constructor that was only part of the text (``reshape((/.../),
+    ...)``), where the search silently dropped everything around it.
+    """
+    if UPPERCASED_CALL.search(spelled):
+        return True
+    if "//" in text:
+        return True
+    constructed = ARRAY_CONSTRUCTOR.search(text)
+    return bool(constructed) and constructed.span() != (0, len(text))
+
+
 def _is_expression(text: str) -> str | bool:
     """Whether ``text`` is something Python can evaluate.
 
@@ -339,8 +365,10 @@ class Subprograms:
 
         lines.extend(self._result_initializer(subprogram, semantics, statements))
 
-        prologue_refusals: list[str] = []
+        prologue_refusals: list[tuple[str, int, int]] = []
         prologue = self._prologue(subprogram, semantics, statements, prologue_refusals)
+        # Where the prologue's first line lands: after the header comment.
+        prologue_at = len(lines) + 1
         if prologue:
             lines.append(
                 "    # UB-guard + automatic-array allocation "
@@ -351,8 +379,10 @@ class Subprograms:
         report: list[dict[str, Any]] = []
         # Prologue refusals are deferred work like any block: without these
         # entries a skipped allocation or parameter was a comment the bundle
-        # never carried, and acceptance had nothing to refuse.
-        for at, reason in enumerate(prologue_refusals, start=1):
+        # never carried, and acceptance had nothing to refuse. Each entry
+        # points at the lines the refusal emitted, so the rebase can place
+        # it in the finished file like a DATA block.
+        for at, (reason, low, high) in enumerate(prologue_refusals, start=1):
             report.append(
                 {
                     "subprogram": emit_name(subprogram),
@@ -361,7 +391,7 @@ class Subprograms:
                     "src_span": [0, 0],
                     "status": "agent_queue",
                     "reason": reason,
-                    "py_lines": [0, 0],
+                    "py_lines": [prologue_at + low, prologue_at + high],
                 }
             )
         # DATA sits in the specification part, and is a static
@@ -625,15 +655,24 @@ class Subprograms:
         subprogram: dict[str, Any],
         semantics: Semantics,
         statements: Statements,
-        refusals: list[str] | None = None,
+        refusals: list[tuple[str, int, int]] | None = None,
     ) -> list[str]:
         # Policy: a refusal is never a comment. Every site below records its
         # reason (the caller turns them into agent_queue report entries) and
         # emits a raise, so partial translation can neither pass a gate nor
-        # compute quietly wrong numbers at runtime.
+        # compute quietly wrong numbers at runtime. Each recorded refusal is
+        # ``(reason, low, high)``: the reason and the half-open span, in the
+        # returned lines, that it emitted.
         if refusals is None:
             refusals = []
         lines: list[str] = []
+
+        def _emit(emitted: list[str], pending: list[str]) -> None:
+            low, high = len(lines), len(lines) + len(emitted)
+            lines.extend(emitted)
+            for reason in pending:
+                refusals.append((reason, low, high))
+
         # intent(out)-only arguments are NOT parameters (return convention):
         # the function owns their buffers. Arrays get np.empty -- contents
         # undefined, exactly like Fortran -- and scalars the UB-guard zero.
@@ -643,8 +682,10 @@ class Subprograms:
                 # fresh one here would write the caller's result into an array
                 # the caller never sees.
                 continue
-            lines.extend(
-                self._out_argument(argument, subprogram, semantics, statements, refusals)
+            pending: list[str] = []
+            _emit(
+                self._out_argument(argument, subprogram, semantics, statements, pending),
+                pending,
             )
         # Local PARAMETERs, as local assignments (matches Fortran scope).
         own_parameters = frozenset(p["name"].lower() for p in subprogram["local_parameters"])
@@ -660,9 +701,13 @@ class Subprograms:
                     f"local parameter {parameter['name']} ({refusal}): "
                     f"{initializer.strip()}"
                 )
-                refusals.append(reason)
-                lines.append(f"    # AGENT_QUEUE: {reason}")
-                lines.append(f"    raise NotImplementedError({reason!r})")
+                _emit(
+                    [
+                        f"    # AGENT_QUEUE: {reason}",
+                        f"    raise NotImplementedError({reason!r})",
+                    ],
+                    [reason],
+                )
                 continue
             lines.append(f"    {name} = {value}")
         parameter_names = {p["name"] for p in subprogram["local_parameters"]}
@@ -671,7 +716,8 @@ class Subprograms:
                 continue
             if self._types_an_intrinsic(local, statements):
                 continue
-            lines.extend(self._local(local, semantics, statements, refusals))
+            pending = []
+            _emit(self._local(local, semantics, statements, pending), pending)
         return lines
 
     @staticmethod
@@ -809,11 +855,13 @@ class Subprograms:
                 # A fixed-shape component whose extent no module-scope name
                 # resolves would materialize as None and read as absent.
                 # Queue it; never guess a size.
-                reason = "INTENT(OUT) derived-type dummy not materialized at function entry"
-                refusals.append(f"out-arg {argument['name']}: {reason}")
+                reason = (
+                    f"out-arg {argument['name']}: INTENT(OUT) derived-type dummy not "
+                    f"materialized at function entry (type({type_name})%{unresolved} "
+                    "dims not statically resolvable)"
+                )
+                refusals.append(reason)
                 return [
-                    f"    # out-arg {argument['name']}: type({type_name})%"
-                    f"{unresolved} dims not statically resolvable",
                     f"    # AGENT_QUEUE: {reason}",
                     f"    raise NotImplementedError({reason!r})",
                 ]
@@ -915,7 +963,7 @@ class Subprograms:
         it was wrong.
         """
         spelled = self._token_parameter_value(text, local_parameters)
-        if _is_expression(spelled):
+        if _is_expression(spelled) and not _token_pass_guessed(text, spelled):
             return spelled
         return self._reparsed_parameter_value(text, spelled, statements)
 

@@ -411,13 +411,21 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             # counted every name (construct labels included) as a read and
             # dropped every write -- silently under-reporting the exact thing
             # this module's invariant forbids.
+            # fparser hangs the block's statements directly off the
+            # construct (an Execution_Part wrapper, if one ever appears, is
+            # unwrapped). Each statement is visited AS a statement: descending
+            # one level further visited its Name children instead, which the
+            # fallback counted as reads and never as writes.
             for child in stmt.children:
                 if isinstance(child, (f08.Block_Stmt, f08.End_Block_Stmt)):
                     continue
                 if isinstance(child, f03.Specification_Part):
                     continue
-                for inner in getattr(child, "children", None) or []:
-                    visit(inner)
+                if isinstance(child, f03.Execution_Part):
+                    for inner in child.children:
+                        visit(inner)
+                    continue
+                visit(child)
             return
         if isinstance(stmt, f03.Assignment_Stmt):
             lhs, _, rhs = stmt.children

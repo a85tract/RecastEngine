@@ -84,6 +84,10 @@ ARRAY_TEXT = re.compile(r"\(/.*?/\)", re.S)
 DIVISION_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?\s*/\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?")
 MARKER = re.compile(r"^    # (B\d{3}) <- ")
 DEFINITION = re.compile(r"^def (\w+)\(")
+STATE_REFUSAL = re.compile(r"^(\w+) = None  # AGENT_QUEUE: ")
+"""The one line a refused module-state binding emits, at module scope. Its
+report entry (block ``S001``) is located by this line rather than by a block
+marker, because module state has no function to carry a marker inside."""
 DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 
@@ -512,6 +516,7 @@ class Modules:
         lines = text.splitlines()
         starts: dict[str, int] = {}
         markers: list[tuple[str, str, int]] = []
+        refused_state: dict[str, int] = {}
         current = None
         for number, line in enumerate(lines, 1):
             defined = DEFINITION.match(line)
@@ -522,6 +527,11 @@ class Modules:
             marked = MARKER.match(line)
             if marked and current:
                 markers.append((current, marked.group(1), number))
+                continue
+            refused = STATE_REFUSAL.match(line)
+            if refused:
+                # Anchored at column 0, so it cannot match inside a function.
+                refused_state[refused.group(1)] = number
         ordered = [
             pysafe(emit_name(s))
             for s in self.subprograms.record["subprograms"]
@@ -546,6 +556,18 @@ class Modules:
             key = (pysafe(entry["subprogram"]), entry["block"])
             if key in spans:
                 entry["py_lines"] = spans[key]
+                continue
+            if str(entry.get("key", "")).startswith("module-state:"):
+                # A refused module-state binding is one line at module scope,
+                # found by its AGENT_QUEUE comment; a report entry with no
+                # such line is the report and the text disagreeing.
+                at = refused_state.get(key[0])
+                if at is None:
+                    raise ConfigError(
+                        f"module state {entry['subprogram']!r} is recorded as deferred but "
+                        "the emitted file carries no AGENT_QUEUE binding for it"
+                    )
+                entry["py_lines"] = [at, at]
                 continue
             # A DATA block carries no marker -- the pipeline emits none and
             # the emitted text is compared to it byte for byte -- so its
