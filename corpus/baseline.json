@@ -3,7 +3,7 @@
   "bspline": {
    "bare_files": 0,
    "blocks": 685,
-   "deferred": 4,
+   "deferred": 5,
    "refusals": [
     [
      "size with a dim= or mask= keyword",
@@ -11,6 +11,10 @@
     ],
     [
      "seq-assoc: formal rank > actual rank work",
+     1
+    ],
+    [
+     "dbfqad/P001: local parameter min_tol (literal 'X' was never hoisted, so it has no name to ",
      1
     ],
     [
@@ -66,11 +70,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/328 blocks disagree: dbndsl/B001, sort_ascending/B002, dlsi/B007, dwnlit/B013",
+       "detail": "1/328 blocks disagree: sort_ascending/B002",
        "metrics": {
         "blocks_checked": 328,
         "blocks_deferred": 0,
-        "blocks_matched": 324,
+        "blocks_matched": 327,
         "blocks_waived": 0
        },
        "passed": false
@@ -104,7 +108,7 @@
      }
     },
     "fortran:bspline_sub_module": {
-     "deferred": 4,
+     "deferred": 5,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -120,7 +124,7 @@
        "detail": "4/313 blocks disagree: check/B001, dbint4/B036, dbsgq8/B009, dbsgq8/B010",
        "metrics": {
         "blocks_checked": 313,
-        "blocks_deferred": 4,
+        "blocks_deferred": 5,
         "blocks_matched": 309,
         "blocks_waived": 0
        },
@@ -539,8 +543,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 505,
-   "deferred": 89,
+   "blocks": 497,
+   "deferred": 105,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -551,8 +555,16 @@
      34
     ],
     [
+     "READ writes its item list; an I/O stub would drop the writes",
+     8
+    ],
+    [
      "goto N is not a loop-exit pattern",
      3
+    ],
+    [
+     "qr_fact/P001: local array tau: extent not resolvable (dim expr 'X')",
+     1
     ],
     [
      "inquire writes POS=",
@@ -560,6 +572,34 @@
     ],
     [
      "write with ADVANCE= control",
+     1
+    ],
+    [
+     "spline3/P001: local array c: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3ders/P001: local array c: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3pars/P001: local array as: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3pars/P002: local array bs: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3pars/P003: local array cs: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3pars/P004: local array ipiv2: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "spline3pars/P005: local array bmat: extent not resolvable (dim expr 'X')",
      1
     ],
     [
@@ -600,7 +640,7 @@
      }
     },
     "fortran:linalg": {
-     "deferred": 65,
+     "deferred": 66,
      "import_error": "ModuleNotFoundError: No module named 'lapack_numpy'",
      "imports": false,
      "mechanical": false,
@@ -617,7 +657,7 @@
        "detail": "13/229 blocks disagree: deig/B011, zeig/B012, deigvals/B010, zeigvals/B011, deigh_simple/B009 (+8 more)",
        "metrics": {
         "blocks_checked": 229,
-        "blocks_deferred": 65,
+        "blocks_deferred": 66,
         "blocks_matched": 216,
         "blocks_waived": 0
        },
@@ -677,7 +717,7 @@
      }
     },
     "fortran:ppm": {
-     "deferred": 2,
+     "deferred": 7,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -690,10 +730,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "11/19 blocks disagree: loadppm/B001, loadppm/B002, loadppm/B004, loadppm/B005, loadppm/B008 (+6 more)",
+       "detail": "6/14 blocks disagree: loadppm/B001, loadppm/B008, loadppm/B009, loadppm/B013, saveppm/B001 (+1 more)",
        "metrics": {
-        "blocks_checked": 19,
-        "blocks_deferred": 2,
+        "blocks_checked": 14,
+        "blocks_deferred": 7,
         "blocks_matched": 8,
         "blocks_waived": 0
        },
@@ -752,7 +792,7 @@
      }
     },
     "fortran:splines": {
-     "deferred": 3,
+     "deferred": 10,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -769,7 +809,7 @@
        "detail": "51 blocks match",
        "metrics": {
         "blocks_checked": 51,
-        "blocks_deferred": 3,
+        "blocks_deferred": 10,
         "blocks_matched": 51,
         "blocks_waived": 0
        },
@@ -804,7 +844,7 @@
      }
     },
     "fortran:utils": {
-     "deferred": 2,
+     "deferred": 5,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -817,10 +857,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "10/46 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B004, loadtxt/B005, loadtxt/B007 (+5 more)",
+       "detail": "7/43 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B005, loadtxt/B008, loadtxt/B011 (+2 more)",
        "metrics": {
-        "blocks_checked": 46,
-        "blocks_deferred": 2,
+        "blocks_checked": 43,
+        "blocks_deferred": 5,
         "blocks_matched": 36,
         "blocks_waived": 0
        },
@@ -872,8 +912,8 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 900,
-   "deferred": 45,
+   "blocks": 896,
+   "deferred": 57,
    "refusals": [
     [
      "generic 'X': no match",
@@ -896,8 +936,32 @@
      4
     ],
     [
+     "READ writes its item list; an I/O stub would drop the writes",
+     4
+    ],
+    [
      "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
      2
+    ],
+    [
+     "merge_sorted/P001: local array xo: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "cspl_interpdev_tab/P001: local array tofill: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "cspleps/P001: local array r: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "cspleps/P002: local array f: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "cspleps/P003: local array s: extent not resolvable (dim expr 'X')",
+     1
     ],
     [
      "no statement rule for Select_Type_Construct",
@@ -908,6 +972,18 @@
      1
     ],
     [
+     "mti/S001: module-state initializer not renderable: 'X'",
+     1
+    ],
+    [
+     "rng_init_by_scalar/P001: out-arg state: INTENT(OUT) derived-type dummy not materialized at",
+     1
+    ],
+    [
+     "rng_init_by_array/P001: out-arg state: INTENT(OUT) derived-type dummy not materialized at ",
+     1
+    ],
+    [
      "a keyword argument is not a subscript",
      1
     ]
@@ -915,7 +991,7 @@
    "status": "failed",
    "units": {
     "fortran:array_utils": {
-     "deferred": 1,
+     "deferred": 2,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -931,7 +1007,7 @@
        "detail": "3/69 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016",
        "metrics": {
         "blocks_checked": 69,
-        "blocks_deferred": 1,
+        "blocks_deferred": 2,
         "blocks_matched": 66,
         "blocks_waived": 0
        },
@@ -975,16 +1051,17 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "ok",
-      "verifier/static.rwset": "ok",
-      "verifier/symbolic.notary": "ok"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": null,
+     "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "10 points across 1 subprogram(s), all bit-exact",
+       "detail": "1 translated subprogram(s) were never compared: print_msg -- defer them or drop them from the unit; silence is not a pass",
        "metrics": {
         "bit_exact": 10,
+        "integer_mismatch": 0,
+        "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
@@ -992,6 +1069,8 @@
         "subprograms": {
          "is_inf": {
           "bit_exact": 10,
+          "integer_mismatch": 0,
+          "integer_points": 10,
           "max_rel": 0.0,
           "max_ulp": 0,
           "nan_mismatch": 0,
@@ -1000,7 +1079,7 @@
         },
         "trials": 10
        },
-       "passed": true
+       "passed": false
       },
       "static.rwset": {
        "detail": "57 blocks match",
@@ -1011,18 +1090,11 @@
         "blocks_waived": 0
        },
        "passed": true
-      },
-      "symbolic.notary": {
-       "detail": "no rewrites to notarize; the translation is print-order faithful",
-       "metrics": {
-        "rewrites": 0
-       },
-       "passed": true
       }
      }
     },
     "fortran:csplines": {
-     "deferred": 10,
+     "deferred": 14,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1038,7 +1110,7 @@
        "detail": "7/66 blocks disagree: cspl_interp/B002, cspleps/B003, csplint/B006, csplint/B012, csplint/B016 (+2 more)",
        "metrics": {
         "blocks_checked": 66,
-        "blocks_deferred": 10,
+        "blocks_deferred": 14,
         "blocks_matched": 59,
         "blocks_waived": 0
        },
@@ -1098,27 +1170,28 @@
      }
     },
     "fortran:fstring": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/29 blocks disagree: readf/B003",
+       "detail": "28 blocks match",
        "metrics": {
-        "blocks_checked": 29,
-        "blocks_deferred": 2,
+        "blocks_checked": 28,
+        "blocks_deferred": 3,
         "blocks_matched": 28,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1278,9 +1351,9 @@
      }
     },
     "fortran:mt19937_64": {
-     "deferred": 0,
+     "deferred": 1,
      "imports": true,
-     "mechanical": true,
+     "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
@@ -1295,7 +1368,7 @@
        "detail": "23 blocks match",
        "metrics": {
         "blocks_checked": 23,
-        "blocks_deferred": 0,
+        "blocks_deferred": 1,
         "blocks_matched": 23,
         "blocks_waived": 0
        },
@@ -1329,7 +1402,7 @@
      }
     },
     "fortran:mtrandom": {
-     "deferred": 1,
+     "deferred": 4,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1342,10 +1415,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/33 blocks disagree: read_urandom/B001, read_urandom/B002",
+       "detail": "1/32 blocks disagree: read_urandom/B001",
        "metrics": {
-        "blocks_checked": 33,
-        "blocks_deferred": 1,
+        "blocks_checked": 32,
+        "blocks_deferred": 4,
         "blocks_matched": 31,
         "blocks_waived": 0
        },
@@ -1536,27 +1609,28 @@
      }
     },
     "fortran:random": {
-     "deferred": 3,
+     "deferred": 4,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/13 blocks disagree: generate_random_seed/B001",
+       "detail": "12 blocks match",
        "metrics": {
-        "blocks_checked": 13,
-        "blocks_deferred": 3,
+        "blocks_checked": 12,
+        "blocks_deferred": 4,
         "blocks_matched": 12,
         "blocks_waived": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1580,6 +1654,8 @@
        "detail": "80 points across 1 subprogram(s), all bit-exact",
        "metrics": {
         "bit_exact": 80,
+        "integer_mismatch": 0,
+        "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
@@ -1587,6 +1663,8 @@
         "subprograms": {
          "sort": {
           "bit_exact": 80,
+          "integer_mismatch": 0,
+          "integer_points": 0,
           "max_rel": 0.0,
           "max_ulp": 0,
           "nan_mismatch": 0,
@@ -1617,7 +1695,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 8,
+     "deferred": 9,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1630,10 +1708,10 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "6/101 blocks disagree: replace/B006, str2i/B001, zarr2str/B002, dparr2str/B002, rarr2str/B002 (+1 more)",
+       "detail": "5/100 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
        "metrics": {
-        "blocks_checked": 101,
-        "blocks_deferred": 8,
+        "blocks_checked": 100,
+        "blocks_deferred": 9,
         "blocks_matched": 95,
         "blocks_waived": 0
        },
@@ -1718,13 +1796,15 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "10 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
+       "detail": "11 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
        "metrics": {
-        "bit_exact": 44,
-        "max_rel": Infinity,
-        "max_ulp": 4746776785696325632,
+        "bit_exact": 0,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 100,
+        "points": 0,
         "subprograms": {
          "dchfdv": {
           "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
@@ -1736,26 +1816,22 @@
           "error": "candidate raised: IndexError: index 8 is out of bounds for axis 0 with size 8"
          },
          "dpchcm": {
-          "bit_exact": 44,
-          "max_rel": Infinity,
-          "max_ulp": 4746776785696325632,
-          "nan_mismatch": 0,
-          "points": 100
+          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
          },
          "dpchfd": {
-          "error": "candidate raised: IndexError: invalid index to scalar variable."
+          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
          },
          "dpchfe": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
+          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
          },
          "dpchia": {
-          "error": "candidate raised: TypeError: dpchid() takes 8 positional arguments but 9 were given"
+          "error": "function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
          },
          "dpchic": {
           "error": "oracle raised: TypeError: ref_pchip_module.w_dpchic() missing required argument 'switch_bn' (pos 3)"
          },
          "dpchid": {
-          "error": "value: shape () vs (2,)"
+          "error": "function 'dpchid' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
          },
          "dpchim": {
           "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (8,-1,)"
@@ -1785,7 +1861,7 @@
   "polyroots": {
    "bare_files": 0,
    "blocks": 434,
-   "deferred": 4,
+   "deferred": 11,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank work",
@@ -1794,12 +1870,40 @@
     [
      "call to external subroutine 'X'",
      2
+    ],
+    [
+     "rpoly/P001: local parameter cosr (literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "rpoly/P002: local parameter sinr (literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cpoly/P001: local parameter cosr (literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cpoly/P002: local parameter sinr (literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cpoly/P003: local parameter mre (literal 'X' was never hoisted, so it has no name to emit)",
+     1
+    ],
+    [
+     "cpoly/P004: local parameter cos45 (literal 'X' was never hoisted, so it has no name to emi",
+     1
+    ],
+    [
+     "rroots_chebyshev_cubic/P001: local parameter small (literal 'X' was never hoisted, so it h",
+     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 4,
+     "deferred": 11,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1812,11 +1916,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "39/434 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, dqtcrt/B001 (+34 more)",
+       "detail": "37/434 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
        "metrics": {
         "blocks_checked": 434,
-        "blocks_deferred": 4,
-        "blocks_matched": 395,
+        "blocks_deferred": 11,
+        "blocks_matched": 397,
         "blocks_waived": 0
        },
        "passed": false
@@ -1828,17 +1932,41 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 627,
-   "deferred": 1,
+   "deferred": 7,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank work",
+     1
+    ],
+    [
+     "dqc25c/P001: local parameter x (literal 'X' was never hoisted, so it has no name to emit):",
+     1
+    ],
+    [
+     "dqc25s/P001: local parameter x (literal 'X' was never hoisted, so it has no name to emit):",
+     1
+    ],
+    [
+     "dqnc79/P001: local parameter nbits (literal 'X' was never hoisted, so it has no name to em",
+     1
+    ],
+    [
+     "dqnc79/P002: local parameter nlmx (literal 'X' was never hoisted, so it has no name to emi",
+     1
+    ],
+    [
+     "dgauss8/P001: local parameter nlmx (literal 'X' was never hoisted, so it has no name to em",
+     1
+    ],
+    [
+     "dlobatto/P001: local parameter alpha (literal 'X' was never hoisted, so it has no name to ",
      1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 1,
+     "deferred": 7,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1851,11 +1979,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "14/627 blocks disagree: dqagie/B013, dqagpe/B023, dqagse/B012, dqawfe/B009, dqawoe/B049 (+9 more)",
+       "detail": "7/627 blocks disagree: dqnc79/B023, dgauss8/B019, dgauss8/B024, dsimpson/B016, adaptive_simpson_step/B010 (+2 more)",
        "metrics": {
         "blocks_checked": 627,
-        "blocks_deferred": 1,
-        "blocks_matched": 613,
+        "blocks_deferred": 7,
+        "blocks_matched": 620,
         "blocks_waived": 0
        },
        "passed": false
@@ -1918,11 +2046,15 @@
   "slsqp": {
    "bare_files": 0,
    "blocks": 191,
-   "deferred": 2,
+   "deferred": 3,
    "refusals": [
     [
      "seq-assoc: formal rank > actual rank w",
      2
+    ],
+    [
+     "linmin/P001: local parameter c (literal 'X' was never hoisted, so it has no name to emit):",
+     1
     ]
    ],
    "status": "failed",
@@ -1953,7 +2085,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1969,7 +2101,7 @@
        "detail": "18/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+13 more)",
        "metrics": {
         "blocks_checked": 111,
-        "blocks_deferred": 2,
+        "blocks_deferred": 3,
         "blocks_matched": 93,
         "blocks_waived": 0
        },
@@ -2067,11 +2199,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "28/1588 blocks disagree: jdzo/B005, jy01a/B004, jynbh/B004, chgm/B011, itairy/B005 (+23 more)",
+       "detail": "27/1588 blocks disagree: jy01a/B004, jynbh/B004, chgm/B011, itairy/B005, cjynb/B006 (+22 more)",
        "metrics": {
         "blocks_checked": 1588,
         "blocks_deferred": 21,
-        "blocks_matched": 1560,
+        "blocks_matched": 1561,
         "blocks_waived": 0
        },
        "passed": false
