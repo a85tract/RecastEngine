@@ -1615,3 +1615,34 @@ def test_an_internal_functions_result_is_not_host_associated(tmp_path: Path) -> 
     inner = next(s for s in record["subprograms"] if s["name"] == "get_tolerance")
     assert inner["host"] == "bracket"
     assert inner.get("host_vars") == ["scale"]
+
+
+def test_character_parameters_fold_and_fit_or_stay_a_skip() -> None:
+    """#47 both ways: a bare literal and a foldable expression are values,
+    fitted to the declared length as a Fortran assignment would; what cannot
+    be folded -- a name the scope does not know -- is a skip with the reason,
+    never a rendered ``A / / B`` (numfor's ``strings.f90``, twenty units)."""
+    from recast.fortran.constants import char_length, classify_init
+
+    known = {"ascii_lowercase", "accented_lowercase"}
+    assert classify_init("'abc'", known) == ("str", "abc")
+    assert classify_init("'it''s'", known) == ("str", "it's")
+    assert classify_init("'ab'", known, {}, 6) == ("str", "ab    ")
+    assert classify_init("'abcdef'", known, {}, 2) == ("str", "ab")
+    values = {"ascii_lowercase": "abc", "accented_lowercase": "\u00e1\u00e9"}
+    assert classify_init("ascii_lowercase // accented_lowercase", known, values) == (
+        "str",
+        "abc\u00e1\u00e9",
+    )
+    assert classify_init("' ' // achar(9)", known) == ("str", " \t")
+    assert classify_init("repeat('ab', 2) // trim('x  ') // new_line('a')", known) == (
+        "str",
+        "ababx\n",
+    )
+    assert classify_init("adjustl('  cd')", known) == ("str", "cd  ")
+    kind, why = classify_init("ascii_lowercase // accented_lowercase", known)
+    assert kind == "skip" and "character expression" in why
+    assert classify_init("'a' // nothere", known, values)[0] == "skip"
+    assert (char_length("CHARACTER(LEN = 4)"), char_length("CHARACTER(LEN = *)")) == (4, "*")
+    assert (char_length("CHARACTER"), char_length("CHARACTER(LEN = n)")) == (1, None)
+    assert char_length("CHARACTER", "c*6") == 6
