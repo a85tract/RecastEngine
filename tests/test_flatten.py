@@ -272,6 +272,19 @@ def test_recorder_probes_the_original_signature(tree: Path) -> None:
     assert "'OUTPUT', 'inst__gs'" not in text
 
 
+def test_recorder_window_records_only_the_steps_it_names(tree: Path) -> None:
+    """A recording of the first calls is a recording of the model's start;
+    the window makes one of a later state without the calls before it."""
+    text = recorder_module(
+        "physics_mod", [_warm(tree)], calls=5, window=("clock_mod", "step", 673, 720)
+    )
+    assert "use clock_mod, only: step" in text
+    body = text[text.index("subroutine rec_warm(") :]
+    guard = body.index("if (step < 673 .or. step > 720) return")
+    assert guard < body.index("if (phase == 0) then")  # both phases, before the count
+    assert "window" not in recorder_module("physics_mod", [_warm(tree)], calls=5)
+
+
 def test_probe_tree_brackets_a_continued_call(tree: Path, tmp_path: Path) -> None:
     out = tmp_path / "probed"
     sites = probe_tree(tree, out, {"physics_mod": [_warm(tree)]})

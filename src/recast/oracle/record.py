@@ -97,10 +97,24 @@ def _record_call(
 
 
 def recorder_module(
-    module: str, plans: list[FlatPlan], calls: int = 40, name: str = RECORDER_MODULE
+    module: str,
+    plans: list[FlatPlan],
+    calls: int = 40,
+    name: str = RECORDER_MODULE,
+    window: tuple[str, str, int, int] | None = None,
 ) -> str:
-    """The Fortran recorder for the adapted subprograms of ``module``."""
+    """The Fortran recorder for the adapted subprograms of ``module``.
+
+    ``window`` is ``(module, variable, first, last)``: an integer the model
+    keeps -- its step counter -- and the closed range of its values during
+    which calls are recorded. A recording of the first ``calls`` calls is a
+    recording of the model's start, and a gate on it is blind to what only
+    a later state exercises; ``window`` is how a recording of day 15 is
+    made without recording the fourteen days before it.
+    """
     used: dict[str, set[str]] = {}
+    if window is not None:
+        used.setdefault(window[0], set()).add(window[1])
     types: dict[str, str | None] = {}
     for plan in plans:
         for obj in plan.objects:
@@ -214,6 +228,9 @@ def recorder_module(
         else:
             lines.append(f"    {patch} = size({first[0].name}%{first[1].name}, 1)")
         u = f"u_{sname}"
+        if window is not None:
+            _, counter, lo, hi = window
+            lines.append(f"    if ({counter} < {lo} .or. {counter} > {hi}) return")
         lines += [
             "    if (phase == 0) then",
             f"       n_{sname} = n_{sname} + 1",

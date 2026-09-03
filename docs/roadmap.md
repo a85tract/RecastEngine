@@ -1439,10 +1439,13 @@ scripts under `examples/probe_kernel/`, so no compiler is needed to hold
 them; the C-compiling path is held by the case repository on its own
 machines.
 
-Two engine findings from the case, not fixed here: a transform that raises
-anything but a `RecastError` ends the whole walk (`run.py` catches only
-that), and `Oracle`/`Verifier` still have no `applicable`, so a mixed-language
-tree reaches every oracle.
+Two engine findings from the case, fixed on 2026-09-03: a transform, oracle
+or verifier that raises anything but a `RecastError` now fails its unit by
+name ("plugin exception: ...") and the walk goes on, where before one
+dangling symlink in a corpus ended every other unit's verdict; and
+`Oracle` and `Verifier` have `applicable`, true by default, so a
+mixed-language tree's units that an oracle has no reference for are
+recorded incomplete rather than reaching it.
 
 ### The column orchestrator, 2026-08-30 to 09-02: what it forced out, and one thing landed ahead of upstream
 

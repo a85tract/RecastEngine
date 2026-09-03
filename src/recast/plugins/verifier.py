@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from recast.model import Candidate, Confidence, OracleRef, Unit, Verdict
+from recast.model import Candidate, Confidence, Facts, OracleRef, Unit, Verdict
 from recast.plugins.executor import Executor
 
 
@@ -28,6 +28,13 @@ class Verifier(ABC):
 
     provides: Confidence = Confidence.SAMPLED
     """The strongest confidence this Verifier can ever award."""
+
+    def applicable(self, unit: Unit, facts: Facts) -> bool:
+        """Cheap pre-filter, as on ``Transform``. Return False rather than
+        raising on a unit this verifier cannot judge. A gate that does not
+        apply leaves the unit incomplete; an optional verifier is skipped.
+        True by default."""
+        return True
 
     @abstractmethod
     def verify(

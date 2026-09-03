@@ -119,6 +119,29 @@ python-to-jax = "recast.recipes:PythonToJaxRecipe"
 "recast.python-numpy.numba" = "recast.engines:python_numba_engine"
 "recast.python-numpy.jax" = "recast.engines:python_jax_engine"
 
+[tool.hatch.build.targets.sdist]
+# The source distribution is what an index publishes. Only what a user of
+# the package needs: not docs/ (the disclosure ledger, the roadmap), not
+# .github/, not AGENTS.md. Checked by tests/test_packaging.py.
+include = [
+  "src",
+  "tests",
+  "tools",
+  "examples",
+  "conformance",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+  "DCO",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "pyproject.toml",
+]
+# Named as well as omitted: corpus/ holds other projects' sources under
+# their own licences, and an include list that grew a path by accident
+# would otherwise ship them.
+exclude = ["corpus", "docs", ".github", "AGENTS.md"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/recast"]
 

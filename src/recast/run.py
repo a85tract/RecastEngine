@@ -762,7 +762,14 @@ def _run_recipe(
             # than the first item of it.
             if outcome.status == "failed" and stage.kind == "scanner":
                 continue
-            if outcome.status == "failed" and (stage.gate or stage.kind in ("transform", "oracle")):
+            stops = outcome.status == "failed" and (
+                stage.gate or stage.kind in ("transform", "oracle")
+            )
+            # An oracle that does not apply to the unit leaves nothing for
+            # the gate to compare against; the unit stays incomplete rather
+            # than reaching a verifier with no reference.
+            stops = stops or (outcome.status == "incomplete" and stage.kind == "oracle")
+            if stops:
                 unit_run.stopped_by = stage.plugin
                 # Fail fast, but not silently: the store stages still run, so
                 # the failing Verdict is recorded. A gate that failed and was
@@ -991,19 +998,24 @@ def _walk_stage(
                 stage_plugin=stage.plugin,
             )
             return StageOutcome(stage.kind, stage.plugin, "failed", str(error))
-        except BaseException as error:
+        except Exception as error:
+            # A plugin bug is this unit's failure, not the walk's end: one
+            # dangling symlink in a corpus used to take every other unit's
+            # verdict with it. The reason names the exception so the bug is
+            # not mistaken for a refusal.
+            reason = f"plugin exception: {_exception_reason(error)}"
             events.emit(
                 RunEventEntity.CANDIDATE,
                 RunEventAction.FINISHED,
-                status="aborted",
+                status="failed",
                 reason_code="transform_exception",
-                reason=_exception_reason(error),
+                reason=reason,
                 unit_id=unit.uid,
                 stage_index=stage_index,
                 stage_kind=stage.kind,
                 stage_plugin=stage.plugin,
             )
-            raise
+            return StageOutcome(stage.kind, stage.plugin, "failed", reason)
         try:
             candidate_digest = unit_run.candidate.digest() if events.enabled else None
         except BaseException as error:
@@ -1038,12 +1050,20 @@ def _walk_stage(
 
     if stage.kind == "oracle":
         oracle = factory()
+        if not oracle.applicable(unit, facts):
+            # No reference for this unit is not a failed reference: the unit
+            # is unverified, and says so, rather than broken or passed.
+            return _incomplete(stage, "not applicable to this unit", waived)
         try:
             key = oracle.key(unit, facts, config)
             if key not in oracle_cache:
                 oracle_cache[key] = oracle.materialize(unit, facts, workspace, executor, config)
         except RecastError as error:
             return StageOutcome(stage.kind, stage.plugin, "failed", str(error))
+        except Exception as error:
+            return StageOutcome(
+                stage.kind, stage.plugin, "failed", f"plugin exception: {_exception_reason(error)}"
+            )
         return StageOutcome(stage.kind, stage.plugin, "ok", key)
 
     if stage.kind == "verifier":
@@ -1051,6 +1071,11 @@ def _walk_stage(
             return StageOutcome(
                 stage.kind, stage.plugin, "failed", "no candidate to verify; transform never ran"
             )
+        verifier = factory()
+        if not verifier.applicable(unit, facts):
+            if stage.gate:
+                return _incomplete(stage, "not applicable to this unit", waived)
+            return StageOutcome(stage.kind, stage.plugin, "skipped", "not applicable to this unit")
         candidate_digest = unit_run.candidate.digest() if events.enabled else None
         events.emit(
             RunEventEntity.VERDICT,
@@ -1066,17 +1091,19 @@ def _walk_stage(
             verifier=stage.plugin,
         )
         try:
-            verifier = factory()
             verdict = verifier.verify(
                 unit, unit_run.candidate, unit_run.oracle, workspace, executor, config
             )
-        except BaseException as error:
+        except Exception as error:
+            # Fail closed: a verifier that crashed has not compared anything,
+            # and the unit fails on that rather than the walk ending here.
+            reason = f"plugin exception: {_exception_reason(error)}"
             events.emit(
                 RunEventEntity.VERDICT,
                 RunEventAction.FINISHED,
-                status="aborted",
+                status="failed",
                 reason_code="verification_exception",
-                reason=_exception_reason(error),
+                reason=reason,
                 unit_id=unit.uid,
                 stage_index=stage_index,
                 stage_kind=stage.kind,
@@ -1084,7 +1111,7 @@ def _walk_stage(
                 candidate_digest=candidate_digest,
                 verifier=stage.plugin,
             )
-            raise
+            return StageOutcome(stage.kind, stage.plugin, "failed", reason)
         unit_run.verdicts.append(verdict)
         status = "ok" if verdict.passed else "failed"
         events.emit(
