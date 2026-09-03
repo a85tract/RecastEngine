@@ -339,7 +339,8 @@ class Subprograms:
 
         lines.extend(self._result_initializer(subprogram, semantics, statements))
 
-        prologue = self._prologue(subprogram, semantics, statements)
+        prologue_refusals: list[str] = []
+        prologue = self._prologue(subprogram, semantics, statements, prologue_refusals)
         if prologue:
             lines.append(
                 "    # UB-guard + automatic-array allocation "
@@ -348,6 +349,21 @@ class Subprograms:
             lines.extend(prologue)
 
         report: list[dict[str, Any]] = []
+        # Prologue refusals are deferred work like any block: without these
+        # entries a skipped allocation or parameter was a comment the bundle
+        # never carried, and acceptance had nothing to refuse.
+        for at, reason in enumerate(prologue_refusals, start=1):
+            report.append(
+                {
+                    "subprogram": emit_name(subprogram),
+                    "key": subprogram_key(subprogram),
+                    "block": f"P{at:03d}",
+                    "src_span": [0, 0],
+                    "status": "agent_queue",
+                    "reason": reason,
+                    "py_lines": [0, 0],
+                }
+            )
         # DATA sits in the specification part, and is a static
         # initialisation: its assignments go after the prologue, before any
         # statement can read the names. Its own block ids, because the
@@ -366,7 +382,9 @@ class Subprograms:
                 lines.extend(statements.data_statement(statement, 1))
                 data_entry["status"] = "mechanical"
             except REFUSED as refusal:
-                lines.append(f"    pass  # DATA {refusal} (AGENT_QUEUE)")
+                reason = f"DATA deferred: {refusal}"
+                lines.append(f"    # AGENT_QUEUE: {reason}")
+                lines.append(f"    raise NotImplementedError({reason!r})")
                 data_entry["status"] = "agent_queue"
                 data_entry["reason"] = str(refusal)
             data_entry["py_lines"] = [before, len(lines)]
@@ -603,8 +621,18 @@ class Subprograms:
         return lines
 
     def _prologue(
-        self, subprogram: dict[str, Any], semantics: Semantics, statements: Statements
+        self,
+        subprogram: dict[str, Any],
+        semantics: Semantics,
+        statements: Statements,
+        refusals: list[str] | None = None,
     ) -> list[str]:
+        # Policy: a refusal is never a comment. Every site below records its
+        # reason (the caller turns them into agent_queue report entries) and
+        # emits a raise, so partial translation can neither pass a gate nor
+        # compute quietly wrong numbers at runtime.
+        if refusals is None:
+            refusals = []
         lines: list[str] = []
         # intent(out)-only arguments are NOT parameters (return convention):
         # the function owns their buffers. Arrays get np.empty -- contents
@@ -615,7 +643,9 @@ class Subprograms:
                 # fresh one here would write the caller's result into an array
                 # the caller never sees.
                 continue
-            lines.extend(self._out_argument(argument, subprogram, semantics, statements))
+            lines.extend(
+                self._out_argument(argument, subprogram, semantics, statements, refusals)
+            )
         # Local PARAMETERs, as local assignments (matches Fortran scope).
         own_parameters = frozenset(p["name"].lower() for p in subprogram["local_parameters"])
         for parameter in subprogram["local_parameters"]:
@@ -626,14 +656,13 @@ class Subprograms:
             try:
                 value = self._parameter_value(initializer.strip(), own_parameters, statements)
             except REFUSED as refusal:
-                # The name is still bound, because a later statement that
-                # reads it should fail on the value rather than on a
-                # NameError -- and because the module has to import at all
-                # for anything else in it to be checked.
-                lines.append(
-                    f"    {name} = None  # AGENT_QUEUE: local parameter "
-                    f"{parameter['name']} ({refusal}): {initializer.strip()}"
+                reason = (
+                    f"local parameter {parameter['name']} ({refusal}): "
+                    f"{initializer.strip()}"
                 )
+                refusals.append(reason)
+                lines.append(f"    # AGENT_QUEUE: {reason}")
+                lines.append(f"    raise NotImplementedError({reason!r})")
                 continue
             lines.append(f"    {name} = {value}")
         parameter_names = {p["name"] for p in subprogram["local_parameters"]}
@@ -642,7 +671,7 @@ class Subprograms:
                 continue
             if self._types_an_intrinsic(local, statements):
                 continue
-            lines.extend(self._local(local, semantics, statements))
+            lines.extend(self._local(local, semantics, statements, refusals))
         return lines
 
     @staticmethod
@@ -701,7 +730,10 @@ class Subprograms:
         subprogram: dict[str, Any],
         semantics: Semantics,
         statements: Statements,
+        refusals: list[str] | None = None,
     ) -> list[str]:
+        if refusals is None:
+            refusals = []
         name = pysafe(argument["name"])
         if argument.get("optional"):
             if argument.get("dims"):
@@ -739,7 +771,12 @@ class Subprograms:
             try:
                 shape = ", ".join(self._extent(d, statements) for d in dims)
             except REFUSED as refusal:
-                return [f"    # out-arg {argument['name']}: allocation skipped ({refusal})"]
+                reason = f"out-arg {argument['name']}: allocation refused ({refusal})"
+                refusals.append(reason)
+                return [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
             dtype = ALLOCATED_DTYPES.get(argument["dtype"], "np.float64")
             return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if not dims and argument["dtype"] in ("float64", "float32"):
@@ -773,6 +810,7 @@ class Subprograms:
                 # resolves would materialize as None and read as absent.
                 # Queue it; never guess a size.
                 reason = "INTENT(OUT) derived-type dummy not materialized at function entry"
+                refusals.append(f"out-arg {argument['name']}: {reason}")
                 return [
                     f"    # out-arg {argument['name']}: type({type_name})%"
                     f"{unresolved} dims not statically resolvable",
@@ -786,8 +824,14 @@ class Subprograms:
         return []
 
     def _local(
-        self, local: dict[str, Any], semantics: Semantics, statements: Statements
+        self,
+        local: dict[str, Any],
+        semantics: Semantics,
+        statements: Statements,
+        refusals: list[str] | None = None,
     ) -> list[str]:
+        if refusals is None:
+            refusals = []
         name = pysafe(local["name"])
         dims = local.get("dims")
         if dims:
@@ -797,9 +841,11 @@ class Subprograms:
             try:
                 shape = ", ".join(self._extent(d, statements) for d in dims)
             except REFUSED as refusal:
+                reason = f"local array {local['name']}: extent not resolvable ({refusal})"
+                refusals.append(reason)
                 return [
-                    f"    # {local['name']}: array prologue skipped"
-                    f" ({refusal}) — first use will AgentQueue"
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
                 ]
             derived = DERIVED.match(str(local["dtype"]))
             if derived is not None:

@@ -343,14 +343,35 @@ class BitexactVerifier(Verifier):
                     totals.get("dominant_points", 0) + outcome["dominant_points"]
                 )
 
+        # Policy gate: a subprogram the module declares (its _SIGNATURES),
+        # that is not deferred, and that no comparison attempt covered, is a
+        # translation claim with no evidence. Every silent-narrowing filter --
+        # oracle-side wrapper drops, generability skips, config subsets --
+        # lands here by construction, because coverage is judged against what
+        # was TRANSLATED, not against whatever survived the filters.
+        uncovered = sorted(
+            name
+            for name in table
+            if name not in deferred_subprograms and name not in set(wanted)
+        )
         metrics = {
             "subprograms": per_subprogram,
             "trials": trials,
             "skipped": skipped,
+            "uncovered": uncovered,
             "max_rel": worst_rel,
             **totals,
             **self._devices(translated, handle),
         }
+        if uncovered:
+            return self._verdict(
+                candidate,
+                Confidence.FAILED,
+                metrics,
+                f"{len(uncovered)} translated subprogram(s) were never compared: "
+                + ", ".join(uncovered[:5])
+                + " -- defer them or drop them from the unit; silence is not a pass",
+            )
         if failures:
             return self._verdict(
                 candidate,

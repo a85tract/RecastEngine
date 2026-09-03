@@ -339,7 +339,10 @@ class Statements:
             # statement itself does nothing where it stands.
             return [f"{pad}pass  # ENTRY (legacy)"]
         if isinstance(node, f03.Read_Stmt):
-            return [f"{pad}pass  # READ (I/O stub)"]
+            # READ writes every item in its list; a pass drops those writes
+            # silently -- the exact hazard the INQUIRE branch below refuses
+            # over. Same statement class, same answer.
+            raise NoRule("READ writes its item list; an I/O stub would drop the writes")
         if isinstance(node, (f03.Open_Stmt, f03.Close_Stmt)):
             return [f"{pad}pass  # OPEN/CLOSE (I/O stub)"]
         if isinstance(
