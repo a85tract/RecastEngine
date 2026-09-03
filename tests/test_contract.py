@@ -73,6 +73,12 @@ def test_core_imports_no_domain_packages() -> None:
         # The differential gate generates and compares NumPy arrays -- that
         # is the comparison, not a convenience. Lazy, same rule as above.
         "recast.verify.bitexact": {"numpy"},
+        # These two verifier plugins execute NumPy inputs against accelerator
+        # candidates.  Like bitexact above, NumPy is their instrument; the JAX
+        # variant also explicitly lowers/compiles one sampled signature instead
+        # of trusting a wrapper attribute. Both remain lazy inside verification,
+        # so catalog/plugin discovery stays dependency-free.
+        "recast.verify.python_accelerators": {"numpy", "jax"},
         # The replay oracle parses recorded values into the arrays the gate
         # compares, so NumPy is the reference's representation rather than a
         # convenience -- same rule as the gate above it, and lazy for the same
@@ -130,7 +136,8 @@ for cached in list(sys.modules):
 
 from importlib.metadata import entry_points
 for group in ("recast.frontends", "recast.transforms", "recast.verifiers",
-              "recast.executors", "recast.stores", "recast.recipes"):
+              "recast.executors", "recast.stores", "recast.recipes",
+              "recast.engines"):
     for ep in entry_points(group=group):
         ep.load()
 print("ok")
@@ -254,7 +261,7 @@ def test_registry_rejects_silent_override() -> None:
 
 
 def test_registry_reports_available_names_on_miss() -> None:
-    reg = Registry()
+    reg = Registry(discover_installed=False)
     reg.register("oracle", "f2py-golden", object)
     with pytest.raises(PluginNotFound, match="f2py-golden"):
         reg.get("oracle", "typo")

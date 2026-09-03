@@ -48,6 +48,7 @@ __all__ = ["BitexactVerifier", "factory"]
 DEFAULT_RANGE = (-1000.0, 1000.0)
 DEFAULT_INTEGER_RANGE = (1, 8)
 DEFAULT_DIMENSION = 8
+SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
 
 
 def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
@@ -290,7 +291,14 @@ class BitexactVerifier(Verifier):
         per_subprogram: dict[str, dict[str, Any]] = {}
         failures: list[str] = []
         worst_rel = 0.0
-        totals = {"points": 0, "bit_exact": 0, "max_ulp": 0, "nan_mismatch": 0}
+        totals = {
+            "points": 0,
+            "bit_exact": 0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "integer_points": 0,
+            "integer_mismatch": 0,
+        }
         for name in wanted:
             sub = table[name]
             translated_fn = getattr(translated, name, None)
@@ -324,6 +332,8 @@ class BitexactVerifier(Verifier):
             totals["bit_exact"] += outcome["bit_exact"]
             totals["max_ulp"] = max(totals["max_ulp"], outcome["max_ulp"])
             totals["nan_mismatch"] += outcome["nan_mismatch"]
+            totals["integer_points"] += outcome["integer_points"]
+            totals["integer_mismatch"] += outcome["integer_mismatch"]
             worst_rel = max(worst_rel, outcome["max_rel"])
             if "max_ulp_dominant" in outcome:
                 totals["max_ulp_dominant"] = max(
@@ -351,6 +361,21 @@ class BitexactVerifier(Verifier):
         if not per_subprogram:
             return self._verdict(
                 candidate, Confidence.FAILED, metrics, "nothing was compared; that is not a pass"
+            )
+        if totals["points"] == 0:
+            return self._verdict(
+                candidate,
+                Confidence.FAILED,
+                metrics,
+                "zero numerical points were compared; that is not a pass",
+            )
+        if totals["integer_mismatch"]:
+            return self._verdict(
+                candidate,
+                Confidence.FAILED,
+                metrics,
+                f"{totals['integer_mismatch']}/{totals['integer_points']} integer point(s) "
+                "differ exactly; integer mismatches cannot be tolerance-excused",
             )
         if totals["nan_mismatch"]:
             return self._verdict(
@@ -455,9 +480,51 @@ class BitexactVerifier(Verifier):
     ) -> dict[str, Any]:
         from recast.transform.numpy.vocabulary import pysafe
 
+        if convention not in {"f2py", "emitted", "recorded"}:
+            return {"error": f"oracle declares unsupported return convention {convention!r}"}
+
+        declared_dtypes = [
+            (f"argument {a.get('name', '<unnamed>')!r}", a.get("dtype")) for a in sub["args"]
+        ]
+        if sub["kind"] == "function":
+            declared_dtypes.append(("function result", sub.get("result_dtype")))
+        unsupported = [
+            f"{place}={dtype!r}"
+            for place, dtype in declared_dtypes
+            if not isinstance(dtype, str) or dtype not in SUPPORTED_DTYPES
+        ]
+        if unsupported:
+            return {
+                "error": "unsupported declared dtype(s) "
+                f"{', '.join(unsupported)}; supported dtypes are "
+                f"{', '.join(sorted(SUPPORTED_DTYPES))}"
+            }
+
         required = [a for a in sub["args"] if not a.get("optional")]
         outs_all = [a for a in sub["args"] if a["intent"] in ("OUT", "INOUT")]
         outs_required = [a for a in outs_all if not a.get("optional")]
+        unknown_intents = [a["name"] for a in sub["args"] if a["intent"] == "UNKNOWN"]
+        if unknown_intents:
+            return {
+                "error": "argument(s) "
+                f"{', '.join(unknown_intents)} have UNKNOWN intent; this verifier cannot "
+                "know whether their post-call values are outputs"
+            }
+        if sub["kind"] == "function" and outs_all:
+            names = ", ".join(a["name"] for a in outs_all)
+            return {
+                "error": f"function {name!r} declares OUT/INOUT dummy argument(s) "
+                f"{names}; this verifier cannot pair both its result and side effects"
+            }
+        logical_inouts = [
+            a["name"] for a in outs_all if a["intent"] == "INOUT" and a.get("dtype") == "bool"
+        ]
+        if convention == "f2py" and logical_inouts:
+            return {
+                "error": "f2py LOGICAL INOUT dummy argument(s) "
+                f"{', '.join(logical_inouts)} have no portable Python buffer ABI; "
+                "refusing to guess the compiler's raw true representation"
+            }
 
         # A scalar that names another argument's extent is not free data: it
         # must equal the extent the arrays are generated with, or every call
@@ -470,6 +537,7 @@ class BitexactVerifier(Verifier):
         }
 
         points = bit_exact = nan_mismatch = 0
+        integer_points = integer_mismatch = 0
         max_ulp = 0
         max_ulp_dominant = 0
         dominant_points = 0
@@ -503,6 +571,27 @@ class BitexactVerifier(Verifier):
                         inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
                     else:
                         inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
+
+            recorded_outputs = None
+            if samples is not None:
+                recorded_outputs = round_item.get("outputs")
+                if not isinstance(recorded_outputs, dict):
+                    return {"error": f"{round_item.get('source', 'sample')} has no OUTPUT mapping"}
+                required_output_names = (
+                    [sub.get("result") or "result"]
+                    if sub["kind"] == "function"
+                    else [a["name"] for a in outs_required]
+                )
+                missing_outputs = [
+                    output
+                    for output in required_output_names
+                    if output.lower() not in recorded_outputs
+                ]
+                if missing_outputs:
+                    return {
+                        "error": "the recorded sample carries no value for required output(s) "
+                        f"{', '.join(missing_outputs)}; partial output evidence is not a pass"
+                    }
 
             if prepare is not None and samples is None:
                 # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
@@ -540,13 +629,16 @@ class BitexactVerifier(Verifier):
             # emitted way instead, because both sides of that comparison came
             # out of the same emitter.
             spell = pysafe if arg_naming == "pysafe" else str.lower
-            truth_kwargs = {
-                spell(a["name"]): (
-                    np.copy(v) if isinstance(v := inputs[a["name"]], np.ndarray) else v
-                )
-                for a in required
-                if a["intent"] != "OUT"
-            }
+            try:
+                truth_kwargs = {
+                    spell(a["name"]): self._truth_input(np, a, inputs[a["name"]], convention)
+                    for a in required
+                    if a["intent"] != "OUT"
+                }
+            except Exception as error:
+                return {
+                    "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
+                }
             truth_args = [truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"]
             try:
                 translated_out = translated_fn(**translated_kwargs)
@@ -555,7 +647,7 @@ class BitexactVerifier(Verifier):
             if samples is not None:
                 # Nothing to call: the reference already ran, in production,
                 # and what it produced is the recording.
-                truth_out = round_item.get("outputs", {})
+                truth_out = recorded_outputs
             else:
                 try:
                     truth_out = truth_fn(**truth_kwargs)
@@ -574,9 +666,47 @@ class BitexactVerifier(Verifier):
             )
             if isinstance(pairs, str):
                 return {"error": pairs}
+            output_dtypes = (
+                {sub.get("result") or "result": sub.get("result_dtype")}
+                if sub["kind"] == "function"
+                else {a["name"]: a.get("dtype") for a in outs_all}
+            )
             for label, ours, theirs in pairs:
-                shaped_ours = np.asarray(ours, dtype=np.float64)
-                shaped_theirs = np.asarray(theirs, dtype=np.float64)
+                declared_dtype = output_dtypes.get(label)
+                if declared_dtype in {"int32", "int64"}:
+                    shaped_ours = self._integer_output(
+                        np, ours, declared_dtype, label=label, side="candidate"
+                    )
+                    if isinstance(shaped_ours, str):
+                        return {"error": shaped_ours}
+                    shaped_theirs = self._integer_output(
+                        np, theirs, declared_dtype, label=label, side="oracle"
+                    )
+                    if isinstance(shaped_theirs, str):
+                        return {"error": shaped_theirs}
+                    if shaped_ours.shape != shaped_theirs.shape:
+                        return {
+                            "error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"
+                        }
+                    exact = shaped_ours == shaped_theirs
+                    compared = int(exact.size)
+                    agreed = int(np.count_nonzero(exact))
+                    points += compared
+                    bit_exact += agreed
+                    integer_points += compared
+                    integer_mismatch += compared - agreed
+                    continue
+                if declared_dtype == "bool":
+                    # f2py exposes Fortran LOGICAL as a C int.  A true value
+                    # need only be nonzero: gfortran commonly emits 1/-1/-2,
+                    # and another compiler may choose a different bit pattern.
+                    # Compare the declared logical meaning, not that private
+                    # representation.
+                    shaped_ours = np.asarray(np.asarray(ours) != 0, dtype=np.float64)
+                    shaped_theirs = np.asarray(np.asarray(theirs) != 0, dtype=np.float64)
+                else:
+                    shaped_ours = np.asarray(ours, dtype=np.float64)
+                    shaped_theirs = np.asarray(theirs, dtype=np.float64)
                 if shaped_ours.shape != shaped_theirs.shape:
                     return {"error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"}
                 a = shaped_ours.ravel()
@@ -612,6 +742,8 @@ class BitexactVerifier(Verifier):
             "max_ulp": max_ulp,
             "max_rel": max_rel,
             "nan_mismatch": nan_mismatch,
+            "integer_points": integer_points,
+            "integer_mismatch": integer_mismatch,
         }
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
@@ -746,6 +878,85 @@ class BitexactVerifier(Verifier):
         return inputs
 
     @staticmethod
+    def _truth_input(
+        np: Any,
+        argument: dict[str, Any],
+        value: Any,
+        convention: str,
+    ) -> Any:
+        """Give the reference an independent input with its required ABI shape.
+
+        f2py represents a scalar ``intent(inout)`` dummy as an in/output
+        rank-0 array.  It accepts a NumPy scalar too, but that object is
+        immutable: the wrapper updates a temporary and Python observes the
+        original value.  A writable zero-dimensional ndarray is therefore
+        part of the f2py calling convention, not a change to the sampled
+        value.  Array INOUTs already arrive as independent writable copies;
+        emitted and recorded references retain their own conventions.
+        """
+        if convention == "f2py" and argument["intent"] == "INOUT" and not argument.get("dims"):
+            buffered = np.asarray(value).copy()
+            if buffered.ndim != 0:
+                raise ValueError(f"scalar INOUT {argument['name']!r} became rank {buffered.ndim}")
+            return buffered
+        return np.copy(value) if isinstance(value, np.ndarray) else value
+
+    @staticmethod
+    def _integer_output(
+        np: Any,
+        value: Any,
+        declared_dtype: str,
+        *,
+        label: str,
+        side: str,
+    ) -> Any | str:
+        """Validate and preserve one declared integer output exactly.
+
+        Casting through float64 aliases adjacent int64 values above 2**53.
+        Casting a float *to* an integer is no safer: it lets a candidate that
+        violated its declared interface masquerade as one that did not.  Only
+        actual integer values in the declared signed range enter the exact
+        comparison.
+        """
+        try:
+            raw = np.asarray(value)
+        except Exception as error:
+            return (
+                f"{label}: {side} {declared_dtype} output cannot be represented as an "
+                f"array: {type(error).__name__}: {error}"
+            )
+
+        if raw.dtype.kind not in {"i", "u", "O"}:
+            return (
+                f"{label}: {side} declared {declared_dtype} but produced non-integer "
+                f"dtype {raw.dtype}"
+            )
+        if raw.dtype.kind == "O":
+            for item in raw.flat:
+                if isinstance(item, (bool, np.bool_)) or not isinstance(item, (int, np.integer)):
+                    return (
+                        f"{label}: {side} declared {declared_dtype} but produced "
+                        f"non-integer value of type {type(item).__name__}"
+                    )
+
+        target = np.dtype(np.int32 if declared_dtype == "int32" else np.int64)
+        limits = np.iinfo(target)
+        if raw.size:
+            if raw.dtype.kind == "O":
+                smallest = min(int(item) for item in raw.flat)
+                largest = max(int(item) for item in raw.flat)
+            else:
+                smallest = int(raw.min())
+                largest = int(raw.max())
+            if smallest < int(limits.min) or largest > int(limits.max):
+                offending = smallest if smallest < int(limits.min) else largest
+                return (
+                    f"{label}: {side} {declared_dtype} output value {offending} is outside "
+                    f"[{int(limits.min)}, {int(limits.max)}]"
+                )
+        return raw.astype(target, copy=False)
+
+    @staticmethod
     def _paired_outputs(
         sub: dict[str, Any],
         outs_all: list[dict[str, Any]],
@@ -765,18 +976,17 @@ class BitexactVerifier(Verifier):
 
         ``f2py`` returns the wrapper's ``intent(out)`` arguments and mutates
         the ``inout`` ones in place, so INOUT values are read back from the
-        arrays that were passed. ``emitted`` is a reference this engine's own
-        backend produced -- a NumPy anchor for a port -- and returns exactly
-        what the candidate does, because the same emitter wrote both.
+        independent arrays that were passed (including rank-0 buffers for
+        scalar INOUTs). ``emitted`` is a reference this engine's own backend
+        produced -- a NumPy anchor for a port -- and returns exactly what the
+        candidate does, because the same emitter wrote both.
         """
         if convention == "recorded":
             # ``truth_out`` is not a return value here -- it is the recorded
-            # OUTPUT section, keyed by the name the probe wrote. So the match
-            # is by name on both sides, and an out-intent argument the
-            # recording does not carry is a gap in the evidence rather than a
-            # difference: it is reported, and the rest of the sample still
-            # counts. A sample carrying *nothing* this subprogram declares is
-            # the error, because comparing zero values is not a pass.
+            # OUTPUT section, keyed by the name the probe wrote. The match is
+            # therefore by exact name on both sides. Every required output was
+            # preflighted before the candidate call; keep the same check here
+            # as a fail-closed local invariant for direct callers.
             mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
             names = (
                 [sub.get("result") or "result"]
@@ -790,15 +1000,13 @@ class BitexactVerifier(Verifier):
                 )
             ours_by_name = dict(zip(names, mine, strict=True))
             wanted = names if sub["kind"] == "function" else [a["name"] for a in outs_required]
-            pairs = [
-                (n, ours_by_name[n], truth_out[n.lower()]) for n in wanted if n.lower() in truth_out
-            ]
-            if not pairs:
+            missing = [name for name in wanted if name.lower() not in truth_out]
+            if missing:
                 return (
-                    "the recorded sample carries none of "
-                    f"{wanted} in its OUTPUT sections, so there is nothing to compare"
+                    "the recorded sample carries no value for required output(s) "
+                    f"{', '.join(missing)}; partial output evidence is not a pass"
                 )
-            return pairs
+            return [(name, ours_by_name[name], truth_out[name.lower()]) for name in wanted]
 
         if sub["kind"] == "function":
             # Both sides return the result, whatever kind of reference this is.

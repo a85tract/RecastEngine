@@ -13,6 +13,12 @@ from __future__ import annotations
 
 __version__ = "0.0.1.dev0"
 
+from recast.engines import (
+    ArtifactContract,
+    TranslationEngine,
+    python_jax_engine,
+    python_numba_engine,
+)
 from recast.errors import (
     AccessViolation,
     ConfigError,
@@ -34,6 +40,7 @@ from recast.model import (
     Unit,
     Verdict,
 )
+from recast.observe import RunEvent, RunEventAction, RunEventEntity, RunObserver
 
 WORKSPACE_DIRNAME = ".recast"
 """Where per-machine state that is not a run's output lives.
@@ -63,6 +70,7 @@ __all__ = [
     "WORKSPACE_DIRNAME",
     "Access",
     "AccessViolation",
+    "ArtifactContract",
     "Candidate",
     "Confidence",
     "ConfigError",
@@ -75,8 +83,15 @@ __all__ = [
     "PluginError",
     "PluginNotFound",
     "RecastError",
+    "RunEvent",
+    "RunEventAction",
+    "RunEventEntity",
+    "RunObserver",
     "Severity",
+    "TranslationEngine",
     "Unit",
     "Verdict",
     "__version__",
+    "python_jax_engine",
+    "python_numba_engine",
 ]

@@ -42,7 +42,7 @@ def failed_gate_run(tmp_path: Path) -> Iterator[RecipeRun]:
     CountingTransform.reset()
     RecordingEvidenceStore.reset()
 
-    registry = Registry()
+    registry = Registry(discover_installed=False)
     registry.register("executor", "local", local_executor)
     registry.register("frontend", StubFrontend.name, StubFrontend)
     registry.register("transform", CountingTransform.name, CountingTransform)
@@ -97,7 +97,7 @@ def test_every_declared_frontend_contributes_its_units(tmp_path: Path) -> None:
     first = StubFrontend.claiming("conformance.first", "one:a", "one:b")
     second = StubFrontend.claiming("conformance.second", "two:a")
 
-    registry = Registry()
+    registry = Registry(discover_installed=False)
     registry.register("executor", "local", local_executor)
     registry.register("frontend", first.name, first)
     registry.register("frontend", second.name, second)
@@ -125,7 +125,7 @@ def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
     first = StubFrontend.claiming("conformance.first", "shared:a")
     second = StubFrontend.claiming("conformance.second", "shared:a")
 
-    registry = Registry()
+    registry = Registry(discover_installed=False)
     registry.register("executor", "local", local_executor)
     registry.register("frontend", first.name, first)
     registry.register("frontend", second.name, second)
@@ -144,7 +144,7 @@ def test_two_frontends_claiming_one_unit_is_refused(tmp_path: Path) -> None:
 
 
 def _scan_registry() -> Registry:
-    registry = Registry()
+    registry = Registry(discover_installed=False)
     registry.register("executor", "local", local_executor)
     registry.register("frontend", StubFrontend.name, StubFrontend)
     registry.register("scanner", QuietScanner.name, QuietScanner)

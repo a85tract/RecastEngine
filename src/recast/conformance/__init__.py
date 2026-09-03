@@ -36,6 +36,7 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
+from recast.engines import TranslationEngine
 from recast.errors import ConfigError
 from recast.model import Candidate, Confidence, Facts, OracleRef, Unit
 from recast.plugins.executor import Executor, Job
@@ -49,6 +50,7 @@ from recast.plugins.verifier import Verifier
 
 __all__ = [
     "ENTRY_POINT_GROUP",
+    "EngineCase",
     "EvidenceStoreCase",
     "ExecutorCase",
     "FindingStoreCase",
@@ -153,6 +155,21 @@ class RecipeCase:
     name: str
     build: Callable[[], Recipe] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EngineCase:
+    """One declarative TranslationEngine manifest to check.
+
+    A manifest needs no workload fixture: its default config, artifact
+    contracts and required gates carry everything the checks inspect.
+    ``build`` and ``build_recipe`` are useful before entry points are installed;
+    published packages normally need only the registered name.
+    """
+
+    name: str
+    build: Callable[[], TranslationEngine] | None = None
+    build_recipe: Callable[[], Recipe] | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +345,7 @@ class PluginSet:
     finding_stores: tuple[FindingStoreCase, ...] = ()
     scanners: tuple[ScannerCase, ...] = ()
     recipes: tuple[RecipeCase, ...] = ()
+    engines: tuple[EngineCase, ...] = ()
 
 
 def load_plugin_set(name: str) -> PluginSet:

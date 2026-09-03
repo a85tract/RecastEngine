@@ -98,7 +98,22 @@ jobs:
       # transforms also have to be *constructible*: determinism is an attribute
       # of an instance, and a factory that cannot run leaves the agentic-gate
       # rule unable to judge anything.
-      - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest conformance/ -rs
+      - run: uv run --extra dev --extra fortran --extra translate --extra verify --extra numba --extra jax pytest conformance/ -rs
+
+  # The two first-class Python accelerator engines, on real CPU backends. Keep
+  # this out of the three-version general matrix: backend installation is the
+  # expensive part, while their stdlib-AST/frontend/protocol code is already
+  # exercised there without importing either optional runtime. This job proves
+  # both generated candidates actually compile and execute under Numba/JAX,
+  # and that spoofed, disabled, malformed and numerically wrong backends fail
+  # closed. tools/ci_local.sh reads this command directly from the workflow.
+  python-accelerators:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv run --extra dev --extra numba --extra jax pytest tests/test_python_accelerator_engines.py -v
 
   # The whole translate spine against a real compiler: frontend, transform,
   # rwset gate, f2py-golden oracle, differential.bitexact -- ending bit-exact,
