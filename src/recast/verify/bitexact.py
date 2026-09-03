@@ -1027,7 +1027,22 @@ class BitexactVerifier(Verifier):
                     "the recorded sample carries no value for required output(s) "
                     f"{', '.join(missing)}; partial output evidence is not a pass"
                 )
-            return [(name, ours_by_name[name], truth_out[name.lower()]) for name in wanted]
+            pairs: list[tuple[str, Any, Any]] = []
+            for name in wanted:
+                ours = ours_by_name[name]
+                theirs = truth_out[name.lower()]
+                # The probe format has no rank-0 section: a scalar result is
+                # written as a section holding exactly one value and parses as
+                # shape (1,). When the candidate returned a scalar, read the
+                # recording back as the scalar it is. The one value is still
+                # compared bit for bit, so the reshape hides nothing; without
+                # it every recorded scalar function was "shape () vs (1,)".
+                import numpy as np
+
+                if getattr(theirs, "shape", None) == (1,) and np.ndim(ours) == 0:
+                    theirs = theirs.reshape(())
+                pairs.append((name, ours, theirs))
+            return pairs
 
         if sub["kind"] == "function":
             # Both sides return the result, whatever kind of reference this is.
