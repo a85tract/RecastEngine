@@ -28,6 +28,13 @@ class Oracle(ABC):
     cost: str = "build"
     """``cheap`` | ``build`` | ``batch``. Schedulers use this to order work."""
 
+    def applicable(self, unit: Unit, facts: Facts) -> bool:
+        """Cheap pre-filter, as on ``Transform``. Return False rather than
+        raising on a unit this oracle has no reference for -- a C kernel in
+        a tree a Fortran oracle also walks. The runner records the unit as
+        incomplete, not failed and not passed. True by default."""
+        return True
+
     @abstractmethod
     def key(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> str:
         """Cache key. Two calls with the same key must be behaviourally identical.

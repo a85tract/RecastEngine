@@ -140,6 +140,20 @@ class ExplodingVerifier(PassVerifier):
         raise RuntimeError("unexpected verifier bug")
 
 
+class NeverOracle(FakeOracle):
+    name = "fake-oracle.never"
+
+    def applicable(self, unit: Unit, facts: Facts) -> bool:
+        return False
+
+
+class NeverVerifier(PassVerifier):
+    name = "fake.never"
+
+    def applicable(self, unit: Unit, facts: Facts) -> bool:
+        return False
+
+
 class RecordingObserver:
     def __init__(self) -> None:
         self.events: list[RunEvent] = []
@@ -455,7 +469,10 @@ def test_observer_explains_a_failed_gate_and_suppressed_stage(tmp_path: Path) ->
     assert observer.events[-1].reason_code == "run_failed"
 
 
-def test_observer_closes_open_lifecycles_when_a_plugin_aborts(tmp_path: Path) -> None:
+def test_a_transform_bug_fails_the_unit_and_the_walk_goes_on(tmp_path: Path) -> None:
+    """A plugin exception is not a refusal and not the end of the run: the
+    unit fails on it, by name, and the store still records the failure.
+    One dangling symlink in a corpus used to end every other unit's walk."""
     observer = RecordingObserver()
     stages = [
         Stage("executor", "fake-exec"),
@@ -463,55 +480,99 @@ def test_observer_closes_open_lifecycles_when_a_plugin_aborts(tmp_path: Path) ->
         Stage("transform", "fake.explode"),
         Stage("store", "fake-store"),
     ]
-
-    with pytest.raises(RuntimeError, match="unexpected transform bug"):
-        run_recipe(
-            FakeRecipe(stages),
-            tmp_path,
-            {"units": ["fake:alpha"]},
-            registry=_registry(),
-            observer=observer,
-        )
-
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+    (unit_run,) = run.units
+    assert unit_run.status is RunStatus.FAILED
+    assert unit_run.stopped_by == "fake.explode"
+    transform = next(o for o in unit_run.outcomes if o.kind == "transform")
+    assert transform.status == "failed"
+    assert "plugin exception" in transform.detail and "unexpected transform bug" in transform.detail
+    assert any(o.kind == "store" and o.status == "ok" for o in unit_run.outcomes)
     finished = [
         (event.entity, event.status, event.reason_code)
         for event in observer.events
         if event.action is RunEventAction.FINISHED
     ]
-    assert finished[-4:] == [
-        (RunEventEntity.CANDIDATE, "aborted", "transform_exception"),
-        (RunEventEntity.STAGE, "aborted", "stage_exception"),
-        (RunEventEntity.UNIT, "aborted", "unit_exception"),
-        (RunEventEntity.RUN, "aborted", "run_exception"),
+    assert (RunEventEntity.CANDIDATE, "failed", "transform_exception") in finished
+    assert finished[-1][0] is RunEventEntity.RUN and finished[-1][1] != "aborted"
+
+
+def test_a_verifier_bug_fails_closed_and_the_walk_goes_on(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    run = run_recipe(
+        FakeRecipe(_stages(Stage("verifier", "fake.verify-explode", gate=True))),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+    (unit_run,) = run.units
+    assert unit_run.status is RunStatus.FAILED
+    verifier = next(o for o in unit_run.outcomes if o.kind == "verifier")
+    assert verifier.status == "failed" and "unexpected verifier bug" in verifier.detail
+    finished = [
+        (event.entity, event.status, event.reason_code)
+        for event in observer.events
+        if event.action is RunEventAction.FINISHED
     ]
-    assert all("unexpected transform bug" in event.reason for event in observer.events[-4:])
+    assert (RunEventEntity.VERDICT, "failed", "verification_exception") in finished
 
 
-def test_observer_closes_a_verdict_lifecycle_when_verification_aborts(
+def test_an_oracle_that_does_not_apply_leaves_the_unit_incomplete(tmp_path: Path) -> None:
+    """No reference for this unit's language is neither a failed reference
+    nor a pass: the unit is incomplete, the gate never runs on nothing."""
+    registry = _registry()
+    registry.register("oracle", "fake-oracle.never", NeverOracle)
+    run = run_recipe(
+        FakeRecipe(
+            _stages(
+                Stage("oracle", "fake-oracle.never"),
+                Stage("verifier", "fake.pass", gate=True),
+            )
+        ),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=registry,
+    )
+    (unit_run,) = run.units
+    assert unit_run.status is RunStatus.INCOMPLETE
+    oracle = next(o for o in unit_run.outcomes if o.kind == "oracle")
+    assert oracle.status == "incomplete" and "not applicable" in oracle.detail
+    # The gate was suppressed by the stop, not run on nothing.
+    assert not any(o.kind == "verifier" for o in unit_run.outcomes)
+    assert not unit_run.verdicts
+    assert unit_run.stopped_by == "fake-oracle.never"
+
+
+def test_a_gate_that_does_not_apply_leaves_the_unit_incomplete_and_an_optional_one_is_skipped(
     tmp_path: Path,
 ) -> None:
-    observer = RecordingObserver()
-
-    with pytest.raises(RuntimeError, match="unexpected verifier bug"):
-        run_recipe(
-            FakeRecipe(_stages(Stage("verifier", "fake.verify-explode", gate=True))),
-            tmp_path,
-            {"units": ["fake:alpha"]},
-            registry=_registry(),
-            observer=observer,
-        )
-
-    finished = [
-        (event.entity, event.status, event.reason_code)
-        for event in observer.events
-        if event.action is RunEventAction.FINISHED
-    ]
-    assert finished[-4:] == [
-        (RunEventEntity.VERDICT, "aborted", "verification_exception"),
-        (RunEventEntity.STAGE, "aborted", "stage_exception"),
-        (RunEventEntity.UNIT, "aborted", "unit_exception"),
-        (RunEventEntity.RUN, "aborted", "run_exception"),
-    ]
+    registry = _registry()
+    registry.register("verifier", "fake.never", NeverVerifier)
+    gated = run_recipe(
+        FakeRecipe(
+            _stages(Stage("oracle", "fake-oracle"), Stage("verifier", "fake.never", gate=True))
+        ),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=registry,
+    )
+    assert gated.units[0].status is RunStatus.INCOMPLETE
+    optional = run_recipe(
+        FakeRecipe(_stages(Stage("oracle", "fake-oracle"), Stage("verifier", "fake.never"))),
+        tmp_path / "optional",
+        {"units": ["fake:alpha"]},
+        registry=registry,
+    )
+    assert optional.units[0].status is RunStatus.PASSED
+    verifier = next(o for o in optional.units[0].outcomes if o.kind == "verifier")
+    assert verifier.status == "skipped" and "not applicable" in verifier.detail
 
 
 def test_verdict_is_structured_even_when_the_recipe_has_no_store(tmp_path: Path) -> None:
