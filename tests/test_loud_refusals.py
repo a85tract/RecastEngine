@@ -130,7 +130,8 @@ def test_every_prologue_refusal_is_recorded_and_raises(source: Path, renderer: M
     array with the same unresolvable extent, and a derived out-arg whose
     component has no static shape. Each is an agent_queue entry AND a raise
     at the site; none is a comment the code runs past."""
-    lines, report = renderer.subprograms.render(_node(source, "prologue_refusals"), "prologue_refusals")
+    node = _node(source, "prologue_refusals")
+    lines, report = renderer.subprograms.render(node, "prologue_refusals")
     body = "\n".join(lines)
     deferred = _deferred(report)
     prologue = [entry for entry in deferred if entry["block"].startswith("P")]

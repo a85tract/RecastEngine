@@ -371,9 +371,7 @@ class Modules:
         if state["init_expr"]:
             value = self._state_value(state, parameters)
             if value.startswith("None  # TODO"):
-                return _refuse(
-                    f"module-state initializer not renderable: {state['init_expr']!r}"
-                )
+                return _refuse(f"module-state initializer not renderable: {state['init_expr']!r}")
             return [
                 f"{pysafe(state['name'])} = {value}  # module state "
                 f"({state['dtype']}), Fortran save-init"
@@ -561,13 +559,13 @@ class Modules:
                 # A refused module-state binding is one line at module scope,
                 # found by its AGENT_QUEUE comment; a report entry with no
                 # such line is the report and the text disagreeing.
-                at = refused_state.get(key[0])
-                if at is None:
+                binding = refused_state.get(key[0])
+                if binding is None:
                     raise ConfigError(
                         f"module state {entry['subprogram']!r} is recorded as deferred but "
                         "the emitted file carries no AGENT_QUEUE binding for it"
                     )
-                entry["py_lines"] = [at, at]
+                entry["py_lines"] = [binding, binding]
                 continue
             # A DATA block carries no marker -- the pipeline emits none and
             # the emitted text is compared to it byte for byte -- so its

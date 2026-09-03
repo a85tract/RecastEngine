@@ -861,9 +861,7 @@ class NumbaSubprograms(Subprograms):
         kept_index: dict[int, int] = {}
         lines: list[str] = []
         for at, line in enumerate(emitted):
-            if any(
-                f"{name} = _make_" in line or f"{name} = _new_" in line for name in flattened
-            ):
+            if any(f"{name} = _make_" in line or f"{name} = _new_" in line for name in flattened):
                 continue
             kept_index[at] = len(lines)
             lines.append(line)
