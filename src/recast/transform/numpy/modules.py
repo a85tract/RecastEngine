@@ -84,6 +84,10 @@ ARRAY_TEXT = re.compile(r"\(/.*?/\)", re.S)
 DIVISION_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?\s*/\s*(?:\d+\.?\d*|\.\d+)(?:_\w+)?")
 MARKER = re.compile(r"^    # (B\d{3}) <- ")
 DEFINITION = re.compile(r"^def (\w+)\(")
+STATE_REFUSAL = re.compile(r"^(\w+) = None  # AGENT_QUEUE: ")
+"""The one line a refused module-state binding emits, at module scope. Its
+report entry (block ``S001``) is located by this line rather than by a block
+marker, because module state has no function to carry a marker inside."""
 DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 
@@ -226,12 +230,20 @@ class Modules:
         for type_name, components in semantics_types.items():
             lines.extend(self._factory(type_name, components))
         for state in self.subprograms.record["module_state"]:
-            lines.extend(self._state(state))
+            lines.extend(self._state(state, report))
         lines.append("")
         for record in self.subprograms.record["subprograms"]:
             node = nodes.get(subprogram_key(record))
             if node is None:
-                continue
+                # The interface record and the parse pass disagree about what
+                # exists. Dropping the subprogram here shipped a file whose
+                # coverage note claimed it was attempted; a broken invariant
+                # is a crash, not a gap.
+                raise RuntimeError(
+                    f"subprogram {subprogram_key(record)!r} has an interface "
+                    "record but no parse node; refusing to emit a module "
+                    "with a silent hole"
+                )
             rendered, entries = self.subprograms.render(node, subprogram_key(record))
             lines.extend(rendered)
             report.extend(entries)
@@ -277,7 +289,29 @@ class Modules:
 
     # -- module state ---------------------------------------------------------
 
-    def _state(self, state: dict[str, Any]) -> list[str]:
+    def _state(
+        self, state: dict[str, Any], report: list[dict[str, Any]] | None = None
+    ) -> list[str]:
+        # Policy: module state the renderer cannot honestly initialize keeps
+        # its None binding (the module must import for anything else to be
+        # checked) but is RECORDED as deferred work -- a comment alone let
+        # `allocated(x)` silently read "never allocated" with no entry
+        # anywhere saying the translation is incomplete.
+        def _refuse(reason: str) -> list[str]:
+            if report is not None:
+                report.append(
+                    {
+                        "subprogram": str(state["name"]),
+                        "key": f"module-state:{state['name']}",
+                        "block": "S001",
+                        "src_span": [0, 0],
+                        "status": "agent_queue",
+                        "reason": reason,
+                        "py_lines": [0, 0],
+                    }
+                )
+            return [f"{pysafe(state['name'])} = None  # AGENT_QUEUE: {reason}"]
+
         parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
         initializer = str(state.get("init_expr") or "").strip()
         lowered = initializer.lower()
@@ -325,23 +359,19 @@ class Modules:
                             f"{state['name']} = np.zeros(({shape},), "
                             f"dtype={dtype})  # module array state"
                         ]
-                    return [
-                        f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
-                        f"{SAVE_ARRAY_REFUSAL} (init {initializer!r})"
-                    ]
+                    return _refuse(f"{SAVE_ARRAY_REFUSAL} (init {initializer!r})")
             if initializer:
                 # A bound no module-scope name resolves, and an initializer to
                 # broadcast across it: the shape is not knowable here, and
                 # guessing one would be a silently wrong buffer.
-                return [
-                    f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
-                    f"{SAVE_ARRAY_REFUSAL} (dims not static)"
-                ]
+                return _refuse(f"{SAVE_ARRAY_REFUSAL} (dims not static)")
             return [
                 f"{pysafe(state['name'])} = None  # allocatable/assumed module array, set by init"
             ]
         if state["init_expr"]:
             value = self._state_value(state, parameters)
+            if value.startswith("None  # TODO"):
+                return _refuse(f"module-state initializer not renderable: {state['init_expr']!r}")
             return [
                 f"{pysafe(state['name'])} = {value}  # module state "
                 f"({state['dtype']}), Fortran save-init"
@@ -457,6 +487,7 @@ class Modules:
                 arguments.append(entry)
             table[emit_name(subprogram)] = {
                 "kind": subprogram["kind"],
+                "public": bool(subprogram.get("public", True)),
                 "args": arguments,
                 "result": subprogram.get("result"),
                 "result_dtype": subprogram.get("result_dtype"),
@@ -484,6 +515,7 @@ class Modules:
         lines = text.splitlines()
         starts: dict[str, int] = {}
         markers: list[tuple[str, str, int]] = []
+        refused_state: dict[str, int] = {}
         current = None
         for number, line in enumerate(lines, 1):
             defined = DEFINITION.match(line)
@@ -494,6 +526,11 @@ class Modules:
             marked = MARKER.match(line)
             if marked and current:
                 markers.append((current, marked.group(1), number))
+                continue
+            refused = STATE_REFUSAL.match(line)
+            if refused:
+                # Anchored at column 0, so it cannot match inside a function.
+                refused_state[refused.group(1)] = number
         ordered = [
             pysafe(emit_name(s))
             for s in self.subprograms.record["subprograms"]
@@ -518,6 +555,18 @@ class Modules:
             key = (pysafe(entry["subprogram"]), entry["block"])
             if key in spans:
                 entry["py_lines"] = spans[key]
+                continue
+            if str(entry.get("key", "")).startswith("module-state:"):
+                # A refused module-state binding is one line at module scope,
+                # found by its AGENT_QUEUE comment; a report entry with no
+                # such line is the report and the text disagreeing.
+                binding = refused_state.get(key[0])
+                if binding is None:
+                    raise ConfigError(
+                        f"module state {entry['subprogram']!r} is recorded as deferred but "
+                        "the emitted file carries no AGENT_QUEUE binding for it"
+                    )
+                entry["py_lines"] = [binding, binding]
                 continue
             # A DATA block carries no marker -- the pipeline emits none and
             # the emitted text is compared to it byte for byte -- so its

@@ -20,11 +20,13 @@ import pytest
 pytest.importorskip("fparser", reason="needs recast-engine[fortran]")
 pytest.importorskip("numpy", reason="needs recast-engine[translate]")
 
-from recast.errors import ConfigError
+import recast.oracle.f2py as f2py_module
+from recast.errors import ConfigError, OracleUnavailable
 from recast.executors.local import LocalExecutor
 from recast.fortran.frontend import FortranFrontend
 from recast.model import Candidate, Confidence, OracleRef, Unit
 from recast.oracle.f2py import F2pyGoldenOracle, wrappers_for
+from recast.plugins.executor import JobResult
 from recast.transform.numpy.translate import NumpyTranslation
 from recast.verify.bitexact import BitexactVerifier
 from recast.verify.rwset import ReadWriteSetVerifier
@@ -148,6 +150,574 @@ def test_a_candidate_without_files_fails_closed(tmp_path: Path) -> None:
     assert "does not import" in verdict.detail
 
 
+def test_f2py_scalar_inout_uses_a_writable_rank_zero_buffer(tmp_path: Path) -> None:
+    """f2py silently loses a scalar update when handed a NumPy scalar.
+
+    Its generated signature calls the dummy an ``in/output rank-0 array``.
+    The verifier must honor that ABI while leaving the candidate's sampled
+    scalar alone.  This one call also pins the pre-existing array-INOUT and
+    pure-OUT paths: all three outputs have to be paired by declaration name.
+    """
+    emitted = b"""\
+import numpy as np
+
+_SIGNATURES = {
+    "step": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "x", "dtype": "float64", "intent": "INOUT", "optional": False},
+            {"name": "a", "dtype": "float64", "intent": "INOUT", "optional": False,
+             "dims": [{"lb": "1", "ub": "3"}]},
+            {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def step(x, a):
+    return x + 1.0, a + 2.0, x * 3.0
+"""
+    candidate = Candidate(
+        unit="fortran:scalar_inout",
+        transform="translate.numpy",
+        files={Path("scalar_inout_numpy.py"): emitted},
+    )
+    seen: list[tuple[tuple[int, ...], bool, tuple[int, ...]]] = []
+
+    class Truth:
+        @staticmethod
+        def w_step(x, a):
+            seen.append((x.shape, bool(x.flags.writeable), a.shape))
+            original = float(x)
+            x[...] = original + 1.0
+            a[...] = a + 2.0
+            return original * 3.0
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"step": "w_step"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 3, "ranges": {"x": (1.0, 2.0), "a": (2.0, 3.0)}},
+    )
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 15
+    assert seen == [((), True, (3,))] * 3
+
+
+@pytest.mark.parametrize("convention", ["emitted", "recorded"])
+def test_non_f2py_conventions_keep_scalar_inout_as_a_scalar(convention: str) -> None:
+    """A rank-0 buffer is an f2py ABI detail, not a universal convention."""
+    import numpy as np
+
+    value = np.float64(2.0)
+    argument = {
+        "name": "x",
+        "dtype": "float64",
+        "intent": "INOUT",
+        "optional": False,
+    }
+    assert BitexactVerifier._truth_input(np, argument, value, convention) is value
+
+
+def test_f2py_logical_inout_fails_closed_before_execution(tmp_path: Path) -> None:
+    """No Python buffer spelling is a portable Fortran LOGICAL INOUT ABI."""
+    emitted = b"""\
+import numpy as np
+
+_SIGNATURES = {
+    "flip": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "x", "dtype": "bool", "intent": "INOUT", "optional": False},
+            {"name": "a", "dtype": "bool", "intent": "INOUT", "optional": False,
+             "dims": [{"lb": "1", "ub": "3"}]},
+            {"name": "y", "dtype": "bool", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def flip(x, a):
+    raise AssertionError("candidate subroutine must not execute")
+"""
+    candidate = Candidate(
+        unit="fortran:logical_inout",
+        transform="translate.numpy",
+        files={Path("logical_inout_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_flip(x, a):
+            raise AssertionError("oracle subroutine must not execute")
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"flip": "w_flip"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 3},
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "no portable Python buffer ABI" in verdict.detail
+    assert "x, a" in verdict.detail
+
+
+def test_f2py_logical_pure_out_is_normalized(tmp_path: Path) -> None:
+    """A pure OUT's nonzero LOGICAL representation compares as Python True."""
+    import numpy as np
+
+    emitted = b"""\
+import numpy as np
+
+_SIGNATURES = {
+    "invert": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "x", "dtype": "bool", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "bool", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def invert(x):
+    return np.logical_not(x)
+"""
+    candidate = Candidate(
+        unit="fortran:logical_out",
+        transform="translate.numpy",
+        files={Path("logical_out_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_invert(x):
+            return np.int32(0 if bool(x) else -7)
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"invert": "w_invert"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 3},
+    )
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 3
+
+
+def test_f2py_logical_function_result_is_normalized(tmp_path: Path) -> None:
+    """A function's nonzero LOGICAL result compares equal to Python True."""
+    import numpy as np
+
+    emitted = b"""\
+_SIGNATURES = {
+    "identity": {
+        "kind": "function",
+        "args": [
+            {"name": "x", "dtype": "bool", "intent": "IN", "optional": False},
+        ],
+        "result": "yes",
+        "result_dtype": "bool",
+    }
+}
+
+def identity(x):
+    return x
+"""
+    candidate = Candidate(
+        unit="fortran:logical_function",
+        transform="translate.numpy",
+        files={Path("logical_function_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_identity(x):
+            assert isinstance(x, np.bool_)
+            return np.int32(-2 if bool(x) else 0)
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"identity": "w_identity"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 3},
+    )
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 3
+
+
+def test_function_dummy_side_effects_fail_closed_before_execution(tmp_path: Path) -> None:
+    """A result-only comparison must not silently ignore an INOUT dummy."""
+    emitted = b"""\
+_SIGNATURES = {
+    "bump": {
+        "kind": "function",
+        "args": [
+            {"name": "x", "dtype": "float64", "intent": "INOUT", "optional": False},
+        ],
+        "result": "y",
+        "result_dtype": "float64",
+    }
+}
+
+def bump(x):
+    raise AssertionError("candidate function must not execute")
+"""
+    candidate = Candidate(
+        unit="fortran:function_side_effect",
+        transform="translate.numpy",
+        files={Path("function_side_effect_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_bump(x):
+            raise AssertionError("oracle function must not execute")
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"bump": "w_bump"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 1},
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "cannot pair both its result and side effects" in verdict.detail
+
+
+def test_unknown_intent_fails_closed_before_execution(tmp_path: Path) -> None:
+    """UNKNOWN is wrapped as INOUT, so omitting its side effect is unsound."""
+    emitted = b"""\
+_SIGNATURES = {
+    "touch": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "x", "dtype": "float64", "intent": "UNKNOWN", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def touch(x):
+    raise AssertionError("candidate subroutine must not execute")
+"""
+    candidate = Candidate(
+        unit="fortran:unknown_intent",
+        transform="translate.numpy",
+        files={Path("unknown_intent_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_touch(x):
+            raise AssertionError("oracle subroutine must not execute")
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"touch": "w_touch"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 1},
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "UNKNOWN intent" in verdict.detail
+
+
+def _integer_output_verdict(
+    tmp_path: Path,
+    expression: str,
+    truth_value,
+    *,
+    dtype: str = "int64",
+    **config,
+):
+    emitted = f"""\
+_SIGNATURES = {{
+    "measure": {{
+        "kind": "subroutine",
+        "args": [
+            {{"name": "y", "dtype": {dtype!r}, "intent": "OUT", "optional": False}},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }}
+}}
+
+def measure():
+    return {expression}
+""".encode()
+    candidate = Candidate(
+        unit="fortran:integer_output",
+        transform="translate.numpy",
+        files={Path("integer_output_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_measure():
+            return truth_value
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"measure": "w_measure"}},
+    )
+    return BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 1, **config},
+    )
+
+
+def test_large_integer_outputs_compare_without_float64_aliasing(tmp_path: Path) -> None:
+    value = 2**53 + 1
+    verdict = _integer_output_verdict(tmp_path, str(value), value)
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["integer_points"] == 1
+    assert verdict.metrics["integer_mismatch"] == 0
+
+
+def test_a_float64_collision_is_an_integer_mismatch_even_with_rtol(tmp_path: Path) -> None:
+    verdict = _integer_output_verdict(
+        tmp_path,
+        str(2**53 + 1),
+        2**53,
+        rtol=1e100,
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert verdict.metrics["integer_mismatch"] == 1
+    assert "cannot be tolerance-excused" in verdict.detail
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expression", "truth_value", "detail"),
+    [
+        ("int64", "1.0", 1, "non-integer dtype float64"),
+        ("int64", str(2**63), 0, "outside"),
+        ("int32", str(2**31), 0, "outside"),
+    ],
+)
+def test_declared_integer_outputs_reject_masquerades_and_overflow(
+    tmp_path: Path,
+    dtype: str,
+    expression: str,
+    truth_value: int,
+    detail: str,
+) -> None:
+    verdict = _integer_output_verdict(
+        tmp_path,
+        expression,
+        truth_value,
+        dtype=dtype,
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert detail in verdict.detail
+
+
+def test_integer_output_comparison_preserves_shape(tmp_path: Path) -> None:
+    verdict = _integer_output_verdict(tmp_path, "[1, 2]", [[1, 2]])
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "shape (2,) vs (1, 2)" in verdict.detail
+
+
+@pytest.mark.parametrize(
+    ("expression", "truth_value", "dtype", "trials"),
+    [
+        ("1", 1, "int64", 0),
+        ("[]", [], "float64", 1),
+    ],
+)
+def test_zero_numerical_points_cannot_be_a_bit_exact_pass(
+    tmp_path: Path,
+    expression: str,
+    truth_value,
+    dtype: str,
+    trials: int,
+) -> None:
+    verdict = _integer_output_verdict(
+        tmp_path,
+        expression,
+        truth_value,
+        dtype=dtype,
+        trials=trials,
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert verdict.metrics["points"] == 0
+    assert "zero numerical points" in verdict.detail
+
+
+@pytest.mark.parametrize(
+    "sub",
+    [
+        {
+            "kind": "subroutine",
+            "args": [
+                {
+                    "name": "z",
+                    "dtype": "complex128",
+                    "intent": "IN",
+                    "optional": False,
+                }
+            ],
+        },
+        {
+            "kind": "function",
+            "args": [
+                {
+                    "name": "x",
+                    "dtype": "float64",
+                    "intent": "IN",
+                    "optional": False,
+                }
+            ],
+            "result": "grid",
+            "result_dtype": "UNKNOWN(TYPE(GRID_T))",
+        },
+    ],
+)
+def test_unsupported_declared_dtype_fails_before_execution(sub) -> None:
+    import numpy as np
+
+    calls = 0
+
+    def must_not_run(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("neither side may execute")
+
+    outcome = BitexactVerifier()._compare_subprogram(
+        np,
+        "unsupported",
+        sub,
+        must_not_run,
+        must_not_run,
+        1,
+        {},
+        {},
+    )
+
+    assert "unsupported declared dtype" in outcome["error"]
+    assert calls == 0
+
+
+def test_recorded_sample_must_carry_every_required_output(tmp_path: Path) -> None:
+    emitted = b"""\
+_SIGNATURES = {
+    "two_outputs": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "y", "dtype": "int32", "intent": "OUT", "optional": False},
+            {"name": "z", "dtype": "int32", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def two_outputs():
+    raise AssertionError("partial evidence must be rejected before candidate execution")
+"""
+    candidate = Candidate(
+        unit="fortran:partial_recording",
+        transform="translate.numpy",
+        files={Path("partial_recording_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "two_outputs",
+                    "source": "partial.txt",
+                    "inputs": {},
+                    "outputs": {"y": 1},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {},
+    )
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "required output(s) z" in verdict.detail
+    assert "partial output evidence is not a pass" in verdict.detail
+
+
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
@@ -185,6 +755,132 @@ contains
   end function column_mass
 end module toy_physics
 """
+
+SCALAR_INOUT_SOURCE = """\
+module scalar_inout
+  implicit none
+contains
+  subroutine step(x)
+    real(8), intent(inout) :: x
+    x = x + 1.0d0
+  end subroutine step
+end module scalar_inout
+"""
+
+LOGICAL_SOURCE = """\
+module logical_values
+  implicit none
+contains
+  subroutine invert_to(x, y)
+    logical, intent(in) :: x
+    logical, intent(out) :: y
+    y = .not. x
+  end subroutine invert_to
+
+  logical function identity(x)
+    logical, intent(in) :: x
+    identity = x
+  end function identity
+end module logical_values
+"""
+
+LOGICAL_INOUT_SOURCE = """\
+module logical_inout
+  implicit none
+contains
+  subroutine flip_scalar(x)
+    logical, intent(inout) :: x
+    x = .not. x
+  end subroutine flip_scalar
+
+  subroutine flip_array(x)
+    logical, intent(inout) :: x(2)
+    x = .not. x
+  end subroutine flip_array
+end module logical_inout
+"""
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_scalar_inout_is_bit_exact_against_real_f2py(tmp_path: Path) -> None:
+    """A real f2py scalar INOUT update must be observable by the gate."""
+    (tmp_path / "scalar_inout.f90").write_text(SCALAR_INOUT_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {
+        "root": tmp_path,
+        "fc": GFORTRAN,
+        "trials": 5,
+        "ranges": {"x": (-5.0, 5.0)},
+    }
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 5
+    assert verdict.metrics["bit_exact"] == 5
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_logical_values_are_bit_exact_against_real_f2py(tmp_path: Path) -> None:
+    """Real f2py exercises pure OUT and function-result LOGICALs."""
+    (tmp_path / "logical_values.f90").write_text(LOGICAL_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 5}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 10
+    assert verdict.metrics["bit_exact"] == 10
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_real_f2py_logical_inout_fails_closed(tmp_path: Path) -> None:
+    """The real ABI hazard is reported, never mistaken for a mismatch."""
+    (tmp_path / "logical_inout.f90").write_text(LOGICAL_INOUT_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 2}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+
+    assert verdict.confidence is Confidence.FAILED
+    assert "no portable Python buffer ABI" in verdict.detail
 
 
 @pytest.mark.skipif(
@@ -513,6 +1209,17 @@ end module toy_split
 """
 
 
+class _CaptureBuild:
+    name = "capture"
+
+    def __init__(self) -> None:
+        self.job = None
+
+    def run(self, job):
+        self.job = job
+        raise OracleUnavailable("captured before execution")
+
+
 def _split_tree(tmp_path: Path) -> tuple[Unit, object]:
     (tmp_path / "toy_kinds.f90").write_text(KINDS_SOURCE)
     (tmp_path / "toy_split.f90").write_text(SPLIT_SOURCE)
@@ -530,6 +1237,199 @@ def test_the_reference_names_the_siblings_the_unit_uses(tmp_path: Path) -> None:
 
     _unit, facts = _split_tree(tmp_path)
     assert companion_sources(facts, tmp_path) == [(tmp_path / "toy_kinds.f90").resolve()]
+
+
+def test_f2py_only_receives_canonical_source_and_include_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NumPy joins/splits sources internally, so hostile original path text
+    must be absent from every argv token and from both compiler flag strings."""
+    project = tmp_path / "source tree" / "-fplugin=must-not-be-a-flag"
+    project.mkdir(parents=True)
+    unit, facts = _split_tree(project)
+    capture = _CaptureBuild()
+    monkeypatch.setattr("recast.oracle.f2py._compiler_version", lambda _compiler: "test-fc 1")
+
+    with pytest.raises(OracleUnavailable, match="captured before execution"):
+        F2pyGoldenOracle().materialize(
+            unit,
+            facts,
+            tmp_path / "work",
+            capture,
+            {"root": project, "fflags": "-O2 -fcheck=bounds"},
+        )
+
+    assert capture.job is not None
+    argv = list(capture.job.argv)
+    assert argv[argv.index("--build-dir") + 1] == "f2py-build"
+    assert "--f90flags=-O2 -fcheck=bounds" in argv
+    assert "--f77flags=-O2 -fcheck=bounds" in argv
+    assert all(str(project) not in token for token in argv)
+    assert all("must-not-be-a-flag" not in token for token in argv)
+
+    compile_index = argv.index("-c")
+    module_index = argv.index("-m", compile_index)
+    build_inputs = argv[compile_index + 3 : module_index]
+    staged_sources = [token for token in build_inputs if token.startswith("sources/")]
+    include_args = [token for token in build_inputs if token.startswith("-I")]
+    assert staged_sources == [
+        "sources/source_0000.f90",
+        "sources/source_0001.f90",
+        "sources/wrappers.f90",
+    ]
+    assert include_args == ["-Iincludes/d0000"]
+    assert all(" " not in token for token in [*staged_sources, *include_args])
+    assert all((capture.job.cwd / token).is_file() for token in staged_sources)
+    assert (capture.job.cwd / "includes/d0000").is_dir()
+    assert (capture.job.cwd / "f2py-build/includes/d0000").is_dir()
+
+
+class _FailingBuild:
+    """An executor whose f2py run fails the way crackfortran does on bad Fortran."""
+
+    name = "failing"
+
+    def __init__(self, stdout: str, stderr: str) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def run(self, job):
+        del job
+        return JobResult(1, self.stdout, self.stderr)
+
+
+def test_a_failed_build_quotes_the_end_of_its_own_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The log sits in a workspace that is gone once the run returns, so a
+    path to it explains nothing; the error carries what the tools said."""
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    monkeypatch.setattr("recast.oracle.f2py._compiler_version", lambda _compiler: "test-fc 1")
+    chatter = "\n".join(f"Reading fortran codes... line {index}" for index in range(400))
+    stderr = (
+        "Traceback (most recent call last):\n"
+        "  File crackfortran.py, line 3, in crackline\n"
+        "crackfortran: analyzeline: No name/args pattern found for line: subroutine (x\n"
+    )
+
+    with pytest.raises(ConfigError) as failure:
+        F2pyGoldenOracle().materialize(
+            unit, facts, tmp_path / "work", _FailingBuild(chatter, stderr), {"root": root}
+        )
+
+    message = str(failure.value)
+    assert message.startswith("f2py build for fortran:toy_split failed (exit 1); log at ")
+    assert message.endswith(stderr.strip())
+    assert "earlier characters of the build output omitted]" in message
+    assert "Reading fortran codes... line 0\n" not in message
+    assert len(message) < 3500
+    log = next((tmp_path / "work").rglob("f2py.log"))
+    assert log.read_text() == chatter + "\n" + stderr
+
+
+def test_log_tail_keeps_short_output_whole_and_cuts_long_output_on_a_line() -> None:
+    assert f2py_module._log_tail("  short\n") == "short"
+    lines = [f"line {index:04d}" for index in range(100)]
+    tail = f2py_module._log_tail("\n".join(lines), limit=200)
+    omitted, kept = tail.split("\n", 1)
+    assert omitted.startswith("… [") and omitted.endswith(
+        " earlier characters of the build output omitted]"
+    )
+    assert kept.splitlines()[0] in lines
+    assert kept.splitlines()[-1] == "line 0099"
+    assert len(kept) <= 200
+    assert "\n".join(lines).endswith(kept)
+
+
+@pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
+def test_main_source_must_be_a_regular_file_inside_root(tmp_path: Path, bad_source: str) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    outside = tmp_path / "outside.f90"
+    outside.write_text(SPLIT_SOURCE)
+    if bad_source == "missing":
+        facts.provenance["source"] = "missing.f90"
+        match = "does not exist"
+    elif bad_source == "directory":
+        (root / "directory.f90").mkdir()
+        facts.provenance["source"] = "directory.f90"
+        match = "not a regular file"
+    else:
+        (root / "escape.f90").symlink_to(outside)
+        facts.provenance["source"] = "escape.f90"
+        match = "outside the configured project root"
+
+    with pytest.raises(ConfigError, match=match):
+        F2pyGoldenOracle().key(unit, facts, {"root": root})
+
+
+@pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
+def test_companions_must_be_regular_files_inside_root(tmp_path: Path, bad_source: str) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    companion = facts.provenance["companions"][0]
+    outside = tmp_path / "outside.f90"
+    outside.write_text(KINDS_SOURCE)
+    if bad_source == "missing":
+        companion["source"] = "missing.f90"
+        match = "does not exist"
+    elif bad_source == "directory":
+        (root / "directory.f90").mkdir()
+        companion["source"] = "directory.f90"
+        match = "not a regular file"
+    else:
+        (root / "escape.f90").symlink_to(outside)
+        companion["source"] = "escape.f90"
+        match = "outside the configured project root"
+
+    with pytest.raises(ConfigError, match=match):
+        F2pyGoldenOracle().key(unit, facts, {"root": root})
+
+
+@pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
+def test_the_flat_oracle_holds_its_plan_to_the_same_root(tmp_path: Path, bad_source: str) -> None:
+    """The flat oracle plans its library from the unit's source under the
+    project root, the way the engine's oracle reads it: the same boundary,
+    or a source outside root would be compiled by one oracle and refused by
+    the other."""
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    outside = tmp_path / "outside.f90"
+    outside.write_text(SPLIT_SOURCE)
+    if bad_source == "missing":
+        facts.provenance["source"] = "missing.f90"
+        match = "does not exist"
+    elif bad_source == "directory":
+        (root / "directory.f90").mkdir()
+        facts.provenance["source"] = "directory.f90"
+        match = "not a regular file"
+    else:
+        (root / "escape.f90").symlink_to(outside)
+        facts.provenance["source"] = "escape.f90"
+        match = "outside the configured project root"
+
+    with pytest.raises(ConfigError, match=match):
+        F2pyFlatOracle().key(unit, facts, {"root": root})
+
+
+def test_the_flat_oracle_refuses_an_extra_source_it_cannot_read(tmp_path: Path) -> None:
+    """A configured extra source that is not there used to drop out of the
+    library key without a word and fail the build later, under a message
+    about the compiler."""
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    unit, facts = _split_tree(root)
+    with pytest.raises(ConfigError, match=r"extra source 0 .* does not exist"):
+        F2pyFlatOracle().key(unit, facts, {"root": root, "extra_sources": ["nowhere.f90"]})
 
 
 def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
@@ -551,11 +1451,15 @@ def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
 def test_the_reference_builds_across_two_files(tmp_path: Path) -> None:
     """The same case, actually compiled. Every library in the public corpus
     that keeps its working precision in its own module failed here, on a
-    ``Cannot open module file`` that named a file sitting beside the source."""
-    unit, facts = _split_tree(tmp_path)
+    ``Cannot open module file`` that named a file sitting beside the source.
+    The original directory is intentionally unsafe as an argv/flags spelling:
+    staging must make both whitespace and a flag-looking component harmless."""
+    project = tmp_path / "project with spaces" / "-fplugin=not-a-real-plugin"
+    project.mkdir(parents=True)
+    unit, facts = _split_tree(project)
     workspace = tmp_path / "work"
     workspace.mkdir()
     ref = F2pyGoldenOracle().materialize(
-        unit, facts, workspace, LocalExecutor(), {"root": tmp_path, "fc": GFORTRAN}
+        unit, facts, workspace, LocalExecutor(), {"root": project, "fc": GFORTRAN}
     )
     assert ref.handle["wrappers"]["scale_all"] == "w_scale_all"

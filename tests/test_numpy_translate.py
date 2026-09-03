@@ -126,6 +126,7 @@ def test_notes_carry_the_block_report_and_the_name_protocol(
     candidate = NumpyTranslation().apply(unit, facts, config_for(root))
     statuses = {entry["block"]: entry["status"] for entry in candidate.notes["blocks"]}
     assert statuses["B003"] == "agent_queue"
+    assert candidate.notes["coverage"] == {"subprograms": ["advance"]}
     # The rename protocol: STEEPNESS in the output is `steepness` in the
     # source, and the read/write cross-check needs that map to undo it.
     assert candidate.notes["renames"]["advance"]["STEEPNESS"] == "steepness"

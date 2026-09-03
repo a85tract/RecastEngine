@@ -29,6 +29,7 @@ import os
 import platform
 import shutil
 import sys
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -49,11 +50,22 @@ from recast.model import (
     Unit,
     Verdict,
 )
+from recast.observe import RunEvent, RunEventAction, RunEventEntity, RunObserver
 from recast.plugins.recipe import Recipe, Stage
 from recast.plugins.store import FindingStore
 from recast.registry import REGISTRY, Registry
 
-__all__ = ["RecipeRun", "RunStatus", "UnitRun", "missing_tools", "run_recipe"]
+__all__ = [
+    "RecipeRun",
+    "RunEvent",
+    "RunEventAction",
+    "RunEventEntity",
+    "RunObserver",
+    "RunStatus",
+    "UnitRun",
+    "missing_tools",
+    "run_recipe",
+]
 
 NO_ORACLE = OracleRef(unit="", oracle="none", key="", handle=None)
 """What a Verifier receives before any Oracle has materialized. Static
@@ -97,6 +109,67 @@ class RunStatus(StrEnum):
 _SEVERITY = {RunStatus.PASSED: 0, RunStatus.FAILED: 1, RunStatus.INCOMPLETE: 2}
 
 
+class _RunEventEmitter:
+    """Sequence and deliver events without burdening the no-observer path."""
+
+    def __init__(self, recipe: str, observer: RunObserver | None) -> None:
+        self.recipe = recipe
+        self.observer = observer
+        # Do not even manufacture a run identity when nobody asked to observe
+        # the run.  Besides avoiding work, this keeps the default path free of
+        # new nondeterminism.
+        self.run_id = uuid.uuid4().hex if observer is not None else ""
+        self.sequence = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.observer is not None
+
+    def emit(
+        self,
+        entity: RunEventEntity,
+        action: RunEventAction,
+        *,
+        status: str,
+        reason_code: str,
+        reason: str = "",
+        unit_id: str | None = None,
+        stage_index: int | None = None,
+        stage_kind: str | None = None,
+        stage_plugin: str | None = None,
+        candidate_digest: str | None = None,
+        evidence_uri: str | None = None,
+        evidence_index: int | None = None,
+        verifier: str | None = None,
+        confidence: str | None = None,
+    ) -> None:
+        if self.observer is None:
+            return
+        self.sequence += 1
+        self.observer.observe(
+            RunEvent(
+                run_id=self.run_id,
+                sequence=self.sequence,
+                emitted_at=datetime.now(UTC).isoformat(),
+                entity=entity,
+                action=action,
+                recipe=self.recipe,
+                status=status,
+                reason_code=reason_code,
+                reason=reason,
+                unit_id=unit_id,
+                stage_index=stage_index,
+                stage_kind=stage_kind,
+                stage_plugin=stage_plugin,
+                candidate_digest=candidate_digest,
+                evidence_uri=evidence_uri,
+                evidence_index=evidence_index,
+                verifier=verifier,
+                confidence=confidence,
+            )
+        )
+
+
 @dataclass
 class StageOutcome:
     """What one stage did for one unit."""
@@ -129,6 +202,14 @@ class UnitRun:
     """Everything that happened to one Unit."""
 
     unit: Unit
+    facts: Facts | None = field(default=None, kw_only=True)
+    """Frontend analysis used for this unit.
+
+    Kept on the in-memory run so a phase boundary can serialize the exact
+    facts handed to the Transform.  ``summary()`` deliberately omits them:
+    facts may contain source-derived data and are not verification results.
+    """
+
     outcomes: list[StageOutcome] = field(default_factory=list)
     candidate: Candidate | None = None
     verdicts: list[Verdict] = field(default_factory=list)
@@ -185,6 +266,13 @@ class RecipeRun:
     root: Path
     workspace: Path
     units: list[UnitRun] = field(default_factory=list)
+    discovered_units: list[Unit] = field(default_factory=list)
+    """Every frontend-discovered unit, before top-level/request filtering.
+
+    The ordinary runner still walks the same selected units.  Retaining the
+    discovery set lets an artifact boundary state which nested units (for
+    example subprograms) a top-level Candidate is expected to cover.
+    """
 
     @property
     def status(self) -> RunStatus:
@@ -275,12 +363,90 @@ class RecipeRun:
         }
 
 
+def _exception_reason(error: BaseException) -> str:
+    """A concise operator reason which still names exceptions with no message."""
+    detail = str(error).strip()
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
+def _unit_finish_reason(unit_run: UnitRun) -> tuple[str, str]:
+    if unit_run.status is RunStatus.INCOMPLETE:
+        incomplete = [
+            item for item in unit_run.outcomes if item.status == "incomplete" and not item.waived
+        ]
+        primary = incomplete[0]
+        more = f"; {len(incomplete) - 1} other incomplete stage(s)" if len(incomplete) > 1 else ""
+        stopped = ""
+        if unit_run.stopped_by is not None:
+            stop_outcome = next(
+                (
+                    item
+                    for item in reversed(unit_run.outcomes)
+                    if item.plugin == unit_run.stopped_by and item.status == "failed"
+                ),
+                None,
+            )
+            detail = (
+                f": {stop_outcome.detail}"
+                if stop_outcome is not None and stop_outcome.detail
+                else ""
+            )
+            stopped = f"; additionally stopped by {unit_run.stopped_by!r}{detail}"
+        return (
+            "unit_incomplete",
+            f"{primary.plugin!r}: {primary.detail}{more}{stopped}",
+        )
+    if unit_run.stopped_by is not None:
+        stopped_outcome = next(
+            (
+                item
+                for item in reversed(unit_run.outcomes)
+                if item.plugin == unit_run.stopped_by and item.status == "failed"
+            ),
+            None,
+        )
+        detail = (
+            f": {stopped_outcome.detail}"
+            if stopped_outcome is not None and stopped_outcome.detail
+            else ""
+        )
+        return "unit_stopped", f"stopped by {unit_run.stopped_by!r}{detail}"
+    if unit_run.status is RunStatus.FAILED:
+        outcome = next(item for item in unit_run.outcomes if item.status == "failed")
+        detail = f": {outcome.detail}" if outcome.detail else ""
+        return "unit_failed", f"{outcome.plugin!r} failed{detail}"
+    return "unit_completed", "all required stages completed"
+
+
+def _emit_unit_finished(events: _RunEventEmitter, unit_run: UnitRun) -> None:
+    if not events.enabled:
+        return
+    reason_code, reason = _unit_finish_reason(unit_run)
+    events.emit(
+        RunEventEntity.UNIT,
+        RunEventAction.FINISHED,
+        status=unit_run.status.value,
+        reason_code=reason_code,
+        reason=reason,
+        unit_id=unit_run.unit.uid,
+    )
+
+
+def _run_finish_reason(run: RecipeRun) -> tuple[str, str]:
+    if not run.units:
+        return "no_units", "no units were selected"
+    tally = Counter(unit.status.value for unit in run.units)
+    reason = ", ".join(f"{count} {status}" for status, count in sorted(tally.items()))
+    return f"run_{run.status.value}", reason
+
+
 def run_recipe(
     recipe: Recipe,
     root: Path,
     config: dict[str, Any] | None = None,
     *,
     registry: Registry = REGISTRY,
+    observer: RunObserver | None = None,
 ) -> RecipeRun:
     """Walk ``recipe`` over the source tree at ``root``.
 
@@ -289,16 +455,63 @@ def run_recipe(
     is merged over the recipe's own per-stage config -- ranges, dims, setup
     calls, waivers all arrive that way, because they are facts about a target,
     not about the engine.
+
+    When supplied, ``observer`` receives the ordered lifecycle described by
+    :mod:`recast.observe`.  It observes decisions but makes none: no observer
+    value is read back into a stage.  An observer exception aborts delivery and
+    the run, so a durable control plane cannot silently lose part of its audit
+    trail.
     """
     config = dict(config or {})
     # Absolute from the start: stages hand paths to jobs that run elsewhere,
     # and a relative path is only meaningful in the directory it was typed in.
     root = Path(root).resolve()
+    events = _RunEventEmitter(recipe.name, observer)
+    events.emit(
+        RunEventEntity.RUN,
+        RunEventAction.STARTED,
+        status="running",
+        reason_code="run_requested",
+        reason=f"recipe {recipe.name!r} requested",
+    )
+    try:
+        run = _run_recipe(recipe, root, config, registry=registry, events=events)
+    except BaseException as error:
+        events.emit(
+            RunEventEntity.RUN,
+            RunEventAction.FINISHED,
+            status="aborted",
+            reason_code="run_exception",
+            reason=_exception_reason(error),
+        )
+        raise
+    if events.enabled:
+        reason_code, reason = _run_finish_reason(run)
+        events.emit(
+            RunEventEntity.RUN,
+            RunEventAction.FINISHED,
+            status=run.status.value,
+            reason_code=reason_code,
+            reason=reason,
+        )
+    return run
+
+
+def _run_recipe(
+    recipe: Recipe,
+    root: Path,
+    config: dict[str, Any],
+    *,
+    registry: Registry,
+    events: _RunEventEmitter,
+) -> RecipeRun:
+    """Implementation behind the public, observed run boundary."""
     problems = recipe.validate(config)
     if problems:
         raise ConfigError(f"recipe {recipe.name!r} config: " + "; ".join(problems))
 
     stages = recipe.stages(config)
+    indexed_stages = list(enumerate(stages))
     _require_walkable(recipe, stages)
     _require_available(stages, registry)
     _require_one_transform(recipe, stages)
@@ -334,28 +547,63 @@ def run_recipe(
     # than the runner's guess. Scanners and adjudicators joined it the day the
     # in-tree gitleaks wrapper was found calling subprocess because the
     # contract had given it nothing else.
-    executor_stage = next((s for s in stages if s.kind == "executor"), None)
+    executor_item = next((item for item in indexed_stages if item[1].kind == "executor"), None)
     handed = sorted({s.kind for s in stages if s.kind in _HANDED_AN_EXECUTOR})
-    if executor_stage is None and handed:
+    if executor_item is None and handed:
         raise ConfigError(
             f"recipe {recipe.name!r} declares {handed} stage(s), which are handed an "
             "executor, but declares no executor stage"
         )
-    executor = (
-        registry.get("executor", executor_stage.plugin)(**stage_config(executor_stage))
-        if executor_stage is not None
-        else None
-    )
-    executor_name = executor_stage.plugin if executor_stage is not None else ""
+    executor = None
+    executor_name = ""
+    if executor_item is not None:
+        executor_index, executor_stage = executor_item
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="executor_initializing",
+            reason=f"initializing executor {executor_stage.plugin!r}",
+            stage_index=executor_index,
+            stage_kind=executor_stage.kind,
+            stage_plugin=executor_stage.plugin,
+        )
+        try:
+            executor = registry.get("executor", executor_stage.plugin)(
+                **stage_config(executor_stage)
+            )
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="executor_exception",
+                reason=_exception_reason(error),
+                stage_index=executor_index,
+                stage_kind=executor_stage.kind,
+                stage_plugin=executor_stage.plugin,
+            )
+            raise
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status="ok",
+            reason_code="executor_ready",
+            reason="executor initialized",
+            stage_index=executor_index,
+            stage_kind=executor_stage.kind,
+            stage_plugin=executor_stage.plugin,
+        )
+        executor_name = executor_stage.plugin
 
-    frontend_stages = [s for s in stages if s.kind == "frontend"]
+    frontend_stages = [item for item in indexed_stages if item[1].kind == "frontend"]
     if not frontend_stages:
         raise ConfigError(f"recipe {recipe.name!r} declares no frontend stage")
     repeated = sorted(
         {
             s.plugin
-            for s in frontend_stages
-            if [t.plugin for t in frontend_stages].count(s.plugin) > 1
+            for _, s in frontend_stages
+            if [t.plugin for _, t in frontend_stages].count(s.plugin) > 1
         }
     )
     if repeated:
@@ -365,16 +613,69 @@ def run_recipe(
             "tree again and claim the same units -- so this is either a duplicate or an "
             "attempt at layering, which belongs inside a Frontend of your own."
         )
-    frontends = {
-        stage.plugin: registry.get("frontend", stage.plugin)(**stage_config(stage))
-        for stage in frontend_stages
-    }
+    frontends: dict[str, Any] = {}
+    for frontend_index, frontend_stage in frontend_stages:
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="frontend_initializing",
+            reason=f"initializing frontend {frontend_stage.plugin!r}",
+            stage_index=frontend_index,
+            stage_kind=frontend_stage.kind,
+            stage_plugin=frontend_stage.plugin,
+        )
+        try:
+            frontends[frontend_stage.plugin] = registry.get("frontend", frontend_stage.plugin)(
+                **stage_config(frontend_stage)
+            )
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="frontend_initialization_exception",
+                reason=_exception_reason(error),
+                stage_index=frontend_index,
+                stage_kind=frontend_stage.kind,
+                stage_plugin=frontend_stage.plugin,
+            )
+            raise
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status="ok",
+            reason_code="frontend_ready",
+            reason="frontend initialized",
+            stage_index=frontend_index,
+            stage_kind=frontend_stage.kind,
+            stage_plugin=frontend_stage.plugin,
+        )
+    frontend_stage_by_name = {stage.plugin: (index, stage) for index, stage in frontend_stages}
 
-    walked = [s for s in stages if s.kind not in _NOT_STEPS]
+    walked = [item for item in indexed_stages if item[1].kind not in _NOT_STEPS]
     oracle_cache: dict[str, OracleRef] = {}
 
-    def walk(unit_run: UnitRun, facts: Facts, steps: list[Stage], unit_workspace: Path) -> None:
-        for stage in steps:
+    def invoke(
+        stage_index: int,
+        stage: Stage,
+        unit_run: UnitRun,
+        facts: Facts,
+        unit_workspace: Path,
+    ) -> StageOutcome:
+        """Walk one stage bracketed by an observer-visible lifecycle."""
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="stage_scheduled",
+            reason=f"{stage.kind} plugin {stage.plugin!r} scheduled",
+            unit_id=unit_run.unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+        try:
             outcome = _walk_stage(
                 stage,
                 call_config(stage),
@@ -388,7 +689,68 @@ def run_recipe(
                 executor,
                 oracle_cache,
                 waived,
+                events,
+                stage_index,
             )
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="stage_exception",
+                reason=_exception_reason(error),
+                unit_id=unit_run.unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+            )
+            raise
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status=outcome.status,
+            reason_code=f"stage_{outcome.status}",
+            reason=outcome.detail,
+            unit_id=unit_run.unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+        return outcome
+
+    def not_run(stage_index: int, stage: Stage, unit: Unit, stopped_by: str) -> None:
+        """Expose a declared stage suppressed by an upstream stop."""
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="stage_considered",
+            reason=f"considering {stage.kind} plugin {stage.plugin!r}",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status="skipped",
+            reason_code="upstream_stop",
+            reason=f"not run because {stopped_by!r} stopped the unit",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
+
+    def walk(
+        unit_run: UnitRun,
+        facts: Facts,
+        steps: list[tuple[int, Stage]],
+        unit_workspace: Path,
+    ) -> None:
+        for position, (stage_index, stage) in enumerate(steps):
+            outcome = invoke(stage_index, stage, unit_run, facts, unit_workspace)
             unit_run.outcomes.append(outcome)
             if stage.kind == "oracle" and outcome.status == "ok":
                 unit_run.oracle = oracle_cache[outcome.detail]
@@ -406,24 +768,13 @@ def run_recipe(
                 # the failing Verdict is recorded. A gate that failed and was
                 # recorded is audit trail; one that failed and vanished is a
                 # rumor.
-                for later in steps[steps.index(stage) + 1 :]:
+                for later_index, later in steps[position + 1 :]:
                     if later.kind == "store":
                         unit_run.outcomes.append(
-                            _walk_stage(
-                                later,
-                                call_config(later),
-                                registry,
-                                recipe,
-                                executor_name,
-                                unit_run.unit,
-                                facts,
-                                unit_run,
-                                unit_workspace,
-                                executor,
-                                oracle_cache,
-                                waived,
-                            )
+                            invoke(later_index, later, unit_run, facts, unit_workspace)
                         )
+                    else:
+                        not_run(later_index, later, unit_run.unit, stage.plugin)
                 break
 
     # Repository scanners first, once, against a Unit that stands for the
@@ -434,38 +785,139 @@ def run_recipe(
     # Unit-subject scanners are left out of this walk, and repository ones
     # out of the per-unit walks below; neither is recorded as skipped on the
     # other's subject, because it was not asked.
-    repository_scanners = _repository_scanners(walked, registry)
+    repository_scanners = _repository_scanners([stage for _, stage in walked], registry)
     if repository_scanners:
         tree = Unit(uid=f"repository:{root.resolve().name}", kind="repository")
         tree_run = UnitRun(unit=tree)
         run.units.append(tree_run)
-        tree_workspace = workspace / "repository"
-        tree_workspace.mkdir(parents=True, exist_ok=True)
-        steps = [
-            s
-            for s in walked
-            if (s.kind == "scanner" and s.plugin in repository_scanners)
-            or s.kind in ("adjudicator", "store")
-        ]
-        walk(tree_run, Facts(unit=tree.uid), steps, tree_workspace)
+        events.emit(
+            RunEventEntity.UNIT,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="repository_scan_selected",
+            reason="repository-scoped scanners selected this synthetic unit",
+            unit_id=tree.uid,
+        )
+        try:
+            tree_workspace = workspace / "repository"
+            tree_workspace.mkdir(parents=True, exist_ok=True)
+            steps = [
+                (index, stage)
+                for index, stage in walked
+                if (stage.kind == "scanner" and stage.plugin in repository_scanners)
+                or stage.kind in ("adjudicator", "store")
+            ]
+            walk(tree_run, Facts(unit=tree.uid), steps, tree_workspace)
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.UNIT,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="unit_exception",
+                reason=_exception_reason(error),
+                unit_id=tree.uid,
+            )
+            raise
+        _emit_unit_finished(events, tree_run)
     unit_steps = [
-        s for s in walked if not (s.kind == "scanner" and s.plugin in repository_scanners)
+        (index, stage)
+        for index, stage in walked
+        if not (stage.kind == "scanner" and stage.plugin in repository_scanners)
     ]
 
-    for unit, owner in _selected_units(frontends, root, recipe, config):
+    frontend_positions = {name: index for name, (index, _stage) in frontend_stage_by_name.items()}
+    for unit, owner in _selected_units(
+        frontends,
+        root,
+        recipe,
+        config,
+        events=events,
+        frontend_positions=frontend_positions,
+        discovered_units=run.discovered_units,
+    ):
         unit_run = UnitRun(unit=unit)
         run.units.append(unit_run)
-        unit_workspace = workspace / unit.uid.replace(":", "_").replace("/", "_")
-        unit_workspace.mkdir(parents=True, exist_ok=True)
-
+        events.emit(
+            RunEventEntity.UNIT,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="unit_selected",
+            reason=f"frontend {owner!r} selected this unit",
+            unit_id=unit.uid,
+        )
         try:
-            facts = frontends[owner].analyze(unit, root)
-        except RecastError as error:
-            unit_run.outcomes.append(StageOutcome("frontend", owner, "failed", str(error)))
-            unit_run.stopped_by = owner
-            continue
-        unit_run.outcomes.append(StageOutcome("frontend", owner, "ok"))
-        walk(unit_run, facts, unit_steps, unit_workspace)
+            unit_workspace = workspace / unit.uid.replace(":", "_").replace("/", "_")
+            unit_workspace.mkdir(parents=True, exist_ok=True)
+            frontend_index, frontend_stage = frontend_stage_by_name[owner]
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.STARTED,
+                status="running",
+                reason_code="frontend_analysis_started",
+                reason=f"frontend {owner!r} analyzing unit",
+                unit_id=unit.uid,
+                stage_index=frontend_index,
+                stage_kind="frontend",
+                stage_plugin=owner,
+            )
+            try:
+                facts = frontends[owner].analyze(unit, root)
+            except RecastError as error:
+                outcome = StageOutcome("frontend", owner, "failed", str(error))
+                unit_run.outcomes.append(outcome)
+                unit_run.stopped_by = owner
+                events.emit(
+                    RunEventEntity.STAGE,
+                    RunEventAction.FINISHED,
+                    status="failed",
+                    reason_code="frontend_failed",
+                    reason=str(error),
+                    unit_id=unit.uid,
+                    stage_index=frontend_index,
+                    stage_kind="frontend",
+                    stage_plugin=owner,
+                )
+                for stage_index, stage in unit_steps:
+                    not_run(stage_index, stage, unit, owner)
+            except BaseException as error:
+                events.emit(
+                    RunEventEntity.STAGE,
+                    RunEventAction.FINISHED,
+                    status="aborted",
+                    reason_code="frontend_exception",
+                    reason=_exception_reason(error),
+                    unit_id=unit.uid,
+                    stage_index=frontend_index,
+                    stage_kind="frontend",
+                    stage_plugin=owner,
+                )
+                raise
+            else:
+                unit_run.facts = facts
+                unit_run.outcomes.append(StageOutcome("frontend", owner, "ok"))
+                events.emit(
+                    RunEventEntity.STAGE,
+                    RunEventAction.FINISHED,
+                    status="ok",
+                    reason_code="frontend_ok",
+                    reason="analysis completed",
+                    unit_id=unit.uid,
+                    stage_index=frontend_index,
+                    stage_kind="frontend",
+                    stage_plugin=owner,
+                )
+                walk(unit_run, facts, unit_steps, unit_workspace)
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.UNIT,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="unit_exception",
+                reason=_exception_reason(error),
+                unit_id=unit.uid,
+            )
+            raise
+        _emit_unit_finished(events, unit_run)
     return run
 
 
@@ -482,7 +934,12 @@ def _walk_stage(
     executor: Any,
     oracle_cache: dict[str, OracleRef],
     waived: frozenset[str] = frozenset(),
+    events: _RunEventEmitter | None = None,
+    stage_index: int | None = None,
 ) -> StageOutcome:
+    # ``_walk_stage`` is private but its defaults keep direct diagnostic use
+    # lightweight.  Production calls always pass the run's one emitter.
+    events = events or _RunEventEmitter(recipe.name, None)
     if stage.optional and stage.plugin not in registry.names(stage.kind):
         return StageOutcome(stage.kind, stage.plugin, "skipped", "optional plugin not installed")
     factory = registry.get(stage.kind, stage.plugin)
@@ -508,11 +965,73 @@ def _walk_stage(
             )
         if not transform.applicable(unit, facts):
             return StageOutcome(stage.kind, stage.plugin, "skipped", "not applicable to this unit")
+        events.emit(
+            RunEventEntity.CANDIDATE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="transform_applicable",
+            reason=f"transform {stage.plugin!r} accepted the unit",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+        )
         try:
             unit_run.candidate = transform.apply(unit, facts, config)
         except RecastError as error:
+            events.emit(
+                RunEventEntity.CANDIDATE,
+                RunEventAction.FINISHED,
+                status="failed",
+                reason_code="transform_refused",
+                reason=str(error),
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+            )
             return StageOutcome(stage.kind, stage.plugin, "failed", str(error))
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.CANDIDATE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="transform_exception",
+                reason=_exception_reason(error),
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+            )
+            raise
+        try:
+            candidate_digest = unit_run.candidate.digest() if events.enabled else None
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.CANDIDATE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="candidate_digest_exception",
+                reason=_exception_reason(error),
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+            )
+            raise
         deferred = len(unit_run.candidate.deferred)
+        events.emit(
+            RunEventEntity.CANDIDATE,
+            RunEventAction.FINISHED,
+            status="ok",
+            reason_code="candidate_produced",
+            reason=f"{deferred} deferred block(s)" if deferred else "candidate produced",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+            candidate_digest=candidate_digest,
+        )
         return StageOutcome(
             stage.kind, stage.plugin, "ok", f"{deferred} deferred block(s)" if deferred else ""
         )
@@ -532,12 +1051,56 @@ def _walk_stage(
             return StageOutcome(
                 stage.kind, stage.plugin, "failed", "no candidate to verify; transform never ran"
             )
-        verifier = factory()
-        verdict = verifier.verify(
-            unit, unit_run.candidate, unit_run.oracle, workspace, executor, config
+        candidate_digest = unit_run.candidate.digest() if events.enabled else None
+        events.emit(
+            RunEventEntity.VERDICT,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="verification_started",
+            reason=f"verifier {stage.plugin!r} judging candidate",
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+            candidate_digest=candidate_digest,
+            verifier=stage.plugin,
         )
+        try:
+            verifier = factory()
+            verdict = verifier.verify(
+                unit, unit_run.candidate, unit_run.oracle, workspace, executor, config
+            )
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.VERDICT,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="verification_exception",
+                reason=_exception_reason(error),
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+                candidate_digest=candidate_digest,
+                verifier=stage.plugin,
+            )
+            raise
         unit_run.verdicts.append(verdict)
         status = "ok" if verdict.passed else "failed"
+        events.emit(
+            RunEventEntity.VERDICT,
+            RunEventAction.FINISHED,
+            status=status,
+            reason_code="verdict_passed" if verdict.passed else "verdict_failed",
+            reason=verdict.detail,
+            unit_id=unit.uid,
+            stage_index=stage_index,
+            stage_kind=stage.kind,
+            stage_plugin=stage.plugin,
+            candidate_digest=verdict.candidate,
+            verifier=verdict.verifier,
+            confidence=verdict.confidence.value,
+        )
         return StageOutcome(
             stage.kind, stage.plugin, status, f"{verdict.confidence.value}: {verdict.detail}"
         )
@@ -610,9 +1173,59 @@ def _walk_stage(
             return StageOutcome(
                 stage.kind, stage.plugin, "ok", f"{len(unit_run.findings)} finding(s) recorded"
             )
-        for verdict in unit_run.verdicts:
-            evidence = _evidence(recipe, executor_name, unit, unit_run, verdict)
-            unit_run.evidence.append(store.put(evidence))
+        for evidence_index, verdict in enumerate(unit_run.verdicts):
+            events.emit(
+                RunEventEntity.EVIDENCE,
+                RunEventAction.STARTED,
+                status="running",
+                reason_code="evidence_recording",
+                reason=f"recording verdict from {verdict.verifier!r}",
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+                candidate_digest=verdict.candidate,
+                evidence_index=evidence_index,
+                verifier=verdict.verifier,
+                confidence=verdict.confidence.value,
+            )
+            try:
+                evidence = _evidence(recipe, executor_name, unit, unit_run, verdict)
+                uri = store.put(evidence)
+            except BaseException as error:
+                events.emit(
+                    RunEventEntity.EVIDENCE,
+                    RunEventAction.FINISHED,
+                    status="aborted",
+                    reason_code="evidence_exception",
+                    reason=f"record {evidence_index}: {_exception_reason(error)}",
+                    unit_id=unit.uid,
+                    stage_index=stage_index,
+                    stage_kind=stage.kind,
+                    stage_plugin=stage.plugin,
+                    candidate_digest=verdict.candidate,
+                    evidence_index=evidence_index,
+                    verifier=verdict.verifier,
+                    confidence=verdict.confidence.value,
+                )
+                raise
+            unit_run.evidence.append(uri)
+            events.emit(
+                RunEventEntity.EVIDENCE,
+                RunEventAction.FINISHED,
+                status="ok",
+                reason_code="evidence_recorded",
+                reason=f"record {evidence_index} stored",
+                unit_id=unit.uid,
+                stage_index=stage_index,
+                stage_kind=stage.kind,
+                stage_plugin=stage.plugin,
+                candidate_digest=verdict.candidate,
+                evidence_uri=uri,
+                evidence_index=evidence_index,
+                verifier=verdict.verifier,
+                confidence=verdict.confidence.value,
+            )
         return StageOutcome(
             stage.kind, stage.plugin, "ok", f"{len(unit_run.verdicts)} verdict(s) recorded"
         )
@@ -627,7 +1240,14 @@ def _walk_stage(
 
 
 def _selected_units(
-    frontends: dict[str, Any], root: Path, recipe: Recipe, config: dict[str, Any]
+    frontends: dict[str, Any],
+    root: Path,
+    recipe: Recipe,
+    config: dict[str, Any],
+    *,
+    events: _RunEventEmitter,
+    frontend_positions: dict[str, int],
+    discovered_units: list[Unit] | None = None,
 ) -> list[tuple[Unit, str]]:
     """Every frontend's units, unioned, each paired with the one that owns it.
 
@@ -644,16 +1264,54 @@ def _selected_units(
     discovered: list[tuple[Unit, str]] = []
     claimed: dict[str, str] = {}
     for name, frontend in frontends.items():
-        for unit in frontend.discover(root):
-            if unit.uid in claimed:
-                raise ConfigError(
-                    f"recipe {recipe.name!r}: frontends {claimed[unit.uid]!r} and {name!r} "
-                    f"both discovered {unit.uid!r}. A Unit has one set of Facts and no "
-                    "record of which frontend produced them, so one of the two has to be "
-                    "narrowed -- by config, or by not declaring both."
-                )
-            claimed[unit.uid] = name
-            discovered.append((unit, name))
+        stage_index = frontend_positions[name]
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.STARTED,
+            status="running",
+            reason_code="frontend_discovery_started",
+            reason=f"frontend {name!r} discovering units",
+            stage_index=stage_index,
+            stage_kind="frontend",
+            stage_plugin=name,
+        )
+        count = 0
+        try:
+            for unit in frontend.discover(root):
+                if unit.uid in claimed:
+                    raise ConfigError(
+                        f"recipe {recipe.name!r}: frontends {claimed[unit.uid]!r} and "
+                        f"{name!r} both discovered {unit.uid!r}. A Unit has one set of "
+                        "Facts and no record of which frontend produced them, so one of "
+                        "the two has to be narrowed -- by config, or by not declaring both."
+                    )
+                claimed[unit.uid] = name
+                discovered.append((unit, name))
+                if discovered_units is not None:
+                    discovered_units.append(unit)
+                count += 1
+        except BaseException as error:
+            events.emit(
+                RunEventEntity.STAGE,
+                RunEventAction.FINISHED,
+                status="aborted",
+                reason_code="frontend_discovery_exception",
+                reason=_exception_reason(error),
+                stage_index=stage_index,
+                stage_kind="frontend",
+                stage_plugin=name,
+            )
+            raise
+        events.emit(
+            RunEventEntity.STAGE,
+            RunEventAction.FINISHED,
+            status="ok",
+            reason_code="frontend_discovery_completed",
+            reason=f"discovered {count} unit(s)",
+            stage_index=stage_index,
+            stage_kind="frontend",
+            stage_plugin=name,
+        )
 
     wanted = config.get("units")
     if wanted:
@@ -676,12 +1334,13 @@ _STEPS = frozenset({"transform", "oracle", "verifier", "scanner", "adjudicator",
 _NOT_STEPS = frozenset({"executor", "frontend"})
 
 # Registered kinds that are not stages at all, and so are refused rather than
-# ignored: an ``agent`` is consulted by a non-deterministic Transform rather
-# than scheduled, and a ``recipe`` is what this *is*, not something it can
-# contain. Naming them here rather than letting them fall through as unknown
-# kinds is what keeps the three sets a partition of ``registry.KINDS``, so a
-# tenth kind cannot be added without deciding which of the three it is.
-_NOT_STAGES = frozenset({"agent", "recipe"})
+# ignored: an ``agent`` is consulted by a non-deterministic Transform, a
+# ``recipe`` is what this *is*, and an ``engine`` is catalog metadata describing
+# a recipe plus its artifact boundary. Naming them here rather than letting them
+# fall through as unknown kinds is what keeps the three sets a partition of
+# ``registry.KINDS``, so a new kind cannot be added without deciding which of
+# the three it is.
+_NOT_STAGES = frozenset({"agent", "recipe", "engine"})
 
 
 # Kinds whose plugins take an ``Executor`` argument. A recipe declaring any of

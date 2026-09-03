@@ -39,7 +39,14 @@ from recast.errors import OracleUnavailable, RecastError
 from recast.fortran.flatten import FORTRAN_TYPES, FlatPlan, plans_from_facts, signature
 from recast.fortran.tree import MODULE_DEFINITION, sources
 from recast.model import Facts, OracleRef, Unit
-from recast.oracle.f2py import DEFAULT_FLAGS, F2pyGoldenOracle
+from recast.oracle.f2py import (
+    DEFAULT_FLAGS,
+    F2pyGoldenOracle,
+    _extra_sources,
+    _regular_file,
+    _resolved_root,
+    _source_under_root,
+)
 from recast.plugins.executor import Executor, Job
 
 __all__ = ["F2pyFlatOracle", "factory", "fortran_adapter", "stub_sources", "unspellable"]
@@ -213,18 +220,32 @@ class F2pyFlatOracle(F2pyGoldenOracle):
         """Linker flags the extension module needs at load time."""
         return str(config.get("ldflags") or "")
 
+    # -- the engine's root boundary -------------------------------------------
+
+    # The engine's oracle reads the unit's source under the project root. This
+    # oracle hands it the adapter it generated instead: content-hashed as
+    # ``adapter_key`` the moment it was made, so the key trusts the bytes the
+    # digest was taken from; written under the workspace by materialize,
+    # where no project root contains it.
+
+    def _main_source(self, facts: Facts, root: Path) -> Path:
+        return _regular_file(Path(facts.provenance["source"]), label="flat adapter")
+
+    def _main_source_digest(self, facts: Facts, root: Path) -> str:
+        return str(facts.provenance["digest"])
+
     # -- the build plan -------------------------------------------------------
 
     def _plan(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> dict[str, Any]:
         """Everything the build depends on, decided without building."""
-        root = Path(config.get("root", ".")).resolve()
-        source = (root / facts.provenance["source"]).resolve()
+        root = _resolved_root(config.get("root", "."))
+        source = _source_under_root(root, facts.provenance.get("source"), label="main source")
         # One topological order over everything the unit uses, companions
         # and stubs alike -- a companion may use a stub, so neither group can
         # be placed as a block ahead of the other. The unit's own source goes
         # in as well: f2py is handed the adapter module, which uses it.
         library = [*stub_sources(source, root, []), source]
-        library += [Path(s).resolve() for s in config.get("extra_sources", [])]
+        library += _extra_sources(config)
         plans = plans_from_facts(facts)
         module = facts.interface["module"]
         spellable = self._subprograms(facts, config)
@@ -232,8 +253,7 @@ class F2pyFlatOracle(F2pyGoldenOracle):
         digest = hashlib.sha256()
         for path in library:
             digest.update(str(path).encode())
-            if path.is_file():
-                digest.update(path.read_bytes())
+            digest.update(path.read_bytes())
         flags = config.get("fflags", DEFAULT_FLAGS)
         for include in self.include_dirs(config):
             if f"-I{include}" not in flags:

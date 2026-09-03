@@ -103,13 +103,29 @@ def test_save_initializers_render_by_form(source: Path, renderer: Modules) -> No
     assert "table = np.array([np.float64('1.5'), np.float64('2.5')])" + tail % "float64" in body
 
 
-def test_an_unrecognized_initializer_is_an_honest_todo(source: Path, renderer: Modules) -> None:
+def test_an_unrecognized_initializer_is_deferred_not_guessed(
+    source: Path, renderer: Modules
+) -> None:
     """``sin(1.0_r8)`` is a constant expression Fortran folds at compile
     time; guessing its value here would bake in a rounding nobody checked.
-    ``None`` with the source text attached is a site for a human."""
-    body, _ = renderer.body(renderer._subprogram_nodes(source))
-    assert any(line.startswith("mystery = None  # TODO: init") for line in body)
+    The binding stays ``None`` so the module imports, and the refusal is
+    RECORDED as deferred work -- a comment alone let ``allocated(x)`` read
+    "never allocated" with nothing anywhere saying the translation is
+    incomplete."""
+    body, report = renderer.body(renderer._subprogram_nodes(source))
+    assert any(
+        line.startswith("mystery = None  # AGENT_QUEUE: module-state initializer not renderable")
+        for line in body
+    )
+    assert not any("TODO" in line and "mystery" in line for line in body)
+    deferred = [entry for entry in report if entry["key"] == "module-state:mystery"]
+    assert len(deferred) == 1
+    assert deferred[0]["status"] == "agent_queue"
+    assert deferred[0]["block"] == "S001"
+    assert "SIN(1.0_r8)" in deferred[0]["reason"]
+    # A binding the renderer CAN honour is not deferred.
     assert "unset = None  # module state (int32), set by init" in body
+    assert not any(entry["key"] == "module-state:unset" for entry in report)
 
 
 # --- factories ---------------------------------------------------------------
@@ -160,7 +176,14 @@ def test_py_lines_point_at_the_markers_of_the_finished_file(
     during emission, so they cannot drift from the file they describe."""
     text, report = renderer.render(source)
     lines = text.splitlines()
+    assert any(entry["block"] == "S001" for entry in report)
     for entry in report:
         first, last = entry["py_lines"]
+        if entry["block"] == "S001":
+            # Module state carries no block marker: its entry points at the
+            # one module-scope line that says it was refused.
+            assert first == last
+            assert lines[first - 1].startswith(f"{entry['subprogram']} = None  # AGENT_QUEUE: ")
+            continue
         assert lines[first - 1].startswith(f"    # {entry['block']} <- ")
         assert last >= first

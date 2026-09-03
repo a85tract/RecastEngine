@@ -339,7 +339,14 @@ def test_the_shipped_example_replays_bit_exact(tmp_path: Path) -> None:
     verdict = BitexactVerifier().verify(unit, candidate, ref, tmp_path, _executor(), config)
     assert verdict.confidence is Confidence.BIT_EXACT
     # Three recordings of a subprogram with two out-intent arguments over
-    # columns of 4, 3 and 2 levels: 2*(4+3+2).
-    assert verdict.metrics["points"] == 18
-    assert verdict.metrics["bit_exact"] == 18
+    # columns of 4, 3 and 2 levels, 2*(4+3+2), plus three recordings of a
+    # scalar function over the same columns, 3*1. Every translated
+    # subprogram of the unit is recorded: one that was not would be an
+    # uncovered translation, and the gate refuses to call that a pass.
+    assert verdict.metrics["points"] == 21
+    assert verdict.metrics["bit_exact"] == 21
     assert verdict.metrics["max_ulp"] == 0
+    compared = verdict.metrics["subprograms"]
+    assert set(compared) == {"settle", "column_mass"}
+    assert all(outcome["points"] > 0 for outcome in compared.values())
+    assert verdict.metrics["uncovered"] == []

@@ -702,11 +702,27 @@ class NumbaSubprograms(Subprograms):
             f'(L{span[0]}-L{span[1]}); state closure passed explicitly."""'
         )
         lines.extend(self._result_initializer(subprogram, semantics, statements))
-        lines.extend(self._prologue(subprogram, semantics, statements))
+        prologue_refusals: list[tuple[str, int, int]] = []
+        prologue_at = len(lines)
+        lines.extend(self._prologue(subprogram, semantics, statements, prologue_refusals))
         for argument in sorted(self.emission.error_args):
             lines.append(f"    _errflag_{argument} = 0")
 
         report: list[dict[str, Any]] = []
+        # The NumPy backend's rule, kept here: a prologue refusal is deferred
+        # work the report carries, not a comment the kernel raises past.
+        for at, (reason, low, high) in enumerate(prologue_refusals, start=1):
+            report.append(
+                {
+                    "subprogram": emit_name(subprogram),
+                    "key": subprogram_key(subprogram),
+                    "block": f"P{at:03d}",
+                    "src_span": [0, 0],
+                    "status": "agent_queue",
+                    "reason": reason,
+                    "py_lines": [prologue_at + low, prologue_at + high],
+                }
+            )
         for block, statement, block_span in chunk_subprogram(node):
             entry: dict[str, Any] = {
                 "subprogram": emit_name(subprogram),
@@ -816,7 +832,11 @@ class NumbaSubprograms(Subprograms):
         return f"def _{subprogram['name']}_k({', '.join(parts)}):"
 
     def _prologue(
-        self, subprogram: dict[str, Any], semantics: Any, statements: Statements
+        self,
+        subprogram: dict[str, Any],
+        semantics: Any,
+        statements: Statements,
+        refusals: list[tuple[str, int, int]] | None = None,
     ) -> list[str]:
         """The NumPy prologue, with derived locals flattened rather than made.
 
@@ -824,7 +844,10 @@ class NumbaSubprograms(Subprograms):
         enter nopython mode -- so those lines are dropped and one slot per
         component takes their place.
         """
-        lines = super()._prologue(subprogram, semantics, statements)
+        if refusals is None:
+            refusals = []
+        recorded: list[tuple[str, int, int]] = []
+        emitted = super()._prologue(subprogram, semantics, statements, recorded)
         assert self.emission is not None
         record = self.emission.kernels.record
         types = record.get("types", {})
@@ -833,13 +856,22 @@ class NumbaSubprograms(Subprograms):
             match = DERIVED.match(str(local.get("dtype")))
             if match is not None:
                 flattened[local["name"]] = match.group(1).lower()
-        lines = [
-            line
-            for line in lines
-            if not any(
-                f"{name} = _make_" in line or f"{name} = _new_" in line for name in flattened
-            )
-        ]
+        # Dropping factory lines shifts everything after them, so the
+        # refusal spans are re-based onto the kept lines rather than copied.
+        kept_index: dict[int, int] = {}
+        lines: list[str] = []
+        for at, line in enumerate(emitted):
+            if any(f"{name} = _make_" in line or f"{name} = _new_" in line for name in flattened):
+                continue
+            kept_index[at] = len(lines)
+            lines.append(line)
+        for reason, low, high in recorded:
+            kept = [kept_index[at] for at in range(low, high) if at in kept_index]
+            if not kept:
+                raise NoRule(
+                    f"prologue refusal {reason!r} emitted no line that survived flattening"
+                )
+            refusals.append((reason, kept[0], kept[-1] + 1))
         for name, type_name in flattened.items():
             specification = types.get(type_name, {})
             for component, spec in specification.items():

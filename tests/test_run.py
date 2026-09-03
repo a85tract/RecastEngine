@@ -18,6 +18,7 @@ import pytest
 from recast import WORKSPACE_DIRNAME
 from recast.errors import ConfigError, ScannerUnavailable
 from recast.model import (
+    Access,
     Candidate,
     Confidence,
     Disclosure,
@@ -28,6 +29,7 @@ from recast.model import (
     Unit,
     Verdict,
 )
+from recast.observe import RunEvent, RunEventAction, RunEventEntity
 from recast.plugins.adjudicator import Adjudicator
 from recast.plugins.executor import Executor, Job, JobResult
 from recast.plugins.frontend import Frontend
@@ -124,6 +126,28 @@ class FailVerifier(PassVerifier):
         )
 
 
+class ExplodingTransform(FakeTransform):
+    name = "fake.explode"
+
+    def apply(self, unit: Unit, facts: Facts, config: dict[str, Any]) -> Candidate:
+        raise RuntimeError("unexpected transform bug")
+
+
+class ExplodingVerifier(PassVerifier):
+    name = "fake.verify-explode"
+
+    def verify(self, unit, candidate, oracle, workspace, executor, config) -> Verdict:
+        raise RuntimeError("unexpected verifier bug")
+
+
+class RecordingObserver:
+    def __init__(self) -> None:
+        self.events: list[RunEvent] = []
+
+    def observe(self, event: RunEvent) -> None:
+        self.events.append(event)
+
+
 class MemoryStore(EvidenceStore):
     name = "fake-store"
     written: ClassVar[list[Any]] = []
@@ -159,9 +183,11 @@ def _registry() -> Registry:
     registry.register("executor", "fake-exec", FakeExecutor)
     registry.register("frontend", "fake-frontend", FakeFrontend)
     registry.register("transform", "fake.transform", FakeTransform)
+    registry.register("transform", "fake.explode", ExplodingTransform)
     registry.register("oracle", "fake-oracle", FakeOracle)
     registry.register("verifier", "fake.pass", PassVerifier)
     registry.register("verifier", "fake.fail", FailVerifier)
+    registry.register("verifier", "fake.verify-explode", ExplodingVerifier)
     registry.register("store", "fake-store", MemoryStore)
     # Entry-point discovery would add the real plugins; a fake registry must
     # not, so mark every kind as already discovered.
@@ -177,6 +203,7 @@ def _registry() -> Registry:
             "adjudicator",
             "agent",
             "recipe",
+            "engine",
         }
     )
     return registry
@@ -298,6 +325,258 @@ def test_evidence_carries_the_recipe_the_digest_and_the_reference(tmp_path: Path
     assert evidence.reference == {"oracle": "fake-oracle", "key": "shared-key"}
     assert evidence.environment["engine"].startswith("recast ")
     assert evidence.meta["timestamp"]
+
+
+# --- observation -------------------------------------------------------------
+
+
+def test_observer_receives_one_ordered_lifecycle(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    stages = _stages(
+        Stage("oracle", "fake-oracle"),
+        Stage("verifier", "fake.pass", gate=True),
+    )
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+
+    assert run.passed
+    assert [(event.entity, event.action) for event in observer.events] == [
+        (RunEventEntity.RUN, RunEventAction.STARTED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # executor initialization
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # frontend initialization
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # frontend discovery
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.UNIT, RunEventAction.STARTED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # frontend analysis
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # transform
+        (RunEventEntity.CANDIDATE, RunEventAction.STARTED),
+        (RunEventEntity.CANDIDATE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # oracle
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # verifier
+        (RunEventEntity.VERDICT, RunEventAction.STARTED),
+        (RunEventEntity.VERDICT, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.STARTED),  # store
+        (RunEventEntity.EVIDENCE, RunEventAction.STARTED),
+        (RunEventEntity.EVIDENCE, RunEventAction.FINISHED),
+        (RunEventEntity.STAGE, RunEventAction.FINISHED),
+        (RunEventEntity.UNIT, RunEventAction.FINISHED),
+        (RunEventEntity.RUN, RunEventAction.FINISHED),
+    ]
+    assert [event.sequence for event in observer.events] == list(range(1, len(observer.events) + 1))
+    assert len({event.run_id for event in observer.events}) == 1
+    assert all(event.access is Access.EMBARGOED for event in observer.events)
+
+    run_scope = [
+        event.reason_code
+        for event in observer.events
+        if event.entity is RunEventEntity.STAGE and event.unit_id is None
+    ]
+    assert run_scope == [
+        "executor_initializing",
+        "executor_ready",
+        "frontend_initializing",
+        "frontend_ready",
+        "frontend_discovery_started",
+        "frontend_discovery_completed",
+    ]
+
+    candidate = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.CANDIDATE and event.action is RunEventAction.FINISHED
+    )
+    assert candidate.reason_code == "candidate_produced"
+    assert candidate.candidate_digest == run.units[0].candidate.digest()
+
+    verdict = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.VERDICT and event.action is RunEventAction.FINISHED
+    )
+    assert verdict.reason_code == "verdict_passed"
+    assert verdict.candidate_digest == run.units[0].candidate.digest()
+    assert verdict.verifier == "fake.pass"
+    assert verdict.confidence == "sampled"
+
+    evidence = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.EVIDENCE and event.action is RunEventAction.FINISHED
+    )
+    assert evidence.evidence_uri == run.units[0].evidence[0]
+    assert evidence.verifier == "fake.pass"
+    assert evidence.confidence == "sampled"
+    assert evidence.evidence_index == 0
+    assert json.loads(json.dumps(evidence.to_record()))["event_id"] == evidence.event_id
+
+
+def test_observer_explains_a_failed_gate_and_suppressed_stage(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    stages = _stages(
+        Stage("verifier", "fake.fail", gate=True),
+        Stage("verifier", "fake.pass", gate=True),
+    )
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+
+    assert run.status is RunStatus.FAILED
+    suppressed = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.STAGE
+        and event.stage_plugin == "fake.pass"
+        and event.action is RunEventAction.FINISHED
+    )
+    assert (suppressed.status, suppressed.reason_code) == ("skipped", "upstream_stop")
+    assert "fake.fail" in suppressed.reason
+    unit_finished = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.UNIT and event.action is RunEventAction.FINISHED
+    )
+    assert (unit_finished.status, unit_finished.reason_code) == ("failed", "unit_stopped")
+    assert "deliberately" in unit_finished.reason
+    assert observer.events[-1].reason_code == "run_failed"
+
+
+def test_observer_closes_open_lifecycles_when_a_plugin_aborts(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("transform", "fake.explode"),
+        Stage("store", "fake-store"),
+    ]
+
+    with pytest.raises(RuntimeError, match="unexpected transform bug"):
+        run_recipe(
+            FakeRecipe(stages),
+            tmp_path,
+            {"units": ["fake:alpha"]},
+            registry=_registry(),
+            observer=observer,
+        )
+
+    finished = [
+        (event.entity, event.status, event.reason_code)
+        for event in observer.events
+        if event.action is RunEventAction.FINISHED
+    ]
+    assert finished[-4:] == [
+        (RunEventEntity.CANDIDATE, "aborted", "transform_exception"),
+        (RunEventEntity.STAGE, "aborted", "stage_exception"),
+        (RunEventEntity.UNIT, "aborted", "unit_exception"),
+        (RunEventEntity.RUN, "aborted", "run_exception"),
+    ]
+    assert all("unexpected transform bug" in event.reason for event in observer.events[-4:])
+
+
+def test_observer_closes_a_verdict_lifecycle_when_verification_aborts(
+    tmp_path: Path,
+) -> None:
+    observer = RecordingObserver()
+
+    with pytest.raises(RuntimeError, match="unexpected verifier bug"):
+        run_recipe(
+            FakeRecipe(_stages(Stage("verifier", "fake.verify-explode", gate=True))),
+            tmp_path,
+            {"units": ["fake:alpha"]},
+            registry=_registry(),
+            observer=observer,
+        )
+
+    finished = [
+        (event.entity, event.status, event.reason_code)
+        for event in observer.events
+        if event.action is RunEventAction.FINISHED
+    ]
+    assert finished[-4:] == [
+        (RunEventEntity.VERDICT, "aborted", "verification_exception"),
+        (RunEventEntity.STAGE, "aborted", "stage_exception"),
+        (RunEventEntity.UNIT, "aborted", "unit_exception"),
+        (RunEventEntity.RUN, "aborted", "run_exception"),
+    ]
+
+
+def test_verdict_is_structured_even_when_the_recipe_has_no_store(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    stages = [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        Stage("transform", "fake.transform"),
+        Stage("verifier", "fake.pass", gate=True),
+    ]
+
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+
+    assert run.passed
+    assert not [event for event in observer.events if event.entity is RunEventEntity.EVIDENCE]
+    verdicts = [event for event in observer.events if event.entity is RunEventEntity.VERDICT]
+    assert [(event.action, event.status) for event in verdicts] == [
+        (RunEventAction.STARTED, "running"),
+        (RunEventAction.FINISHED, "ok"),
+    ]
+    assert verdicts[-1].candidate_digest == run.units[0].candidate.digest()
+    assert verdicts[-1].confidence == "sampled"
+
+
+def test_stage_index_tracks_occurrences_when_a_stage_object_is_reused(tmp_path: Path) -> None:
+    observer = RecordingObserver()
+    repeated = Stage("verifier", "fake.pass")
+
+    run_recipe(
+        FakeRecipe(_stages(repeated, repeated)),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+        observer=observer,
+    )
+
+    finished = [
+        event.stage_index
+        for event in observer.events
+        if event.entity is RunEventEntity.VERDICT and event.action is RunEventAction.FINISHED
+    ]
+    assert finished == [3, 4]
+
+
+def test_no_observer_does_not_manufacture_observation_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_uuid() -> None:
+        raise AssertionError("the no-observer path asked for a run id")
+
+    monkeypatch.setattr("recast.run.uuid.uuid4", unexpected_uuid)
+    run = run_recipe(
+        FakeRecipe(_stages(Stage("verifier", "fake.pass", gate=True))),
+        tmp_path,
+        {"units": ["fake:alpha"]},
+        registry=_registry(),
+    )
+    assert run.passed
+    assert len(run.units[0].evidence) == 1
 
 
 def test_the_cli_resolves_plugin_recipes_from_the_registry() -> None:
@@ -904,10 +1183,27 @@ def test_an_incompleteness_outranks_a_failure(tmp_path: Path) -> None:
         Stage("scanner", "fake.missing"),
         Stage("adjudicator", "fake.confirm", gate=True),
     )
-    run = run_recipe(FakeRecipe(stages), tmp_path, registry=_incomplete_registry())
+    observer = RecordingObserver()
+    run = run_recipe(
+        FakeRecipe(stages),
+        tmp_path,
+        registry=_incomplete_registry(),
+        observer=observer,
+    )
     assert run.status is RunStatus.INCOMPLETE
     assert not run.passed
     assert run.units[0].stopped_by == "fake.confirm", "the gate still stopped the unit"
+    unit_finished = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.UNIT and event.action is RunEventAction.FINISHED
+    )
+    assert (unit_finished.status, unit_finished.reason_code) == (
+        "incomplete",
+        "unit_incomplete",
+    )
+    assert "fake.missing" in unit_finished.reason
+    assert "additionally stopped by 'fake.confirm'" in unit_finished.reason
 
 
 def test_a_run_that_walked_no_units_is_incomplete(tmp_path: Path) -> None:
