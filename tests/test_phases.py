@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -11,7 +12,8 @@ import pytest
 import recast.phases as phase_api
 from recast.engines import ArtifactContract, TranslationEngine
 from recast.errors import ConfigError, PluginError
-from recast.model import Candidate, Confidence, Facts, Unit, Verdict
+from recast.model import Candidate, Confidence, Facts, OracleRef, Unit, Verdict
+from recast.observe import RunEvent, RunEventAction, RunEventEntity
 from recast.phases import (
     CandidateBundle,
     EngineBinding,
@@ -21,6 +23,7 @@ from recast.phases import (
 )
 from recast.plugins.executor import Executor, Job, JobResult
 from recast.plugins.frontend import Frontend
+from recast.plugins.oracle import Oracle
 from recast.plugins.recipe import Recipe, Stage
 from recast.plugins.store import EvidenceStore
 from recast.plugins.transform import Transform
@@ -155,6 +158,28 @@ class MutatingVerifier(PhaseVerifier):
         return super().verify(unit, candidate, oracle, workspace, executor, config)
 
 
+class BrokenOracle(Oracle):
+    """An oracle whose build fails, as f2py does on Fortran it cannot wrap."""
+
+    name = "phase.oracle"
+
+    def key(self, unit, facts, config) -> str:
+        del facts, config
+        return f"{unit.uid}:oracle"
+
+    def materialize(self, unit, facts, workspace, executor, config) -> OracleRef:
+        del unit, facts, workspace, executor, config
+        raise PluginError("crackfortran: DO NOT COPY THIS SOURCE at /private/machine/root")
+
+
+class RecordingObserver:
+    def __init__(self) -> None:
+        self.events: list[RunEvent] = []
+
+    def observe(self, event: RunEvent) -> None:
+        self.events.append(event)
+
+
 class PhaseStore(EvidenceStore):
     name = "phase.store"
     records: ClassVar[list[Any]] = []
@@ -182,6 +207,22 @@ class PhaseRecipe(Recipe):
             Stage("executor", "phase.executor"),
             Stage("frontend", "phase.frontend"),
             Stage("transform", "phase.transform", config={"defer": config.get("defer", False)}),
+            Stage("verifier", "phase.gate", gate=True),
+            Stage("store", "phase.store"),
+        ]
+
+
+class StoppingRecipe(PhaseRecipe):
+    """The real shape of a rejected run: the oracle fails before the gate."""
+
+    name = "stopping"
+
+    def stages(self, config: dict[str, Any]) -> list[Stage]:
+        return [
+            Stage("executor", "phase.executor"),
+            Stage("frontend", "phase.frontend"),
+            Stage("transform", "phase.transform", config={"defer": config.get("defer", False)}),
+            Stage("oracle", "phase.oracle"),
             Stage("verifier", "phase.gate", gate=True),
             Stage("store", "phase.store"),
         ]
@@ -238,6 +279,7 @@ def _registry() -> Registry:
     registry.register("frontend", "phase.frontend", PhaseFrontend)
     registry.register("transform", "phase.transform", PhaseTransform)
     registry.register("verifier", "phase.gate", PhaseVerifier)
+    registry.register("oracle", "phase.oracle", BrokenOracle)
     registry.register("store", "phase.store", PhaseStore)
     engine = _engine()
     registry.register("engine", engine.id, engine)
@@ -427,6 +469,145 @@ def test_report_omits_source_bytes_details_metrics_store_uris_roots_and_time(
     assert "timestamp" not in encoded
     assert "metrics" not in encoded
     assert "detail" not in encoded
+
+
+def test_report_names_the_stage_that_stopped_a_unit_and_observer_gets_its_detail(
+    tmp_path: Path,
+) -> None:
+    registry = _registry()
+    bundle = transform_recipe(
+        StoppingRecipe(),
+        tmp_path,
+        None,
+        source_artifact_digest=_SOURCE,
+        registry=registry,
+        output=tmp_path / "runtime-output",
+        workspace=tmp_path / "runtime-workspace",
+    )
+    observer = RecordingObserver()
+    report = verify_recipe_candidates(
+        StoppingRecipe(),
+        tmp_path,
+        bundle,
+        expected_source_artifact_digest=_SOURCE,
+        expected_engine=EngineBinding.from_engine(_engine()),
+        registry=registry,
+        observer=observer,
+    )
+
+    assert not report.accepted
+    assert "gate.phase.gate" in report.reason_codes
+    (gate,) = report.gates
+    assert gate.missing_units == ("phase:alpha",)
+    unit = next(item for item in report.units if item.uid == "phase:alpha")
+    # The gate never ran; the report says which stage is to blame, by name only.
+    assert unit.stopped_by == "phase.oracle"
+    assert unit.to_dict()["stopped_by"] == "phase.oracle"
+    encoded = report.to_json().decode()
+    assert "crackfortran" not in encoded
+    assert "DO NOT COPY THIS SOURCE" not in encoded
+    assert "/private/machine/root" not in encoded
+
+    # The observer, and only the observer, is told why.
+    oracle_finished = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.STAGE
+        and event.action is RunEventAction.FINISHED
+        and event.stage_plugin == "phase.oracle"
+    )
+    assert (oracle_finished.status, oracle_finished.reason_code) == ("failed", "stage_failed")
+    assert "crackfortran: DO NOT COPY THIS SOURCE" in oracle_finished.reason
+    gate_finished = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.STAGE
+        and event.action is RunEventAction.FINISHED
+        and event.stage_plugin == "phase.gate"
+    )
+    assert (gate_finished.status, gate_finished.reason_code) == ("skipped", "upstream_stop")
+    assert "phase.oracle" in gate_finished.reason
+    # Suppressed stages are bracketed like every other: a start precedes the skip.
+    gate_lifecycle = [
+        (event.action, event.status, event.reason_code)
+        for event in observer.events
+        if event.entity is RunEventEntity.STAGE and event.stage_plugin == "phase.gate"
+    ]
+    assert gate_lifecycle == [
+        (RunEventAction.STARTED, "running", "stage_considered"),
+        (RunEventAction.FINISHED, "skipped", "upstream_stop"),
+    ]
+    unit_finished = next(
+        event
+        for event in observer.events
+        if event.entity is RunEventEntity.UNIT
+        and event.action is RunEventAction.FINISHED
+        and event.unit_id == "phase:alpha"
+    )
+    assert (unit_finished.status, unit_finished.reason_code) == ("failed", "unit_stopped")
+    assert "stopped by 'phase.oracle': crackfortran" in unit_finished.reason
+    assert [(e.entity, e.action) for e in observer.events[:1]] == [
+        (RunEventEntity.RUN, RunEventAction.STARTED)
+    ]
+    assert (observer.events[-1].entity, observer.events[-1].status) == (
+        RunEventEntity.RUN,
+        "failed",
+    )
+    assert [event.sequence for event in observer.events] == list(range(1, len(observer.events) + 1))
+
+    # A unit the gate passed reports no stop, and a run without an observer is unchanged.
+    accepted_bundle, accepted_registry = _bundle(tmp_path)
+    accepted = verify_recipe_candidates(
+        PhaseRecipe(),
+        tmp_path,
+        accepted_bundle,
+        expected_source_artifact_digest=_SOURCE,
+        expected_engine=EngineBinding.from_engine(_engine()),
+        registry=accepted_registry,
+    )
+    assert accepted.accepted
+    assert all(item.stopped_by is None for item in accepted.units)
+    assert all(item.to_dict()["stopped_by"] is None for item in accepted.units)
+
+
+def test_untransformed_unit_fails_the_verification_run_it_was_never_verified_in(
+    tmp_path: Path,
+) -> None:
+    bundle, registry = _bundle(tmp_path)
+    (transformed,) = bundle.units
+    untransformed = replace(
+        bundle, units=(replace(transformed, transform_status="skipped", candidate=None),)
+    )
+    observer = RecordingObserver()
+    report = verify_recipe_candidates(
+        PhaseRecipe(),
+        tmp_path,
+        untransformed,
+        expected_source_artifact_digest=_SOURCE,
+        expected_engine=EngineBinding.from_engine(_engine()),
+        registry=registry,
+        observer=observer,
+    )
+
+    assert not report.accepted
+    assert "binding.transform_coverage" in report.reason_codes
+    (unit,) = report.units
+    assert (unit.stage_status, unit.stopped_by) == ("incomplete", None)
+    # The run's terminal event agrees with the unit's, not with an outcome-less
+    # UnitRun that would have counted as passed.
+    lifecycle = [
+        (event.entity, event.action, event.status, event.reason_code)
+        for event in observer.events
+        if event.entity in {RunEventEntity.RUN, RunEventEntity.UNIT}
+    ]
+    assert lifecycle == [
+        (RunEventEntity.RUN, RunEventAction.STARTED, "running", "verification_requested"),
+        (RunEventEntity.UNIT, RunEventAction.STARTED, "running", "unit_bundled"),
+        (RunEventEntity.UNIT, RunEventAction.FINISHED, "incomplete", "unit_not_transformed"),
+        (RunEventEntity.RUN, RunEventAction.FINISHED, "failed", "verification_walked"),
+    ]
+    assert observer.events[-1].reason == "1 incomplete"
+    assert not any(event.entity is RunEventEntity.STAGE for event in observer.events)
 
 
 def test_verification_never_executes_caller_recipe_hooks(tmp_path: Path) -> None:

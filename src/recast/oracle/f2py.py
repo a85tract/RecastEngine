@@ -66,6 +66,11 @@ DEFAULT_FLAGS = "-O1 -fno-fast-math -ffp-contract=off"
 build rounds, and aggressive optimization is a second variable nobody asked
 to test."""
 
+_BUILD_LOG_TAIL_CHARS = 3000
+"""How much of a failed build's output the error itself quotes. The tail,
+because that is where crackfortran and the compiler report what they could
+not parse; small enough that the error stays a message, not a log."""
+
 _SAFE_SOURCE_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,10}\Z")
 """A suffix that is safe to reproduce on a canonical staging filename.
 
@@ -388,6 +393,19 @@ def companion_sources(facts: Facts, root: Path) -> list[Path]:
     return ordered
 
 
+def _log_tail(output: str, limit: int = _BUILD_LOG_TAIL_CHARS) -> str:
+    """The last ``limit`` characters of ``output``, cut at a line boundary and
+    saying how much came before."""
+    text = output.strip()
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    newline = tail.find("\n")
+    if 0 <= newline < limit // 2:
+        tail = tail[newline + 1 :]
+    return f"… [{len(text) - len(tail)} earlier characters of the build output omitted]\n{tail}"
+
+
 def _compiler_version(compiler: str) -> str:
     """The compiler's own version line. A metadata query, not a build --
     which is why it does not go through the executor: the *key* has to fold
@@ -541,9 +559,14 @@ class F2pyGoldenOracle(Oracle):
             ) from error
         if not result.ok:
             log = build / "f2py.log"
-            log.write_text(result.stdout + "\n" + result.stderr)
+            output = result.stdout + "\n" + result.stderr
+            log.write_text(output)
+            # The log lives in a workspace that is gone once the run returns,
+            # so the error carries the end of it -- where crackfortran and the
+            # compiler say what they could not parse -- not just its path.
             raise ConfigError(
-                f"f2py build for {unit.uid} failed (exit {result.returncode}); log at {log}"
+                f"f2py build for {unit.uid} failed (exit {result.returncode}); log at {log}\n"
+                + _log_tail(output)
             )
 
         sys.path.insert(0, str(stage))
