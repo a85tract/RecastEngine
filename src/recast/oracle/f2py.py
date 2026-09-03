@@ -470,7 +470,10 @@ class F2pyGoldenOracle(Oracle):
         executor: Executor,
         config: dict[str, Any],
     ) -> OracleRef:
-        key = self.key(unit, facts, config)
+        # The key of exactly the facts this build is of. A subclass that keys
+        # a wider plan (``F2pyFlatOracle``) hands facts of its own making in
+        # here and files the ref under its own key once the build is done.
+        key = F2pyGoldenOracle.key(self, unit, facts, config)
         build = workspace / f"oracle-{key.rsplit(':', 1)[-1]}"
         build.mkdir(parents=True, exist_ok=True)
 
