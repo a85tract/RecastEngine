@@ -80,6 +80,7 @@ relaying it, because a gate that binds the wrong array by substring and fills
 the rest with zeros can report a pass it has not earned."""
 
 _IMPLICIT_EXPONENT = re.compile(r"([+-]?\d+\.\d+)([+-]\d+)$")
+_INTEGER_LITERAL = re.compile(r"^[+-]?\d+$")
 """Fortran ``G`` editing drops the ``E`` when the exponent needs three digits,
 so ``1.0701116457083034-114`` is ``1.07...e-114`` and not a subtraction. Python
 cannot read it and the probes emit it, so it is read here."""
@@ -118,11 +119,16 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     name: str | None = None
     dims_text: str | None = None
     values: list[float] = []
+    all_integers = True  # every value of the section so far is an integer literal
 
     def flush() -> None:
         if not name or not values:
             return
-        array = np.array(values, dtype=np.float64)
+        # The recorder writes integer arrays with ``i0`` and reals with an
+        # exponent, so a section whose every value is an integer literal is an
+        # integer array: read it as int32, which is what the signature declares
+        # and what the exact comparison of a declared-integer output expects.
+        array = np.array(values, dtype=np.int32 if all_integers else np.float64)
         if dims_text:
             shape: list[int] = []
             for token in dims_text.split(","):
@@ -155,6 +161,7 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
             flush()
             target, name, dims_text = section.group(1), section.group(2).lower(), section.group(3)
             values = []
+            all_integers = True
             continue
 
         if line.startswith("#"):
@@ -181,10 +188,12 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
 
         try:
             values.append(float(line.replace("D", "E").replace("d", "e")))
+            all_integers = all_integers and _INTEGER_LITERAL.match(line) is not None
         except ValueError:
             implicit = _IMPLICIT_EXPONENT.match(line)
             if implicit:
                 values.append(float(f"{implicit.group(1)}E{implicit.group(2)}"))
+                all_integers = False
 
     flush()
     return inputs, outputs

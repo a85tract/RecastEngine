@@ -284,7 +284,7 @@ def _toy_physics() -> Path:
     return root
 
 
-def _replay(tmp_path: Path, dumps: Path) -> Any:
+def _replay(tmp_path: Path, dumps: Path, verifier_config: dict[str, Any] | None = None) -> Any:
     from recast.executors.local import LocalExecutor
     from recast.oracle.dump_replay import DumpReplayOracle
     from recast.registry import REGISTRY
@@ -304,7 +304,31 @@ def _replay(tmp_path: Path, dumps: Path) -> Any:
     ref = DumpReplayOracle().materialize(
         unit, facts, workspace, executor, {**config, "dumps": str(dumps)}
     )
-    return BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    return BitexactVerifier().verify(
+        unit, candidate, ref, workspace, executor, {**config, **(verifier_config or {})}
+    )
+
+
+def test_an_operator_may_declare_the_uncovered_subprogram_ungated_with_a_reason(
+    tmp_path: Path,
+) -> None:
+    """The same recording of only ``settle``; the operator says where
+    ``column_mass`` is compared instead. The unit passes on what was
+    compared, and the verdict carries the name and the reason. A declared
+    name that is not in this unit's table is not this unit's to report."""
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    for path in (_toy_physics() / "dumps").glob("settle_*.txt"):
+        shutil.copy(path, dumps / path.name)
+    why = "compared inside the driver's whole-step replay"
+    verdict = _replay(
+        tmp_path, dumps, {"ungated": {"column_mass": why, "not_in_this_unit": "typo"}}
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT
+    assert verdict.metrics["uncovered"] == []
+    assert verdict.metrics["ungated"] == {"column_mass": why}
+    assert f"column_mass ({why})" in verdict.detail
+    assert "not_in_this_unit" not in verdict.detail
 
 
 def test_a_translated_subprogram_nobody_compared_fails_the_unit_by_name(tmp_path: Path) -> None:

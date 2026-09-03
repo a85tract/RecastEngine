@@ -142,7 +142,12 @@ class BitexactVerifier(Verifier):
         # neither weakens the verdict for what was compared nor strengthens
         # it for what was not.
         handle = oracle.handle if isinstance(oracle.handle, dict) else {}
-        ungated = dict(handle.get("ungated") or {})
+        # ... and so must an operator who declared one ungated in config; the
+        # comparison put those it found in the table on the metrics.
+        ungated = {
+            **dict(handle.get("ungated") or {}),
+            **dict(verdict.metrics.get("ungated") or {}),
+        }
         if not ungated:
             return verdict
         return Verdict(
@@ -353,9 +358,17 @@ class BitexactVerifier(Verifier):
         # which no wrapper can reach and every public caller exercises; a
         # subprogram compared through its ``<name>_flat`` adapter, which calls
         # it on both sides; and one the oracle listed as ungated, whose
-        # reason ``verify`` carries onto the verdict.
+        # reason ``verify`` carries onto the verdict; and one the operator
+        # declared ungated in config, ``{name: why}``, for a reference this
+        # oracle cannot hold -- a routine a recording never reached because it
+        # is compared inside another unit's replay, say. The reason goes on
+        # the verdict with the oracle's, and a name not in this unit's table
+        # is not this unit's to report.
+        declared = {
+            name: str(why) for name, why in (config.get("ungated") or {}).items() if name in table
+        }
         compared = set(wanted)
-        ungated = set(handle.get("ungated") or {})
+        ungated = set(handle.get("ungated") or {}) | set(declared)
         uncovered = sorted(
             name
             for name, sub in table.items()
@@ -371,6 +384,7 @@ class BitexactVerifier(Verifier):
             "skipped": skipped,
             "uncovered": uncovered,
             "max_rel": worst_rel,
+            **({"ungated": declared} if declared else {}),
             **totals,
             **self._devices(translated, handle),
         }

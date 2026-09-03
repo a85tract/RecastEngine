@@ -78,6 +78,17 @@ def test_a_shape_that_does_not_multiply_out_keeps_the_flat_array() -> None:
     assert inputs["z"].shape == (4,)
 
 
+def test_an_integer_array_is_read_as_integers() -> None:
+    # The recorder writes integer arrays with i0 and reals with an exponent;
+    # a declared-integer output compared as float64 is refused by the gate.
+    inputs, outputs = parse_dump(
+        "# INPUT: nbot(1)\n-9999\n# INPUT: x(2)\n1.0\n2.0\n# OUTPUT: nbot(1)\n2\n"
+    )
+    assert inputs["nbot"].dtype == np.int32 and inputs["nbot"].tolist() == [-9999]
+    assert inputs["x"].dtype == np.float64
+    assert outputs["nbot"].dtype == np.int32 and outputs["nbot"].tolist() == [2]
+
+
 def test_the_probe_header_names_what_was_recorded() -> None:
     """The line upstream's parser drops, and the reason the fuzzy matcher existed."""
     assert parse_probe_header(PROBE) == ("toy", "scale_by_two")
