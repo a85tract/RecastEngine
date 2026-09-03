@@ -338,9 +338,14 @@ def test_compiler_semantics_is_frozen_into_transform_and_golden_oracle_config() 
 
     transform = phase_api._resolved_stage_config(Stage("transform", "phase.transform"), semantic)
     oracle = phase_api._resolved_stage_config(Stage("oracle", "f2py-golden"), semantic)
+    flat = phase_api._resolved_stage_config(Stage("oracle", "f2py-golden-flat"), semantic)
 
     assert transform == {"profile": "gfortran"}
     assert oracle == {"fc": "gfortran"}
+    # The flat oracle builds the reference with ``fc`` too; a compiler bound
+    # at the top level that it never saw would be one the bundle's identity
+    # names and no build used.
+    assert flat == {"fc": "gfortran"}
     with pytest.raises(ConfigError, match="contradicts compiler_semantics"):
         phase_api._resolved_stage_config(
             Stage("transform", "phase.transform", config={"profile": "ifx"}),

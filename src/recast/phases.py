@@ -984,7 +984,9 @@ def _resolved_stage_config(
         inherited: tuple[str, str] | None = None
         if stage.kind == "transform":
             inherited = ("profile", compiler_semantics)
-        elif stage.kind == "oracle" and stage.plugin == "f2py-golden":
+        elif stage.kind == "oracle" and stage.plugin in ("f2py-golden", "f2py-golden-flat"):
+            # The flat oracle compiles the same reference, plus the tree it
+            # uses, with the same compiler: it reads ``fc`` for both builds.
             inherited = ("fc", compiler_semantics)
         if inherited is not None:
             key, value = inherited
