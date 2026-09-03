@@ -176,3 +176,20 @@ and both are needed. See CONTRIBUTING.md.
      missing tool counted as a check that did not complete, and the idea that
      the honest place to fake a wrapped tool is PATH rather than the wrapper.
      What is new is the expression of all of that against the plugin contract.
+
+  recast/verify/probe_protocol.py and recast/verify/probe_inject.py  -- the
+     probe protocol and its comparison, from gate_sdk/gate.h and
+     gate_sdk/scripts/gate_harness.py and stdout_compare.py in ParaCodex
+     (Scientific-Computing-Lab/ParaCodex, MIT). Written by Erel Kaplan and
+     the ParaCodex authors (Kaplan, Bitan, Ghrayeb, Chen, Yotam, Hasabnis,
+     Oren, arXiv:2601.04327). What is theirs is the protocol -- the two line
+     forms a program prints, the checksum-identical / statistics-within-
+     tolerance / deterministic-across-runs rule in that order, the 1e-2
+     default, and the stdout comparison's three readings -- carried here
+     with the same regular expressions so a program instrumented for their
+     harness is judged the same way. What is new is that it returns a record
+     rather than exiting, two suite-specific readings of a program's own
+     verdict (NPB's, Rodinia's) the word list got wrong, and the injection:
+     their supervisor agent placed the probes in both programs by hand; the
+     engine places a candidate's into the reference by anchor matching and
+     refuses when the place is not unique.

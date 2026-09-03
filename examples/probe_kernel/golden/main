@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "PASS"
+printf "GATE:SUM name=out dtype=u32 algo=fnv1a64 value=00ff n=4\nGATE:STAT name=out dtype=f32 n=4 min=0 max=3 mean=1.5 L1=6 L2=3.74\n"

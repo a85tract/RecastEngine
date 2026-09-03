@@ -602,6 +602,83 @@ def _with_a_refused_block(scratch: Path) -> TransformSubject:
     return _fortran_subject(scratch, _DEFERS, "fortran:conformance_defers")
 
 
+# --- c-kernel, executable-golden, differential.probes, performance.benchmark --
+#
+# Four plugins from the ParaCodex case (C kernels to OpenMP offload), held
+# here without a C compiler: the "programs" are shell scripts that print what
+# an instrumented program prints, the build spec is a ``chmod``, and every
+# rule about staging, keys, refusals and verdicts is exercised for real.
+
+_PROBE_LINES = (
+    "GATE:SUM name=out dtype=u32 algo=fnv1a64 value=00ff n=4\n"
+    "GATE:STAT name=out dtype=f32 n=4 min=0 max=3 mean=1.5 L1=6 L2=3.74\n"
+)
+
+
+def _probe_script(mean: str = "1.5") -> bytes:
+    lines = _PROBE_LINES.replace("mean=1.5", f"mean={mean}")
+    return f'#!/bin/sh\necho "PASS"\nprintf "{lines}"\n'.encode()
+
+
+def _plant_c_kernel(root: Path) -> None:
+    kernel = root / "kern"
+    kernel.mkdir(parents=True)
+    (kernel / "Makefile").write_text("program = main\nsource = main.cpp\nRUN_ARGS ?= 8\n")
+    (kernel / "main.cpp").write_text("int main() { for (int i = 0; i < 8; i++) {} return 0; }\n")
+
+
+def _plant_c_workspace_artifact(workspace: Path) -> None:
+    (workspace / "main.cpp").write_text("int main() { return 0; }\n")
+
+
+PROBE_KERNEL = Path(__file__).resolve().parents[3] / "examples" / "probe_kernel"
+"""The repository's own pair of probe-printing scripts, the reference and a
+candidate that agrees with it; see its README."""
+
+
+_C_UNIT = Unit(
+    uid="c:cand",
+    kind="kernel",
+    attrs={
+        "build": {"dir": "cand", "steps": [["chmod", "+x", "main"]], "program": "main"},
+        "golden": {"dir": "golden", "steps": [], "program": "main", "sources": ["main"]},
+    },
+)
+
+
+def _c_facts() -> Facts:
+    return Facts(unit=_C_UNIT.uid, provenance={"revision": "r1"})
+
+
+def _c_other_source(facts: Facts) -> Facts:
+    return replace(facts, provenance={"revision": "r2"})
+
+
+def _probes_candidate(workspace: Path) -> Candidate:
+    return Candidate(
+        unit=_C_UNIT.uid, transform="conformance.relay", files={Path("cand/main"): _probe_script()}
+    )
+
+
+def _probes_break(candidate: Candidate) -> Candidate:
+    """A statistic off by far more than the tolerance; the checksum too."""
+    return replace(candidate, files={Path("cand/main"): _probe_script(mean="9")})
+
+
+def _benchmark_break(candidate: Candidate) -> Candidate:
+    """A program that crashes cannot be timed."""
+    return replace(candidate, files={Path("cand/main"): b"#!/bin/sh\nexit 1\n"})
+
+
+def _executable_oracle(workspace: Path, executor: Executor) -> OracleRef:
+    from recast.oracle.executable import ExecutableGoldenOracle
+
+    return ExecutableGoldenOracle().materialize(_C_UNIT, _c_facts(), workspace, executor, _C_CONFIG)
+
+
+_C_CONFIG: dict[str, Any] = {"root": str(PROBE_KERNEL), "toolchain": {"cc": "cc"}}
+
+
 PLUGIN_SET = PluginSet(
     name="recast",
     executors=(ExecutorCase(name="local"),),
@@ -618,6 +695,12 @@ PLUGIN_SET = PluginSet(
             plant_tree=_plant_python_numpy,
             expect_uids=("python:kernel.py",),
             plant_workspace_artifact=_plant_python_workspace_artifact,
+        ),
+        FrontendCase(
+            name="c-kernel",
+            plant_tree=_plant_c_kernel,
+            expect_uids=("c:kern",),
+            plant_workspace_artifact=_plant_c_workspace_artifact,
         ),
     ),
     transforms=(
@@ -655,6 +738,20 @@ PLUGIN_SET = PluginSet(
             move_the_source=_different_source,
             materializes=False,
             submits_jobs=False,
+        ),
+        OracleCase(
+            # A program run as the reference. Its key folds the compiler's
+            # identity and the arguments, and its refusals are the executor's.
+            name="executable-golden",
+            unit=_C_UNIT,
+            facts=_c_facts,
+            config=_C_CONFIG,
+            moves_the_key={
+                "the compiler": {"toolchain": {"cc": "cc -O0"}},
+                "the arguments": {"run_args": ["4"]},
+            },
+            move_the_source=_c_other_source,
+            materializes=True,
         ),
         OracleCase(
             # The one oracle here that needs no toolchain: it derives its
@@ -758,6 +855,29 @@ PLUGIN_SET = PluginSet(
             candidate=_complete_candidate,
             break_candidate=_complete_break,
             expect=Confidence.SAMPLED,
+        ),
+        VerifierCase(
+            # Two scripts printing probes; the gate stages, "builds" and runs
+            # both through the executor, so a refusing one fails it closed.
+            name="differential.probes",
+            unit=_C_UNIT,
+            candidate=_probes_candidate,
+            break_candidate=_probes_break,
+            oracle=_executable_oracle,
+            expect=Confidence.TOLERANCED,
+            submits_jobs=True,
+            config={**_C_CONFIG, "runs": 2},
+        ),
+        VerifierCase(
+            # A measurement, not a comparison: it needs no oracle, and says
+            # so, which is why an unavailable one is not its concern.
+            name="performance.benchmark",
+            unit=_C_UNIT,
+            candidate=_probes_candidate,
+            break_candidate=_benchmark_break,
+            expect=Confidence.SAMPLED,
+            submits_jobs=True,
+            config={**_C_CONFIG, "profiler": "wall", "runs": 1},
         ),
         VerifierCase(
             name="static.rwset",

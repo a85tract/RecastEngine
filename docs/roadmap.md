@@ -1415,6 +1415,35 @@ already.
 **Done when:** the engine works without it, and it needed no engine patches. Any
 patch it did need is a hole in the contract, and the hole is the finding.
 
+### C kernels, probes and GPU time, 2026-09-02: from the ParaCodex case
+
+The second reproduction case (`paracodex-reproduction`: arXiv:2601.04327,
+serial C/C++ kernels to OpenMP GPU offload) needed four things the engine
+did not have, and none of them is about ParaCodex or about benchmarks, so
+they landed in-tree the way the CLM-ml case's flattening and recorder did:
+
+| plugin | kind | what it is |
+|---|---|---|
+| `c-kernel` | frontend | a program directory as a Unit -- `main.c[pp]` or a Makefile naming `program`; Facts from a lexical scan (loops, nesting, allocations, a timed region, pragmas) that says it is lexical |
+| `executable-golden` | oracle | a reference program built and run; the key folds the compiler's identity and the arguments |
+| `differential.probes` | verifier | two programs printing the same probes (`gate.h`: checksums identical, statistics within 1e-2, deterministic across runs), the candidate's probes carried onto a copy of the reference by anchor matching; stdout comparison as the fallback and `SAMPLED` |
+| `performance.benchmark` | verifier | device time by Nsight Systems or the NVIDIA HPC runtime's `NV_ACC_TIME`, wall-clock where neither exists; fills the slot `port` declared and nothing filled |
+
+How a directory builds is not the engine's to know. The frontend writes a
+*build spec* into `attrs` -- argument vectors with `{cc}`-style placeholders
+-- and `recast.c.build` renders it with the operator's `toolchain` table at
+run time; a suite's Makefile conventions (HeCBench's template, NPB's
+`CLASS=`, a golden with no Makefile at all) are a case frontend's, written
+by subclassing `c-kernel`. The conformance cases run the four on shell
+scripts under `examples/probe_kernel/`, so no compiler is needed to hold
+them; the C-compiling path is held by the case repository on its own
+machines.
+
+Two engine findings from the case, not fixed here: a transform that raises
+anything but a `RecastError` ends the whole walk (`run.py` catches only
+that), and `Oracle`/`Verifier` still have no `applicable`, so a mixed-language
+tree reaches every oracle.
+
 ### The column orchestrator, 2026-08-30 to 09-02: what it forced out, and one thing landed ahead of upstream
 
 Porting CLM-ml's whole time step (`MLCanopyFluxes`: six sub-steps, five

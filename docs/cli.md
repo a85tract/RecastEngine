@@ -91,7 +91,7 @@ a path to a `.json` or `.toml` file. Same object either way, and
 | Recipe | Keys of its own |
 |---|---|
 | `translate` | `target` — `numpy` (default), `numba`, `cuda`, or `tree`: the NumPy translation of a unit that `use`s sibling modules in the same tree, with their translations bundled into the candidate so the gate can import it |
-| `port` | `backend` — `jax` (default), `numba` or `cuda`. `oracle` — what to gate against, `numpy-anchor` by default; `dump-replay` also requires `dumps` |
+| `port` | `backend` — `jax` (default), `numba` or `cuda`. `oracle` — what to gate against, `numpy-anchor` by default; `dump-replay` also requires `dumps`. `benchmark` — `true` adds the `performance.benchmark` measurement after the gate, for a unit whose attrs carry a build spec |
 | `refactor-todo` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
 | `audit` | none |
 | `python-to-numba` | fixed `target=numba`, `frontend=python-numpy`; local executor |
