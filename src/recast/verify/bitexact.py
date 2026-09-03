@@ -350,9 +350,7 @@ class BitexactVerifier(Verifier):
         # lands here by construction, because coverage is judged against what
         # was TRANSLATED, not against whatever survived the filters.
         uncovered = sorted(
-            name
-            for name in table
-            if name not in deferred_subprograms and name not in set(wanted)
+            name for name in table if name not in deferred_subprograms and name not in set(wanted)
         )
         metrics = {
             "subprograms": per_subprogram,

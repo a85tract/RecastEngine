@@ -92,7 +92,7 @@ def _token_pass_guessed(text: str, spelled: str) -> bool:
     if "//" in text:
         return True
     constructed = ARRAY_CONSTRUCTOR.search(text)
-    return bool(constructed) and constructed.span() != (0, len(text))
+    return constructed is not None and constructed.span() != (0, len(text))
 
 
 def _is_expression(text: str) -> str | bool:
@@ -697,10 +697,7 @@ class Subprograms:
             try:
                 value = self._parameter_value(initializer.strip(), own_parameters, statements)
             except REFUSED as refusal:
-                reason = (
-                    f"local parameter {parameter['name']} ({refusal}): "
-                    f"{initializer.strip()}"
-                )
+                reason = f"local parameter {parameter['name']} ({refusal}): {initializer.strip()}"
                 _emit(
                     [
                         f"    # AGENT_QUEUE: {reason}",
