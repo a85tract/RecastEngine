@@ -226,12 +226,20 @@ class Modules:
         for type_name, components in semantics_types.items():
             lines.extend(self._factory(type_name, components))
         for state in self.subprograms.record["module_state"]:
-            lines.extend(self._state(state))
+            lines.extend(self._state(state, report))
         lines.append("")
         for record in self.subprograms.record["subprograms"]:
             node = nodes.get(subprogram_key(record))
             if node is None:
-                continue
+                # The interface record and the parse pass disagree about what
+                # exists. Dropping the subprogram here shipped a file whose
+                # coverage note claimed it was attempted; a broken invariant
+                # is a crash, not a gap.
+                raise RuntimeError(
+                    f"subprogram {subprogram_key(record)!r} has an interface "
+                    "record but no parse node; refusing to emit a module "
+                    "with a silent hole"
+                )
             rendered, entries = self.subprograms.render(node, subprogram_key(record))
             lines.extend(rendered)
             report.extend(entries)
@@ -277,7 +285,29 @@ class Modules:
 
     # -- module state ---------------------------------------------------------
 
-    def _state(self, state: dict[str, Any]) -> list[str]:
+    def _state(
+        self, state: dict[str, Any], report: list[dict[str, Any]] | None = None
+    ) -> list[str]:
+        # Policy: module state the renderer cannot honestly initialize keeps
+        # its None binding (the module must import for anything else to be
+        # checked) but is RECORDED as deferred work -- a comment alone let
+        # `allocated(x)` silently read "never allocated" with no entry
+        # anywhere saying the translation is incomplete.
+        def _refuse(reason: str) -> list[str]:
+            if report is not None:
+                report.append(
+                    {
+                        "subprogram": str(state["name"]),
+                        "key": f"module-state:{state['name']}",
+                        "block": "S001",
+                        "src_span": [0, 0],
+                        "status": "agent_queue",
+                        "reason": reason,
+                        "py_lines": [0, 0],
+                    }
+                )
+            return [f"{pysafe(state['name'])} = None  # AGENT_QUEUE: {reason}"]
+
         parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
         initializer = str(state.get("init_expr") or "").strip()
         lowered = initializer.lower()
@@ -325,23 +355,21 @@ class Modules:
                             f"{state['name']} = np.zeros(({shape},), "
                             f"dtype={dtype})  # module array state"
                         ]
-                    return [
-                        f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
-                        f"{SAVE_ARRAY_REFUSAL} (init {initializer!r})"
-                    ]
+                    return _refuse(f"{SAVE_ARRAY_REFUSAL} (init {initializer!r})")
             if initializer:
                 # A bound no module-scope name resolves, and an initializer to
                 # broadcast across it: the shape is not knowable here, and
                 # guessing one would be a silently wrong buffer.
-                return [
-                    f"{pysafe(state['name'])} = None  # AGENT_QUEUE: "
-                    f"{SAVE_ARRAY_REFUSAL} (dims not static)"
-                ]
+                return _refuse(f"{SAVE_ARRAY_REFUSAL} (dims not static)")
             return [
                 f"{pysafe(state['name'])} = None  # allocatable/assumed module array, set by init"
             ]
         if state["init_expr"]:
             value = self._state_value(state, parameters)
+            if value.startswith("None  # TODO"):
+                return _refuse(
+                    f"module-state initializer not renderable: {state['init_expr']!r}"
+                )
             return [
                 f"{pysafe(state['name'])} = {value}  # module state "
                 f"({state['dtype']}), Fortran save-init"
