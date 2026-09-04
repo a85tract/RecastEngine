@@ -1811,3 +1811,12 @@ def test_the_specifics_of_a_public_generic_are_public_through_it(tmp_path: Path)
     assert by_name["solve_many"]["public"] and by_name["solve_many"]["public_via"] == "solve"
     assert not by_name["helper"]["public"] and "public_via" not in by_name["helper"]
     assert record["generics"] == {"solve": ["solve_one", "solve_many"]}
+
+
+def test_a_siblings_generic_is_a_procedure_to_the_read_write_scope(tmp_path: Path) -> None:
+    """A call into a companion spells the generic (CLUBB's ``zt2zm_api``);
+    without an entry for it the scope counted the name as a read of data."""
+    record = interface.extract(_write(tmp_path, "solve.f90", PUBLIC_GENERIC))
+    table = interface.companion_externals(record)
+    assert table["solve"] == {"kind": "subroutine", "out_positions": [1, 2]}
+    assert table["solve_one"]["out_positions"] == [1]
