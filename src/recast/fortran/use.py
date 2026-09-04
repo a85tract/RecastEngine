@@ -18,7 +18,7 @@ from typing import Any
 
 from recast.errors import RecastError
 from recast.fortran._parse import f03, parse, walk
-from recast.fortran.expr import Expr, build, names_used
+from recast.fortran.expr import Expr, build, names_used, substitute
 
 
 class UnresolvedConstant(RecastError):
@@ -81,7 +81,9 @@ def resolve(symbols: list[str], sources: list[Path]) -> list[dict[str, Any]]:
             raise UnresolvedConstant(f"no initializer for {name!r} in {[str(s) for s in sources]}")
         seen.add(name)
         node, line = table[name]
-        expr: Expr = build(node)
+        # The one legal self-reference, a kind inquiry on the constant being
+        # declared, stands for its kind alone; see ``expr.substitute``.
+        expr: Expr = substitute(build(node), name, Expr("real", "1.0"))
         for dep in names_used(expr):
             need(dep)
         ordered.append(
