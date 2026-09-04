@@ -189,16 +189,25 @@ def _split_arguments(tokens: list[str]) -> list[list[str]]:
     return arguments
 
 
-def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str, str]] | None:
+def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str, Any]] | None:
     """One argument as tokens of the same vocabulary; ``None`` if it names
     something no earlier constant defines."""
-    spelled: list[dict[str, str]] = []
-    for piece in tokens:
+    spelled: list[dict[str, Any]] = []
+    at = 0
+    while at < len(tokens):
+        piece = tokens[at]
         if re.match(r"[A-Za-z_]", piece):
+            if piece.lower() in INTRINSICS and at + 1 < len(tokens) and tokens[at + 1] == "(":
+                # A call inside an argument: ``max( 1.e-10, epsilon(tol) )``.
+                call, at = _intrinsic_call(tokens, at, known_names)
+                if call is None:
+                    return None
+                spelled.append(call)
+                continue
             if piece.lower() in known_names:
                 spelled.append({"t": "ref", "v": piece.lower()})
             elif _KIND_ARGUMENT.match(piece):
-                continue
+                pass
             else:
                 return None
         elif re.match(r"\d", piece):
@@ -209,7 +218,11 @@ def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str,
                 spelled.append({"t": "int", "v": base})
         else:
             spelled.append({"t": "op", "v": piece})
+        at += 1
     return spelled
+
+
+_KIND_INQUIRIES = frozenset({"epsilon", "huge", "tiny"})
 
 
 def _intrinsic_call(
@@ -219,7 +232,12 @@ def _intrinsic_call(
 
     A trailing kind argument -- ``real(x, r8)`` -- is dropped: it says what
     precision the compiler evaluated in, which the target's own float64 is,
-    and it is not a value to pass on.
+    and it is not a value to pass on. The argument of a kind inquiry --
+    ``epsilon(pi)``, ``huge(x)`` -- contributes its kind and no value, and
+    may legally be the constant being declared
+    (``tol = max( 1.e-10_core_rknd, epsilon(tol) )``, CLUBB); when it names
+    nothing yet defined the call is kept with no argument, which is what the
+    target renders anyway.
     """
     name = tokens[at].lower()
     depth = 0
@@ -242,6 +260,10 @@ def _intrinsic_call(
         kept.append(argument)
     spelled = [_argument_tokens(argument, known_names) for argument in kept]
     if any(text is None for text in spelled):
+        if name in _KIND_INQUIRIES:
+            # The argument names nothing yet defined -- the constant itself,
+            # legally -- and only its kind was ever asked for.
+            return {"t": "call", "v": name, "args": []}, end + 1
         return None, end + 1
     return {"t": "call", "v": name, "args": spelled}, end + 1
 

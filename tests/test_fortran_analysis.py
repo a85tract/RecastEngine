@@ -513,7 +513,7 @@ def test_intrinsic_calls_in_initializers_fold_the_same_on_both_sides(tmp_path: P
     # The self-reference is gone from the tree, so it is not a dependency.
     assert "tol" not in expr.names_used(got["tol"])
     scope: dict[str, object] = {}
-    exec(use_constants_module(resolved, "tol_mod"), scope)  # noqa: S102 -- generated text under test
+    exec(use_constants_module(resolved, "tol_mod"), scope)  # generated text under test
     assert scope["EPS"] == np.float64(1.0e-10)
     assert scope["TOL"] == np.float64(1.0e-10)
     assert scope["THREE"] == np.float64(3.0) and type(scope["THREE"]) is np.float64
@@ -1707,3 +1707,26 @@ def test_character_parameters_fold_and_fit_or_stay_a_skip() -> None:
     assert (char_length("CHARACTER(LEN = 4)"), char_length("CHARACTER(LEN = *)")) == (4, "*")
     assert (char_length("CHARACTER"), char_length("CHARACTER(LEN = n)")) == (1, None)
     assert char_length("CHARACTER", "c*6") == 6
+
+
+def test_a_kind_inquiry_on_the_constant_itself_is_kept(tmp_path: Path) -> None:
+    """``tol = max( 1.e-10_core_rknd, epsilon(tol) )`` (CLUBB's
+    penta_bicgstab_solver): the only legal self-reference, asking the
+    constant's own kind. It cannot be a ``ref`` to a name not yet defined, and
+    the target renders the kind's epsilon with no argument."""
+    src = """\
+module self_mod
+  implicit none
+  integer, parameter :: core_rknd = 8
+  real( kind = core_rknd ), parameter :: tol = max( 1.e-10_core_rknd, epsilon(tol) )
+end module self_mod
+"""
+    _write(tmp_path, "self.f90", src)
+    payload = _param(constants.extract(tmp_path / "self.f90"), "tol")["payload"]
+    assert payload == [
+        {
+            "t": "call",
+            "v": "max",
+            "args": [[{"t": "real", "v": "1.e-10"}], [{"t": "call", "v": "epsilon", "args": []}]],
+        }
+    ]
