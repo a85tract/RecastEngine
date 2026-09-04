@@ -289,3 +289,63 @@ def test_logical_operators_on_arrays_are_elementwise(tmp_path: Path) -> None:
     assert " & " in module
     assert "not l_scalar" in module
     assert "not l_ok" not in module
+
+
+SEARCH_LOOP = """\
+module search_mod
+  implicit none
+  private
+  public :: first_above
+contains
+  subroutine first_above( n, z, zmax, k_found, k_scan )
+    integer, intent(in) :: n
+    real, dimension(n), intent(in) :: z
+    real, intent(in) :: zmax
+    integer, intent(out) :: k_found, k_scan
+    integer :: k, kk
+    do k = 1, n
+      if ( z(k) > zmax ) exit
+    end do
+    k_found = k
+    do kk = 1, n, 2
+      k_scan = kk
+    end do
+    k_scan = kk
+  end subroutine first_above
+end module search_mod
+"""
+
+
+def test_a_loop_index_read_after_the_loop_has_the_completion_value(tmp_path: Path) -> None:
+    """CLUBB's lscale_width_vert_avg searches with ``do k = ...; if (...)
+    exit; end do`` and integrates up to ``k`` afterwards. On completion
+    Fortran leaves the index one step past the end -- ``n + 1`` for a unit
+    step, the first odd value past ``n`` for a step of two -- and after an
+    EXIT it keeps the exit value. Python's ``for`` leaves the last value."""
+    import importlib
+    import sys
+
+    (tmp_path / "search_mod.f90").write_text(SEARCH_LOOP)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:search_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "search_mod_numpy.py").read_text()
+    assert text.count("else:\n") >= 2  # both loops: the index is read after each
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("search_mod_numpy")
+        import numpy as np
+
+        z = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+        k_found, k_scan = module.first_above(5, z, np.float32(3.5))
+        assert (k_found, k_scan) == (4, 7)  # exit at z(4); 1,3,5 then one step past
+        k_found, k_scan = module.first_above(5, z, np.float32(9.0))
+        assert (k_found, k_scan) == (6, 7)  # completed: one past n
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("search_mod_numpy", None)

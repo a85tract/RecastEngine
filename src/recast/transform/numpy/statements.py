@@ -131,6 +131,33 @@ FORMAT_SUPPORTED = re.compile(
 write using anything else is refused rather than silently list-directed."""
 
 
+def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
+    """The DO constructs whose loop variable some later statement of the
+    subprogram names -- read after the loop, where Fortran's completion
+    value (one step past the end) and Python's (the last value) differ."""
+    from recast.fortran.interface import names_in, node_span
+
+    marked: set[int] = set()
+    for loop in walk(subprogram, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
+        do_statement = walk(loop, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))
+        control = walk(do_statement[0], f03.Loop_Control) if do_statement else []
+        if not control or control[0].children[1] is None:
+            continue
+        variable = str(control[0].children[1][0]).lower()
+        _, end_line = node_span(loop)
+        if end_line is None:
+            continue
+        for statement in walk(subprogram):
+            item = getattr(statement, "item", None)
+            span = getattr(item, "span", None) if item is not None else None
+            if not span or span[0] <= end_line:
+                continue
+            if variable in names_in(statement):
+                marked.add(id(loop))
+                break
+    return marked
+
+
 @dataclass
 class Statements:
     """Render Fortran statements for one subprogram.
@@ -177,6 +204,13 @@ class Statements:
     called_names: set[str] = field(default_factory=set)
     """Names this subprogram's body calls or subscripts. Filled by ``scan``."""
 
+    index_read_after: set[int] = field(default_factory=set)
+    """DO constructs (by node id) whose index a later statement reads.
+    Filled by ``scan``. Fortran leaves a completed loop's index one step past
+    the end; Python's ``for`` leaves the last value, so these loops get an
+    ``else`` that sets the completion value (an EXIT, a ``break``, skips it,
+    as Fortran keeps the exit value)."""
+
     exit_labels: dict[int, str] = field(default_factory=dict)
     """``id(do-construct)`` -> the label that means ``exit`` inside it."""
 
@@ -217,6 +251,7 @@ class Statements:
         """
         self.exit_labels = {}
         self.consumed_labels = set()
+        self.index_read_after = _loops_whose_index_is_read_after(subprogram)
         self.assigned_names = {
             str(a.children[0]).lower()
             for a in walk(subprogram, f03.Assignment_Stmt)
@@ -1392,7 +1427,18 @@ class Statements:
                     f"{pad}for {name} in range({low}, "
                     f"({high}) + (1 if ({step}) > 0 else -1), {step}):"
                 )
-        return [head, *self._loop_body(node, indent, cycle_name)]
+        lines = [head, *self._loop_body(node, indent, cycle_name)]
+        if id(node) in self.index_read_after:
+            # CLUBB's lscale_width_vert_avg searches with ``do k_avg_upper =
+            # k, ...; if (...) exit; end do`` and then integrates up to
+            # k_avg_upper: on completion Fortran's index is the first value
+            # past the end, m1 + n * m3, and ``for``'s is the last one.
+            # ``else`` runs exactly when no ``break`` did.
+            increment = step if step is not None else "1"
+            trips = f"max(0, (({high}) - ({low}) + ({increment})) // ({increment}))"
+            lines.append(f"{pad}else:")
+            lines.append(f"{pad}    {name} = ({low}) + {trips} * ({increment})")
+        return lines
 
     def _caught_cycle(self, body: list[str], indent: int, cycle_name: str | None) -> list[str]:
         """A loop body, wrapped so a CYCLE naming *this* loop reaches its header."""
