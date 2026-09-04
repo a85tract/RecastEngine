@@ -311,7 +311,7 @@ def _cycle_to_else(stmts, rest):
     cycle. Done on the Python AST before the fori_loop lowering, which has
     no place for a ``continue``: a ``lax.cond`` branch is a function.
     """
-    out = []
+    out: list[ast.stmt] = []
     for at, s in enumerate(stmts):
         if isinstance(s, ast.Continue):
             return out  # what follows is never reached on this path
