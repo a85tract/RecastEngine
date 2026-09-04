@@ -132,26 +132,44 @@ write using anything else is refused rather than silently list-directed."""
 
 
 def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
-    """The DO constructs whose loop variable some later statement of the
-    subprogram names -- read after the loop, where Fortran's completion
-    value (one step past the end) and Python's (the last value) differ."""
+    """The DO constructs whose loop variable a later statement reads before
+    anything redefines it -- where Fortran's completion value (one step past
+    the end) and Python's (the last value) differ and are observed.
+
+    A later DO over the same variable, or an assignment to it, redefines it
+    first and closes the question; ``i`` and ``k`` are reused by most loops
+    of a module, and an ``else`` on every one of them would be noise. The
+    search loops that read their index (CLUBB's ``lscale_width_vert_avg``)
+    are what this finds."""
     from recast.fortran.interface import names_in, node_span
+
+    def index_of(statement: Any) -> str | None:
+        control = walk(statement, f03.Loop_Control)
+        if control and control[0].children[1] is not None:
+            return str(control[0].children[1][0]).lower()
+        return None
 
     marked: set[int] = set()
     for loop in walk(subprogram, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
         do_statement = walk(loop, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))
-        control = walk(do_statement[0], f03.Loop_Control) if do_statement else []
-        if not control or control[0].children[1] is None:
-            continue
-        variable = str(control[0].children[1][0]).lower()
+        variable = index_of(do_statement[0]) if do_statement else None
         _, end_line = node_span(loop)
-        if end_line is None:
+        if variable is None or end_line is None:
             continue
         for statement in walk(subprogram):
             item = getattr(statement, "item", None)
             span = getattr(item, "span", None) if item is not None else None
             if not span or span[0] <= end_line:
                 continue
+            if isinstance(statement, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt)):
+                if index_of(statement) == variable:
+                    break  # redefined by the next loop over it
+                # Another loop's header may still read it in its bounds
+                # (``do k_avg = k_avg_lower, k_avg_upper``): checked below.
+            if isinstance(statement, f03.Assignment_Stmt):
+                target = statement.children[0]
+                if isinstance(target, f03.Name) and str(target).lower() == variable:
+                    break  # redefined by assignment
             if variable in names_in(statement):
                 marked.add(id(loop))
                 break
