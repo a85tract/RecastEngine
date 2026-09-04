@@ -634,3 +634,40 @@ def test_an_extent_the_plan_cannot_spell_becomes_an_argument(tmp_path: Path) -> 
     assert "ngrdcol = " not in probe.split("phase == 0")[0]
     again = FlatPlan.from_dict(plan.to_dict())
     assert again.extent_args == plan.extent_args
+
+
+def test_a_call_continued_with_trailing_comments_is_probed_whole(tmp_path: Path) -> None:
+    """CLUBB continues its calls as ``a, b, & ! In`` on every line: the
+    comment after the ampersand left a blank the joiner did not strip, and
+    the probe carried ``&`` into its argument list."""
+    from recast.oracle.record import probe_tree
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    (tmp_path / "driver_mod.f90").write_text(
+        """\
+module driver_mod
+  use coefs_mod, only: coefs_type
+  use solver_mod, only: apply
+  implicit none
+contains
+  subroutine step( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    call apply( nzt, ngrdcol, & ! In
+                c, &        ! In
+                x )         ! In/out
+  end subroutine step
+end module driver_mod
+"""
+    )
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    plans = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    sites = probe_tree(tmp_path, tmp_path / "probed", {"solver_mod": plans})
+    assert sites == {"apply": 1}
+    probed = (tmp_path / "probed" / "driver_mod.f90").read_text()
+    assert "call rec_apply(0, nzt, ngrdcol, c, x)" in probed
+    assert "&" not in probed.split("call rec_apply(0")[1].split("\n")[0]

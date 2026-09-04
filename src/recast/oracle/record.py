@@ -389,7 +389,11 @@ def probe_tree(
             span = [lines[i]]
             while _continues(span[-1]) and i + len(span) < len(lines):
                 span.append(lines[i + len(span)])
-            logical = " ".join(_strip_comment(ln).rstrip("&").strip().lstrip("&") for ln in span)
+            # ``a, & ! In`` leaves a space between the ampersand and the
+            # comment it trailed: strip blanks before the ampersands.
+            logical = " ".join(
+                _strip_comment(ln).strip().rstrip("&").strip().lstrip("&").strip() for ln in span
+            )
             match = CALL.match(" " * (len(span[0]) - len(span[0].lstrip())) + logical.strip())
             called = match.group("name").lower() if match else None
             if match and called and called in targets:
