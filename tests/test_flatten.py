@@ -627,7 +627,7 @@ def test_an_extent_the_plan_cannot_spell_becomes_an_argument(tmp_path: Path) -> 
     assert "integer, intent(in) :: c__coef_n2" in adapter
     assert "real(8), intent(in) :: c__coef(ngrdcol, c__coef_n2)" in adapter
     recorder = recorder_module("solver_mod", [plan])
-    assert "'# c__coef_n2 = ', size(c%coef, 2)" in recorder
+    assert "'# c__coef_n2 = ', merge(size(c%coef, 2), 0, allocated(c%coef))" in recorder
     # ngrdcol is a dummy of the probe already: declared once, not assigned.
     probe = recorder[recorder.index("subroutine rec_apply(") :]
     assert probe.count("integer :: ngrdcol") == 0
@@ -671,3 +671,20 @@ end module driver_mod
     probed = (tmp_path / "probed" / "driver_mod.f90").read_text()
     assert "call rec_apply(0, nzt, ngrdcol, c, x)" in probed
     assert "&" not in probed.split("call rec_apply(0")[1].split("\n")[0]
+
+
+def test_the_recorder_guards_a_component_the_run_may_not_allocate(tmp_path: Path) -> None:
+    """CLUBB allocates its scalar-tracer coefficients only when sclr_dim > 0;
+    reshape of an unallocated component faulted the recording run."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    recorder = recorder_module("solver_mod", [plan])
+    assert "if (allocated(c%coef)) then" in recorder
+    assert "'# INPUT: c__coef(0,0)'" in recorder
+    assert "merge(size(c%coef, 2), 0, allocated(c%coef))" in recorder

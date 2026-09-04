@@ -96,6 +96,25 @@ def _record_call(
     )
 
 
+def _record_component(lines: list[str], unit: str, tag: str, obj: Any, comp: Any) -> None:
+    """One component's record, guarded when it may not be there: a component
+    the model allocates only on some configurations (CLUBB's scalar-tracer
+    coefficients under ``sclr_dim = 0``) is written as a zero-extent record,
+    and ``reshape`` is never asked for storage that does not exist."""
+    target = f"{obj.name}%{comp.name}"
+    rank = len(comp.extents)
+    if not comp.bounds:
+        _record_call(lines, unit, tag, comp.flat, target, rank, comp.dtype)
+        return
+    test = "associated" if comp.pointer else "allocated"
+    lines.append(f"       if ({test}({target})) then")
+    _record_call(lines, unit, tag, comp.flat, target, rank, comp.dtype)
+    lines.append("       else")
+    zeros = "(" + ",".join("0" for _ in range(rank)) + ")" if rank else ""
+    lines.append(f"       write ({unit}, '(a)') '# {tag}: {comp.flat}{zeros}'")
+    lines.append("       end if")
+
+
 def recorder_module(
     module: str,
     plans: list[FlatPlan],
@@ -252,9 +271,15 @@ def recorder_module(
             lines.append(f"       write ({u}, '(a,{fmt})') '# {a['name']} = ', {a['name']}")
         lines.append(f"       write ({u}, '(a,i0)') '# {patch} = ', {patch}")
         for extent, (owner, member, axis) in plan.extent_args.items():
-            # An extent the plan could not spell: the run's own, from size().
+            # An extent the plan could not spell: the run's own, from size(),
+            # zero when the component was never allocated.
+            component = next(
+                c for o in plan.objects if o.name == owner for c in o.components if c.name == member
+            )
+            test = "associated" if component.pointer else "allocated"
             lines.append(
-                f"       write ({u}, '(a,i0)') '# {extent} = ', size({owner}%{member}, {axis})"
+                f"       write ({u}, '(a,i0)') '# {extent} = ', "
+                f"merge(size({owner}%{member}, {axis}), 0, {test}({owner}%{member}))"
             )
 
         for a in originals:
@@ -264,15 +289,7 @@ def recorder_module(
                 )
         for obj in plan.objects:
             for comp in obj.components:
-                _record_call(
-                    lines,
-                    u,
-                    "INPUT",
-                    comp.flat,
-                    f"{obj.name}%{comp.name}",
-                    len(comp.extents),
-                    comp.dtype,
-                )
+                _record_component(lines, u, "INPUT", obj, comp)
         for state in plan.states:
             _record_call(
                 lines,
@@ -288,20 +305,7 @@ def recorder_module(
         for obj in plan.objects:
             for comp in obj.components:
                 if comp.written:
-                    _record_call(
-                        lines,
-                        u,
-                        "OUTPUT",
-                        comp.flat,
-                        f"{obj.name}%{comp.name}",
-                        len(comp.extents),
-                        comp.dtype,
-                    )
-        for a in originals:
-            if a.get("dims") and not DERIVED.match(str(a["dtype"])) and a["intent"] != "IN":
-                _record_call(
-                    lines, u, "OUTPUT", a["name"], a["name"], len(a["dims"]), str(a["dtype"])
-                )
+                    _record_component(lines, u, "OUTPUT", obj, comp)
         for state in plan.states:
             if state.written:
                 _record_call(
