@@ -690,7 +690,9 @@ class _Rewrite(ast.NodeTransformer):
             # companion's port delegated is a host function no tracer can
             # run, so the caller is not flat either.
             callee = node.args[0]
-            module = self.spelling.modules.get(callee.value.id)
+            owner = callee.value
+            assert isinstance(owner, ast.Name)
+            module = self.spelling.modules.get(owner.id)
             port = self.ports.get(module) if module is not None else None
             if port is not None:
                 if callee.attr not in port["kernels"]:
@@ -701,10 +703,10 @@ class _Rewrite(ast.NodeTransformer):
                     raise NotFlat(
                         f"elemental call of {module}.{callee.attr}, which reads module state"
                     )
-                self.companions.add(callee.value.id)
+                self.companions.add(owner.id)
                 node.args[0] = ast.copy_location(
                     ast.Attribute(
-                        value=ast.Name(id=f"{callee.value.id}_jax", ctx=ast.Load()),
+                        value=ast.Name(id=f"{owner.id}_jax", ctx=ast.Load()),
                         attr=f"_{callee.attr}_k_impl",
                         ctx=ast.Load(),
                     ),
