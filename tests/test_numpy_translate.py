@@ -430,3 +430,60 @@ def test_a_call_into_a_stubbed_module_raises_on_its_own_line(tmp_path: Path) -> 
     finally:
         sys.path.remove(str(out))
         sys.modules.pop("solver_mod_numpy", None)
+
+
+HANDS_ON_AN_OPTIONAL = """
+module relay_mod
+  implicit none
+contains
+  subroutine inner( x, y, rc )
+    real, intent(in) :: x
+    real, intent(out) :: y
+    real, intent(out), optional :: rc
+    y = 2.0 * x
+    if ( present(rc) ) rc = 1.0 / x
+  end subroutine inner
+  subroutine outer( x, y, rc, scale )
+    real, intent(in) :: x
+    real, intent(out) :: y
+    real, intent(out), optional :: rc
+    real, intent(in), optional :: scale
+    call inner( x, y, rc = rc )
+    if ( present(scale) ) y = y * scale
+  end subroutine outer
+end module relay_mod
+"""
+
+
+def test_an_optional_handed_on_carries_its_own_presence(tmp_path: Path) -> None:
+    """``call inner( x, y, rc = rc )`` where ``rc`` is the caller's own
+    optional OUT: present in the callee exactly when present in the caller.
+    Rendered ``want_rc=True`` it was always present, and CLUBB's
+    xm_wpxp_solve took the LAPACK diagnostic path on every call."""
+    import importlib
+    import sys
+
+    (tmp_path / "relay_mod.f90").write_text(HANDS_ON_AN_OPTIONAL)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:relay_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "relay_mod_numpy.py").read_text()
+    assert "want_rc=want_rc" in text
+    assert "want_rc=True" not in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("relay_mod_numpy")
+        import numpy as np
+
+        y, rc = module.outer(np.float32(4.0))
+        assert y == 8.0 and rc != 0.25  # not asked for, not computed
+        y, rc = module.outer(np.float32(4.0), want_rc=True)
+        assert y == 8.0 and rc == 0.25
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("relay_mod_numpy", None)
