@@ -1158,6 +1158,10 @@ class BitexactVerifier(Verifier):
         if dominant_at is None:
             return None
         magnitude = np.abs(reference)
+        if magnitude.size == 0:
+            # A zero-extent output (CLUBB's scalar tracers under
+            # sclr_dim = 0): nothing to weigh, and no maximum to take.
+            return []
         if axis in ("all", None) or magnitude.ndim <= 1:
             scale = magnitude.max()
         else:
