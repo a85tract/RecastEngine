@@ -773,6 +773,61 @@ def release(n):
     assert "zero numerical points" in verdict.detail
 
 
+def test_a_declared_ungated_subprogram_is_not_compared_on_a_recording(tmp_path: Path) -> None:
+    """CLUBB's sponge initializer leaves the levels below the layer undefined
+    on both sides; the operator's declaration says so, with the reason, and
+    the replay reported it -- then compared the heap against np.empty anyway."""
+    emitted = b"""\
+_SIGNATURES = {
+    "fill": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "int32", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def fill(n):
+    return 2
+"""
+    candidate = Candidate(
+        unit="fortran:undefined_tail",
+        transform="translate.numpy",
+        files={Path("undefined_tail_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "fill",
+                    "source": "fill.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {"y": 1},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"ungated": {"fill": "the tail is undefined on both sides"}},
+    )
+    assert "differ" not in verdict.detail
+    assert "fill (the tail is undefined on both sides)" in verdict.detail
+
+
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
