@@ -23,7 +23,7 @@ import re
 from pathlib import PurePath, PurePosixPath
 from typing import Any
 
-from recast.fortran.expr import Expr, render
+from recast.fortran.expr import Expr, python_call, render, with_integer_division
 
 __all__ = [
     "constants_module",
@@ -293,20 +293,12 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
 
 
 def _python(expr: Expr) -> str:
-    text = render(
-        expr,
+    # Fortran divides two integers to an integer; ``with_integer_division``
+    # spells those quotients ``//`` from the tree's own types.
+    return render(
+        with_integer_division(expr),
         real=lambda text: f"np.float64('{text}')",
         integer=lambda text: text,
         name=lambda text: text.upper(),
+        call=python_call,
     )
-    return _integer_division(text)
-
-
-def _integer_division(text: str) -> str:
-    """Fortran divides two integers to an integer. An expression with no
-    real literal in it is integer arithmetic throughout (a name in it is an
-    integer parameter, or it would have been a real one), and ``/`` has to
-    be ``//`` -- ``nrk = runge_kutta_type / 10`` is 4, not 4.1."""
-    if "np.float64(" in text or "float(" in text:
-        return text
-    return text.replace("//", "/").replace("/", "//")
