@@ -51,6 +51,16 @@ DEFAULT_DIMENSION = 8
 SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
 
 
+def _extent(dim: dict[str, Any], dims: dict[str, int]) -> int:
+    """An axis's extent: ``ub - lb + 1`` when a lower bound is declared
+    (CLUBB's ``lhs(-2:2, ...)`` has five rows, not two), ``ub`` otherwise."""
+    upper = _resolve_extent(dim.get("ub"), dims)
+    lower = str(dim.get("lb") or "1").strip()
+    if lower == "1" or dim.get("ub") is None:
+        return upper
+    return upper - _resolve_extent(lower, dims) + 1
+
+
 def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
     """A declared dimension's extent under the operator's table."""
     if text is None:
@@ -579,7 +589,9 @@ class BitexactVerifier(Verifier):
             token
             for argument in sub["args"]
             for dim in argument.get("dims") or []
-            for token in re.findall(r"[a-z_]\w*", str(dim.get("ub") or "").lower())
+            for token in re.findall(
+                r"[a-z_]\w*", f"{dim.get('lb') or ''} {dim.get('ub') or ''}".lower()
+            )
         }
 
         points = bit_exact = nan_mismatch = 0
@@ -1134,7 +1146,7 @@ class BitexactVerifier(Verifier):
         }.get(argument["dtype"], np.float64)
         shape = None
         if argument.get("dims"):
-            shape = tuple(_resolve_extent(d.get("ub"), dims) for d in argument["dims"])
+            shape = tuple(_extent(d, dims) for d in argument["dims"])
         if dtype in (np.float64, np.float32):
             low, high = ranges.get(name, DEFAULT_RANGE)
             if shape is None:
