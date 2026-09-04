@@ -605,8 +605,22 @@ def _accesses(
             *walk(node, f03.Structure_Constructor),
         ]:
             spelled_callee = str(call.children[0]).lower()
-            for callee in generics.get(spelled_callee, [spelled_callee]):
-                expanded.append((call, callee))
+            candidates = generics.get(spelled_callee)
+            if candidates is None:
+                expanded.append((call, spelled_callee))
+                continue
+            # The specifics a call of this arity can reach: Fortran picks by
+            # rank too, which this walk does not resolve, so the union of
+            # what the arity-compatible ones touch is what the adapter carries.
+            given = len(call.children[1].children) if call.children[1] is not None else 0
+            arity = {
+                specific: len(procedures[specific][2]["args"])
+                for specific in candidates
+                if specific in procedures
+            }
+            exact = [n for n, count in arity.items() if count == given]
+            fitting = exact or [n for n, count in arity.items() if count >= given]
+            expanded.extend((call, callee) for callee in fitting)
         for call, callee in expanded:
             if callee not in procedures:
                 continue
@@ -682,6 +696,7 @@ def _accesses(
             visited.add(key)
             callee_node = _subprogram_node(path, callee)
             if callee_node is None:
+                visited.discard(key)
                 continue
             _, inner_reads, inner_writes = _accesses(
                 callee_node,
@@ -695,6 +710,9 @@ def _accesses(
                 externals,
                 companions,
             )
+            # A guard against cycles, not a memo: the same callee followed
+            # from another site, under another mapping, is followed again.
+            visited.discard(key)
             callee_dummies = {a["name"].lower() for a in callee_record["args"]}
             for inner, target in ((inner_reads, reads), (inner_writes, writes)):
                 for item in inner:
