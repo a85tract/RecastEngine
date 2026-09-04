@@ -361,11 +361,14 @@ def _assigned_names(stmts):
                 # body before their use and never read after it; carried, they
                 # would have to be initialized at the enclosing level, where
                 # nothing assigns them.
-                if isinstance(t, ast.Name) and not re.fullmatch(r"_(?:hi_|cnt_|t)\d+", t.id):
+                # ``_out`` is the anchor's call-result tuple, assigned and
+                # unpacked on consecutive lines of one block: the block's own,
+                # never a carry (its shape changes from call to call).
+                if isinstance(t, ast.Name) and not re.fullmatch(r"_(?:hi_|cnt_|t)\d+|_out", t.id):
                     add(t.id)
                 elif isinstance(t, ast.Tuple):
                     for e in t.elts:
-                        if isinstance(e, ast.Name) and not re.fullmatch(r"_t\d+", e.id):
+                        if isinstance(e, ast.Name) and not re.fullmatch(r"_t\d+|_out", e.id):
                             add(e.id)
         elif isinstance(s, ast.If):
             for n in _assigned_names(s.body) + _assigned_names(s.orelse):

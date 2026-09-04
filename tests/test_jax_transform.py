@@ -523,3 +523,82 @@ def test_a_call_result_tuple_inside_a_loop_is_the_bodys_own(tmp_path: Path) -> N
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"pair_demo{suffix}", None)
+
+
+WRITER = """\
+module writer_mod
+  implicit none
+contains
+  subroutine fill(n, x, y)
+    integer,  intent(in)  :: n
+    real(8),  intent(in)  :: x(n)
+    real(8) :: y(n)
+    y = x + 1.0d0
+  end subroutine fill
+end module writer_mod
+"""
+
+CALLS_WRITER = """\
+module caller_mod
+  use writer_mod, only: fill
+  implicit none
+contains
+  subroutine run(n, x, y)
+    integer,  intent(in)  :: n
+    real(8),  intent(in)  :: x(n)
+    real(8),  intent(out) :: y(n)
+    call fill( n, x, y )
+    y = y * 2.0d0
+  end subroutine run
+end module caller_mod
+"""
+
+
+def test_a_bare_call_binds_the_kernels_returned_buffer(tmp_path: Path) -> None:
+    """CLUBB declares ``xp3_lg_2005_ansatz``'s ``xp3`` without an intent and
+    the extension's frontend overrides it to OUT. The caller's anchor, seeing
+    no intent at the call, calls bare: the callee writes ``y`` in place and
+    returns it, and the caller ignores the return. A kernel cannot write in
+    place -- its return *is* the output -- so the statement binds what
+    comes back to the actual; without it advance_xp3 got back the zeros it
+    passed in for every xp3."""
+    import importlib
+    import sys
+
+    from recast.registry import REGISTRY
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    def overriding_frontend(**_config: object) -> FortranFrontend:
+        return FortranFrontend(
+            flatten=True, buffer_out_arrays="all", intent_overrides={"fill": {"y": "OUT"}}
+        )
+
+    REGISTRY.register("frontend", "fortran-y-out", overriding_frontend, replace=True)
+    (tmp_path / "writer_mod.f90").write_text(WRITER)
+    (tmp_path / "caller_mod.f90").write_text(CALLS_WRITER)
+    frontend = overriding_frontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:caller_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    conventions = TreeConventions(frontend="fortran-y-out")
+    candidate = TreeToJax(conventions).apply(unit, facts, {"root": str(tmp_path)})
+    assert "run" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    ported = candidate.files[Path("caller_mod_jax.py")].decode()
+    assert "_writer_mod.fill(n, x, y)" in candidate.files[Path("caller_mod_numpy.py")].decode()
+    assert "y = _writer_mod_jax._fill_k_impl(n, x, y)" in ported
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("caller_mod_jax")
+        import numpy as np
+
+        got = module.run(2, np.array([1.0, 2.0]), np.zeros(2))
+        assert np.asarray(got).tolist() == [4.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("caller_mod", "writer_mod")):
+                sys.modules.pop(name, None)

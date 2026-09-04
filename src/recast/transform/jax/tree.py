@@ -425,6 +425,10 @@ class _Rewrite(ast.NodeTransformer):
         call = node.value
         if isinstance(call, ast.Call) and self._flat_callee(call) is not None:
             return self._rewrite_call(None, call)
+        if isinstance(call, ast.Call):
+            bound = self._bind_buffer_outputs(node, call)
+            if bound is not None:
+                return bound
         # ``_f_copy_out(dst, src)``: an in-place copy is an assignment here.
         if (
             isinstance(call, ast.Call)
@@ -752,6 +756,54 @@ class _Rewrite(ast.NodeTransformer):
                 raise NotFlat(f"{module}.{func.attr} writes {state}, which the plan does not carry")
             flats.append(flat)
         return flats
+
+    def _callee_record(self, call: ast.Call) -> dict[str, Any] | None:
+        """The interface record of a kernel a call statement reaches: one of
+        this module's, or a companion port's."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            return (self.own.get("records") or {}).get(func.id)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            module = self.spelling.modules.get(func.value.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is None or func.attr not in port.get("kernels", ()):
+                return None
+            return (port.get("records") or {}).get(func.attr)
+        return None
+
+    def _bind_buffer_outputs(self, node: ast.Expr, call: ast.Call) -> ast.stmt | None:
+        """``callee(..., up3)`` as a statement: the anchor's callee wrote the
+        OUT array in place and returned it; the caller ignored the return.
+        A kernel cannot write in place -- its return *is* the output -- so
+        the statement binds what comes back to the actuals it was passed
+        (CLUBB's advance_xp3 calling skx_module's xp3_lg_2005_ansatz:
+        without this every xp3 came back as the zeros it went in as)."""
+        record = self._callee_record(call)
+        if record is None or record.get("kind") == "function":
+            return None
+        outs = [
+            (at, a)
+            for at, a in enumerate(record["args"])
+            if a["intent"] in ("OUT", "INOUT") and not a.get("optional")
+        ]
+        if not outs:
+            return None
+        by_keyword = {k.arg: k.value for k in call.keywords if k.arg}
+        targets: list[ast.expr] = []
+        for at, a in outs:
+            actual = call.args[at] if at < len(call.args) else by_keyword.get(_py(a["name"]))
+            if actual is None or not isinstance(actual, ast.Name | ast.Subscript):
+                return None
+            target = copy.deepcopy(actual)
+            target.ctx = ast.Store()
+            targets.append(target)
+        target_node: ast.expr = (
+            targets[0] if len(targets) == 1 else ast.Tuple(elts=targets, ctx=ast.Store())
+        )
+        # As an assignment, through the assignment's own path: the callee's
+        # spelling, its state closure and its written state bind there.
+        assign = ast.Assign(targets=[target_node], value=call)
+        return self.visit(ast.copy_location(assign, node))
 
     # -- calls into companions ------------------------------------------------
 
