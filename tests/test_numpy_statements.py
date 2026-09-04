@@ -140,6 +140,9 @@ contains
     call fillv(a(n))
     call fillm(a(n))
     s = pick_norm(2, w(1, j))
+    call tailv(a(n))
+    call tailm(a(n))
+    s = tail_norm(a(n))
   end subroutine calls
 
   subroutine initialised(x)
@@ -327,6 +330,22 @@ contains
     real(r8) :: r
     r = x(1)
   end function pick_norm
+
+  subroutine tailv(x)
+    real(r8), intent(inout) :: x(*)
+    x(1) = 0.0_r8
+  end subroutine tailv
+
+  subroutine tailm(x)
+    real(r8), intent(inout) :: x(2, *)
+    x(1, 1) = 0.0_r8
+  end subroutine tailm
+
+  function tail_norm(x) result(r)
+    real(r8), intent(in) :: x(*)
+    real(r8) :: r
+    r = x(1)
+  end function tail_norm
 
   subroutine scale_scalar(x, f)
     real(r8), intent(inout) :: x
@@ -961,6 +980,34 @@ def test_sequence_association_takes_leading_axes_whole(sources: dict[str, Path])
     assert statements.render(pick(nodes, f03.Call_Stmt, 9), 1) == [
         "    consume(n, j, np.reshape(flat, (n, j,), order='F'))"
     ]
+
+
+def test_an_element_for_an_assumed_size_dummy_is_the_tail_of_the_actual(
+    sources: dict[str, Path],
+) -> None:
+    """``x(*)`` spans the caller's storage from the element to the end of the
+    array, and only the caller knows how far that is: ``a(n)`` is ``a[n-1:]``,
+    a view, so what the callee writes in place is in the caller's array and
+    the copy-out onto the same view changes nothing. Rendering the element
+    alone -- what an unbounded dummy used to get -- handed the callee one
+    number to subscript, and an OUT dummy's writes landed on ``None``."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    assert statements.render(pick(nodes, f03.Call_Stmt, 14), 1) == [
+        "    _f_copy_out(a[(n - 1):], np.ravel(tailv(a[(n - 1):]), order='F'))"
+    ]
+    assignments = [n for n in nodes if isinstance(n, f03.Assignment_Stmt)]
+    assert statements.render(assignments[-1], 1) == ["    s = tail_norm(a[(n - 1):])"]
+
+
+def test_an_element_for_a_rank_2_assumed_size_dummy_is_refused(
+    sources: dict[str, Path],
+) -> None:
+    """``x(2, *)`` has no extent to reshape the tail to, so there is no
+    view for the callee's writes to land in; refused, not rendered as a
+    reshape to ``None``."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    with pytest.raises(REFUSED, match="assumed-size dummy"):
+        statements.render(pick(nodes, f03.Call_Stmt, 15), 1)
 
 
 def test_a_reshape_reads_the_callee_s_bound_in_whatever_case_it_was_written(

@@ -732,24 +732,64 @@ class Expressions:
         """
         rendered = self.render(actual)
         formal_dims = formal.get("dims") or []
-        if not (len(formal_dims) >= 1 and all(d.get("ub") for d in formal_dims)):
+        if not formal_dims:
             return rendered
         try:
             rank = self.semantics.rank(actual)
         except REFUSED:
+            return rendered
+        element = (
+            rank == 0
+            and isinstance(actual, f03.Part_Ref)
+            and self.semantics.is_array(str(actual.children[0]).lower())
+        )
+        if self._assumed_size(formal_dims):
+            # ``x(*)``: the dummy spans the caller's storage from the element
+            # to the end of the array, and only the caller knows how far
+            # that is. Rendering the element alone -- what an unbounded
+            # dummy used to get -- hands the callee one number to subscript.
+            if element:
+                return self._association_tail(actual, formal_dims)
+            if rank is not None and 0 < rank < len(formal_dims):
+                raise NoRule(
+                    f"seq-assoc: rank-{rank} actual for the rank-{len(formal_dims)} "
+                    f"assumed-size dummy {formal['name']}"
+                )
+            return rendered
+        if not all(d.get("ub") for d in formal_dims):
             return rendered
         if rank is not None and 0 < rank < len(formal_dims):
             # Fortran sequence association: a lower-rank actual fills the
             # dummy in column-major order.
             shape = ", ".join(self.extent(d, substitutions) for d in formal_dims)
             return f"np.reshape({rendered}, ({shape},), order='F')"
-        if (
-            rank == 0
-            and isinstance(actual, f03.Part_Ref)
-            and self.semantics.is_array(str(actual.children[0]).lower())
-        ):
+        if element:
             return self.sequence_association(actual, formal_dims, substitutions)
         return rendered
+
+    @staticmethod
+    def _assumed_size(formal_dims: list[dict[str, Any]]) -> bool:
+        """``x(*)`` or ``x(n, *)``: the last axis has no extent of its own."""
+        return bool(formal_dims and formal_dims[-1].get("assumed_size"))
+
+    def _association_tail(self, actual: Any, formal_dims: list[dict[str, Any]]) -> str:
+        """An element actual for an assumed-size dummy: the actual's memory
+        from the element on, as a view the callee reads and writes in place.
+
+        Only a rank-1 actual has that as a view. A higher-rank actual's tail
+        in column-major order is ``ravel(order='F')``, which is a copy unless
+        the array happens to be Fortran-contiguous, and a copy is somewhere
+        an OUT dummy's writes are lost; a rank-2 assumed-size dummy has no
+        extent to reshape to at all. Both are refused.
+        """
+        name = str(actual.children[0]).lower()
+        declaration = self.semantics.declaration(name) or {}
+        if len(declaration.get("dims") or []) != 1 or len(formal_dims) != 1:
+            raise NoRule(
+                f"seq-assoc: element of {name} for an assumed-size dummy is only a view "
+                "when both are rank-1"
+            )
+        return f"{self.names.symbol(name)}[{self._association_start(actual)}:]"
 
     def substitutions(self, record: dict[str, Any], actuals: list[Any]) -> dict[str, str]:
         """Formal name -> the actual bound to it, rendered in the caller's scope.
@@ -786,6 +826,10 @@ class Expressions:
         element the source spells, so the callee's whole array landed on one
         scalar and NumPy said so.
         """
+        if self._assumed_size(formal_dims):
+            # The tail view the callee was handed; the copy-out onto it is
+            # the same memory, so the writes it made in place stand.
+            return self._association_tail(actual, formal_dims), True
         whole = self._leading_axes_whole(actual, formal_dims)
         if whole is not None:
             # The view the callee was handed is where its result lands (#27);
@@ -869,11 +913,16 @@ class Expressions:
         gate reported as a disagreement -- nor does it get a non-unit lower
         bound wrong.
         """
+        axes = [self.extent(d, substitutions) for d in formal_dims]
+        offset = self._association_start(actual)
+        return offset, " * ".join(f"({axis})" for axis in axes), ", ".join(axes)
+
+    def _association_start(self, actual: Any) -> str:
+        """The element's 0-based position in the actual's column-major storage."""
         name = str(actual.children[0]).lower()
         subscripts = self._subscript_nodes(actual)
         declaration = self.semantics.declaration(name) or {}
         actual_dims = declaration.get("dims") or []
-        axes = [self.extent(d, substitutions) for d in formal_dims]
         symbol = self.names.symbol(name)
         shifts = []
         for at, subscript in enumerate(subscripts):
@@ -884,7 +933,7 @@ class Expressions:
         for at in range(1, len(shifts)):
             stride = f"{stride} * {self.extent_along(symbol, at - 1)}"
             offset = f"{offset} + {shifts[at]} * {stride}"
-        return offset, " * ".join(f"({axis})" for axis in axes), ", ".join(axes)
+        return offset
 
     def sequence_association(
         self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
