@@ -425,10 +425,17 @@ def wrappers_for(
         # once, so the reference's output buffers start where the emitted
         # translation's do (see ``undefined_array``) and an output neither
         # side wrote compares equal instead of comparing two heaps.
+        #
+        # A caller-buffer array (``buffer``) is not the wrapper's to define:
+        # it is the caller's storage on both sides, so the gate generates it
+        # and hands the same values to the reference and the candidate, and
+        # zeroing it here would leave every cell the callee never writes at
+        # 0 against the candidate's generated value. An assumed-size dummy,
+        # which is always a buffer, cannot be assigned whole anyway.
         defined = [
             f"  {a['name']} = {'.false.' if a['dtype'] == 'bool' else '0'}"
             for a in arguments
-            if a["intent"] == "OUT" and a["dtype"] != "PROCEDURE"
+            if a["intent"] == "OUT" and a["dtype"] != "PROCEDURE" and not a.get("buffer")
         ]
         wrapper = f"w_{name}"
         names.append(wrapper)
