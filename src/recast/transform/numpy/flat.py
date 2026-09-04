@@ -77,6 +77,12 @@ def python_adapter(plans: list[FlatPlan]) -> str:
             lines.append(f"    {', '.join(_py(n) + '_' for n in outs)}, = _out")
         for obj in plan.objects:
             if obj.kind == "dummy":
+                if obj.name in outs and obj.name not in {a["name"] for a in passed}:
+                    # An intent(out) object is one the translation returns
+                    # (sponge_layer_damping's profile, CLUBB): its written
+                    # components are read off the returned object, not the
+                    # record built from the inputs.
+                    lines.append(f"    {obj.name} = {_py(obj.name)}_")
                 for comp in obj.components:
                     if comp.written:
                         lines.append(f"    {comp.flat} = {obj.name}.{comp.name}")

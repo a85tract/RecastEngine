@@ -159,18 +159,19 @@ def _evaluate(
     initialize it with something a parameter can be folded from."""
     # Lazy, like ``render`` above: ``expr`` parses, and this module is imported
     # by paths that must stay importable without the ``fortran`` extra.
-    from recast.fortran.expr import python_call, with_integer_division
+    from recast.fortran.expr import python_call, typed, with_integer_division
 
     try:
         records = resolve([name], files)
     except unresolved:
         return None
     env: dict[str, Any] = {}
+    kinds: dict[str, str | None] = {}
     try:
         for entry in records:
             # Integer arithmetic where Fortran's ``/`` truncates.
             text = render(
-                with_integer_division(entry["expr"]),
+                with_integer_division(entry["expr"], env=kinds),
                 real=lambda t: f"float('{t}')",
                 integer=lambda t: t,
                 name=lambda t: t.upper(),
@@ -179,6 +180,7 @@ def _evaluate(
             scope = {"__builtins__": {}, "max": max, "min": min, "abs": abs, "int": int}
             scope.update({"float": float, "math": math, "sys": sys})
             env[entry["name"].upper()] = eval(text, scope, dict(env))  # noqa: S307
+            kinds[entry["name"]] = entry.get("dtype") or typed(entry["expr"], kinds)
     except Exception:  # an initializer shape the renderer has no rule for
         return None
     return env.get(name.upper())
