@@ -1636,6 +1636,7 @@ def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
     out: list[ast.stmt] = []
     exited = False
     for statement in stmts:
+        had_return = _has_return([statement])  # before the rewrite takes the returns away
         if isinstance(statement, ast.Return):
             rewritten: ast.stmt = ast.copy_location(
                 ast.Assign(
@@ -1657,7 +1658,7 @@ def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
                 orelse=[],
             )
         out.append(rewritten)
-        if _has_return([statement]):
+        if had_return:
             exited = True
     return out
 
