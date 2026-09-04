@@ -270,6 +270,12 @@ class BitexactVerifier(Verifier):
                 if a["intent"] != "OUT"
             )
 
+        # One the operator declared ungated is not compared: the declaration
+        # says the reference cannot be held -- on generated inputs (CLUBB's
+        # rcm_sat_adj iterates and error-stops on them) or on a recording
+        # (its sponge initializer leaves the levels below the layer
+        # undefined on both sides). The reason is reported beside the verdict.
+        declared_ungated = set(config.get("ungated") or {})
         if recorded:
             # A recording names what it is a recording of, so the set to
             # compare is the set that was captured -- not every subprogram the
@@ -281,15 +287,13 @@ class BitexactVerifier(Verifier):
                 by_subprogram.setdefault(str(sample.get("subprogram", "")), []).append(sample)
             offered = sorted(by_subprogram)
             wanted = config.get("subprograms") or [
-                name for name in offered if name in table and judged(name)
+                name
+                for name in offered
+                if name in table and judged(name) and name not in declared_ungated
             ]
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
-            # One the operator declared ungated is not sampled either: the
-            # declaration says the reference cannot be held on generated
-            # inputs (CLUBB's rcm_sat_adj iterates and error-stops on them).
-            declared_ungated = set(config.get("ungated") or {})
             wanted = config.get("subprograms") or [
                 name
                 for name in wrappers
