@@ -328,11 +328,18 @@ class F2pyFlatOracle(F2pyGoldenOracle):
         module = facts.interface["module"]
         chosen = set(self._subprograms(facts, config))
         flat_entries = [{**signature(p), "name": p.name, "public": True} for p in plan["plans"]]
+        # A chosen specific of a public generic is re-exported under the
+        # generic's name, so its wrapper has to call it through that name
+        # too: the generic table survives for exactly those.
+        generics = {
+            generic: [s for s in specifics if s in chosen]
+            for generic, specifics in (facts.interface.get("generics") or {}).items()
+        }
         interface = {
             **facts.interface,
             "module": f"{module}_flat",
             "is_module": True,
-            "generics": {},
+            "generics": {g: names for g, names in generics.items() if names},
             "subprograms": [
                 *[s for s in facts.interface["subprograms"] if s["name"] in chosen],
                 *flat_entries,
