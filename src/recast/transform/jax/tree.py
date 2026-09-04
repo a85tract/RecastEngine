@@ -644,8 +644,20 @@ class _Rewrite(ast.NodeTransformer):
         self.generic_visit(node)
         if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
             # ``if cond: write(iulog, ...)`` -- a log line the anchor already
-            # left as ``pass``; nothing to carry.
-            return [*node.orelse] if node.orelse else None
+            # left as ``pass``; nothing to carry. An else branch keeps its
+            # guard, inverted: the fold of an early return leaves exactly
+            # ``if returned: pass else: <the rest>``, and running the rest
+            # unconditionally was the returned path's outputs overwritten.
+            if not node.orelse:
+                return None
+            return ast.copy_location(
+                ast.If(
+                    test=ast.UnaryOp(op=ast.Not(), operand=node.test),
+                    body=list(node.orelse),
+                    orelse=[],
+                ),
+                node,
+            )
         return node
 
     def visit_Raise(self, node: ast.Raise) -> Any:
@@ -1640,7 +1652,9 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     ]
     if tuples:
         final = body[-1]
-        same = all(ast.dump(node.value) == ast.dump(final.value) for node in tuples)
+        same = final.value is not None and all(
+            ast.dump(node.value) == ast.dump(final.value) for node in tuples
+        )
         folded = _fold_returns(body[:-1], []) if same else None
         if folded is None:
             raise NotFlat(
