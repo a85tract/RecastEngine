@@ -803,7 +803,8 @@ class _Rewrite(ast.NodeTransformer):
         # As an assignment, through the assignment's own path: the callee's
         # spelling, its state closure and its written state bind there.
         assign = ast.Assign(targets=[target_node], value=call)
-        return self.visit(ast.copy_location(assign, node))
+        bound: ast.stmt | None = self.visit(ast.copy_location(assign, node))
+        return bound
 
     # -- calls into companions ------------------------------------------------
 
