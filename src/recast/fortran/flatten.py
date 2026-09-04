@@ -62,7 +62,8 @@ __all__ = [
 ]
 
 DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.IGNORECASE)
-ALLOCATE_THIS = re.compile(r"allocate\s*\(\s*this\s*%\s*(\w+)\s*\(([^()]*)\)", re.I)
+ALLOCATE_STMT = re.compile(r"\ballocate\s*\(", re.I)
+COMPONENT_ALLOCATION = re.compile(r"(\w+)\s*%\s*(\w+)\s*\(([^()]*)\)")
 FORTRAN_TYPES = {"float64": "real(8)", "float32": "real(4)", "int32": "integer", "bool": "logical"}
 
 
@@ -218,15 +219,18 @@ class FlatPlan:
                         sized.append({"lb": "1", "ub": extent})
                 entry["dims"] = sized
             args.append(entry)
-        args.append(
-            {
-                "name": self.patch_count,
-                "dtype": "int32",
-                "intent": "IN",
-                "optional": False,
-                "dims": None,
-            }
-        )
+        if not any(a["name"].lower() == self.patch_count for a in args):
+            # CLUBB passes ngrdcol explicitly: the driver's extent is a dummy
+            # already there, and declaring it twice does not compile.
+            args.append(
+                {
+                    "name": self.patch_count,
+                    "dtype": "int32",
+                    "intent": "IN",
+                    "optional": False,
+                    "dims": None,
+                }
+            )
         for obj in self.objects:
             for comp in obj.components:
                 args.append(
@@ -317,10 +321,36 @@ def _state_declaration(name: str, root: Path) -> tuple[str, str] | None:
 
 
 def _allocation_bounds(path: Path) -> dict[str, list[str]]:
-    """``component -> [axis bound text, ...]`` from ``allocate (this%c (…))``."""
+    """``component -> [axis bound text, ...]`` from the module's ALLOCATE
+    statements: ``allocate (this%c (…))`` in the CLM family, and CLUBB's
+    ``allocate( gr%zm(ngrdcol,gr%nzm), gr%zt(ngrdcol,gr%nzt), … )`` -- one
+    statement over many components of an object named however the setup
+    routine names its dummy. Continuation lines and comments are folded
+    first; the first allocation of a component wins."""
     out: dict[str, list[str]] = {}
-    for match in ALLOCATE_THIS.finditer(path.read_text(errors="replace")):
-        out.setdefault(match.group(1).lower(), [b.strip() for b in match.group(2).split(",")])
+    text = path.read_text(errors="replace")
+    for start in ALLOCATE_STMT.finditer(text):
+        # The statement: from ``allocate(`` to its matching parenthesis,
+        # across ``&`` continuations, with trailing comments dropped.
+        depth, at = 0, start.end() - 1
+        while at < len(text):
+            character = text[at]
+            if character == "!":
+                at = text.find("\n", at)
+                if at < 0:
+                    break
+                continue
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            at += 1
+        body = text[start.end() : at]
+        for item in COMPONENT_ALLOCATION.finditer(body.replace("&", " ")):
+            axes = [b.strip() for b in item.group(3).split(",")]
+            out.setdefault(item.group(2).lower(), axes)
     return out
 
 
@@ -340,6 +370,11 @@ def _axis(
             return text
         if text in constants:
             return str(constants[text])
+        # A scalar component of the object itself -- CLUBB allocates
+        # ``gr%zm(ngrdcol, gr%nzm)`` -- spelled by that component's flat
+        # name once the plan's objects are known (``_bind_symbolic_extents``).
+        if re.fullmatch(r"\w+\s*%\s*\w+", text):
+            return text
         # An arithmetic bound over constants: ``-nlevsno+1``.
         expression = re.sub(
             r"[A-Za-z_]\w*", lambda m: str(constants.get(m.group(0).lower(), m.group(0))), text
@@ -363,6 +398,8 @@ def _axis(
         extent = patch if low == "1" else None
     elif re.fullmatch(r"-?\d+", low) and re.fullmatch(r"-?\d+", high):
         extent = str(int(high) - int(low) + 1)
+    elif low == "1":
+        extent = high
     else:
         extent = f"({high}) - ({low}) + 1"
     if extent is None:
@@ -802,6 +839,15 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
                 (type_files[flat.type_name],),
                 kinds,
             )
+            # A component whose allocation is sized by another component of
+            # the same object (``gr%zm(ngrdcol, gr%nzm)``) needs that one
+            # carried too, as an input, whether or not the body reads it.
+            for member, member_axes in bounds.items():
+                if member not in touched[obj]:
+                    continue
+                for ref in re.findall(r"(\w+)\s*%\s*(\w+)", " ".join(member_axes)):
+                    if ref[0].lower() == obj and ref[1].lower() in comps:
+                        touched[obj].setdefault(ref[1].lower(), False)
             for member, written in sorted(touched[obj].items()):
                 spec = comps.get(member)
                 if spec is None:
@@ -972,8 +1018,20 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
     answers for makes the component unsupported."""
     by_name = {state.name: state.flat for state in plan.states if not state.extents}
 
+    carried = {(obj.name, comp.name): comp.flat for obj in plan.objects for comp in obj.components}
+    flat_names = set(carried.values())
+
     def bind(text: str) -> str | None:
         missing: list[str] = []
+
+        def component(match: re.Match[str]) -> str:
+            key = (match.group(1).lower(), match.group(2).lower())
+            if key in carried:
+                return carried[key]
+            missing.append(match.group(0))
+            return match.group(0)
+
+        text = re.sub(r"(\w+)\s*%\s*(\w+)", component, text)
 
         def swap(match: re.Match[str]) -> str:
             token = match.group(0)
@@ -982,6 +1040,8 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
                 return token
             if lowered in by_name:
                 return by_name[lowered]
+            if token in flat_names:
+                return token  # a component of the object, bound just above
             missing.append(token)
             return token
 

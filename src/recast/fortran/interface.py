@@ -1305,6 +1305,19 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if argument["intent"] in ("OUT", "INOUT")
             ],
         }
+    # The sibling's generics too: a call spells the generic (CLUBB's
+    # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
+    # not know as a procedure it counts as a read of data. The entry's
+    # writes are the union over the specifics -- which agree, in every
+    # generic seen so far, on being functions with no OUT argument.
+    for generic, specifics in (record.get("generics") or {}).items():
+        known = [table[s] for s in specifics if s in table]
+        if generic in table or not known:
+            continue
+        table[generic] = {
+            "kind": known[0]["kind"],
+            "out_positions": sorted({at for entry in known for at in entry["out_positions"]}),
+        }
     return table
 
 

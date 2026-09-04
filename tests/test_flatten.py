@@ -484,3 +484,86 @@ def test_the_adapter_declares_a_lower_bound_and_calls_through_a_generic() -> Non
     assert "use solve_mod, only: solve\n" in text  # both specifics, one generic
     assert "call solve(n=n, x=x)" in text
     assert "solve_one(" not in text.replace("subroutine solve_one_flat(", "")
+
+
+# --- a CLUBB-shaped object: many components in one ALLOCATE, sized by itself
+
+GRID = """\
+module grid_class
+  implicit none
+  private
+  public :: grid, setup_grid
+  integer, parameter :: t_above = 1, t_below = 2
+  type grid
+    integer :: nzm, nzt
+    real(8), allocatable, dimension(:,:) :: zm, zt
+    real(8), allocatable, dimension(:,:,:) :: weights_zt2zm
+    real(8) :: grid_dir
+  end type grid
+contains
+  subroutine setup_grid( ngrdcol, nzmax, gr )
+    integer, intent(in) :: ngrdcol, nzmax
+    type(grid), intent(inout) :: gr
+    integer :: ierr
+    gr%nzm = nzmax
+    gr%nzt = nzmax - 1
+    allocate( gr%zm(ngrdcol,gr%nzm), gr%zt(ngrdcol,gr%nzt), & ! two at once
+              gr%weights_zt2zm(ngrdcol,gr%nzm,t_above:t_below), &
+              stat=ierr )
+    gr%grid_dir = 1.0d0
+  end subroutine setup_grid
+end module grid_class
+"""
+
+COLUMN = """\
+module column_mod
+  use grid_class, only: grid
+  implicit none
+  private
+  public :: ddz
+contains
+  subroutine ddz( nzm, ngrdcol, gr, x, dxdz )
+    integer, intent(in) :: nzm, ngrdcol
+    type(grid), intent(in) :: gr
+    real(8), intent(in), dimension(ngrdcol, nzm) :: x
+    real(8), intent(out), dimension(ngrdcol, nzm) :: dxdz
+    integer :: i, k
+    do k = 1, nzm
+      do i = 1, ngrdcol
+        dxdz(i,k) = gr%grid_dir * x(i,k) * gr%zm(i,k) * gr%weights_zt2zm(i,k,1)
+      end do
+    end do
+  end subroutine ddz
+end module column_mod
+"""
+
+CLUBB_CONVENTIONS = FlatConventions(patch_count="ngrdcol", bounds_pattern=r"^ngrdcol$")
+
+
+def test_an_object_allocated_many_at_once_and_sized_by_itself(tmp_path: Path) -> None:
+    """CLUBB's grid: one ALLOCATE over every component, the object named by
+    the setup routine's dummy rather than ``this``, an axis sized by another
+    component of the same object (``gr%nzm``) and one by the module's
+    private parameters (``t_above:t_below``). The plan carries ``nzm`` as an
+    input the body never reads, spells the extents by it, and declares the
+    driver's extent once, because ``ngrdcol`` is a dummy already."""
+    (tmp_path / "grid_class.f90").write_text(GRID)
+    (tmp_path / "column_mod.f90").write_text(COLUMN)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:column_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    (gr,) = plan.objects
+    by_name = {c.name: c for c in gr.components}
+    assert set(by_name) == {"grid_dir", "zm", "weights_zt2zm", "nzm"}
+    assert by_name["nzm"].written is False
+    assert by_name["zm"].extents == ["ngrdcol", "gr__nzm"]
+    assert by_name["weights_zt2zm"].extents == ["ngrdcol", "gr__nzm", "2"]
+    assert by_name["weights_zt2zm"].bounds[2] == ("1", "2")
+    names = [a["name"] for a in plan.flat_args]
+    assert names.count("ngrdcol") == 1
+    assert names.index("gr__nzm") < names.index("gr__zm")
+    text = fortran_adapter("column_mod", [plan], [])
+    assert "real(8), intent(in) :: gr__zm(ngrdcol, gr__nzm)" in text
+    assert "allocate(gr%zm(1:ngrdcol, 1:gr__nzm))" in text
