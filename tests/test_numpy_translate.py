@@ -252,3 +252,77 @@ def test_an_integer_parameter_divides_the_way_fortran_does(tmp_path: Path) -> No
     exec(text, namespace)
     assert namespace["NRK"] == 4 and isinstance(namespace["NRK"], int)
     assert namespace["HALF"] == 0.5
+
+
+CALLBACK = """\
+module callback_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+  abstract interface
+    subroutine func(n, x, fvec, iflag)
+      import :: r8
+      implicit none
+      integer, intent(in) :: n
+      real(r8), intent(in) :: x(n)
+      real(r8), intent(out) :: fvec(n)
+      integer, intent(inout) :: iflag
+    end subroutine func
+  end interface
+contains
+  subroutine sweep(fcn, n, x, work, iflag)
+    procedure(func) :: fcn
+    integer, intent(in) :: n
+    real(r8), intent(inout) :: x(n)
+    real(r8), intent(inout) :: work(n)
+    integer, intent(inout) :: iflag
+    integer :: j
+    do j = 1, n
+      x(j) = x(j) + 1.0_r8
+      call fcn(n, x, work, iflag)
+    end do
+  end subroutine sweep
+
+  subroutine drive(fcn, n, x, work, iflag)
+    procedure(func) :: fcn
+    integer, intent(in) :: n
+    real(r8), intent(inout) :: x(n)
+    real(r8), intent(inout) :: work(n)
+    integer, intent(inout) :: iflag
+    call sweep(fcn, n, x, work, iflag)
+  end subroutine drive
+end module callback_mod
+"""
+
+
+@pytest.fixture(scope="module")
+def callback_candidate(tmp_path_factory: pytest.TempPathFactory):
+    tree = tmp_path_factory.mktemp("callback")
+    (tree / "callback_mod.f90").write_text(CALLBACK)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tree) if u.uid == "fortran:callback_mod")
+    facts = frontend.analyze(unit, tree)
+    return unit, NumpyTranslation().apply(unit, facts, {"root": tree})
+
+
+def test_a_callback_taking_module_translates_whole(callback_candidate) -> None:
+    """A dummy procedure argument is the shape every MINPACK-style driver has.
+    Refusing the call left the caller's whole block in the agent queue -- and
+    with it every subprogram that reaches its result through one."""
+    _unit, candidate = callback_candidate
+    assert candidate.deferred == []
+    module = candidate.files[Path("callback_mod_numpy.py")].decode()
+    assert "_out = fcn(n, x, iflag)" in module
+    assert "_f_copy_out(work, _out[0])" in module
+
+
+def test_the_callback_translation_passes_the_dataflow_gate(callback_candidate) -> None:
+    """The two halves have to agree about the same call: the source's read of
+    ``fcn`` at callee position, and the write the copy-out shim makes."""
+    from recast.executors.local import LocalExecutor
+    from recast.model import Confidence
+    from recast.verify.rwset import ReadWriteSetVerifier
+
+    unit, candidate = callback_candidate
+    verdict = ReadWriteSetVerifier().check(unit, candidate, Path("."), LocalExecutor(), {})
+    assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+    assert verdict.metrics["blocks_matched"] == verdict.metrics["blocks_checked"] > 0
