@@ -484,6 +484,12 @@ class Modules:
                 if argument.get("buffer") and self.subprograms.buffer_out_arrays:
                     # The caller's storage: a harness has to pass one in.
                     entry["buffer"] = True
+                if argument.get("procedure"):
+                    # A procedure argument's "type" is what calling it means,
+                    # so the harness on the other side gets the interface
+                    # itself: it has to build something callable, and the
+                    # emitted body calls it by the same in/out split.
+                    entry["interface"] = self._interface(argument.get("interface"))
                 arguments.append(entry)
             table[emit_name(subprogram)] = {
                 "kind": subprogram["kind"],
@@ -493,6 +499,37 @@ class Modules:
                 "result_dtype": subprogram.get("result_dtype"),
             }
         return table
+
+    def _interface(self, name: Any) -> dict[str, Any] | None:
+        """One abstract interface, in the same shape a signature entry has.
+
+        ``None`` when the declaration named no interface -- ``procedure()``
+        says a name is callable and nothing about the call -- because a
+        harness cannot build a callable it has no argument list for, and an
+        empty one would be a guess.
+        """
+        record = (self.subprograms.record.get("interfaces") or {}).get(str(name))
+        if record is None:
+            return None
+        arguments = []
+        for argument in record["args"]:
+            entry: dict[str, Any] = {
+                "name": argument["name"],
+                "dtype": argument["dtype"],
+                "intent": argument["intent"],
+                "optional": argument.get("optional", False),
+            }
+            if argument.get("dims"):
+                entry["dims"] = [
+                    {"lb": d.get("lb", "1"), "ub": d.get("ub")} for d in argument["dims"]
+                ]
+            arguments.append(entry)
+        return {
+            "kind": record["kind"],
+            "args": arguments,
+            "result": record.get("result"),
+            "result_dtype": record.get("result_dtype"),
+        }
 
     # -- plumbing -------------------------------------------------------------
 
