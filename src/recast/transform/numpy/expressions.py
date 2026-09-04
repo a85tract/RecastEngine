@@ -63,7 +63,11 @@ BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()
 """What a declared bound is allowed to be made of. Bound texts are simple by
 construction; anything richer refuses the statement that needed the bound."""
 
-__all__ = ["Expressions", "Remote"]
+__all__ = ["REFUSED", "Expressions", "Remote"]
+
+REFUSED = (NoRule, Unanalyzable)
+"""The two ways a rule declines: no rule for the construct, or the semantics
+layer could not answer a question the rule needed answered."""
 
 CONSTANT_FOLDED = frozenset(
     {
@@ -746,6 +750,284 @@ class Expressions:
 
     # -- calls ----------------------------------------------------------------
 
+    def actual_argument(
+        self, formal: dict[str, Any], actual: Any, substitutions: dict[str, str]
+    ) -> str:
+        """One actual argument, as the *callee's* dummy sees it.
+
+        Fortran's sequence association lets an actual of lower rank -- a whole
+        array passed to a two-dimensional dummy, an array element passed to an
+        array dummy -- stand for the contiguous memory the dummy spans, and a
+        target with real array objects has to say so. Applied wherever a call
+        is bound against a record, which is both statements (``call qrfac(...,
+        a, ...)``) and expressions: ``enorm(m, a(1, j))`` passes the whole of
+        column ``j``, and rendering the element alone hands ``enorm`` a scalar
+        to subscript.
+        """
+        rendered = self.render(actual)
+        formal_dims = formal.get("dims") or []
+        if not formal_dims:
+            return rendered
+        try:
+            rank = self.semantics.rank(actual)
+        except REFUSED:
+            return rendered
+        element = (
+            rank == 0
+            and isinstance(actual, f03.Part_Ref)
+            and self.semantics.is_array(str(actual.children[0]).lower())
+        )
+        if self._assumed_size(formal_dims):
+            # ``x(*)``: the dummy spans the caller's storage from the element
+            # to the end of the array, and only the caller knows how far
+            # that is. Rendering the element alone -- what an unbounded
+            # dummy used to get -- hands the callee one number to subscript.
+            if element:
+                return self._association_tail(actual, formal_dims)
+            if rank is not None and 0 < rank < len(formal_dims):
+                raise NoRule(
+                    f"seq-assoc: rank-{rank} actual for the rank-{len(formal_dims)} "
+                    f"assumed-size dummy {formal['name']}"
+                )
+            return rendered
+        if not all(d.get("ub") for d in formal_dims):
+            return rendered
+        if rank is not None and 0 < rank < len(formal_dims):
+            # Fortran sequence association: a lower-rank actual fills the
+            # dummy in column-major order.
+            shape = ", ".join(self.extent(d, substitutions) for d in formal_dims)
+            return f"np.reshape({rendered}, ({shape},), order='F')"
+        if element:
+            return self.sequence_association(actual, formal_dims, substitutions)
+        return rendered
+
+    @staticmethod
+    def _assumed_size(formal_dims: list[dict[str, Any]]) -> bool:
+        """``x(*)`` or ``x(n, *)``: the last axis has no extent of its own."""
+        return bool(formal_dims and formal_dims[-1].get("assumed_size"))
+
+    def _association_tail(self, actual: Any, formal_dims: list[dict[str, Any]]) -> str:
+        """An element actual for an assumed-size dummy: the actual's memory
+        from the element on, as a view the callee reads and writes in place.
+
+        Only a rank-1 actual has that as a view. A higher-rank actual's tail
+        in column-major order is ``ravel(order='F')``, which is a copy unless
+        the array happens to be Fortran-contiguous, and a copy is somewhere
+        an OUT dummy's writes are lost; a rank-2 assumed-size dummy has no
+        extent to reshape to at all. Both are refused.
+        """
+        name = str(actual.children[0]).lower()
+        declaration = self.semantics.declaration(name) or {}
+        if len(declaration.get("dims") or []) != 1 or len(formal_dims) != 1:
+            raise NoRule(
+                f"seq-assoc: element of {name} for an assumed-size dummy is only a view "
+                "when both are rank-1"
+            )
+        return f"{self.names.symbol(name)}[{self._association_start(actual)}:]"
+
+    def substitutions(self, record: dict[str, Any], actuals: list[Any]) -> dict[str, str]:
+        """Formal name -> the actual bound to it, rendered in the caller's scope.
+
+        Keyed in one case, because ``a(Lda, n)`` and the dummy ``lda`` are one
+        name; and every formal gets an entry, bound or not, because a
+        dimension no actual answered is a different thing from a name both
+        sides can see. ``extent`` reads both facts.
+        """
+        table = {formal["name"].lower(): "" for formal in record["args"]}
+        for formal, actual in zip(record["args"], actuals, strict=False):
+            if actual is None:
+                continue
+            try:
+                table[formal["name"].lower()] = self.render(actual)
+            except REFUSED:
+                pass
+        return table
+
+    # -- sequence association -------------------------------------------------
+
+    def sequence_association_target(
+        self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
+    ) -> tuple[str, bool]:
+        """The same association, as somewhere a callee's OUT array can land.
+
+        Returns the target text and whether the value has to be flattened in
+        column-major order first. The input form is free to build a reshaped
+        *copy*; a target cannot -- what is written has to reach the caller's
+        own memory -- so only the two forms that are views are allowed here:
+        the leading axes taken whole, and a slice of a rank-1 actual. Anything
+        else is refused rather than written to a copy nobody reads, which is
+        what ``wa(index + 1)`` was doing: assigned as if it were the single
+        element the source spells, so the callee's whole array landed on one
+        scalar and NumPy said so.
+        """
+        if self._assumed_size(formal_dims):
+            # The tail view the callee was handed; the copy-out onto it is
+            # the same memory, so the writes it made in place stand.
+            return self._association_tail(actual, formal_dims), True
+        whole = self._leading_axes_whole(actual, formal_dims)
+        if whole is not None:
+            # The view the callee was handed is where its result lands (#27);
+            # ``[...]`` sends it through the runtime's copy-out like any other
+            # whole-array target.
+            return f"{whole}[...]", False
+        name = str(actual.children[0]).lower()
+        declaration = self.semantics.declaration(name) or {}
+        if len(declaration.get("dims") or []) != 1:
+            raise NoRule(f"seq-assoc target: {name} is not rank-1 and not at a lower bound")
+        offset, span, _ = self._association_offset(actual, formal_dims, substitutions)
+        return f"{self.names.symbol(name)}[{offset}:{offset} + {span}]", True
+
+    def _leading_axes_whole(self, actual: Any, formal_dims: list[dict[str, Any]]) -> str | None:
+        """``arr(1, k)`` to a rank-1 formal: the whole of column ``k``.
+
+        ``None`` when the element is not at the lower bound of the leading
+        axes, which is where the general offset form has to be used instead.
+        """
+        name = str(actual.children[0]).lower()
+        subscripts = self._subscript_nodes(actual)
+        declaration = self.semantics.declaration(name)
+        if declaration is None:
+            raise NoRule(f"seq-assoc: undeclared {name}")
+        actual_dims = declaration.get("dims") or []
+        if len(subscripts) != len(actual_dims):
+            raise NoRule(f"seq-assoc: rank mismatch {name}")
+        if len(formal_dims) > len(actual_dims):
+            # A rank-1 actual filling a rank-2 dummy -- ``wa(index + 1)`` for
+            # ``fjac(ldfjac, n)``. There are no leading axes to take whole,
+            # but the association is ordinary: memory is memory, and the
+            # offset form below spells it.
+            return None
+        first_scalar = None
+        for at, subscript in enumerate(subscripts):
+            if not isinstance(subscript, f03.Subscript_Triplet):
+                if first_scalar is None:
+                    first_scalar = at
+            else:
+                first_scalar = None
+        if first_scalar is None:
+            raise NoRule(f"seq-assoc: no scalar subscript in {name}")
+        at_lower_bound = (
+            first_scalar == 0
+            and isinstance(subscripts[0], f03.Int_Literal_Constant)
+            and str(subscripts[0]).split("_")[0] == str(actual_dims[0].get("lb", "1"))
+        )
+        if not (at_lower_bound and len(formal_dims) <= len(actual_dims) - first_scalar):
+            return None
+        parts = []
+        for at in range(len(actual_dims)):
+            if at < len(formal_dims):
+                parts.append(":")
+                continue
+            # A trailing scalar subscript shifts by the axis's DECLARED
+            # lower bound, not a blanket 1 (#39): an element ``a(1,1,ie)``
+            # of a local ``a(np,np,nets:nete)`` is ``a[:, :, ie - nets]``.
+            low = actual_dims[at].get("lb", "1")
+            if low in (None, "1", ":"):
+                parts.append(self._shifted(subscripts[at]))
+            else:
+                parts.append(f"({self.render(subscripts[at])}) - ({self.bound(low)})")
+        return f"{self.names.symbol(name)}[{', '.join(parts)}]"
+
+    @staticmethod
+    def _subscript_nodes(actual: Any) -> list[Any]:
+        arglist = actual.children[1]
+        if arglist is None:
+            return []
+        return list(arglist.children) if hasattr(arglist, "children") else [arglist]
+
+    def _association_offset(
+        self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
+    ) -> tuple[str, str, str]:
+        """``(offset, span, shape)`` for an element actual, in column-major order.
+
+        The stride along an axis is the array's own extent there, not the text
+        of its declared upper bound: the two agree, and asking the array does
+        not read a name the block never mentions -- ``a(Lda, n)`` made every
+        such call look like a read of ``lda``, which the static read/write
+        gate reported as a disagreement -- nor does it get a non-unit lower
+        bound wrong.
+        """
+        axes = [self.extent(d, substitutions) for d in formal_dims]
+        offset = self._association_start(actual)
+        return offset, " * ".join(f"({axis})" for axis in axes), ", ".join(axes)
+
+    def _association_start(self, actual: Any) -> str:
+        """The element's 0-based position in the actual's column-major storage."""
+        name = str(actual.children[0]).lower()
+        subscripts = self._subscript_nodes(actual)
+        declaration = self.semantics.declaration(name) or {}
+        actual_dims = declaration.get("dims") or []
+        symbol = self.names.symbol(name)
+        shifts = []
+        for at, subscript in enumerate(subscripts):
+            low = actual_dims[at].get("lb", "1")
+            shifts.append(f"({self.render(subscript)} - {low})")
+        offset = shifts[0]
+        stride = "1"
+        for at in range(1, len(shifts)):
+            stride = f"{stride} * {self.extent_along(symbol, at - 1)}"
+            offset = f"{offset} + {shifts[at]} * {stride}"
+        return offset
+
+    def sequence_association(
+        self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
+    ) -> str:
+        """A scalar element actual -- ``arr(i, k)`` -- passed to an array
+        formal. Fortran passes contiguous memory starting at the element.
+
+        The common pattern is the element sitting at the lower bound of the
+        leading axes -- ``arr(1, k)`` -- which becomes taking those axes whole:
+        ``arr[:, k - 1]``. The general form flattens in column-major order,
+        offsets, and reshapes; correct everywhere, and worth avoiding where
+        the cheap answer holds.
+        """
+        whole = self._leading_axes_whole(actual, formal_dims)
+        if whole is not None:
+            return whole
+        offset, span, shape = self._association_offset(actual, formal_dims, substitutions)
+        flat = f"{self.names.symbol(str(actual.children[0]).lower())}.ravel(order='F')"
+        # The slice ends where the dummy does. Reshaping the whole tail is
+        # what Fortran means only when the actual happens to end there too;
+        # NumPy refuses any other size, so a dummy shorter than the memory
+        # behind it -- ``enorm(m - j + 1, a(j, j))`` -- raised instead of
+        # taking the first ``m - j + 1`` elements.
+        return f"np.reshape({flat}[{offset}:{offset} + {span}], ({shape},), order='F')"
+
+    def _shifted(self, node: Any) -> str:
+        """A single 1-based index, 0-based. A literal folds only while the
+        folded value stays inside the whitelist; otherwise it references the
+        hoisted constant, minus one."""
+        if isinstance(node, f03.Int_Literal_Constant):
+            folded = int(str(node).split("_")[0]) - 1
+            if folded in (0, 1, 2):
+                return str(folded)
+            return f"{self.names.literal(node)} - 1"
+        return f"{self.render(node)} - 1"
+
+    def extent(self, dim: dict[str, Any], substitutions: dict[str, str]) -> str:
+        """One axis of a callee's dummy, as an expression the *caller* can read.
+
+        A dummy's bound is written in the callee's names, so an axis named by
+        one of the callee's own arguments is the actual the caller passed for
+        it -- looked up without regard to case, because ``a(Lda, n)`` and the
+        dummy ``lda`` are the same name. Missing that lookup renders the
+        callee's parameter name in the caller's scope: ``r1mpyq(1, n, Qtf, 1,
+        ...)`` reshaped ``qtf`` to ``(lda, n)``, and ``lda`` is a name the
+        caller does not have.
+
+        An axis the call did not bind is refused rather than guessed at, for
+        the same reason. Anything that is not one of the callee's arguments --
+        a module parameter, an arithmetic expression over them -- means the
+        same thing on both sides and goes through ``bound``.
+        """
+        text = str(dim["ub"])
+        if text.lower() in substitutions:
+            substituted = substitutions[text.lower()]
+            if not substituted:
+                raise NoRule(f"dummy dimension {text!r} is not bound by this call")
+            return substituted
+        return self.bound(text)
+
     def _arguments(self, items: list[Any]) -> list[str]:
         rendered = []
         for item in items:
@@ -792,6 +1074,21 @@ class Expressions:
             else pysafe(emit_name(record or {"name": name}))
         )
         if record is not None and not remote:
+            # Sequence association applies to a function reference as much as
+            # to a CALL: ``enorm(m, a(1, j))`` hands the callee the whole of
+            # column ``j``, and rendering the element alone hands it a scalar
+            # to subscript. Only where every actual is positional -- a keyword
+            # actual is not bound to a formal by position, and guessing which
+            # dummy it answers is how the reshape lands on the wrong one.
+            positional = not any(
+                isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec)) for item in items
+            )
+            if positional and len(items) <= len(record["args"]):
+                substitutions = self.substitutions(record, items)
+                arguments = [
+                    self.actual_argument(formal, item, substitutions)
+                    for formal, item in zip(record["args"], items, strict=False)
+                ]
             arguments = [
                 *arguments,
                 *(self.names.symbol(hv) for hv in record.get("host_vars") or ()),

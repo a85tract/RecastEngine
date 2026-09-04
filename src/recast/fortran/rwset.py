@@ -90,6 +90,15 @@ class Scope:
     conservative reading rather than a guess.
     """
 
+    dummy_procedures: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Dummy procedure argument -> the interface record it was declared with.
+
+    ``procedure(func) :: fcn`` makes ``call fcn(...)`` a call whose argument
+    intents are stated by the abstract interface ``func``. Without them the
+    call falls to the unresolved-external reading -- every actual read, none
+    written -- which loses the write the callback exists to make.
+    """
+
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     alias_dims: dict[str, Any] = field(default_factory=dict)
     """An ``associate`` alias -> the dims of the component it selects, so a
@@ -153,8 +162,16 @@ def scope_for(
     if sub["result"] is not None:
         ranks.setdefault(sub["result"], len(sub["result_dims"] or []))
 
+    interfaces = record.get("interfaces") or {}
+    dummy_procedures = {
+        argument["name"]: interfaces[argument["interface"]]
+        for argument in sub["args"]
+        if argument.get("procedure") and argument.get("interface") in interfaces
+    }
+
     return Scope(
         subprograms=subs,
+        dummy_procedures=dummy_procedures,
         generics=dict(record["generics"]),
         ranks=ranks,
         chars=frozenset(chars),
@@ -378,6 +395,13 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             name = _resolve_generic(name, items, scope) or name
 
         callee = scope.subprograms.get(name)
+        if callee is None and name in scope.dummy_procedures:
+            # Calling through a dummy procedure reads it: which code runs is
+            # decided by the value the caller passed, and the translation
+            # spells that read the same way -- the argument's own name at
+            # callee position.
+            callee = scope.dummy_procedures[name]
+            reads.add(name)
         actuals = _bind_actuals(callee, items) if callee is not None else items
         # A call through a dummy reads the dummy: the callable is data this
         # subprogram was passed, and the translation spells it as a name.

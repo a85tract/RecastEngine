@@ -189,7 +189,9 @@ def _split_arguments(tokens: list[str]) -> list[list[str]]:
     return arguments
 
 
-def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str, Any]] | None:
+def _argument_tokens(
+    tokens: list[str], known_names: set[str], aliases: dict[str, str] | None = None
+) -> list[dict[str, Any]] | None:
     """One argument as tokens of the same vocabulary; ``None`` if it names
     something no earlier constant defines."""
     spelled: list[dict[str, Any]] = []
@@ -199,13 +201,13 @@ def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str,
         if re.match(r"[A-Za-z_]", piece):
             if piece.lower() in INTRINSICS and at + 1 < len(tokens) and tokens[at + 1] == "(":
                 # A call inside an argument: ``max( 1.e-10, epsilon(tol) )``.
-                call, at = _intrinsic_call(tokens, at, known_names)
+                call, at = _intrinsic_call(tokens, at, known_names, aliases)
                 if call is None:
                     return None
                 spelled.append(call)
                 continue
             if piece.lower() in known_names:
-                spelled.append({"t": "ref", "v": piece.lower()})
+                spelled.append({"t": "ref", "v": _spelled_ref(piece, aliases)})
             elif _KIND_ARGUMENT.match(piece):
                 pass
             else:
@@ -225,8 +227,20 @@ def _argument_tokens(tokens: list[str], known_names: set[str]) -> list[dict[str,
 _KIND_INQUIRIES = frozenset({"epsilon", "huge", "tiny"})
 
 
+def _spelled_ref(name: str, aliases: dict[str, str] | None) -> str:
+    """The name a reference is recorded under.
+
+    A subprogram's own parameters are emitted under a mangled name -- one
+    constants file holds every subprogram's -- so a local parameter written
+    in terms of an earlier one has to record the mangled name, not the name
+    the source wrote.
+    """
+    lowered = name.lower()
+    return (aliases or {}).get(lowered, lowered)
+
+
 def _intrinsic_call(
-    tokens: list[str], at: int, known_names: set[str]
+    tokens: list[str], at: int, known_names: set[str], aliases: dict[str, str] | None = None
 ) -> tuple[dict[str, Any] | None, int]:
     """The call starting at ``tokens[at]``, and the index just past it.
 
@@ -258,7 +272,7 @@ def _intrinsic_call(
         if last and len(stripped) == 1 and _KIND_ARGUMENT.match(stripped[0]):
             continue
         kept.append(argument)
-    spelled = [_argument_tokens(argument, known_names) for argument in kept]
+    spelled = [_argument_tokens(argument, known_names, aliases) for argument in kept]
     if any(text is None for text in spelled):
         if name in _KIND_INQUIRIES:
             # The argument names nothing yet defined -- the constant itself,
@@ -415,11 +429,133 @@ def fit_char(value: str, length: int | str | None) -> str:
     return value
 
 
+def _constructor_elements(init: str) -> list[str] | None:
+    """The top-level elements of an array constructor, as source text.
+
+    Both spellings; ``None`` when the text is not a constructor. Splitting at
+    depth zero keeps a nested call -- ``[epsilon(1.0_wp), tiny(1.0_wp)]`` --
+    one element rather than three.
+    """
+    compact = init.strip()
+    inner = None
+    for pattern in (_ARRAY_CTOR_OLD, _ARRAY_CTOR_NEW):
+        match = pattern.fullmatch(compact)
+        if match:
+            inner = match.group(1)
+            break
+    if inner is None:
+        return None
+    elements, depth, current = [], 0, ""
+    for character in inner:
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth -= 1
+        elif character == "," and depth == 0:
+            elements.append(current.strip())
+            current = ""
+            continue
+        current += character
+    if current.strip():
+        elements.append(current.strip())
+    return elements or None
+
+
+def _array_index(
+    tokens: list[str],
+    at: int,
+    known_names: set[str],
+    array_names: set[str],
+    aliases: dict[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, int]:
+    """``dpmpar(1)`` -- a subscript of an earlier *array* parameter.
+
+    Written exactly like a call, and told apart from one only by knowing that
+    the name holds an array. Without this a module that keeps its machine
+    constants in one array -- ``epsmch = dpmpar(1)`` -- lost every parameter
+    downstream of it, and with them every routine that reads one.
+    """
+    name = tokens[at].lower()
+    depth = 0
+    end = at + 1
+    while end < len(tokens):
+        if tokens[end] == "(":
+            depth += 1
+        elif tokens[end] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    if end >= len(tokens):
+        return None, end + 1
+    subscripts = _split_arguments(tokens[at + 2 : end])
+    spelled = [_argument_tokens(subscript, known_names, aliases) for subscript in subscripts]
+    if not spelled or any(text is None for text in spelled):
+        return None, end + 1
+    return {"t": "index", "v": _spelled_ref(name, aliases), "args": spelled}, end + 1
+
+
+def _classify_tokens(
+    e: str,
+    compact: str,
+    known_names: set[str],
+    array_names: set[str],
+    aliases: dict[str, str] | None = None,
+) -> tuple[str, Any]:
+    """A constant expression over earlier parameters, token by token.
+
+    Re-emitted rather than folded so the target language evaluates the same
+    arithmetic the compiler did, rather than this stage folding it at a
+    different precision.
+    """
+    toks = _TOKEN_RE.findall(e)
+    if not (toks and "".join(toks).replace(" ", "") == compact):
+        return "skip", f"unevaluated expression: {e}"
+    out: list[dict[str, Any]] = []
+    at = 0
+    while at < len(toks):
+        t = toks[at]
+        called = at + 1 < len(toks) and toks[at + 1] == "("
+        if re.match(r"[A-Za-z_]", t) and t.lower() in INTRINSICS:
+            if called:
+                call, at = _intrinsic_call(toks, at, known_names, aliases)
+                if call is None:
+                    return "skip", f"unresolved argument in expression: {e}"
+                out.append(call)
+                continue
+            if t.lower() not in known_names:
+                return "skip", f"unknown name {t!r} in expression: {e}"
+            out.append({"t": "ref", "v": _spelled_ref(t, aliases)})
+        elif re.match(r"[A-Za-z_]", t) and t.lower() in array_names and called:
+            index, at = _array_index(toks, at, known_names, array_names, aliases)
+            if index is None:
+                return "skip", f"unresolved subscript in expression: {e}"
+            out.append(index)
+            continue
+        elif re.match(r"[A-Za-z_]", t):
+            if t.lower() not in known_names:
+                return "skip", f"unknown name {t!r} in expression: {e}"
+            out.append({"t": "ref", "v": _spelled_ref(t, aliases)})
+        elif re.match(r"\d", t):
+            base = _normalize_real(t)
+            if "." in base or "e" in base:
+                out.append({"t": "real32" if is_default_real(t) else "real", "v": base})
+            else:
+                out.append({"t": "int", "v": base})
+        else:
+            out.append({"t": "op", "v": t})
+        at += 1
+    return "expr", out
+
+
 def classify_init(
     init_expr: str,
     known_names: set[str],
     char_values: Mapping[str, str] | None = None,
     char_len: int | str | None = None,
+    *,
+    array_names: set[str] | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> tuple[str, Any]:
     """Classify a parameter initializer. Returns ``(kind, payload)``.
 
@@ -430,10 +566,16 @@ def classify_init(
     ``expr``            -> tokens over earlier constants, in source order.
     ``skip``            -> a reason, in words.
 
+    ``array_names`` are the earlier parameters that hold arrays, so a
+    subscript of one is told apart from a call to a function this stage
+    cannot evaluate. ``aliases`` renames a reference on the way into the
+    record -- a subprogram's own parameters are emitted mangled.
+
     ``skip`` is a result, not an error. A kind parameter has no runtime value to
     carry, and an initializer this frontend cannot evaluate must be reported as
     unresolved rather than approximated.
     """
+    arrays = set(array_names or ())
     e = init_expr.strip()
 
     m = re.search(r"selected_real_kind\s*\(\s*(\d+)", e, re.I)
@@ -485,7 +627,7 @@ def classify_init(
         kind = "real32" if is_default_real(compact) else "real"
         return kind, m.group(1) + _normalize_real(m.group(2))
     if compact.lower() in known_names:
-        return "ref", compact.lower()
+        return "ref", _spelled_ref(compact, aliases)
 
     # An array constructor. ``_array_literal`` takes the ones whose *shape*
     # is on the entity; this takes the rest, which is how a parameter written
@@ -496,53 +638,29 @@ def classify_init(
     if spelled is not None:
         return "expr", [{"t": "spelled", "v": spelled}]
 
-    # One that holds more than literals -- a name, an implied do. The token
-    # walk below would spell its delimiters as arithmetic, so it stops here.
-    # Naming the first unresolved name says which one, the way every other
-    # unevaluable expression here does; "more than literals" said only that
-    # something was wrong.
+    # One that holds more than literals -- an intrinsic inquiry, a name, an
+    # implied do. Each element is classified on its own, because the token
+    # walk below would spell the constructor's delimiters as arithmetic; an
+    # element it cannot classify keeps that element's own reason.
     if "(/" in compact or "[" in compact:
+        elements = _constructor_elements(e)
+        if elements is not None:
+            spelled_elements = []
+            for element in elements:
+                kind, payload = _classify_tokens(
+                    element, element.replace(" ", ""), known_names, arrays, aliases
+                )
+                if kind != "expr":
+                    return kind, payload
+                spelled_elements.append(payload)
+            return "expr", [{"t": "array", "elements": spelled_elements}]
         for name in _TOKEN_RE.findall(e):
             if name[0].isalpha() or name[0] == "_":
                 if name.lower() not in known_names:
                     return "skip", f"unknown name {name!r} in expression: {e}"
         return "skip", f"array constructor over more than literals: {e}"
 
-    # A constant expression over earlier parameters. Re-emitted token-wise so
-    # the target language evaluates the same arithmetic the compiler folded,
-    # rather than this stage folding it at a different precision.
-    toks = _TOKEN_RE.findall(e)
-    if toks and "".join(toks).replace(" ", "") == compact:
-        out: list[dict[str, str]] = []
-        at = 0
-        while at < len(toks):
-            t = toks[at]
-            if re.match(r"[A-Za-z_]", t) and t.lower() in INTRINSICS:
-                if at + 1 < len(toks) and toks[at + 1] == "(":
-                    call, at = _intrinsic_call(toks, at, known_names)
-                    if call is None:
-                        return "skip", f"unresolved argument in expression: {e}"
-                    out.append(call)
-                    continue
-                if t.lower() not in known_names:
-                    return "skip", f"unknown name {t!r} in expression: {e}"
-                out.append({"t": "ref", "v": t.lower()})
-            elif re.match(r"[A-Za-z_]", t):
-                if t.lower() not in known_names:
-                    return "skip", f"unknown name {t!r} in expression: {e}"
-                out.append({"t": "ref", "v": t.lower()})
-            elif re.match(r"\d", t):
-                base = _normalize_real(t)
-                if "." in base or "e" in base:
-                    out.append({"t": "real32" if is_default_real(t) else "real", "v": base})
-                else:
-                    out.append({"t": "int", "v": base})
-            else:
-                out.append({"t": "op", "v": t})
-            at += 1
-        return "expr", out
-
-    return "skip", f"unevaluated expression: {e}"
+    return _classify_tokens(e, compact, known_names, arrays, aliases)
 
 
 def _array_elements(init: str) -> str | None:
@@ -553,28 +671,9 @@ def _array_elements(init: str) -> str | None:
     makes the whole thing not-an-array, which is the honest answer: this stage
     cannot evaluate a name.
     """
-    compact = init.strip()
-    inner = None
-    for pattern in (_ARRAY_CTOR_OLD, _ARRAY_CTOR_NEW):
-        match = pattern.fullmatch(compact)
-        if match:
-            inner = match.group(1)
-            break
-    if inner is None:
+    elements = _constructor_elements(init)
+    if elements is None:
         return None
-    elements, depth, current = [], 0, ""
-    for character in inner:
-        if character in "([":
-            depth += 1
-        elif character in ")]":
-            depth -= 1
-        elif character == "," and depth == 0:
-            elements.append(current.strip())
-            current = ""
-            continue
-        current += character
-    if current.strip():
-        elements.append(current.strip())
 
     spelled = []
     for element in elements:
@@ -633,6 +732,19 @@ def _decl_line(decl: Any) -> int | None:
     return None
 
 
+def _holds_an_array(parameter: dict[str, Any]) -> bool:
+    """Whether a classified parameter's value is an array rather than a scalar."""
+    if parameter["kind"] == "array":
+        return True
+    payload = parameter["payload"]
+    return (
+        parameter["kind"] == "expr"
+        and isinstance(payload, list)
+        and len(payload) == 1
+        and payload[0]["t"] in ("array", "spelled")
+    )
+
+
 def extract(
     path: Path,
     *,
@@ -651,6 +763,9 @@ def extract(
     mod_name, mod_spec, sub_scope = _scope_of(ast, path, scope)
 
     known: set[str] = set(extern_names or ())
+    # Which of the known names hold arrays. A subscript of one is spelled
+    # exactly like a call, and nothing else here can tell the two apart.
+    arrays: set[str] = set()
     module_parameters: list[dict[str, Any]] = []
     char_values: dict[str, str] = {}  # every character parameter's value so far
 
@@ -692,10 +807,13 @@ def extract(
                     known,
                     char_values,
                     char_length(str(type_spec), str(ent)) if base == "CHARACTER" else None,
+                    array_names=arrays,
                 )
             if rec["kind"] == "str":
                 char_values[name] = rec["payload"]
             module_parameters.append(rec)
+            if _holds_an_array(rec):
+                arrays.add(name)
             if rec["kind"] != "skip":
                 # Only a parameter that got a value is a name later ones may
                 # be written in terms of. Adding every declared name meant an
@@ -728,6 +846,13 @@ def extract(
         sname = str(st.children[1]).lower()
         literal_map[sname] = {}
 
+        # A subprogram's own parameters are known to the ones declared after
+        # them -- ``epsf = factor*epsmch`` reads the ``factor`` two lines up
+        # -- and are emitted under the mangled name the constants file uses.
+        local_known: set[str] = set(known)
+        local_aliases: dict[str, str] = {}
+        local_arrays: set[str] = set(arrays)
+
         spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
         local_chars = dict(char_values)  # the module's values, then this subprogram's
         if spec is not None:
@@ -736,7 +861,13 @@ def extract(
                 for pdef in walk(pstmt, f03.Named_Constant_Def):
                     pname = str(pdef.children[0]).lower()
                     init = str(pdef.children[1])
-                    kind, payload = classify_init(init, known, local_chars)
+                    kind, payload = classify_init(
+                        init,
+                        local_known,
+                        local_chars,
+                        array_names=local_arrays,
+                        aliases=local_aliases,
+                    )
                     if kind == "str":
                         local_chars[pname] = payload
                     local_parameters.append(
@@ -750,6 +881,9 @@ def extract(
                             "payload": payload,
                         }
                     )
+                    if kind != "skip":
+                        local_known.add(pname)
+                        local_aliases[pname] = f"{sname}__{pname}"
             for decl in walk(spec, f03.Type_Declaration_Stmt):
                 local_type_spec, attr_list, _ = decl.children
                 attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
@@ -769,23 +903,29 @@ def extract(
                     else:
                         kind, payload = classify_init(
                             init or "",
-                            known,
+                            local_known,
                             local_chars,
                             char_length(str(local_type_spec), str(ent)),
+                            array_names=local_arrays,
+                            aliases=local_aliases,
                         )
                     if kind == "str":
                         local_chars[pname] = payload
-                    local_parameters.append(
-                        {
-                            "subprogram": sname,
-                            "name": pname,
-                            "const": const,
-                            "form": "declaration",
-                            "init_expr": init,
-                            "kind": kind,
-                            "payload": payload,
-                        }
-                    )
+                    entry = {
+                        "subprogram": sname,
+                        "name": pname,
+                        "const": const,
+                        "form": "declaration",
+                        "init_expr": init,
+                        "kind": kind,
+                        "payload": payload,
+                    }
+                    local_parameters.append(entry)
+                    if kind != "skip":
+                        local_known.add(pname)
+                        local_aliases[pname] = f"{sname}__{pname}"
+                        if _holds_an_array(entry):
+                            local_arrays.add(pname)
                     literal_map[sname][f"@param:{pname}"] = const
 
             # Declaration bounds take part in the zero-literal rule too: the

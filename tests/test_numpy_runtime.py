@@ -13,6 +13,7 @@ worth pinning by hand rather than trusting to the differential gate.
 from __future__ import annotations
 
 import ast
+import math
 
 import pytest
 
@@ -193,6 +194,24 @@ def test_ceiling_and_floor_return_a_default_integer() -> None:
     assert runtime._f_vfloor(np.float64(2.9)).dtype == np.int32
     assert runtime._f_vceil(np.float64(-2.1)) == -2
     assert runtime._f_vfloor(np.float64(-2.1)) == -3
+
+
+def test_sqrt_of_a_negative_is_a_nan_rather_than_an_exception() -> None:
+    """Fortran carries on with the NaN. ``math.sqrt`` raises ValueError, which
+    turns a number the compiled reference keeps computing with into a crash --
+    and one the differential gate reports as "the candidate raised" rather
+    than as the NaN both sides hold."""
+    assert np.isnan(runtime._f_sqrt(-1.0))
+    assert np.isnan(runtime._f_sqrt(float("nan")))
+
+
+def test_sqrt_of_a_non_negative_is_the_hardware_root_to_the_bit() -> None:
+    """Nothing is traded for the case above: the ordinary argument still goes
+    through ``math.sqrt``, which is the correctly-rounded hardware square root
+    the compiled reference calls."""
+    for x in (0.0, 1.0, 2.0, 1e-300, 1e300, 0.1):
+        assert runtime._f_sqrt(x) == math.sqrt(x)
+    assert math.copysign(1.0, runtime._f_sqrt(-0.0)) == -1.0
 
 
 def test_min_and_max_absorb_a_nan_on_the_left_and_propagate_one_on_the_right() -> None:

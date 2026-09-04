@@ -186,8 +186,8 @@ class Subprograms:
     local is undefined until assigned; this backend gives every one of them an
     initializer, which makes a read-before-write *reproducible* -- and a
     reproducible wrong number is the kind that survives a run, a re-run and a
-    reviewer. ``np.empty`` usually lands on an OS zero page, so the answer
-    looks deterministic and drifts only once the heap is dirty.
+    reviewer. Unpoisoned, that initializer is a zero fill, which is
+    reproducible but says nothing -- see ``undefined_array``.
 
     Turned on, every float array Fortran would have left undefined is
     NaN-filled instead of merely allocated, so a read of an unwritten cell
@@ -678,8 +678,8 @@ class Subprograms:
                 refusals.append((reason, low, high))
 
         # intent(out)-only arguments are NOT parameters (return convention):
-        # the function owns their buffers. Arrays get np.empty -- contents
-        # undefined, exactly like Fortran -- and scalars the UB-guard zero.
+        # the function owns their buffers. Arrays go through
+        # ``undefined_array`` and scalars get the UB-guard zero.
         for argument in subprogram["args"]:
             if argument["intent"] != "OUT" or self._is_caller_buffer(argument):
                 # A buffer argument arrives already allocated; allocating a

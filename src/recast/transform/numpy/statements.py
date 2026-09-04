@@ -40,7 +40,7 @@ from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.calls import CallSite
-from recast.transform.numpy.expressions import Expressions
+from recast.transform.numpy.expressions import REFUSED, Expressions
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
@@ -52,9 +52,6 @@ pipeline has it here."""
 DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 __all__ = ["REFUSED", "Statements"]
-
-REFUSED = (NoRule, Unanalyzable)
-"""What a refusal looks like from either floor below this one."""
 
 INT_SENTINEL = -2147483647
 """``INT32_MIN + 1``: the fill for an undefined integer under ``poison_integers``.
@@ -83,13 +80,24 @@ def undefined_array(owner: Any, shape: str, dtype: str) -> str:
     is deliberately not covered: that patch reaches ``np.empty`` and not
     ``np.empty_like``, so poisoning it here would be this backend answering a
     question the experiment does not ask.
+
+    Unpoisoned, the buffer is *zeroed* rather than merely allocated. Fortran
+    leaves it undefined and this backend cannot make it defined, but it can
+    choose which undefined: ``np.empty`` hands back whatever the heap last
+    held, so a read of an unwritten cell answers differently on a dirty heap
+    than on a clean one, and an ``intent(out)`` argument a subprogram returns
+    early without ever assigning -- a guard rejecting its own arguments -- is
+    not comparable against anything at all. Zero is reproducible, which is
+    what makes a wrong number findable, and what lets the differential gate
+    compare an output neither side defined instead of comparing two heaps.
+    Making an undefined read *visible* is what the poison flags above are for.
     """
     if getattr(owner, "poison_undefined", False):
         if dtype in ("np.float64", "np.float32"):
             return f"np.full({shape}, np.nan, dtype={dtype})"
         if getattr(owner, "poison_integers", False) and dtype in ("np.int32", "np.int64"):
             return f"np.full({shape}, {INT_SENTINEL}, dtype={dtype})"
-    return f"np.empty({shape}, dtype={dtype})"
+    return f"np.zeros({shape}, dtype={dtype})"
 
 
 ALLOCATED_DTYPES = {
@@ -1713,6 +1721,16 @@ class Statements:
             remote = self.expressions.remotes[name]
             record = self.semantics.procedures.get(remote.name)
             name, prefix = remote.name, remote.alias + "."
+        callee = ""
+        if record is None:
+            # A dummy procedure argument: the thing to call arrived as an
+            # argument, and its abstract interface says what calling it
+            # means. Bound like any other callee, but spelled with the
+            # argument's own name -- ``fcn(...)``, the parameter -- rather
+            # than with the interface's.
+            interface = self.semantics.dummy_procedure(name)
+            if interface is not None and interface["kind"] == "subroutine":
+                record, callee = interface, pysafe(name)
         if record is None:
             # A call through a procedure dummy, bound against the explicit
             # interface of the same name: ``external :: func`` in a solver,
@@ -1764,16 +1782,15 @@ class Statements:
 
         # Formal name -> rendered actual: sequence-association reshapes need
         # the callee's dimension names resolved to caller expressions.
-        substitutions = {}
-        for formal, actual in zip(record["args"], actuals, strict=True):
-            if actual is not None:
-                try:
-                    substitutions[formal["name"]] = self.expressions.render(actual)
-                except REFUSED:
-                    pass
+        substitutions = self.expressions.substitutions(record, actuals)
 
         inputs: list[str] = []
         outputs: list[str] = []
+        # Output positions whose actual is sequence-associated: what the
+        # callee returns has the callee's shape, and the caller's memory is a
+        # flat window onto it, so the value is laid out in Fortran's order
+        # before it is copied back.
+        flattened: set[int] = set()
         for formal, actual in zip(record["args"], actuals, strict=True):
             if actual is None:  # an unsupplied optional
                 if not formal["optional"]:
@@ -1786,18 +1803,16 @@ class Statements:
             passes = formal["intent"] in ("IN", "INOUT", "UNKNOWN") or bool(
                 formal.get("buffer") and self.buffer_out_arrays
             )
-            view = None
             if passes and not self.is_optional_output(formal):
                 # A buffer formal is a parameter of the callee as well as one
                 # of its returns: the callee writes into the storage this
                 # caller owns, so the actual has to be passed in too.
-                argument, view = self._input_argument(formal, actual, substitutions, inputs)
-                inputs.append(argument)
+                inputs.append(self._input_argument(formal, actual, substitutions, inputs))
             if formal["intent"] in ("OUT", "INOUT"):
-                # A sequence-associated element actual: the callee's array IS
-                # the view into this caller's buffer, so the result comes
-                # back through that view (#27).
-                outputs.append(f"{view}[...]" if view else self._output_target(actual))
+                target, flat = self._output_target(formal, actual, substitutions)
+                if flat:
+                    flattened.add(len(outputs))
+                outputs.append(target)
 
         elemental = any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or []))
         broadcasts = False
@@ -1818,7 +1833,7 @@ class Statements:
         # Python takes no positional argument after a keyword one, and
         # Fortran's optionals can leave a gap anywhere in the list.
         inputs = [a for a in inputs if "=" not in a] + [a for a in inputs if "=" in a]
-        target = f"{prefix}{pysafe(emit_name(record))}"
+        target = f"{prefix}{callee or pysafe(emit_name(record))}"
         if broadcasts:
             call = f"_f_ecall({target}, {', '.join(inputs)})"
         else:
@@ -1827,15 +1842,21 @@ class Statements:
             # A whole-array OUT actual is copied into the caller's buffer by
             # the runtime rather than assigned through ``[...]``: the callee
             # may return a narrower array than the buffer it was handed.
-            has_array = any("[...]" in target for target in outputs)
+            def value(index: int, text: str) -> str:
+                return f"np.ravel({text}, order='F')" if index in flattened else text
+
+            has_array = any("[...]" in target for target in outputs) or flattened
             if has_array and len(outputs) == 1:
                 base = outputs[0].replace("[...]", "")
-                return [f"{pad}_f_copy_out({base}, {call})"]
+                return [f"{pad}_f_copy_out({base}, {value(0, call)})"]
             if has_array:
                 lines = [f"{pad}_out = {call}"]
                 for i, target in enumerate(outputs):
-                    if "[...]" in target:
-                        lines.append(f"{pad}_f_copy_out({target.replace('[...]', '')}, _out[{i}])")
+                    if "[...]" in target or i in flattened:
+                        lines.append(
+                            f"{pad}_f_copy_out({target.replace('[...]', '')}, "
+                            f"{value(i, f'_out[{i}]')})"
+                        )
                     else:
                         lines.append(f"{pad}{target} = _out[{i}]")
                 return lines
@@ -1844,47 +1865,42 @@ class Statements:
 
     def _input_argument(
         self, formal: dict[str, Any], actual: Any, substitutions: dict[str, str], inputs: list[str]
-    ) -> tuple[str, str | None]:
-        """The rendered actual, and -- when it is a sequence-associated
-        element -- the view of the caller's storage it stands for."""
-        rendered = self.expressions.render(actual)
-        view = None
-        formal_dims = formal.get("dims") or []
-        if len(formal_dims) >= 1 and all(d.get("ub") for d in formal_dims):
-            try:
-                rank = self.semantics.rank(actual)
-            except REFUSED:
-                rank = None
-            if rank is not None and 0 < rank < len(formal_dims):
-                # Fortran sequence association: a lower-rank actual fills the
-                # dummy in column-major order.
-                shape = ", ".join(
-                    substitutions.get(d["ub"], "") or self.bound(d["ub"]) for d in formal_dims
-                )
-                rendered = f"np.reshape({rendered}, ({shape},), order='F')"
-            elif (
-                rank == 0
-                and len(formal_dims) >= 1
-                and isinstance(actual, f03.Part_Ref)
-                and self.semantics.is_array(str(actual.children[0]).lower())
-            ):
-                rendered = view = self._sequence_association(actual, formal_dims, substitutions)
+    ) -> str:
+        rendered = self.expressions.actual_argument(formal, actual, substitutions)
         keyword = formal["optional"] or any("=" in a for a in inputs)
-        return (f"{pysafe(formal['name'])}={rendered}" if keyword else rendered), view
+        return f"{pysafe(formal['name'])}={rendered}" if keyword else rendered
 
-    def _output_target(self, actual: Any) -> str:
+    def _output_target(
+        self, formal: dict[str, Any], actual: Any, substitutions: dict[str, str]
+    ) -> tuple[str, bool]:
+        """Where a callee's OUT argument lands, and whether it needs flattening."""
         if isinstance(actual, f03.Name):
             name = str(actual).lower()
             # A whole-array out actual: assign INTO the buffer, preserving
             # Fortran's aliasing semantics.
             if self.semantics.is_array(name):
-                return f"{self.names.symbol(name)}[...]"
-            return self.names.symbol(name)
+                return f"{self.names.symbol(name)}[...]", False
+            return self.names.symbol(name), False
         if isinstance(actual, f03.Part_Ref):
+            name = str(actual.children[0]).lower()
+            if formal.get("dims") and self.semantics.is_array(name):
+                try:
+                    rank = self.semantics.rank(actual)
+                except REFUSED:
+                    rank = None
+                if rank == 0:
+                    # An element passed where an array is expected: the callee
+                    # writes the memory that follows it, not that one number.
+                    return self.expressions.sequence_association_target(
+                        actual, formal["dims"], substitutions
+                    )
             # Subscripted, so an array whatever this file was told about it.
-            return self.expressions.subscript(str(actual.children[0]).lower(), actual.children[1])
+            return (
+                self.expressions.subscript(name, actual.children[1]),
+                False,
+            )
         if isinstance(actual, f03.Data_Ref):
-            return self.expressions.render(actual)
+            return self.expressions.render(actual), False
         raise NoRule("out actual arg is not a variable/section")
 
     def _external_call(self, name: str, external: dict[str, Any], node: Any, pad: str) -> list[str]:
@@ -1963,95 +1979,6 @@ class Statements:
         if not outputs:
             return ""
         return ", ".join(outputs) if len(outputs) > 1 else outputs[0]
-
-    # -- sequence association -------------------------------------------------
-
-    def _sequence_association(
-        self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
-    ) -> str:
-        """A scalar element actual -- ``arr(i, k)`` -- passed to an array
-        formal. Fortran passes contiguous memory starting at the element.
-
-        The common pattern is the element sitting at the lower bound of the
-        leading axes -- ``arr(1, k)`` -- which becomes taking those axes whole:
-        ``arr[:, k - 1]``. The general form flattens in column-major order,
-        offsets, and reshapes; correct everywhere, and worth avoiding where
-        the cheap answer holds.
-        """
-        name = str(actual.children[0]).lower()
-        arglist = actual.children[1]
-        subscripts = (
-            (arglist.children if hasattr(arglist, "children") else [arglist])
-            if arglist is not None
-            else []
-        )
-        declaration = self.semantics.declaration(name)
-        if declaration is None:
-            raise NoRule(f"seq-assoc: undeclared {name}")
-        actual_dims = declaration.get("dims") or []
-        if len(subscripts) != len(actual_dims):
-            raise NoRule(f"seq-assoc: rank mismatch {name}")
-        if len(formal_dims) > len(actual_dims):
-            raise NoRule(f"seq-assoc: formal rank > actual rank {name}")
-
-        first_scalar = None
-        for at, subscript in enumerate(subscripts):
-            if not isinstance(subscript, f03.Subscript_Triplet):
-                if first_scalar is None:
-                    first_scalar = at
-            else:
-                first_scalar = None
-        if first_scalar is None:
-            raise NoRule(f"seq-assoc: no scalar subscript in {name}")
-        at_lower_bound = (
-            first_scalar == 0
-            and isinstance(subscripts[0], f03.Int_Literal_Constant)
-            and str(subscripts[0]).split("_")[0] == str(actual_dims[0].get("lb", "1"))
-        )
-        if at_lower_bound and len(formal_dims) <= len(actual_dims) - first_scalar:
-            parts = []
-            for at in range(len(actual_dims)):
-                if at < len(formal_dims):
-                    parts.append(":")
-                    continue
-                # A trailing scalar subscript shifts by the axis's DECLARED
-                # lower bound, not a blanket 1 (#39): an element ``a(1,1,ie)``
-                # of a local ``a(np,np,nets:nete)`` is ``a[:, :, ie - nets]``.
-                low = actual_dims[at].get("lb", "1")
-                if low in (None, "1", ":"):
-                    parts.append(self._shifted(subscripts[at]))
-                else:
-                    rendered = self.expressions.render(subscripts[at])
-                    parts.append(f"({rendered}) - ({self.bound(low)})")
-            return f"{self.names.symbol(name)}[{', '.join(parts)}]"
-
-        shape = ", ".join(
-            substitutions.get(d["ub"], "") or self.bound(d["ub"]) for d in formal_dims
-        )
-        flat = f"{self.names.symbol(name)}.ravel(order='F')"
-        shifts = []
-        for at, subscript in enumerate(subscripts):
-            low = actual_dims[at].get("lb", "1")
-            shifts.append(f"({self.expressions.render(subscript)} - {low})")
-        offset = shifts[0]
-        stride = "1"
-        for at in range(1, len(shifts)):
-            high = actual_dims[at - 1].get("ub", "1")
-            high_py = self.bound(high) if not high.isdigit() else high
-            stride = f"{stride} * {high_py}"
-            offset = f"{offset} + {shifts[at]} * {stride}"
-        return f"np.reshape({flat}[{offset}:], ({shape},), order='F')"
-
-    def _shifted(self, node: Any) -> str:
-        """A single 1-based index, 0-based. A literal folds only while the
-        folded value stays inside the whitelist; otherwise it references the
-        hoisted constant, minus one."""
-        if isinstance(node, f03.Int_Literal_Constant):
-            folded = int(str(node).split("_")[0]) - 1
-            if folded in (0, 1, 2):
-                return str(folded)
-            return f"{self.names.literal(node)} - 1"
-        return f"{self.expressions.render(node)} - 1"
 
     def bound(self, text: str) -> str:
         """Declared bound text -> Python. Lives on the expression layer, which
