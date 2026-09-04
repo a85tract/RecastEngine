@@ -355,3 +355,78 @@ def test_a_loop_index_read_after_the_loop_has_the_completion_value(tmp_path: Pat
     finally:
         sys.path.remove(str(out))
         sys.modules.pop("search_mod_numpy", None)
+
+
+STUBBED_PATH = """
+module lapack_wrap
+  implicit none
+contains
+  subroutine band_solvex( n, a, x )
+    integer, intent(in) :: n
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    x = a
+  end subroutine band_solvex
+end module lapack_wrap
+"""
+
+CHOOSES_A_SOLVER = """
+module solver_mod
+  use lapack_wrap, only: band_solvex
+  implicit none
+contains
+  subroutine solve( method, n, m, a, x )
+    integer, intent(in) :: method, n, m
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    real :: work(n, max(2, m))
+    work = 0.0
+    if ( method == 1 ) then
+      call band_solvex( n, a, x )
+    else
+      x = a + work(:, 1)
+    end if
+  end subroutine solve
+end module solver_mod
+"""
+
+
+def test_a_call_into_a_stubbed_module_raises_on_its_own_line(tmp_path: Path) -> None:
+    """CLUBB's matrix_solver_wrapper chooses LAPACK or its own LU solver by
+    a run-time flag; ``lapack_wrap`` is stubbed. With no rule for the call
+    the whole IF was deferred -- condition and LU branch included -- and the
+    candidate raised on the path the run takes. The raise belongs to the
+    statement; the branch around it stays. And ``work(n, max(2, m))``
+    (windm's ``rhs``) is a bound Python can spell."""
+    import importlib
+    import sys
+
+    (tmp_path / "lapack_wrap.f90").write_text(STUBBED_PATH)
+    (tmp_path / "solver_mod.f90").write_text(CHOOSES_A_SOLVER)
+    frontend = FortranFrontend(stub_modules=["lapack_wrap"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface["stub_procedures"] == ["band_solvex"]
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "solver_mod_numpy.py").read_text()
+    assert "max(2, m)" in text
+    raised = "raise NotImplementedError('band_solvex: procedure of a stubbed module, not ported')"
+    assert raised in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("solver_mod_numpy")
+        import numpy as np
+
+        a = np.array([1.0, 2.0], dtype=np.float32)
+        _a, x = module.solve(2, 2, 1, a)  # INOUT a and OUT x come back
+        assert x.tolist() == [1.0, 2.0]
+        with pytest.raises(NotImplementedError):
+            module.solve(1, 2, 1, a)
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("solver_mod_numpy", None)

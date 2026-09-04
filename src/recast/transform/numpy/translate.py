@@ -280,6 +280,7 @@ class NumpyTranslation(Transform):
             use_parameters=use_parameters,
             companion_globals=companion_globals,
             externals=facts.provenance.get("externals", {}),
+            stub_procedures=frozenset(facts.interface.get("stub_procedures") or ()),
             remotes=remotes,
             function_stubs=config.get("function_stubs", {}),
             statement_stubs=config.get("statement_stubs", {}),
