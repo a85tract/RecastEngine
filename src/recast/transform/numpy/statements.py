@@ -1782,7 +1782,7 @@ class Statements:
                     outputs.append("_")  # the return tuple has fixed length
                 continue
             if self.is_optional_output(formal):
-                inputs.append(f"want_{formal['name']}=True")
+                inputs.append(f"want_{formal['name']}={self._presence(actual)}")
             passes = formal["intent"] in ("IN", "INOUT", "UNKNOWN") or bool(
                 formal.get("buffer") and self.buffer_out_arrays
             )
@@ -1931,6 +1931,21 @@ class Statements:
         if outputs:
             return [f"{pad}{', '.join(outputs)} = {call}"]
         return [f"{pad}{call}"]
+
+    def _presence(self, actual: Any) -> str:
+        """``present()`` of what is passed to an optional OUT: true for a
+        value of the caller's own; the caller's own presence when the
+        actual is one of its optional dummies handed on (CLUBB's
+        xm_wpxp_solve passes ``rcond = rcond`` to band_solve, and takes the
+        LAPACK diagnostic path only when *its* caller asked for rcond)."""
+        if isinstance(actual, f03.Name):
+            name = str(actual).lower()
+            for declared in self.semantics.subprogram["args"]:
+                if declared["name"].lower() == name and declared["optional"]:
+                    if self.is_optional_output(declared):
+                        return f"want_{name}"
+                    return f"({self.names.symbol(name)} is not None)"
+        return "True"
 
     @staticmethod
     def is_optional_output(formal: dict[str, Any]) -> bool:
