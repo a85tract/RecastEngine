@@ -723,3 +723,80 @@ def test_a_branch_on_a_static_scalar_is_a_trace_time_if(tmp_path: Path) -> None:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"guard_demo{suffix}", None)
+
+
+EARLY_RETURNS = """\
+module early_mod
+  implicit none
+  type coefs_type
+    real(8), allocatable :: coef(:, :)
+  end type coefs_type
+contains
+  subroutine init_coefs( nz, ngrdcol, c )
+    integer, intent(in) :: nz, ngrdcol
+    type(coefs_type), intent(inout) :: c
+    allocate( c%coef(1:ngrdcol, 1:nz) )
+    c%coef = 2.0d0
+  end subroutine init_coefs
+  subroutine apply( nzt, ngrdcol, c, x, y, bad, worse )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(out), dimension(ngrdcol, nzt) :: y
+    logical, intent(in) :: bad, worse
+    x = x * c%coef(:, 1:nzt)
+    y = x
+    if ( bad ) then
+      if ( worse ) then
+        return
+      end if
+      y = y + 1.0d0
+      return
+    end if
+    y = y + 10.0d0
+  end subroutine apply
+end module early_mod
+"""
+
+
+def test_early_returns_of_the_same_tuple_fold_into_the_branches(tmp_path: Path) -> None:
+    """CLUBB's advance_clubb_core returns after each solver when the error
+    code says so, the outputs as they stand. The single-exit rewrite merges
+    one value with a where and refused a tuple; when every early return is
+    the final tuple, the continuation folds into the non-returning branches
+    and the kernel keeps one exit."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "early_mod.f90").write_text(EARLY_RETURNS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:early_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "apply_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("early_mod_jax")
+        import numpy as np
+
+        coef = np.full((1, 2), 2.0, order="F")
+
+        def run(bad, worse):
+            x = np.ones((1, 2), order="F")
+            _x, y = module.apply_flat(2, 1, x, np.zeros((1, 2), order="F"), bad, worse, 2, coef)
+            return np.asarray(y).tolist()
+
+        assert run(False, False) == [[12.0, 12.0]]
+        assert run(True, False) == [[3.0, 3.0]]
+        assert run(True, True) == [[2.0, 2.0]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"early_mod{suffix}", None)

@@ -1584,6 +1584,39 @@ def _has_return(stmts: list[ast.stmt]) -> bool:
     return any(isinstance(n, ast.Return) for s in stmts for n in ast.walk(s))
 
 
+def _fold_returns(stmts: list[ast.stmt], rest: list[ast.stmt]) -> list[ast.stmt] | None:
+    """``stmts`` followed by ``rest`` with every early ``return`` folded into
+    the branch structure: the continuation moves into the branches that do
+    not return, so the function's one return at the end is reached by all
+    paths with the outputs as the early return would have left them. None
+    when a return sits inside a loop, which this fold cannot express."""
+    out: list[ast.stmt] = []
+    for at, statement in enumerate(stmts):
+        if isinstance(statement, ast.Return):
+            return out  # what follows is never reached on this path
+        if isinstance(statement, ast.For | ast.While) and _has_return([statement]):
+            return None
+        if isinstance(statement, ast.If) and _has_return([statement]):
+            # The continuation, itself folded: a return further down the
+            # same block would otherwise ride into the branch unfolded.
+            tail = _fold_returns(stmts[at + 1 :], rest)
+            if tail is None:
+                return None
+            body = _fold_returns(statement.body, copy.deepcopy(tail))
+            orelse = _fold_returns(statement.orelse, copy.deepcopy(tail))
+            if body is None or orelse is None:
+                return None
+            return [
+                *out,
+                ast.copy_location(
+                    ast.If(test=statement.test, body=body or [ast.Pass()], orelse=orelse),
+                    statement,
+                ),
+            ]
+        out.append(statement)
+    return [*out, *rest]
+
+
 def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     """Early returns -- ``if f0 == 0: root = x0; return root`` -- become a
     flag and a value, every later statement runs under ``if not _ret``, and
@@ -1593,13 +1626,27 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return body
     # The merge is one ``jnp.where`` over one value: a function with several
-    # outputs returns a tuple, which ``where`` cannot select.
-    for statement in body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-                raise NotFlat(
-                    f"an early return in a function with several outputs: {ast.unparse(node)}"
-                )
+    # outputs returns a tuple, which ``where`` cannot select. When every
+    # early return hands back the same tuple the final one does (CLUBB's
+    # advance_clubb_core: ``if ( fatal ) return`` after each solver, the
+    # outputs as they stand), the returns fold into the branch structure
+    # instead: what follows a returning branch moves into the branches that
+    # do not return, and the one return at the end is reached by all.
+    tuples = [
+        node
+        for statement in body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
+    ]
+    if tuples:
+        final = body[-1]
+        same = all(ast.dump(node.value) == ast.dump(final.value) for node in tuples)
+        folded = _fold_returns(body[:-1], []) if same else None
+        if folded is None:
+            raise NotFlat(
+                f"an early return in a function with several outputs: {ast.unparse(tuples[0])}"
+            )
+        return [*folded, final]
 
     class Returns(ast.NodeTransformer):
         def visit_Return(self, node: ast.Return) -> Any:
