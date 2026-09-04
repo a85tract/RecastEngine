@@ -615,13 +615,11 @@ class KernelLowerer:
             raise JaxQueue("loop with no carried effects")
         self.n += 1
         fname = f"_body_{self.n}"
-        carry_call = ast.Call(
-            func=ast.Attribute(
-                value=ast.Name(id="lax", ctx=ast.Load()), attr="fori_loop", ctx=ast.Load()
-            ),
-            args=[],
-            keywords=[],
-        )
+        # Through the runtime's ``_f_fori``: a trip count that is static
+        # and empty (a loop over an array's zero-extent axis -- CLUBB's
+        # scalar tracers under sclr_dim = 0) is skipped rather than traced,
+        # because JAX refuses any index into a size-0 axis at trace time.
+        carry_call = ast.Call(func=ast.Name(id="_f_fori", ctx=ast.Load()), args=[], keywords=[])
         result = ast.Assign(
             targets=[ast.Tuple(elts=_names(carried, ast.Store), ctx=ast.Store())], value=carry_call
         )

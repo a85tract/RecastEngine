@@ -76,7 +76,7 @@ def test_the_port_emits_the_flat_function_as_a_kernel(tree: Path) -> None:
     candidate = TreeToJax(CONVENTIONS).apply(unit, facts, {"root": str(tree)})
     ported = candidate.files[Path("physics_mod_jax.py")].decode()
     assert "def _warm_flat_k_impl(" in ported
-    assert "lax.fori_loop" in ported and ".at[p - 1, ic - 1].set(" in ported
+    assert "_f_fori(" in ported and ".at[p - 1, ic - 1].set(" in ported
     assert "_JAX_KERNELS = ['reset_flat', 'warm_flat']" in ported
     # The originals take the object and stay host-delegated; the flat
     # signatures reach the ported module's table for the gate.

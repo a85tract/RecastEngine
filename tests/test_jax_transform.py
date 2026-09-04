@@ -359,3 +359,50 @@ def test_the_jax_runtime_carries_sqrt_sum_and_erf(tmp_path: Path) -> None:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"shim_demo{suffix}", None)
+
+
+EMPTY_AXIS = """\
+module tracer_demo
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine scale_tracers(n, m, f, x, y)
+    integer,  intent(in)  :: n, m
+    real(r8), intent(in)  :: f
+    real(r8), intent(in)  :: x(n, m)
+    real(r8), intent(out) :: y(n, m)
+    integer :: s
+    do s = 1, m
+      y(:, s) = f * x(:, s)
+    end do
+  end subroutine scale_tracers
+end module tracer_demo
+"""
+
+
+def test_a_loop_over_a_zero_extent_axis_runs_no_iteration(tmp_path: Path) -> None:
+    """CLUBB's scalar tracers under ``sclr_dim = 0``: ``do sclr = 1, sclr_dim``
+    over ``(ngrdcol, nzm, 0)`` arrays. ``fori_loop`` traced the body once
+    and JAX refused the index into the size-0 axis."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, EMPTY_AXIS, "tracer_demo")
+    assert candidate.notes["jax"]["kernels"] == ["scale_tracers"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("tracer_demo_jax")
+        import numpy as np
+
+        empty = np.zeros((3, 0), order="F")
+        assert np.asarray(module.scale_tracers(3, 0, 2.0, empty)).shape == (3, 0)
+        x = np.ones((3, 2), order="F")
+        assert np.asarray(module.scale_tracers(3, 2, 2.0, x)).tolist() == [[2.0, 2.0]] * 3
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"tracer_demo{suffix}", None)

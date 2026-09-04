@@ -39,6 +39,7 @@ __all__ = [
     "_f_adjustl",
     "_f_dim",
     "_f_epsilon",
+    "_f_fori",
     "_f_huge",
     "_f_int_div",
     "_f_len_trim",
@@ -149,6 +150,19 @@ def _f_vlog10(x):
 
 def _f_vpow(a, b):
     return jnp.asarray(a) ** b
+
+
+def _f_fori(lo, hi, body, init):
+    """``lax.fori_loop`` unless the trip count is static and empty.
+
+    A Fortran DO over an array's zero-extent axis (CLUBB's scalar tracers
+    under ``sclr_dim = 0``) runs no iteration; ``fori_loop`` would still
+    trace the body once, and JAX refuses any index into a size-0 axis at
+    trace time. A dynamic bound is left to ``fori_loop``.
+    """
+    if isinstance(lo, int) and isinstance(hi, int) and hi <= lo:
+        return init
+    return lax.fori_loop(lo, hi, body, init)
 
 
 def _f_sqrt(x):
