@@ -677,6 +677,39 @@ class _Rewrite(ast.NodeTransformer):
             raise NotFlat(
                 f"{ast.unparse(node.func)} takes the object and is called inside an expression"
             )
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_f_ecall"
+            and node.args
+            and isinstance(node.args[0], ast.Attribute)
+            and isinstance(node.args[0].value, ast.Name)
+        ):
+            # ``_f_ecall(_new.calculate_mixture_fraction, ...)``: the
+            # elemental broadcast of a companion's procedure. Its kernel's
+            # implementation goes under the vectorize; a procedure the
+            # companion's port delegated is a host function no tracer can
+            # run, so the caller is not flat either.
+            callee = node.args[0]
+            module = self.spelling.modules.get(callee.value.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is not None:
+                if callee.attr not in port["kernels"]:
+                    raise NotFlat(
+                        f"elemental call of {module}.{callee.attr}, which its port did not lower"
+                    )
+                if (port.get("closures") or {}).get(callee.attr):
+                    raise NotFlat(
+                        f"elemental call of {module}.{callee.attr}, which reads module state"
+                    )
+                self.companions.add(callee.value.id)
+                node.args[0] = ast.copy_location(
+                    ast.Attribute(
+                        value=ast.Name(id=f"{callee.value.id}_jax", ctx=ast.Load()),
+                        attr=f"_{callee.attr}_k_impl",
+                        ctx=ast.Load(),
+                    ),
+                    callee,
+                )
         self.generic_visit(node)
         # ``int(x)`` and ``np.float64(x)`` on a traced value: the cast the
         # anchor spells with a Python or NumPy constructor is ``jnp``'s here.

@@ -602,3 +602,76 @@ def test_a_bare_call_binds_the_kernels_returned_buffer(tmp_path: Path) -> None:
         for name in list(sys.modules):
             if name.startswith(("caller_mod", "writer_mod")):
                 sys.modules.pop(name, None)
+
+
+ELEMENTAL_COMPANION = """\
+module elem_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  elemental subroutine split(x, lo, hi)
+    real(r8), intent(in)  :: x
+    real(r8), intent(out) :: lo, hi
+    lo = x - 1.0_r8
+    hi = x + 1.0_r8
+  end subroutine split
+end module elem_mod
+"""
+
+CALLS_ELEMENTAL_COMPANION = """\
+module bracket_mod
+  use elem_mod, only: split
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine bracket(n, nz, x, lo, hi)
+    integer,  intent(in)  :: n, nz
+    real(r8), intent(in)  :: x(n, nz)
+    real(r8), intent(out) :: lo(n, nz), hi(n, nz)
+    integer :: i
+    do i = 1, n
+      call split( x(i, :), lo(i, :), hi(i, :) )
+    end do
+  end subroutine bracket
+end module bracket_mod
+"""
+
+
+def test_an_elemental_call_of_a_companion_broadcasts_its_kernel(tmp_path: Path) -> None:
+    """CLUBB's new_hybrid_pdf_driver calls new_hybrid_pdf's elemental
+    ``calculate_mixture_fraction`` over column slices: the anchor's
+    ``_f_ecall(_new.calculate_mixture_fraction, ...)``. Left as the host
+    attribute, the vectorize traced a NumPy function; the companion's kernel
+    implementation goes under it instead."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "elem_mod.f90").write_text(ELEMENTAL_COMPANION)
+    (tmp_path / "bracket_mod.f90").write_text(CALLS_ELEMENTAL_COMPANION)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:bracket_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "bracket" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    ported = candidate.files[Path("bracket_mod_jax.py")].decode()
+    assert "_f_ecall(_elem_mod_jax._split_k_impl, " in ported
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("bracket_mod_jax")
+        import numpy as np
+
+        x = np.array([[1.0, 2.0], [3.0, 4.0]], order="F")
+        lo, hi = (np.asarray(v) for v in module.bracket(2, 2, x))
+        assert lo.tolist() == [[0.0, 1.0], [2.0, 3.0]] and hi.tolist() == [[2.0, 3.0], [4.0, 5.0]]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("bracket_mod", "elem_mod")):
+                sys.modules.pop(name, None)
