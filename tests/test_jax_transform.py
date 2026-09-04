@@ -241,3 +241,74 @@ def test_a_constant_table_is_read_through_jnp() -> None:
     text = _ast.unparse(node)
     assert "jnp.asarray(MDAYLEAP)[m - 1]" in text
     assert "x[i]" in text  # a lowercase array is a traced value already
+
+
+CYCLES = """\
+module cycle_demo
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine clip_below(n, zlo, z, v, w)
+    integer,  intent(in)  :: n
+    real(r8), intent(in)  :: zlo
+    real(r8), intent(in)  :: z(n), v(n)
+    real(r8), intent(out) :: w(n)
+    integer :: k
+    do k = 1, n
+      if ( z(k) < zlo ) then
+        w(k) = 0.0_r8
+        cycle
+      end if
+      w(k) = v(k) * 2.0_r8
+    end do
+  end subroutine clip_below
+  subroutine first_above(n, zlo, z, kfound)
+    integer,  intent(in)  :: n
+    real(r8), intent(in)  :: zlo
+    real(r8), intent(in)  :: z(n)
+    integer,  intent(out) :: kfound
+    integer :: k
+    kfound = 0
+    do k = 1, n
+      if ( z(k) > zlo ) then
+        kfound = k
+        exit
+      end if
+    end do
+  end subroutine first_above
+end module cycle_demo
+"""
+
+
+def test_a_cycle_folds_into_the_branch_and_an_exit_is_delegated(tmp_path: Path) -> None:
+    """CLUBB's interpolators: ``if ( ... ) then ... cycle end if`` in a DO
+    loop. The lowering passed the ``continue`` through into a ``lax.cond``
+    branch -- a SyntaxError that took the whole emitted module down. Folded
+    into the branch structure it is a kernel; an EXIT has no fori_loop
+    shape and is delegated to the host, not emitted."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, CYCLES, "cycle_demo")
+    assert candidate.notes["jax"]["kernels"] == ["clip_below"]
+    assert "first_above" in candidate.notes["jax"]["delegated"]
+    emitted = candidate.files[Path("cycle_demo_jax.py")].decode()
+    assert "continue" not in emitted.replace("continuation", "")
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("cycle_demo_jax")
+        import numpy as np
+
+        z = np.array([1.0, 2.0, 3.0, 4.0])
+        v = np.array([1.0, 1.0, 1.0, 1.0])
+        w = np.asarray(module.clip_below(4, 2.5, z, v))
+        assert w.tolist() == [0.0, 0.0, 2.0, 2.0]
+        assert int(module.first_above(4, 2.5, z)) == 3
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"cycle_demo{suffix}", None)

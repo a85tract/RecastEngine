@@ -291,6 +291,42 @@ class CallRewrite(ast.NodeTransformer):
 # ------------------------------------------------------- statement lowering
 
 
+def _has_cycle(stmts) -> bool:
+    """Whether a ``continue`` of *this* loop sits in ``stmts`` -- at the top
+    level or under an ``if``; one inside a nested ``for`` is that loop's."""
+    for s in stmts:
+        if isinstance(s, ast.Continue):
+            return True
+        if isinstance(s, ast.If) and (_has_cycle(s.body) or _has_cycle(s.orelse)):
+            return True
+    return False
+
+
+def _cycle_to_else(stmts, rest):
+    """``stmts`` followed by ``rest``, with every ``continue`` folded away.
+
+    Fortran's ``if ( ... ) then ... cycle end if`` followed by the rest of
+    the loop body (CLUBB's interpolators) is ``if c: A else: R`` -- the
+    continuation of the loop body moves into the branches that do not
+    cycle. Done on the Python AST before the fori_loop lowering, which has
+    no place for a ``continue``: a ``lax.cond`` branch is a function.
+    """
+    out = []
+    for at, s in enumerate(stmts):
+        if isinstance(s, ast.Continue):
+            return out  # what follows is never reached on this path
+        if isinstance(s, ast.If) and (_has_cycle(s.body) or _has_cycle(s.orelse)):
+            tail = [*stmts[at + 1 :], *rest]
+            folded = ast.If(
+                test=s.test,
+                body=_cycle_to_else(s.body, copy.deepcopy(tail)) or [ast.Pass()],
+                orelse=_cycle_to_else(s.orelse, copy.deepcopy(tail)),
+            )
+            return [*out, ast.copy_location(folded, s)]
+        out.append(s)
+    return [*out, *rest]
+
+
 def _assigned_names(stmts):
     """Names stored by Assign statements, first-assignment order
     (nested fori_loop/cond results arrive as Tuple targets; static
@@ -453,6 +489,12 @@ class KernelLowerer:
         for s in stmts:
             if isinstance(s, self.BANNED):
                 raise JaxQueue(f"unsupported stmt {type(s).__name__}")
+            if isinstance(s, ast.Continue | ast.Break):
+                # A CYCLE the loop pass could not fold into a branch, or an
+                # EXIT: neither has a place in a fori_loop body. Delegated,
+                # not emitted -- a ``continue`` inside a ``lax.cond`` branch
+                # is a SyntaxError that takes the whole module down.
+                raise JaxQueue(f"{type(s).__name__.lower()} inside a lowered loop")
             if isinstance(s, ast.Return) and depth > 0:
                 raise JaxQueue("return inside loop/branch body")
             if isinstance(s, ast.For):
@@ -566,7 +608,7 @@ class KernelLowerer:
         else:
             raise JaxQueue("malformed range")
 
-        body = self.lower_block(s.body, depth + 1)
+        body = self.lower_block(_cycle_to_else(s.body, []), depth + 1)
         settled = _trace_constant_stores(body)
         carried = [n for n in _assigned_names(body) if n != s.target.id and n not in settled]
         if not carried:
