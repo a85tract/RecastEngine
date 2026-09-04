@@ -244,6 +244,11 @@ def recorder_module(
             fmt = {"int32": "i0", "bool": "l1"}.get(str(a["dtype"]), "es25.17e3")
             lines.append(f"       write ({u}, '(a,{fmt})') '# {a['name']} = ', {a['name']}")
         lines.append(f"       write ({u}, '(a,i0)') '# {patch} = ', {patch}")
+        for extent, (owner, member, axis) in plan.extent_args.items():
+            # An extent the plan could not spell: the run's own, from size().
+            lines.append(
+                f"       write ({u}, '(a,i0)') '# {extent} = ', size({owner}%{member}, {axis})"
+            )
 
         for a in originals:
             if a.get("dims") and not DERIVED.match(str(a["dtype"])):

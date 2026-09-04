@@ -567,3 +567,66 @@ def test_an_object_allocated_many_at_once_and_sized_by_itself(tmp_path: Path) ->
     text = fortran_adapter("column_mod", [plan], [])
     assert "real(8), intent(in) :: gr__zm(ngrdcol, gr__nzm)" in text
     assert "allocate(gr%zm(1:ngrdcol, 1:gr__nzm))" in text
+
+
+COEFS = """\
+module coefs_mod
+  implicit none
+  private
+  public :: coefs_type, init_coefs
+  type coefs_type
+    real(8), allocatable, dimension(:,:) :: coef
+  end type coefs_type
+contains
+  subroutine init_coefs( ngrdcol, nz, c )
+    integer, intent(in) :: ngrdcol, nz
+    type(coefs_type), intent(out) :: c
+    allocate( c%coef(1:ngrdcol,1:nz) )
+    c%coef = 0.0d0
+  end subroutine init_coefs
+end module coefs_mod
+"""
+
+USES_COEFS = """\
+module solver_mod
+  use coefs_mod, only: coefs_type
+  implicit none
+  private
+  public :: apply
+contains
+  subroutine apply( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    x = x * c%coef(:, 1:nzt)
+  end subroutine apply
+end module solver_mod
+"""
+
+
+def test_an_extent_the_plan_cannot_spell_becomes_an_argument(tmp_path: Path) -> None:
+    """``coef`` is allocated ``(1:ngrdcol, 1:nz)`` by the initializer's dummy
+    ``nz``; the planned subprogram takes ``nzt``, not ``nz``. The extent is
+    the run's own: the plan makes it an integer argument, the recorder writes
+    it from ``size()``, and the adapters declare the component by it."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    assert plan.extent_args == {"c__coef_n2": ["c", "coef", 2]}
+    (coef,) = plan.objects[0].components
+    assert coef.extents == ["ngrdcol", "c__coef_n2"]
+    names = [a["name"] for a in plan.flat_args]
+    assert names.index("c__coef_n2") < names.index("c__coef")
+    adapter = fortran_adapter("solver_mod", [plan], [])
+    assert "integer, intent(in) :: c__coef_n2" in adapter
+    assert "real(8), intent(in) :: c__coef(ngrdcol, c__coef_n2)" in adapter
+    recorder = recorder_module("solver_mod", [plan])
+    assert "'# c__coef_n2 = ', size(c%coef, 2)" in recorder
+    again = FlatPlan.from_dict(plan.to_dict())
+    assert again.extent_args == plan.extent_args

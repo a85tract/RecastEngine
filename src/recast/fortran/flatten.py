@@ -146,11 +146,20 @@ class FlatPlan:
     dim_constants: dict[str, int] = field(default_factory=dict)
     """Named extents of the original dummies that are tree constants
     (``a(nrk,nrk)``), so the flat signature can spell them as numbers."""
+    extent_args: dict[str, list[Any]] = field(default_factory=dict)
+    """``{name: [object, component, axis]}``: an integer argument of the
+    adapter carrying an extent the plan could not spell -- an allocation
+    sized by the allocating routine's dummy when the planned subprogram
+    has none of that name (CLUBB's ``coef_wp4_implicit(1:ngrdcol, 1:nz)``
+    under ``advance_wp2_wp3``, which takes ``nzm`` and ``nzt``). The
+    recorder writes it from ``size()``; the sampled gate sizes it like any
+    scalar an array's dims name."""
+
     left_to_module: list[str] = field(default_factory=list)
-    """Module state the body reaches that the adapter cannot set: a
-    variable its module keeps private (CLUBB's ``error_code %
-    clubb_debug_level``). Both sides run with the module's own default,
-    and the plan says so rather than failing."""
+    """What the body reaches that the adapter does not carry: module state
+    its module keeps private (CLUBB's ``error_code % clubb_debug_level``),
+    a character component (``err_info % err_header``). Both sides run with
+    the default, and the plan says so rather than failing."""
     patch_count: str = "np_"
     counter_prefix: str = "num_"
 
@@ -201,6 +210,7 @@ class FlatPlan:
             states=states,
             dim_constants=dict(data.get("dim_constants", {})),
             left_to_module=list(data.get("left_to_module", [])),
+            extent_args={k: list(v) for k, v in (data.get("extent_args") or {}).items()},
             patch_count=data.get("patch_count", "np_"),
             counter_prefix=data.get("counter_prefix", "num_"),
         )
@@ -251,6 +261,10 @@ class FlatPlan:
                     "optional": False,
                     "dims": None,
                 }
+            )
+        for name in self.extent_args:
+            args.append(
+                {"name": name, "dtype": "int32", "intent": "IN", "optional": False, "dims": None}
             )
         for obj in self.objects:
             for comp in obj.components:
@@ -338,6 +352,17 @@ def _state_declaration(name: str, root: Path) -> tuple[str, str] | None:
                 continue  # a dummy of that type, not the module's variable
             module = MODULE_DEFINITION.search(text)
             return match.group(1).lower(), (module.group(1).lower() if module else "")
+    # Declared in a list over several lines (CLUBB's four sponge settings
+    # under one ``type(sponge_damp_settings), public :: &``): the module
+    # record has read the declaration whole.
+    for path in sources(root):
+        record = _module_record(path, {})
+        for entry in (record or {}).get("module_state", ()):
+            if str(entry.get("name", "")).lower() != name.lower():
+                continue
+            derived = DERIVED.match(str(entry.get("dtype", "")))
+            if derived:
+                return derived.group(1).lower(), str(record.get("module", "")).lower()
     return None
 
 
@@ -919,6 +944,12 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
                 if spec is None:
                     plan.unsupported.append(f"{obj}%{member}: no such component")
                     continue
+                if str(spec.get("dtype")) not in FORTRAN_TYPES:
+                    # A character component (CLUBB's err_info%err_header): the
+                    # adapter has no flat spelling for it and the physics reads
+                    # it only to print. Left at the object's default, and said.
+                    plan.left_to_module.append(f"{obj}%{member}: {spec.get('dtype')} not carried")
+                    continue
                 found_axes = bounds.get(member)
                 if found_axes is None and spec.get("dims"):
                     plan.unsupported.append(f"{obj}%{member}: no allocate statement found")
@@ -1104,7 +1135,9 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
     carried = {(obj.name, comp.name): comp.flat for obj in plan.objects for comp in obj.components}
     flat_names = set(carried.values())
 
-    def bind(text: str) -> str | None:
+    def bind(text: str, synthetic: str | None = None) -> str | None:
+        """``synthetic`` names the extent argument to stand in when the
+        text is one identifier nothing else answers for."""
         missing: list[str] = []
 
         def component(match: re.Match[str]) -> str:
@@ -1129,13 +1162,24 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
             return token
 
         out = re.sub(r"[A-Za-z_]\w*", swap, text)
+        if missing and synthetic is not None:
+            bare = text.strip().strip("()").strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", bare) and bare.lower() == missing[0].lower():
+                return synthetic
         return None if missing else out
 
     for obj in plan.objects:
         kept = []
         for comp in obj.components:
-            extents = [bind(e) for e in comp.extents]
-            bounds = [(bind(lo), bind(hi)) for lo, hi in comp.bounds]
+            names = [f"{comp.flat}_n{axis + 1}" for axis in range(len(comp.extents))]
+            extents = [bind(e, names[axis]) for axis, e in enumerate(comp.extents)]
+            bounds = [
+                (bind(lo), bind(hi, names[axis]) if lo.strip() == "1" else bind(hi))
+                for axis, (lo, hi) in enumerate(comp.bounds)
+            ]
+            for axis, extent in enumerate(extents):
+                if extent == names[axis]:
+                    plan.extent_args[names[axis]] = [obj.name, comp.name, axis + 1]
             if any(e is None for e in extents) or any(
                 lo is None or hi is None for lo, hi in bounds
             ):
