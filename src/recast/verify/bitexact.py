@@ -246,6 +246,14 @@ class BitexactVerifier(Verifier):
     refused is reported as one that could not be compared, which is what
     ``uncovered`` and the coverage gate above are for. The number of redraws
     is recorded per subprogram so the count is never silent.
+
+    Two things a redraw is not for. A NaN on one side only is a mismatch
+    between the sides, not a domain draw, and is counted as one; only a trial
+    where both sides produce NaN at the same points is drawn again. And a
+    trial compared only after a shape refusal moved the free extents is
+    evidence at the extents it landed on, not the configured ones: a
+    subprogram that passes mostly that way fails by name, with the number of
+    such trials recorded as ``reshaped``.
     """
 
     dominant_at: float | None = None
@@ -730,6 +738,9 @@ class BitexactVerifier(Verifier):
         dominant_points = 0
         max_rel = 0.0
         redrawn = 0
+        # Trials that were compared only after a shape refusal moved the free
+        # extents off the configured ones.
+        reshaped = 0
         # Extents no operator pinned. A redraw varies these along with the
         # values, because some of what a subprogram will not accept is a
         # *shape*: a packed triangular workspace wants an extent that is a
@@ -973,18 +984,23 @@ class BitexactVerifier(Verifier):
                         b.tolist(),
                         dominant=self._dominance(np, shaped_theirs, dominant_at, dominant_axis),
                     )
-                    if samples is None and bool(np.isnan(a).any() or np.isnan(b).any()):
-                        # A draw that put the subprogram outside its numeric
-                        # domain: a square root of a negative, a division that
-                        # overflowed. Fortran does not say what MIN and MAX return
-                        # for a NaN operand, and gfortran's answer is whichever
-                        # operand its register allocator made the second one --
-                        # measurably the first argument at one call site and the
-                        # second at the next. Held to the bit, such a trial
-                        # compares the compiler's scheduling rather than the
-                        # translation, so it is drawn again.
-                        reason = f"{label}: a NaN in the compared values"
-                        continue
+                    if samples is None:
+                        nan_ours = np.isnan(a)
+                        nan_theirs = np.isnan(b)
+                        if nan_ours.any() and bool((nan_ours == nan_theirs).all()):
+                            # A draw that put the subprogram outside its numeric
+                            # domain on *both* sides: a square root of a negative,
+                            # a division that overflowed. Fortran does not say
+                            # what MIN and MAX return for a NaN operand, and
+                            # gfortran's answer is whichever operand its register
+                            # allocator made the second one, so what the two
+                            # sides do with the NaN afterwards is the compiler's
+                            # scheduling rather than the translation; the trial is
+                            # drawn again. A NaN on one side where the other has
+                            # a number is not that: it is a ``nan_mismatch``, and
+                            # it fails the unit.
+                            reason = f"{label}: a NaN in the compared values on both sides"
+                            continue
                     measured: dict[str, Any] = {
                         "points": audit["total_points"],
                         "bit_exact": audit["bit_exact"],
@@ -1005,12 +1021,18 @@ class BitexactVerifier(Verifier):
                         else:
                             scale = np.maximum(np.abs(b), 1e-300)
                         with np.errstate(invalid="ignore"):
-                            measured["max_rel"] = float(np.nanmax(np.abs(a - b) / scale))
+                            rel = np.abs(a - b) / scale
+                        # A one-sided NaN is counted in ``nan_mismatch``; it has
+                        # no relative error to report.
+                        rel = rel[~np.isnan(rel)]
+                        measured["max_rel"] = float(rel.max()) if rel.size else 0.0
                     staged.append(measured)
                 if reason:
                     declined = reason
                     redrawn += 1
                     continue
+                if reshape:
+                    reshaped += 1
                 for measured in staged:
                     points += measured["points"]
                     bit_exact += measured["bit_exact"]
@@ -1028,6 +1050,20 @@ class BitexactVerifier(Verifier):
                     "error": f"no draw this harness could compare in {attempts} attempt(s): "
                     + (declined or "reason not recorded")
                 }
+        if samples is None and reshaped * 2 > len(rounds):
+            # A trial compared only after its extents were moved is evidence
+            # about the extents the redraw happened to land on, not the ones
+            # asked for. A subprogram that passes mostly that way -- a packed
+            # workspace whose ``lr`` must be ``n(n+1)/2`` at every order, so the
+            # default extents never work and the redraws that do are n = 1 --
+            # is unverified at the configured extents, and says so by name
+            # rather than passing on the handful of points that did fit.
+            return {
+                "error": f"{reshaped} of {len(rounds)} trial(s) were compared only after the "
+                f"free extent(s) {', '.join(free_extents)} were moved off the configured "
+                f"values; the {points} point(s) that fit are not evidence at those extents. "
+                "Pin `dims` to extents the subprogram takes"
+            }
         outcome = {
             "points": points,
             "bit_exact": bit_exact,
@@ -1037,6 +1073,7 @@ class BitexactVerifier(Verifier):
             "integer_points": integer_points,
             "integer_mismatch": integer_mismatch,
             "redrawn": redrawn,
+            "reshaped": reshaped,
         }
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
