@@ -1652,8 +1652,10 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     ]
     if tuples:
         final = body[-1]
-        same = final.value is not None and all(
-            ast.dump(node.value) == ast.dump(final.value) for node in tuples
+        final_value = final.value
+        same = final_value is not None and all(
+            node.value is not None and ast.dump(node.value) == ast.dump(final_value)
+            for node in tuples
         )
         folded = _fold_returns(body[:-1], []) if same else None
         if folded is None:
