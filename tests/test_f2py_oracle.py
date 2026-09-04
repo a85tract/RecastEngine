@@ -1463,3 +1463,14 @@ def test_the_reference_builds_across_two_files(tmp_path: Path) -> None:
         unit, facts, workspace, LocalExecutor(), {"root": project, "fc": GFORTRAN}
     )
     assert ref.handle["wrappers"]["scale_all"] == "w_scale_all"
+
+
+def test_a_lower_bound_is_spelled_in_the_wrapper() -> None:
+    """``lhs(-2:2, ngrdcol, ndim)`` (CLUBB's pentadiagonal solvers) has five
+    rows; a wrapper declaring ``lhs(2, ...)`` would hand the callee two."""
+    from recast.oracle.f2py import _extent
+
+    assert _extent({"lb": "-2", "ub": "2"}) == "-2:2"
+    assert _extent({"lb": "1", "ub": "n"}) == "n"
+    assert _extent({"lb": None, "ub": "n"}) == "n"
+    assert _extent({"lb": "0", "ub": "nlev"}) == "0:nlev"

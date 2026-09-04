@@ -186,8 +186,12 @@ def _stage_build_inputs(
 
 
 def _extent(dim: dict[str, Any]) -> str:
+    """The axis as the wrapper declares it: ``lb:ub`` when the lower bound is
+    not one (CLUBB's ``lhs(-2:2, ngrdcol, ndim)``), so the callee sees the
+    layout it was written for and f2py sizes the axis ``ub - lb + 1``."""
     if dim.get("ub"):
-        return str(dim["ub"])
+        lower = str(dim.get("lb") or "1").strip()
+        return f"{lower}:{dim['ub']}" if lower != "1" else str(dim["ub"])
     return "*" if dim.get("assumed_size") else ":"
 
 
