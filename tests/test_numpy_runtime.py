@@ -339,3 +339,24 @@ def test_copy_out_writes_the_overlap_and_leaves_the_rest() -> None:
     runtime._f_copy_out(same, 7.0)
     assert list(same) == [7.0, 7.0]
     runtime._f_copy_out(None, np.ones(2))  # nothing to write into, no error
+
+
+def test_sum_accumulates_in_fortran_element_order() -> None:
+    """gfortran's inlined SUM is a loop in element order; np.sum pairs its
+    terms and rounds differently -- CLUBB's vertical_integral drifted 12 ULP.
+    The sequential helper matches the loop exactly, whole or along an axis."""
+    import numpy as np
+
+    from recast.transform.numpy import runtime
+
+    rng = np.random.default_rng(7)
+    a = np.asfortranarray(rng.uniform(-1e6, 1e6, size=(37, 23)))
+    loop = np.float64(0)
+    for x in np.ravel(a, order="F"):
+        loop = loop + x
+    assert runtime._f_vsum(a) == loop
+    along = np.zeros(23)
+    for i in range(37):
+        along = along + a[i, :]
+    assert np.array_equal(runtime._f_vsum(a, axis=0), along)
+    assert runtime._f_vsum(np.array([1, 2, 3], dtype=np.int32)) == 6

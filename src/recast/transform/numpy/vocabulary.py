@@ -166,7 +166,7 @@ REDUCTIONS: dict[str, str] = {
     "minval": "np.min",
     "product": "np.prod",
     "size": "np.size",
-    "sum": "np.sum",
+    "sum": "_f_vsum",
     # With unit lower bounds -- which every translated array has -- the upper
     # bound and the extent are the same number.
     "ubound": "np.size",
