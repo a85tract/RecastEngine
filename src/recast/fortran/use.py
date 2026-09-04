@@ -25,8 +25,9 @@ class UnresolvedConstant(RecastError):
     """A use-imported name whose initializer is in none of the given sources."""
 
 
-def harvest(path: Path) -> dict[str, tuple[Any, int | None]]:
-    """``name -> (initializer node, line)`` for module-level initialized entities.
+def harvest(path: Path) -> dict[str, tuple[Any, int | None, str | None]]:
+    """``name -> (initializer node, line, declared base type)`` for module-level
+    initialized entities; the base type is ``real``, ``int`` or ``None``.
 
     Covers parameters and initialized ``save``/``protected`` variables alike: a
     constant that a physics module reads is a constant whether or not the
