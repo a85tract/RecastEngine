@@ -51,6 +51,16 @@ DEFAULT_DIMENSION = 8
 SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
 
 
+def _returned(translated_out: Any) -> list[Any]:
+    """The values a candidate call handed back, as a list: a tuple's items,
+    one bare value, or none at all -- a subroutine with no OUT argument
+    returns ``None`` (CLUBB's finalize_tau_sponge_damp_api deallocates and
+    returns), and that is zero values, not one."""
+    if translated_out is None:
+        return []
+    return list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+
+
 def _extent(dim: dict[str, Any], dims: dict[str, int]) -> int:
     """An axis's extent: ``ub - lb + 1`` when a lower bound is declared
     (CLUBB's ``lhs(-2:2, ...)`` has five rows, not two), ``ub`` otherwise."""
@@ -1060,7 +1070,7 @@ class BitexactVerifier(Verifier):
             # therefore by exact name on both sides. Every required output was
             # preflighted before the candidate call; keep the same check here
             # as a fail-closed local invariant for direct callers.
-            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+            mine = _returned(translated_out)
             names = (
                 [sub.get("result") or "result"]
                 if sub["kind"] == "function"
@@ -1116,7 +1126,7 @@ class BitexactVerifier(Verifier):
                 for a in outs_required
             ]
 
-        ours = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+        ours = _returned(translated_out)
         if len(ours) != len(outs_all):
             return (
                 f"candidate returned {len(ours)} value(s) for "

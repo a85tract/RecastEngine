@@ -718,6 +718,61 @@ def two_outputs():
     assert "partial output evidence is not a pass" in verdict.detail
 
 
+def test_a_recorded_subroutine_with_no_output_returns_nothing(tmp_path: Path) -> None:
+    """CLUBB's finalize_tau_sponge_damp_api deallocates a component and
+    returns: no OUT argument, so its adapter returns ``None``. The gate
+    counted that as one value against zero out-intent arguments."""
+    emitted = b"""\
+_SIGNATURES = {
+    "release": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def release(n):
+    return None
+"""
+    candidate = Candidate(
+        unit="fortran:no_output",
+        transform="translate.numpy",
+        files={Path("no_output_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "release",
+                    "source": "release.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {},
+    )
+    # Nothing to compare is still not a pass -- but for the right reason.
+    assert "returned 1 value(s)" not in verdict.detail
+    assert "zero numerical points" in verdict.detail
+
+
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
