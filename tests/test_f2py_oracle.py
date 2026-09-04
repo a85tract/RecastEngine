@@ -102,6 +102,45 @@ def test_out_arguments_are_defined_before_the_call() -> None:
     assert "  rho = 0" not in body
 
 
+def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
+    """An intent(out) array the callee cannot size -- ``dy(*)`` -- is the
+    caller's storage on both sides: the gate generates it and hands the same
+    values to the reference and the candidate. Zeroing it in the wrapper would
+    fail every cell the callee never writes, and ``dy = 0`` is not even legal
+    for an assumed-size dummy (SLSQP's ``dcopy`` stopped the oracle build)."""
+    record = {
+        "module": "blas_mod",
+        "subprograms": [
+            {
+                "name": "dcopy",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {
+                        "name": "dx",
+                        "dtype": "float64",
+                        "intent": "IN",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None, "assumed_size": True}],
+                    },
+                    {
+                        "name": "dy",
+                        "dtype": "float64",
+                        "intent": "OUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None, "assumed_size": True}],
+                        "buffer": True,
+                    },
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["dcopy"])
+    body = text[text.index("subroutine w_dcopy") : text.index("end subroutine w_dcopy")]
+    assert "real(8), intent(out) :: dy(*)" in body
+    assert "  dy = 0" not in body
+
+
 def test_a_dtype_the_wrapper_cannot_spell_refuses() -> None:
     broken = {
         "module": "m",
