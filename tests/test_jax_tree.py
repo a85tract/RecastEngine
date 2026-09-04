@@ -87,6 +87,19 @@ def test_the_port_emits_the_flat_function_as_a_kernel(tree: Path) -> None:
     assert Path("physics_mod_jax_runtime.py") in candidate.files
 
 
+def test_a_bundled_companion_the_root_does_not_hold_fails_the_port(tree: Path) -> None:
+    """The anchor says it bundled ``ghost``; no unit under the root defines
+    it. A port that carried on would spell kernels that call into a module
+    it never ported."""
+    from recast.errors import ConfigError
+    from recast.model import Candidate
+
+    unit, facts = _unit_and_facts(tree)
+    anchor = Candidate(unit=unit.uid, transform="test", notes={"tree": {"bundled": ["ghost"]}})
+    with pytest.raises(ConfigError, match="companion 'ghost' of 'fortran:physics_mod'"):
+        TreeToJax(CONVENTIONS)._port_companions(anchor, facts, {"root": str(tree)})
+
+
 def test_early_returns_merge_into_one_exit() -> None:
     from recast.transform.jax.tree import _single_exit
 
