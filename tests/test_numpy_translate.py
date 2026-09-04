@@ -617,3 +617,91 @@ def test_the_callback_translation_passes_the_dataflow_gate(callback_candidate) -
     verdict = ReadWriteSetVerifier().check(unit, candidate, Path("."), LocalExecutor(), {})
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
     assert verdict.metrics["blocks_matched"] == verdict.metrics["blocks_checked"] > 0
+
+
+NESTED_GENERICS = """
+module sat_mod
+  implicit none
+  private
+  public :: t_api, rsat_api
+  interface t_api
+    module procedure t_k, t_2d
+  end interface t_api
+  interface rsat_api
+    module procedure rsat_k, rsat_2d
+  end interface rsat_api
+contains
+  function t_k( thl ) result( t )
+    real, intent(in) :: thl
+    real :: t
+    t = thl + 1.0
+  end function t_k
+  function t_2d( n, thl ) result( t )
+    integer, intent(in) :: n
+    real, intent(in) :: thl(n, 2)
+    real :: t(n, 2)
+    t = thl + 1.0
+  end function t_2d
+  function rsat_k( p, t ) result( r )
+    real, intent(in) :: p, t
+    real :: r
+    r = t / p
+  end function rsat_k
+  function rsat_2d( n, p, t ) result( r )
+    integer, intent(in) :: n
+    real, intent(in) :: p(n, 2), t(n, 2)
+    real :: r(n, 2)
+    r = t / p
+  end function rsat_2d
+end module sat_mod
+"""
+
+CALLS_NESTED_GENERICS = """
+module core_mod
+  use sat_mod, only: t_api, rsat_api
+  implicit none
+contains
+  subroutine step( n, p, thl, rsat )
+    integer, intent(in) :: n
+    real, intent(in) :: p(n, 2), thl(n, 2)
+    real, intent(out) :: rsat(n, 2)
+    rsat = rsat_api( n, p, t_api( n, thl ) )
+  end subroutine step
+end module core_mod
+"""
+
+
+def test_a_generic_whose_actual_is_another_generics_result_is_dispatched(tmp_path: Path) -> None:
+    """CLUBB's advance_clubb_core: ``sat_mixrat_liq_api( ..., thlm2T_in_K_api(
+    ... ), ... )``. The inner generic's result was ranked scalar without
+    looking, so the outer one matched no specific and its block was deferred
+    -- and a deferred block takes the whole subprogram out of the gate."""
+    import importlib
+    import sys
+
+    (tmp_path / "sat_mod.f90").write_text(NESTED_GENERICS)
+    (tmp_path / "core_mod.f90").write_text(CALLS_NESTED_GENERICS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:core_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    from recast.transform.numpy.tree import TreeTranslation
+
+    candidate = TreeTranslation().apply(unit, facts, {"root": str(tmp_path)})
+    assert not candidate.deferred, candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "core_mod_numpy.py").read_text()
+    assert "rsat_2d(" in text and "t_2d(" in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("core_mod_numpy")
+        import numpy as np
+
+        p = np.full((2, 2), 2.0, dtype=np.float32, order="F")
+        thl = np.ones((2, 2), dtype=np.float32, order="F")
+        assert module.step(2, p, thl).tolist() == [[1.0, 1.0], [1.0, 1.0]]
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("core_mod_numpy", None)
