@@ -742,7 +742,7 @@ class KernelLowerer:
             # takes its level indices as arguments, and its caller's loop
             # index reaches it as a tracer). Decided at trace time by the
             # runtime's ``_f_concrete``.
-            python_form = [ast.If(test=s.test, body=body, orelse=orelse or [])]
+            python_form: list[ast.stmt] = [ast.If(test=s.test, body=body, orelse=orelse or [])]
             try:
                 cond_form = self._cond_form(s, copy.deepcopy(body), copy.deepcopy(orelse))
             except JaxQueue:
