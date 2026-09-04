@@ -1819,7 +1819,13 @@ def test_a_siblings_generic_is_a_procedure_to_the_read_write_scope(tmp_path: Pat
     without an entry for it the scope counted the name as a read of data."""
     record = interface.extract(_write(tmp_path, "solve.f90", PUBLIC_GENERIC))
     table = interface.companion_externals(record)
-    assert table["solve"] == {"kind": "subroutine", "out_positions": [1, 2], "buffer_positions": []}
+    assert table["solve"]["kind"] == "subroutine"
+    assert table["solve"]["out_positions"] == [1, 2]  # the union, for a call of no known arity
+    # ... and each specific with its arity, for the scope to pick by the actuals.
+    assert [(x["name"], x["args"], x["out_positions"]) for x in table["solve"]["specifics"]] == [
+        ("solve_one", 2, [1]),
+        ("solve_many", 3, [2]),
+    ]
     assert table["solve_one"]["out_positions"] == [1]
 
 
@@ -1850,3 +1856,41 @@ end module gas_mod
     assert scope["EP"] == np.float64(287.04) / np.float64(461.5)
     assert scope["EP2"] == np.float64(1.0) / scope["EP"]
     assert scope["NRK"] == 4
+
+
+STUBBED_CALLER = """\
+module budget_mod
+  use stats_mod, only: stats_type, stats_update
+  implicit none
+  private
+  public :: tend
+contains
+  subroutine tend( n, x, stats )
+    integer, intent(in) :: n
+    real, dimension(n), intent(inout) :: x
+    type(stats_type), intent(inout) :: stats
+    real, dimension(n) :: stats_tmp
+    x = 2.0 * x
+    if ( stats%l_sample ) then
+      stats_tmp = x / 2.0
+      call stats_update( "x_budget", stats_tmp, stats )
+    end if
+  end subroutine tend
+end module budget_mod
+"""
+
+
+def test_a_call_into_a_stubbed_module_reads_and_writes_nothing(tmp_path: Path) -> None:
+    """CLUBB brackets its budgets with calls into stats_netcdf, a stub: the
+    translation emits ``pass`` for them, so the source side must not count
+    their actuals either -- ``stats_tmp`` was a read only the source saw."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "budget.f90", STUBBED_CALLER)
+    frontend = FortranFrontend(stub_modules=["stats_mod"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:budget_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface  # analysed without the stub module in the tree
+    blocks = facts.effects["fortran:budget_mod/tend"]["blocks"]
+    reads = {name for block in blocks for name in block.get("reads", [])}
+    assert "stats_tmp" not in reads and "x_budget" not in reads

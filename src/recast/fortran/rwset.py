@@ -383,6 +383,14 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
 
         if callee is None:
             external = scope.externals.get(name)
+            if external and external.get("stub"):
+                return  # a stubbed call: the translation drops it, actuals and all
+            if external and external.get("specifics"):
+                # A sibling's generic: the specific this arity reaches, or the
+                # union when none matches exactly.
+                fitting = [x for x in external["specifics"] if x["args"] == len(actuals)]
+                if fitting:
+                    external = fitting[0]
             out_positions = set(external.get("out_positions", [])) if external else set()
             buffers = set(external.get("buffer_positions", [])) if external else set()
             for j, actual in enumerate(actuals):

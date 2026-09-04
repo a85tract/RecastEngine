@@ -1317,15 +1317,33 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     # writes are the union over the specifics -- which agree, in every
     # generic seen so far, on being functions with no OUT argument.
     for generic, specifics in (record.get("generics") or {}).items():
-        known = [table[s] for s in specifics if s in table]
+        known = [(s, table[s]) for s in specifics if s in table]
         if generic in table or not known:
             continue
+        # Which specific a call reaches depends on its arity (and ranks the
+        # scope does not resolve): the entry carries every specific with its
+        # argument count, and the scope picks by the actuals it sees. A
+        # union over specifics of different arity marked the wrong
+        # positions -- CLUBB's tridiag_solve, zm2zt_api.
+        arity = {
+            s: len(next(x for x in record["subprograms"] if x["name"] == s)["args"])
+            for s, _ in known
+        }
         table[generic] = {
-            "kind": known[0]["kind"],
-            "out_positions": sorted({at for entry in known for at in entry["out_positions"]}),
+            "kind": known[0][1]["kind"],
+            "out_positions": sorted({at for _, entry in known for at in entry["out_positions"]}),
             "buffer_positions": sorted(
-                {at for entry in known for at in entry.get("buffer_positions", [])}
+                {at for _, entry in known for at in entry.get("buffer_positions", [])}
             ),
+            "specifics": [
+                {
+                    "name": s,
+                    "args": arity[s],
+                    "out_positions": entry["out_positions"],
+                    "buffer_positions": entry.get("buffer_positions", []),
+                }
+                for s, entry in known
+            ],
         }
     return table
 
