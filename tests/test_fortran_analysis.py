@@ -2055,3 +2055,69 @@ def test_a_component_out_actual_reads_no_variable_of_the_components_name(tmp_pat
     (block,) = facts.effects["fortran:pdf_mod/run"]["blocks"]
     assert "p" in block["writes"] and "p" in block["reads"]
     assert "eta" not in block["reads"] and "chi" not in block["reads"]
+
+
+HANDS_ON_SOLVER = """
+module solve_mod
+  implicit none
+contains
+  subroutine solve( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 1.0
+  end subroutine solve
+end module solve_mod
+"""
+
+HANDS_ON_CALLER = """
+module relay_mod
+  use solve_mod, only: solve
+  implicit none
+contains
+  subroutine outer( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    call solve( n, a, x, rc = rc )
+  end subroutine outer
+  subroutine own( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    call inner( n, a, x, rc )
+  end subroutine own
+  subroutine inner( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 2.0
+  end subroutine inner
+end module relay_mod
+"""
+
+
+def test_an_optional_handed_on_to_an_optional_out_is_read_for_its_presence(tmp_path: Path) -> None:
+    """``call solve( ..., rc = rc )`` with the caller's own optional ``rc``:
+    the callee asks ``present(rc)``, which the translation spells as the
+    caller's ``want_rc`` sentinel -- a read of ``rc`` on the target side.
+    The source side scored only the write, and CLUBB's xm_wpxp_solve
+    disagreed on the one block that hands ``rcond`` to band_solve. Both a
+    sibling's procedure and one of this module count it."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", HANDS_ON_SOLVER)
+    _write(tmp_path, "relay.f90", HANDS_ON_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:relay_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:relay_mod/outer"]["blocks"]
+    assert "rc" in block["reads"] and "rc" in block["writes"]
+    (block,) = facts.effects["fortran:relay_mod/own"]["blocks"]
+    assert "rc" in block["reads"] and "rc" in block["writes"]
