@@ -709,6 +709,12 @@ class BitexactVerifier(Verifier):
             truth_args = [truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"]
             try:
                 translated_out = translated_fn(**translated_kwargs)
+            except SystemExit as error:
+                # A translated ``error stop`` (CLUBB's calc_mixture_fraction on
+                # a zero F_x): the candidate's answer for these inputs is to
+                # end the program, which is a comparison that cannot be made,
+                # not the end of the run.
+                return {"error": f"candidate raised: SystemExit (error stop): {error}"}
             except Exception as error:
                 return {"error": f"candidate raised: {type(error).__name__}: {error}"}
             if samples is not None:

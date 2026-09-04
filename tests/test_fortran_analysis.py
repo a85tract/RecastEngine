@@ -1821,3 +1821,32 @@ def test_a_siblings_generic_is_a_procedure_to_the_read_write_scope(tmp_path: Pat
     table = interface.companion_externals(record)
     assert table["solve"] == {"kind": "subroutine", "out_positions": [1, 2], "buffer_positions": []}
     assert table["solve_one"]["out_positions"] == [1]
+
+
+def test_a_quotient_of_real_parameters_is_a_real_quotient(tmp_path: Path) -> None:
+    """CLUBB's ``ep = Rd / Rv``: no literal in sight, two real parameters.
+    The old rule -- no real literal means integer arithmetic throughout --
+    folded it to zero. The declared types decide."""
+    import numpy as np
+
+    from recast.transform.numpy.constants import use_constants_module
+
+    src = """\
+module gas_mod
+  implicit none
+  integer, parameter :: core_rknd = 8
+  real( kind = core_rknd ), parameter :: rd = 287.04_core_rknd, rv = 461.5_core_rknd
+  real( kind = core_rknd ), parameter :: ep = rd / rv
+  real( kind = core_rknd ), parameter :: ep2 = 1.0_core_rknd / ep
+  integer, parameter :: runge_kutta_type = 45
+  integer, parameter :: nrk = runge_kutta_type / 10
+end module gas_mod
+"""
+    _write(tmp_path, "gas.f90", src)
+    resolved = use.resolve(["ep2", "nrk"], [tmp_path / "gas.f90"])
+    assert {r["name"]: r["dtype"] for r in resolved}["ep"] == "real"
+    scope: dict[str, object] = {}
+    exec(use_constants_module(resolved, "gas_mod"), scope)  # generated text under test
+    assert scope["EP"] == np.float64(287.04) / np.float64(461.5)
+    assert scope["EP2"] == np.float64(1.0) / scope["EP"]
+    assert scope["NRK"] == 4
