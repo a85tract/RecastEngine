@@ -179,9 +179,18 @@ def _f_fori(lo, hi, body, init):
 
 
 def _f_ecall(fn, *args, **kw):
-    """ELEMENTAL procedure broadcast over array actuals, as the NumPy
-    runtime does with np.vectorize: the scalar kernel per element."""
-    return jnp.vectorize(fn)(*args, **kw)
+    """ELEMENTAL procedure broadcast over array actuals: the scalar kernel
+    per element, in sequence, as the NumPy runtime's np.vectorize runs it.
+
+    Not jnp.vectorize: under jit that is a vmap, which turns the kernel's
+    branches into selects and its loops into batched ones, and CLUBB's
+    hybrid PDF closure came out 1e7 ULP from the anchor that way (2 ULP
+    this way). lax.map keeps each element's own control flow."""
+    arrays = [jnp.asarray(a) for a in args]
+    shape = jnp.broadcast_shapes(*[a.shape for a in arrays])
+    flat = tuple(jnp.broadcast_to(a, shape).reshape(-1) for a in arrays)
+    outs = lax.map(lambda xs: fn(*xs, **kw), flat)
+    return jax.tree_util.tree_map(lambda o: o.reshape(shape), outs)
 
 
 def _f_sqrt(x):
