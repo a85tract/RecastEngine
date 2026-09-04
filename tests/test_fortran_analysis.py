@@ -249,6 +249,40 @@ def test_kinds_spelled_by_iso_fortran_env_resolve(tmp_path: Path) -> None:
     assert record["kind_map"]["def"] == "float32", "kind(1.0) is default real"
 
 
+RENAMED = """\
+module renamed_mod
+  use iso_fortran_env, only: wp => real64
+  implicit none
+contains
+  subroutine renamed(a, n)
+    real(wp), intent(in) :: a
+    integer, intent(in) :: n
+  end subroutine renamed
+end module renamed_mod
+"""
+
+
+def test_a_kind_renamed_from_iso_fortran_env_resolves(tmp_path: Path) -> None:
+    """``use iso_fortran_env, only: wp => real64`` is how a modern file names
+    its working precision, and the module is intrinsic -- no source declares
+    ``real64``, so it is in no supplied kind table. Left unresolved, every
+    ``real(wp)`` reaches the f2py oracle as a dummy it cannot spell and the
+    whole module drops out of the bit-exact gate."""
+    record = interface.extract(_write(tmp_path, "renamed.f90", RENAMED))
+    assert record["kind_map"]["wp"] == "float64"
+    args = {a["name"]: a for a in record["subprograms"][0]["args"]}
+    assert args["a"]["dtype"] == "float64"
+
+
+def test_another_module_s_real64_is_its_own(tmp_path: Path) -> None:
+    """The intrinsic names are read only for a ``use`` of the intrinsic
+    module. A kinds module of somebody's own that happens to export
+    ``real64`` says what it says, and this must not answer for it."""
+    source = RENAMED.replace("use iso_fortran_env, only:", "use local_kinds, only:")
+    record = interface.extract(_write(tmp_path, "local.f90", source))
+    assert "wp" not in record["kind_map"]
+
+
 def test_a_kind_named_after_another_kind_resolves(tmp_path: Path) -> None:
     """``wp = rk`` where ``rk = real64``. Both are module parameters, and the
     alias is often declared before the thing it aliases, so one pass down the
@@ -1168,12 +1202,46 @@ def test_an_array_constructor_in_either_spelling_is_read(tmp_path: Path) -> None
     assert "dtype=object" in names["payload"][0]["v"], "character elements"
 
 
-def test_a_constructor_over_names_is_skipped_rather_than_approximated(
-    tmp_path: Path,
-) -> None:
+def test_a_constructor_over_names_carries_its_elements(tmp_path: Path) -> None:
     """Its elements are not literals, so the kind-suffix strip that makes the
-    literal case exact does not apply."""
-    assert _param(_forms(tmp_path), "derived")["kind"] == "skip"
+    literal case exact does not apply -- but each element is a constant
+    expression in its own right, and classifying them one at a time keeps the
+    value without this stage folding anything."""
+    derived = _param(_forms(tmp_path), "derived")
+    assert derived["kind"] == "expr"
+    assert derived["payload"] == [
+        {"t": "array", "elements": [[{"t": "ref", "v": "pi"}], [{"t": "ref", "v": "pi"}]]}
+    ]
+
+
+def test_a_constructor_over_an_unknown_name_is_still_skipped() -> None:
+    """The reason a constructor is refused is an element nothing defines, not
+    the constructor itself."""
+    kind, payload = constants.classify_init("(/pi, nowhere/)", {"pi"})
+    assert kind == "skip"
+    assert "nowhere" in payload
+
+
+def test_an_inquiry_constructor_and_a_subscript_of_it_are_read() -> None:
+    """``dpmpar = [epsilon(..), tiny(..), huge(..)]`` then ``epsmch =
+    dpmpar(1)``: the constructor holds calls rather than literals, and the
+    parameter after it subscripts the array -- spelled exactly like a call,
+    and told apart only by knowing the name holds an array."""
+    kind, payload = constants.classify_init("[epsilon(1.0_wp), tiny(1.0_wp)]", set())
+    assert kind == "expr"
+    assert payload == [
+        {
+            "t": "array",
+            "elements": [
+                [{"t": "call", "v": "epsilon", "args": [[{"t": "real", "v": "1.0"}]]}],
+                [{"t": "call", "v": "tiny", "args": [[{"t": "real", "v": "1.0"}]]}],
+            ],
+        }
+    ]
+
+    kind, payload = constants.classify_init("dpmpar(1)", {"dpmpar"}, array_names={"dpmpar"})
+    assert kind == "expr"
+    assert payload == [{"t": "index", "v": "dpmpar", "args": [[{"t": "int", "v": "1"}]]}]
 
 
 def test_a_signed_literal_node_is_collected(tmp_path: Path) -> None:
@@ -1252,7 +1320,7 @@ end module f77ish
     assert intents["made"] == "OUT"  # assigned, never read
     assert intents["n"] == "OUT"
     assert intents["used"] == "INOUT"  # read on its own right-hand side
-    assert intents["x"] == "UNKNOWN"  # only read
+    assert intents["x"] == "IN"  # only read
     assert intents["buf"] == "UNKNOWN"  # an array mutates through its buffer
     assert intents["onward"] == "UNKNOWN"  # only passed on; its fate is the callee's
 
@@ -2121,3 +2189,102 @@ def test_an_optional_handed_on_to_an_optional_out_is_read_for_its_presence(tmp_p
     assert "rc" in block["reads"] and "rc" in block["writes"]
     (block,) = facts.effects["fortran:relay_mod/own"]["blocks"]
     assert "rc" in block["reads"] and "rc" in block["writes"]
+
+
+CALLBACK = """\
+module callback_mod
+  implicit none
+  abstract interface
+    subroutine func(n, x, fvec, iflag)
+      implicit none
+      integer, intent(in) :: n
+      real, intent(in) :: x(n)
+      real, intent(out) :: fvec(n)
+      integer, intent(inout) :: iflag
+    end subroutine func
+  end interface
+contains
+  subroutine sweep(fcn, n, x, work, iflag)
+    procedure(func) :: fcn
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    real, intent(inout) :: work(n)
+    integer, intent(inout) :: iflag
+    call fcn(n, x, work, iflag)
+  end subroutine sweep
+
+  subroutine drive(fcn, n, x, work, iflag)
+    procedure(func) :: fcn
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    real, intent(inout) :: work(n)
+    integer, intent(inout) :: iflag
+    call sweep(fcn, n, x, work, iflag)
+  end subroutine drive
+end module callback_mod
+"""
+
+
+def test_a_dummy_procedure_carries_the_interface_it_was_declared_with(tmp_path: Path) -> None:
+    """``procedure(func) :: fcn`` is declared by no type declaration, so
+    before this the argument had no type, no intent and no hint that it was
+    callable at all -- and a call through it could only be refused."""
+    src = _write(tmp_path, "callback.f90", CALLBACK)
+    record = interface.extract(src)
+    sweep = next(s for s in record["subprograms"] if s["name"] == "sweep")
+    fcn = sweep["args"][0]
+    assert fcn["procedure"] is True
+    assert fcn["interface"] == "func"
+    assert [a["name"] for a in sweep["args"][1:]] == ["n", "x", "work", "iflag"]
+    assert not any(a.get("procedure") for a in sweep["args"][1:])
+
+
+def test_an_abstract_interface_is_extracted_like_a_subprogram(tmp_path: Path) -> None:
+    """The interface body is what says ``fvec`` is written, so it is read
+    with the same extractor a real subprogram is."""
+    src = _write(tmp_path, "callback.f90", CALLBACK)
+    record = interface.extract(src)
+    func = record["interfaces"]["func"]
+    assert func["kind"] == "subroutine"
+    assert [(a["name"], a["intent"]) for a in func["args"]] == [
+        ("n", "IN"),
+        ("x", "IN"),
+        ("fvec", "OUT"),
+        ("iflag", "INOUT"),
+    ]
+    assert "func" not in {s["name"] for s in record["subprograms"]}, "an interface is not a body"
+
+
+def test_a_call_through_a_dummy_procedure_splits_by_the_interface(tmp_path: Path) -> None:
+    """Without the interface the call reads the unresolved-external way --
+    every actual read, none written -- which loses ``work``."""
+    from recast.fortran import rwset
+
+    src = _write(tmp_path, "callback.f90", CALLBACK)
+    record = interface.extract(src)
+    node = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "sweep"
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "sweep"))}
+    assert blocks["B001"] == {
+        "id": "B001",
+        "reads": ["fcn", "iflag", "n", "x"],
+        "writes": ["iflag", "work"],
+    }, "which code runs is decided by fcn, so calling through it reads it"
+
+
+def test_a_dummy_procedure_passed_on_is_a_read_not_a_call(tmp_path: Path) -> None:
+    src = _write(tmp_path, "callback.f90", CALLBACK)
+    record = interface.extract(src)
+    from recast.fortran import rwset
+
+    node = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
+    assert "fcn" in blocks["B001"]["reads"]
+    assert blocks["B001"]["writes"] == ["iflag", "work", "x"]

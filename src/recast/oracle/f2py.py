@@ -144,10 +144,20 @@ def _staged_suffix(source: Path) -> str:
     return suffix
 
 
+MODULE_DIR = "includes/mods"
+"""Where the compiler leaves the reference's ``.mod`` files, and where the
+wrapper's ``use`` finds them. A short relative name for the same reason every
+other token here is one."""
+
+
 def _stage_build_inputs(
     stage: Path, sources: list[Path], wrapper_text: str
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], str, list[str]]:
     """Copy sources and expose include directories through controlled names.
+
+    Returns the staged reference sources, the staged wrapper, and the include
+    arguments -- the reference and the wrapper separately, because only the
+    wrapper is ever handed to f2py.
 
     NumPy currently performs ``' '.join(...).split()`` both while parsing
     f2py sources and while parsing include options.  Consequently *every*
@@ -162,6 +172,11 @@ def _stage_build_inputs(
     source_dir.mkdir()
     include_dir.mkdir()
     backend_include_dir.mkdir(parents=True)
+    (stage / MODULE_DIR).mkdir()
+    # Meson resolves an include directory against f2py's build directory, and
+    # crackfortran and the compiler resolve it against the job's cwd. The
+    # same relative name has to name the same directory from both.
+    (backend_include_dir / "mods").symlink_to(stage / MODULE_DIR, target_is_directory=True)
 
     staged: list[str] = []
     for index, source in enumerate(sources):
@@ -171,7 +186,6 @@ def _stage_build_inputs(
 
     wrapper = Path("sources") / "wrappers.f90"
     (stage / wrapper).write_text(wrapper_text)
-    staged.append(wrapper.as_posix())
 
     include_args: list[str] = []
     parents = dict.fromkeys(source.parent for source in sources)
@@ -182,7 +196,130 @@ def _stage_build_inputs(
         (include_dir / alias).symlink_to(parent, target_is_directory=True)
         (backend_include_dir / alias).symlink_to(parent, target_is_directory=True)
         include_args.append(f"-Iincludes/{alias}")
-    return staged, include_args
+    return staged, wrapper.as_posix(), include_args
+
+
+INTENT_SPELLING = {"IN": "in", "OUT": "out", "INOUT": "inout", "UNKNOWN": "inout"}
+"""Declared intent -> what a wrapper dummy is spelled with."""
+
+CALLBACK_INTENT = {"IN": "in", "OUT": "out", "INOUT": "in,out"}
+"""Declared intent -> what f2py calls it on a call-back argument.
+
+f2py's call-back convention is the emitted translation's own: the arguments
+the Fortran side supplies are passed to the Python function, and the ones it
+expects back come out of the return. ``intent(in,out)`` is both.
+"""
+
+
+def _callback_declarations(
+    argument: dict[str, Any], interfaces: dict[str, Any]
+) -> tuple[list[str], str]:
+    """The ``!f2py`` lines that teach f2py what a call-back argument is.
+
+    f2py works a call-back's signature out from a call to it in the body of
+    the routine being wrapped, and there is no such call here: the wrapper
+    hands the procedure straight on. So the call is written for f2py alone --
+    ``!f2py`` lines are Fortran comments and reach no compiler -- together
+    with a declaration per call-back argument, which is where the intents
+    come from. Without them the generated glue calls Python with no arguments
+    and copies nothing back.
+
+    The call-back's own arguments are the only names in scope for its
+    dimensions, so an extent naming one of them is renamed with it; an extent
+    naming anything else is refused rather than resolved against the
+    wrapper's scope, where it would mean a different variable.
+    """
+    name = argument["name"]
+    # An interface record names its interface; a signature entry carries the
+    # record itself, because the harness on the other side has no module
+    # record to look it up in. Either arrives here.
+    interface = argument.get("interface")
+    if isinstance(interface, str):
+        interface = interfaces.get(interface)
+    if not interface:
+        raise ConfigError(
+            f"procedure argument {name!r} carries no interface; this wrapper cannot say "
+            "what calling it means -- wrap it by hand or drop the subprogram from the gate"
+        )
+    if interface["kind"] != "subroutine":
+        raise ConfigError(
+            f"procedure argument {name!r} is a function; this wrapper spells subroutine "
+            "call-backs only"
+        )
+    spelled = {a["name"].lower(): f"cb_{name}_{a['name']}" for a in interface["args"]}
+    sized = {
+        token.lower()
+        for a in interface["args"]
+        for d in a.get("dims") or []
+        for token in re.findall(r"[A-Za-z_]\w*", str(d.get("ub") or ""))
+    }
+    lines = []
+    for a in interface["args"]:
+        base = FORTRAN_TYPES.get(a["dtype"])
+        intent = CALLBACK_INTENT.get(a["intent"])
+        if base is None or intent is None:
+            raise ConfigError(
+                f"call-back {name!r} argument {a['name']!r} is dtype {a['dtype']!r} "
+                f"intent {a['intent']!r}, which this wrapper cannot spell"
+            )
+        attributes = [f"intent({intent})"]
+        if a["name"].lower() in sized:
+            # f2py makes a dimension-determining integer optional and moves it
+            # to the end of the call-back's argument list. The translation
+            # calls the same object positionally, in declaration order, so it
+            # has to stay where the interface put it.
+            attributes.append("required")
+        dims = ""
+        if a.get("dims"):
+            axes = []
+            for d in a["dims"]:
+                axis = str(d.get("ub") or "").strip()
+                if axis.lower() not in spelled:
+                    raise ConfigError(
+                        f"call-back {name!r} argument {a['name']!r} has extent {axis!r}, "
+                        "which is not one of the call-back's own arguments"
+                    )
+                axes.append(spelled[axis.lower()])
+            dims = ", dimension(" + ", ".join(axes) + ")"
+        lines.append(
+            f"!f2py  {base}{dims}, {', '.join(attributes)} :: {spelled[a['name'].lower()]}"
+        )
+    arguments = ", ".join(spelled[a["name"].lower()] for a in interface["args"])
+    lines.append(f"!f2py  call {name}({arguments})")
+    return lines, f"  external {name}"
+
+
+_FREE_FORM_COLUMNS = 100
+"""Where a generated wrapper line is folded.
+
+Free-form Fortran's limit is 132 columns and gfortran makes overrunning it an
+error, not a warning -- a subprogram with two dozen arguments writes an
+argument list longer than that. Folded well short of the limit so the
+continuation marker itself always fits.
+"""
+
+
+def _fold(line: str) -> list[str]:
+    """One generated line as as many continued lines as it needs.
+
+    Broken after a comma, which is the only place a wrapper's long lines have
+    a boundary, and never inside a ``!f2py`` directive: those are comments to
+    every compiler, and f2py's own parser does not read a continuation in one.
+    """
+    if len(line) <= _FREE_FORM_COLUMNS or line.lstrip().startswith("!"):
+        return [line]
+    indent = " " * (len(line) - len(line.lstrip())) + "    "
+    pieces = line.split(", ")
+    folded: list[str] = []
+    current = pieces[0]
+    for piece in pieces[1:]:
+        if len(current) + len(piece) + 4 > _FREE_FORM_COLUMNS:
+            folded.append(current + ", &")
+            current = indent + piece
+        else:
+            current = f"{current}, {piece}"
+    folded.append(current)
+    return folded
 
 
 def _extent(dim: dict[str, Any]) -> str:
@@ -233,6 +370,7 @@ def wrappers_for(
         for specific in specifics
     }
     table = {s["name"]: s for s in record["subprograms"]}
+    interfaces = record.get("interfaces") or {}
     module = record["module"]
     is_module = record.get("is_module", True)
     # A submodule cannot be USEd; its procedures are reached through the
@@ -252,6 +390,14 @@ def wrappers_for(
         declarations = []
         hidden: list[str] = []
         for argument in arguments:
+            if argument["dtype"] == "PROCEDURE":
+                try:
+                    directives, external = _callback_declarations(argument, interfaces)
+                except ConfigError as error:
+                    raise ConfigError(f"{name}: {error}") from error
+                declarations.append(external)
+                declarations.extend(directives)
+                continue
             spelled = FORTRAN_TYPES.get(argument["dtype"])
             if spelled is None:
                 raise ConfigError(
@@ -259,9 +405,7 @@ def wrappers_for(
                     f"{argument['dtype']!r}, which this wrapper cannot spell; "
                     "wrap it by hand or drop the subprogram from the gate"
                 )
-            intent = {"IN": "in", "OUT": "out", "INOUT": "inout", "UNKNOWN": "inout"}[
-                argument["intent"]
-            ]
+            intent = INTENT_SPELLING[argument["intent"]]
             dims = ""
             override = (dims_override or {}).get(argument["name"])
             if override and argument.get("dims"):
@@ -277,6 +421,26 @@ def wrappers_for(
                 # is the mix ``(incfd, :)`` that spelling ``*`` as ``:`` made.
                 dims = "(" + ", ".join(_extent(d) for d in argument["dims"]) + ")"
             declarations.append(f"  {spelled}, intent({intent}) :: {argument['name']}{dims}")
+        # An intent(out) dummy is undefined on entry, and a subprogram that
+        # returns early -- a guard rejecting its own arguments -- never
+        # assigns it. What f2py then hands back is whatever the buffer it
+        # allocated happened to hold, which is not a fact about the Fortran
+        # and not something any translation can be held to. Defined here,
+        # once, so the reference's output buffers start where the emitted
+        # translation's do (see ``undefined_array``) and an output neither
+        # side wrote compares equal instead of comparing two heaps.
+        #
+        # A caller-buffer array (``buffer``) is not the wrapper's to define:
+        # it is the caller's storage on both sides, so the gate generates it
+        # and hands the same values to the reference and the candidate, and
+        # zeroing it here would leave every cell the callee never writes at
+        # 0 against the candidate's generated value. An assumed-size dummy,
+        # which is always a buffer, cannot be assigned whole anyway.
+        defined = [
+            f"  {a['name']} = {'.false.' if a['dtype'] == 'bool' else '0'}"
+            for a in arguments
+            if a["intent"] == "OUT" and a["dtype"] != "PROCEDURE" and not a.get("buffer")
+        ]
         wrapper = f"w_{name}"
         names.append(wrapper)
         use_line = [f"  use {module}, only: {call_name}"] if is_module else []
@@ -334,11 +498,12 @@ def wrappers_for(
                 *parameter_lines,
                 *external_line,
                 *declarations,
+                *defined,
                 f"  call {call_name}({', '.join(argument_names)})",
                 f"end subroutine {wrapper}",
                 "",
             ]
-    return "\n".join(pieces) + "\n", names
+    return "\n".join(line for piece in pieces for line in _fold(piece)) + "\n", names
 
 
 def companion_sources(facts: Facts, root: Path) -> list[Path]:
@@ -501,6 +666,12 @@ class F2pyGoldenOracle(Oracle):
             parameters=config.get("wrapper_parameters"),
             dims_override=config.get("wrapper_dims"),
         )
+        # ``only:`` names the wrappers to build -- and drops f2py's own
+        # ``__user__routines`` module with them, leaving the generated C
+        # referring to a call-back type nothing declared. The wrapper file
+        # holds nothing but these wrappers, so the list is a restriction to
+        # everything, and saying nothing builds the same set.
+        selection = [] if "!f2py" in wrapper_text else ["only:", *wrapper_names, ":"]
 
         compiler = config.get("fc", "gfortran")
         module_name = f"ref_{facts.interface['module']}"
@@ -509,12 +680,15 @@ class F2pyGoldenOracle(Oracle):
         # module later in the list is a fatal "cannot open module file".
         original_sources = [*companions, *extras, source]
         stage = Path(tempfile.mkdtemp(prefix="f2py-stage-", dir=build))
-        sources, include_args = _stage_build_inputs(stage, original_sources, wrapper_text)
+        sources, wrapper, include_args = _stage_build_inputs(stage, original_sources, wrapper_text)
         # fflags remains the operator's compiler-flags string.  Source/include
         # paths never join it: NumPy splits this value internally, so appending
         # an original directory here would let whitespace and flag-looking
         # path components become compiler options.
         flags = config.get("fflags", DEFAULT_FLAGS)
+        objects = self._compile_reference(
+            unit, sources, stage, build, compiler, flags, include_args, executor, config
+        )
         job = Job(
             argv=[
                 sys.executable,
@@ -523,13 +697,13 @@ class F2pyGoldenOracle(Oracle):
                 "-c",
                 "--build-dir",
                 "f2py-build",
-                *sources,
+                wrapper,
+                *objects,
                 *include_args,
+                f"-I{MODULE_DIR}",
                 "-m",
                 module_name,
-                "only:",
-                *wrapper_names,
-                ":",
+                *selection,
                 f"--f90flags={flags}",
                 f"--f77flags={flags}",
                 "--backend",
@@ -592,6 +766,78 @@ class F2pyGoldenOracle(Oracle):
             },
             cost=self.cost,
         )
+
+    def _compile_reference(
+        self,
+        unit: Unit,
+        sources: list[str],
+        stage: Path,
+        build: Path,
+        compiler: str,
+        flags: str,
+        include_args: list[str],
+        executor: Executor,
+        config: dict[str, Any],
+    ) -> list[str]:
+        """Compile the reference sources, and hand f2py the objects.
+
+        f2py's own parser only ever sees the generated wrapper. The reference
+        is compiled by the Fortran compiler, which is the only thing here that
+        actually understands Fortran: crackfortran does not know BLOCK
+        constructs, submodules, or a dozen other things a modern file is
+        written with, and it fails the *whole* build on one of them -- an
+        oracle refused over a construct nobody was asking it to wrap. The
+        objects ride into ``f2py -c`` as extra objects, which it passes
+        straight to the linker, and the ``.mod`` files the wrapper's ``use``
+        needs are left in one directory both halves of the build can name.
+
+        Sources are compiled in the order they were staged, because a ``use``
+        of a module compiled later is a fatal "cannot open module file".
+        """
+        objects: list[str] = []
+        for index, relative in enumerate(sources):
+            # A bare name in the job's own directory: NumPy's Meson backend
+            # copies an extra object into the build directory but names it in
+            # ``meson.build`` by the path it was given, so only a basename
+            # resolves from both places.
+            obj = f"object_{index:04d}.o"
+            job = Job(
+                argv=[
+                    compiler,
+                    "-c",
+                    "-fPIC",
+                    *flags.split(),
+                    f"-J{MODULE_DIR}",
+                    f"-I{MODULE_DIR}",
+                    *include_args,
+                    relative,
+                    "-o",
+                    obj,
+                ],
+                cwd=stage,
+                env={**os.environ},
+                timeout_s=float(config.get("build_timeout", 600)),
+                label=f"{compiler} {relative}",
+            )
+            try:
+                result = executor.run(job)
+            except RecastError:
+                raise
+            except Exception as error:
+                raise OracleUnavailable(
+                    f"executor {getattr(executor, 'name', type(executor).__name__)!r} did not "
+                    f"run the reference compile for {unit.uid}: {type(error).__name__}: {error}"
+                ) from error
+            if not result.ok:
+                log = build / "reference.log"
+                output = result.stdout + "\n" + result.stderr
+                log.write_text(output)
+                raise ConfigError(
+                    f"reference compile of {relative} for {unit.uid} failed "
+                    f"(exit {result.returncode}); log at {log}\n" + _log_tail(output)
+                )
+            objects.append(obj)
+        return objects
 
     @staticmethod
     def _subprograms(facts: Facts, config: dict[str, Any]) -> list[str]:

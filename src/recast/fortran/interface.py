@@ -12,6 +12,13 @@ source is silent -- an argument whose intent is undeclared comes back as
 arguments have no usable declared intent and pretending otherwise is how a
 translation gets a plausible wrong answer.
 
+The two exceptions are not guesses but readings of the body, and each says so
+in ``intent_inferred``: a dummy the body only ever assigns to is ``OUT``, and
+one it only ever reads -- never assigned, never a DO variable, never handed to
+anything that could write it -- is ``IN``. Both are what the code does, not
+what it probably meant, and a body that does anything else leaves the argument
+``UNKNOWN``.
+
 ``intent_overrides`` is the one way a fact the source does not state may enter,
 and it is deliberately narrow: it may fill an ``UNKNOWN`` in, never contradict a
 declared intent, and the record keeps both what the source said and the fact
@@ -422,6 +429,34 @@ def dimension_stmt_shapes(spec_part: Any) -> dict[str, dict[str, Any]]:
     return shapes
 
 
+def procedure_declarations(spec_part: Any) -> dict[str, str | None]:
+    """``procedure(func) :: fcn`` -> ``{"fcn": "func"}``.
+
+    A dummy procedure is declared by a PROCEDURE statement rather than a type
+    declaration, so nothing in ``collect_decls`` sees it and the argument was
+    left with no type, no intent and no hint that it is callable at all. The
+    value is the interface the declaration names -- an abstract interface of
+    this file, usually -- or ``None`` for the typed forms (``procedure(real)``,
+    ``procedure()``), which say the result type but not the argument list and
+    so cannot be called from a translation.
+    """
+    declared: dict[str, str | None] = {}
+    if spec_part is None:
+        return declared
+    for stmt in walk(spec_part, f03.Procedure_Declaration_Stmt):
+        spec, _attrs, decl_list = (list(stmt.children) + [None] * 3)[:3]
+        interface = str(spec).lower() if isinstance(spec, f03.Name) else None
+        entities = getattr(decl_list, "children", None) or ([decl_list] if decl_list else [])
+        for entity in entities:
+            # ``fcn`` is a bare Name; ``fcn => null()`` is a Proc_Decl whose
+            # first child is the name. Walking every Name below the list would
+            # also collect the initializer's.
+            head = entity.children[0] if isinstance(entity, f03.Proc_Decl) else entity
+            if isinstance(head, f03.Name):
+                declared[str(head).lower()] = interface
+    return declared
+
+
 def apply_dimension_stmts(
     entities: dict[str, dict[str, Any]], shapes: dict[str, dict[str, Any]]
 ) -> None:
@@ -765,6 +800,7 @@ def _record_of(
         info["procedure"] = True
         info["fortran_type"] = "PROCEDURE"
         info["dtype"] = "PROCEDURE"
+    dummy_procedures = procedure_declarations(spec)
 
     args: list[dict[str, Any]] = []
     for pos, an in enumerate(arg_names):
@@ -783,6 +819,17 @@ def _record_of(
             "line": info.get("line"),
             **({"procedure": True} if info.get("procedure") else {}),
         }
+        # A dummy procedure is not data: it carries the interface it was
+        # declared with instead of a dtype, and every consumer that asks
+        # "what does calling this mean" reads that name. ``procedure`` is its
+        # dtype because every consumer of the record already switches on
+        # that field, and a name declared PROCEDURE is passed in and never
+        # assigned -- which is intent(in), stated by the declaration itself.
+        if an in dummy_procedures:
+            arg["procedure"] = True
+            arg["interface"] = dummy_procedures[an]
+            arg["dtype"] = "PROCEDURE"
+            arg["intent"] = "IN"
         apply_intent_override(arg, name, (intent_overrides or {}).get(an))
         args.append(arg)
 
@@ -1057,20 +1104,29 @@ def _derived_types(
 def _interfaces(
     mod_spec: Any, kind_map: dict[str, str], state_names: set[str], sub_names: set[str]
 ) -> dict[str, Any]:
-    """``{name: subprogram record}`` for the bodies of unnamed interface blocks.
+    """``{name: subprogram record}`` for the bodies of interface blocks.
 
     An explicit interface for a procedure the module does not define -- the
     shape a procedure dummy has to have (``external :: func`` in a solver,
-    ``interface / subroutine func(...)`` above it). It is what a call through
-    that dummy is bound against, and the record has the same shape as a
-    subprogram's so the call renderer needs no second path.
+    ``interface / subroutine func(...)`` above it) -- and an ``abstract
+    interface``, which says what calling a ``procedure(func) :: fcn`` dummy
+    means: which arguments it takes, and which of them it writes. Without it
+    a translation can only refuse the call, because it has no way to know
+    that ``call fcn(n, x, fvec, iflag)`` writes ``fvec``. It is what a call
+    through that dummy is bound against, and the record has the same shape
+    as a subprogram's so the call renderer needs no second path.
     """
     interfaces: dict[str, Any] = {}
     if mod_spec is None:
         return interfaces
     for ib in walk(mod_spec, f03.Interface_Block):
-        if any(st.children[0] is not None for st in walk(ib, f03.Interface_Stmt)):
-            continue  # a generic: its specifics are procedures, see _generics
+        # ``interface gen`` names a generic: its specifics are procedures, see
+        # _generics. ``abstract interface`` is spelled with the same slot.
+        if any(
+            st.children[0] is not None and str(st.children[0]).upper() != "ABSTRACT"
+            for st in walk(ib, f03.Interface_Stmt)
+        ):
+            continue
         for body in walk(ib, (f03.Subroutine_Body, f03.Function_Body)):
             record = extract_subprogram(body, kind_map, state_names, sub_names)
             interfaces[record["name"]] = record
@@ -1221,6 +1277,7 @@ def extract(
         for s in subs
     ]
     _infer_write_only_intents(subs, subprograms)
+    _infer_read_only_intents(subs, subprograms, sub_names)
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
     _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
@@ -1522,6 +1579,89 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) 
             )
             if not covered:
                 argument["buffer"] = True
+
+
+def _written_or_escaping(exec_part: Any, sub_names: set[str]) -> set[str]:
+    """Names this execution part could change, read conservatively.
+
+    A name is here if it is assigned to, if it controls a DO, if a READ fills
+    it, if an ALLOCATE/DEALLOCATE/NULLIFY names it -- or if it is handed to
+    something that might write it. An intrinsic never writes its argument and
+    a subscript is not a call, so neither of those escapes; a reference to one
+    of this file's own subprograms, and anything fparser could not resolve to
+    either, does.
+    """
+    escaping: set[str] = set()
+
+    def leftmost(node: Any) -> str | None:
+        while node is not None and not isinstance(node, f03.Name):
+            children = getattr(node, "children", None)
+            if not children:
+                return None
+            node = children[0]
+        return str(node).lower() if isinstance(node, f03.Name) else None
+
+    for assignment in walk(exec_part, (f03.Assignment_Stmt, f03.Pointer_Assignment_Stmt)):
+        name = leftmost(assignment.children[0])
+        if name:
+            escaping.add(name)
+    for control in walk(exec_part, f03.Loop_Control):
+        for name in walk(control, f03.Name):
+            escaping.add(str(name).lower())
+            break
+    for statement in walk(
+        exec_part,
+        (f03.Read_Stmt, f03.Allocate_Stmt, f03.Deallocate_Stmt, f03.Nullify_Stmt),
+    ):
+        for name in walk(statement, f03.Name):
+            escaping.add(str(name).lower())
+    for call in walk(exec_part, f03.Call_Stmt):
+        arguments = call.children[1]
+        for name in walk(arguments, f03.Name) if arguments is not None else []:
+            escaping.add(str(name).lower())
+    for reference in walk(exec_part, (f03.Part_Ref, f03.Structure_Constructor)):
+        base = reference.children[0]
+        if not isinstance(base, f03.Name):
+            continue
+        if isinstance(reference, f03.Part_Ref) and str(base).lower() not in sub_names:
+            continue  # a subscript, or a reference to something with no body here
+        for name in walk(reference.children[1], f03.Name):
+            escaping.add(str(name).lower())
+    return escaping
+
+
+def _infer_read_only_intents(
+    subs: list[Any], records: list[dict[str, Any]], sub_names: set[str]
+) -> None:
+    """Give a dummy the body never changes the intent its use says it has.
+
+    The mirror of ``_infer_write_only_intents``, and the commoner half: a
+    dummy declared without INTENT that is only ever read is ``intent(in)``.
+    Left ``UNKNOWN`` it is not a wrong answer, but it is an unanswerable one
+    for anything downstream that has to know whether the value after the call
+    is an output -- the differential gate refuses the whole subprogram over
+    it, so one undeclared argument costs the routine its evidence.
+    """
+    by_name = {sub_name_of(s): s for s in subs}
+    for record in records:
+        candidates = [
+            argument
+            for argument in record["args"]
+            if argument["intent"] == "UNKNOWN"
+            and not argument.get("optional")
+            and not argument.get("procedure")
+        ]
+        node = by_name.get(record["name"])
+        if not candidates or node is None:
+            continue
+        exec_part = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
+        if exec_part is None:
+            continue
+        escaping = _written_or_escaping(exec_part, sub_names)
+        for argument in candidates:
+            if argument["name"] not in escaping:
+                argument["intent"] = "IN"
+                argument["intent_inferred"] = "read-only"
 
 
 def _host_associate(

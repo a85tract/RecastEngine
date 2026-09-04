@@ -31,6 +31,7 @@ import dataclasses
 import hashlib
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -294,8 +295,8 @@ class F2pyFlatOracle(F2pyGoldenOracle):
             digest.update(path.read_bytes())
         flags = config.get("fflags", DEFAULT_FLAGS)
         for include in self.include_dirs(config):
-            if f"-I{include}" not in flags:
-                flags = f"{flags} -I{include}"
+            if f"-I{include}" not in shlex.split(flags):
+                flags = f"{flags} {shlex.quote(f'-I{include}')}"
         parameters = {
             **((facts.extra or {}).get("dim_parameters") or {}),
             **(config.get("wrapper_parameters") or {}),
@@ -356,7 +357,7 @@ class F2pyFlatOracle(F2pyGoldenOracle):
             **config,
             "extra_sources": [],
             "subprograms": [s["name"] for s in interface["subprograms"]],
-            "fflags": f"{plan['fflags']} -I{lib_dir}",
+            "fflags": f"{plan['fflags']} {shlex.quote(f'-I{lib_dir}')}",
             "wrapper_parameters": plan["wrapper_parameters"],
         }
         return handed_facts, handed
@@ -389,7 +390,7 @@ class F2pyFlatOracle(F2pyGoldenOracle):
         script = [
             "import subprocess, sys",
             f"fc = {compiler!r}",
-            f"flags = {plan['fflags'].split()!r}",
+            f"flags = {shlex.split(plan['fflags'])!r}",
             f"sources = {[str(p) for p in plan['library']]!r}",
             "objects = []",
             "for i, src in enumerate(sources):",
