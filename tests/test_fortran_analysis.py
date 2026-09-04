@@ -978,7 +978,8 @@ end module sib_mod
 """
     record = interface.extract(_write(tmp_path, "sib.f90", sibling), kind_assumptions=KINDS)
     table = interface.companion_externals(record)
-    assert table["qsat_water"] == {"kind": "subroutine", "out_positions": [2, 3]}
+    assert table["qsat_water"]["kind"] == "subroutine"
+    assert table["qsat_water"]["out_positions"] == [2, 3]
 
 
 def _sub_node(tmp_path: Path, name: str):
@@ -1818,5 +1819,5 @@ def test_a_siblings_generic_is_a_procedure_to_the_read_write_scope(tmp_path: Pat
     without an entry for it the scope counted the name as a read of data."""
     record = interface.extract(_write(tmp_path, "solve.f90", PUBLIC_GENERIC))
     table = interface.companion_externals(record)
-    assert table["solve"] == {"kind": "subroutine", "out_positions": [1, 2]}
+    assert table["solve"] == {"kind": "subroutine", "out_positions": [1, 2], "buffer_positions": []}
     assert table["solve_one"]["out_positions"] == [1]

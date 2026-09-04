@@ -362,6 +362,11 @@ def span_rwset(
 STUB_LINE = re.compile(r"^\s*(?:pass\s*#.*\(infra stub\)|#.*)$")
 
 
+CONTROL_LINE = re.compile(r"^\s*(?:(?:if|elif|for|while)\b[^#]*:|else\s*:|pass)\s*(?:#.*)?$")
+"""A line of control flow with nothing of its own: a condition, a loop
+header, an ``else``, a ``pass``. Around stub markers it is still a stub."""
+
+
 def stubbed_blocks(candidate: Candidate) -> dict[str, str]:
     """``"sub/Bnnn" -> reason`` for every block emitted as stub markers only.
 
@@ -390,7 +395,10 @@ def stubbed_blocks(candidate: Candidate) -> dict[str, str]:
             continue
         body = [ln for ln in lines[span[0] - 1 : span[1]] if ln.strip()]
         stubs = [ln for ln in body if "(infra stub)" in ln]
-        if stubs and all(STUB_LINE.match(ln) for ln in body):
+        if stubs and all(STUB_LINE.match(ln) or CONTROL_LINE.match(ln) for ln in body):
+            # ``if (stats%l_sample) then / call stats_update(...) / end if``
+            # (CLUBB) is a stub under a condition: the condition is read on
+            # both sides, and the only disagreement is the stub's actuals.
             calls = sorted({ln.split("#", 1)[1].split("(")[0].strip() for ln in stubs})
             waived[f"{block['subprogram']}/{block['block']}"] = "framework stub: " + ", ".join(
                 calls
