@@ -406,3 +406,67 @@ def test_a_loop_over_a_zero_extent_axis_runs_no_iteration(tmp_path: Path) -> Non
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"tracer_demo{suffix}", None)
+
+
+FLOORED = """\
+module floor_mod
+  implicit none
+  type coefs_type
+    real(8), allocatable :: coef(:, :)
+  end type coefs_type
+contains
+  subroutine init_coefs( nz, ngrdcol, c )
+    integer, intent(in) :: nz, ngrdcol
+    type(coefs_type), intent(inout) :: c
+    allocate( c%coef(1:ngrdcol, 1:nz) )
+    c%coef = 2.0d0
+  end subroutine init_coefs
+  subroutine apply( nzt, ngrdcol, c, x, floor )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(in), optional :: floor
+    x = x * c%coef(:, 1:nzt)
+    if ( present( floor ) ) then
+      x = max( x, floor )
+    end if
+  end subroutine apply
+end module floor_mod
+"""
+
+
+def test_a_flat_kernel_spells_the_optional_dummy_the_plan_leaves_out(tmp_path: Path) -> None:
+    """CLUBB's grid interpolators take an optional ``zt_min``; the plan drops
+    it (the adapter calls with it absent) and the kernel inlines a body that
+    tests ``zt_min is not None`` -- a NameError on every call."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "floor_mod.f90").write_text(FLOORED)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:floor_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    ported = candidate.files[Path("floor_mod_jax.py")].decode()
+    assert "floor = None" in ported
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("floor_mod_jax")
+        import numpy as np
+
+        coef = np.full((2, 3), 2.0, order="F")
+        x = np.ones((2, 3), order="F")
+        assert "apply_flat" in candidate.notes["jax"]["kernels"]
+        result = np.asarray(module.apply_flat(3, 2, x, 3, coef))
+        assert result.tolist() == [[2.0, 2.0, 2.0], [2.0, 2.0, 2.0]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"floor_mod{suffix}", None)

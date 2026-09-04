@@ -897,6 +897,7 @@ class _Rewrite(ast.NodeTransformer):
         if not body or not isinstance(body[-1], ast.Return):
             body.append(ast.Return(value=_tuple(_outputs(plan))))
         taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+        body = [*_absent_optionals(plan, taken), *body]
         flat = ast.FunctionDef(
             name=plan.name,
             args=ast.arguments(
@@ -2297,6 +2298,37 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     )
 
 
+def _absent_optionals(plan: FlatPlan, taken: list[str]) -> list[ast.stmt]:
+    """Bindings for the optional dummies the flat signature leaves out.
+
+    The plan drops an optional dummy: the adapter calls the original with it
+    absent, so its NumPy default (``None``) stands in. The kernel inlines
+    the original's body, which still names it -- CLUBB's grid interpolators
+    test ``present(zt_min)`` -- so the absence is spelled at the top:
+    ``zt_min = None``, and ``want_zt_min = False`` for an optional OUT, the
+    anchor's presence sentinel. A trace-time ``if x is not None`` then skips
+    the branch the Fortran skipped.
+    """
+    out: list[ast.stmt] = []
+    for a in plan.subprogram.get("args") or ():
+        if not a.get("optional"):
+            continue
+        name = _py(a["name"])
+        if name in taken:
+            continue
+        out.append(
+            ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=ast.Constant(value=None))
+        )
+        if a.get("intent") == "OUT":
+            out.append(
+                ast.Assign(
+                    targets=[ast.Name(id=f"want_{name}", ctx=ast.Store())],
+                    value=ast.Constant(value=False),
+                )
+            )
+    return out
+
+
 def flat_function(
     fn: ast.FunctionDef,
     plan: FlatPlan,
@@ -2325,6 +2357,7 @@ def flat_function(
     if not body or not isinstance(body[-1], ast.Return):
         body.append(ast.Return(value=_tuple(_outputs(plan))))
     taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+    body = [*_absent_optionals(plan, taken), *body]
     flat = ast.FunctionDef(
         name=plan.name,
         args=ast.arguments(
