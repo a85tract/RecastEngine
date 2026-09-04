@@ -156,7 +156,9 @@ def substitute(expr: Expr, name: str, replacement: Expr) -> Expr:
     For the one legal self-reference in an initializer, a kind inquiry on the
     constant being declared (``tol = max( 1.e-10_r8, epsilon(tol) )``): the
     reference carries the constant's kind and nothing else, and the fold
-    renders reals as 64-bit, so a 64-bit literal stands in for it.
+    renders reals as 64-bit, so a 64-bit literal stands in for it. Every
+    occurrence is replaced: a parameter cannot name itself anywhere else in
+    its own initializer, so there is no other occurrence to preserve.
     """
     if expr.kind == "name" and expr.text == name:
         return replacement

@@ -310,6 +310,10 @@ contains
     do kk = 1, n, 2
       k_scan = kk
     end do
+    ! The bounds of a loop over another variable read kk: still a read.
+    do k = 1, kk
+      k_scan = k_scan + 0
+    end do
     k_scan = kk
   end subroutine first_above
 end module search_mod
@@ -335,7 +339,9 @@ def test_a_loop_index_read_after_the_loop_has_the_completion_value(tmp_path: Pat
     for path, content in candidate.files.items():
         (out / path.name).write_bytes(content)
     text = (out / "search_mod_numpy.py").read_text()
-    assert text.count("else:\n") >= 2  # both loops: the index is read after each
+    # The first two loops' indices are read after them (one in a later
+    # loop's bounds); the last loop's index k is not.
+    assert text.count("max(0, ") == 2
     sys.path.insert(0, str(out))
     try:
         module = importlib.import_module("search_mod_numpy")
