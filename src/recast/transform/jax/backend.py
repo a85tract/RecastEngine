@@ -550,10 +550,10 @@ class KernelLowerer:
             self.n += 1
             tmp = f"_t{self.n}"
             stores = [ast.Assign(targets=[ast.Name(id=tmp, ctx=ast.Store())], value=s.value)]
-            for at, element in enumerate(t.elts):
+            for index, element in enumerate(t.elts):
                 piece = ast.Subscript(
                     value=ast.Name(id=tmp, ctx=ast.Load()),
-                    slice=ast.Constant(value=at),
+                    slice=ast.Constant(value=index),
                     ctx=ast.Load(),
                 )
                 stores.append(self.lower_assign(ast.Assign(targets=[element], value=piece)))
