@@ -276,8 +276,17 @@ class BitexactVerifier(Verifier):
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
+            # One the operator declared ungated is not sampled either: the
+            # declaration says the reference cannot be held on generated
+            # inputs (CLUBB's rcm_sat_adj iterates and error-stops on them).
+            declared_ungated = set(config.get("ungated") or {})
             wanted = config.get("subprograms") or [
-                name for name in wrappers if name in table and judged(name) and generable(name)
+                name
+                for name in wrappers
+                if name in table
+                and judged(name)
+                and generable(name)
+                and name not in declared_ungated
             ]
             skipped = sorted(set(wrappers) - set(wanted))
 

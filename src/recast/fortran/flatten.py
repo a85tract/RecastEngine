@@ -146,6 +146,11 @@ class FlatPlan:
     dim_constants: dict[str, int] = field(default_factory=dict)
     """Named extents of the original dummies that are tree constants
     (``a(nrk,nrk)``), so the flat signature can spell them as numbers."""
+    left_to_module: list[str] = field(default_factory=list)
+    """Module state the body reaches that the adapter cannot set: a
+    variable its module keeps private (CLUBB's ``error_code %
+    clubb_debug_level``). Both sides run with the module's own default,
+    and the plan says so rather than failing."""
     patch_count: str = "np_"
     counter_prefix: str = "num_"
 
@@ -195,6 +200,7 @@ class FlatPlan:
             unsupported=list(data.get("unsupported", [])),
             states=states,
             dim_constants=dict(data.get("dim_constants", {})),
+            left_to_module=list(data.get("left_to_module", [])),
             patch_count=data.get("patch_count", "np_"),
             counter_prefix=data.get("counter_prefix", "num_"),
         )
@@ -583,13 +589,25 @@ def _accesses(
         interesting = objects | set(aliases)
         # ``dummy = hybrid(...)`` parses as any of three node kinds depending
         # on what fparser could tell about the name.
+        # A call spelled by a generic (CLUBB's ``zt2zm_api`` over grid_class's
+        # specifics) is followed into every specific: which one Fortran
+        # picks depends on ranks this walk does not resolve, and the union
+        # of what they touch is what the adapter has to carry.
+        generics: dict[str, list[str]] = {}
+        for _path, module_record_, _sub in procedures.values():
+            for generic, specifics in (module_record_.get("generics") or {}).items():
+                generics.setdefault(generic.lower(), [n.lower() for n in specifics])
+        expanded: list[tuple[Any, str]] = []
         for call in [
             *walk(node, f03.Call_Stmt),
             *walk(node, f03.Part_Ref),
             *walk(node, f03.Function_Reference),
             *walk(node, f03.Structure_Constructor),
         ]:
-            callee = str(call.children[0]).lower()
+            spelled_callee = str(call.children[0]).lower()
+            for callee in generics.get(spelled_callee, [spelled_callee]):
+                expanded.append((call, callee))
+        for call, callee in expanded:
             if callee not in procedures:
                 continue
             path, module_record, callee_record = procedures[callee]
@@ -991,11 +1009,21 @@ def _state_vars(
         if not record:
             continue
         module = str(record.get("module", "")).lower()
+        public = {str(n).lower() for n in record.get("public") or ()}
+        default_private = bool(
+            re.search(r"^\s*private\s*(?:!.*)?$", path.read_text(errors="replace"), re.I | re.M)
+        )
         for entry in record.get("module_state", ()):
             name = str(entry["name"]).lower()
             # Every module *variable* the run may have set -- initialized in
             # the tree or not -- is the run's to say; parameters are not here.
             if name not in wanted or name in seen:
+                continue
+            if default_private and name not in public:
+                # No ``use`` reaches it, so no adapter sets it: both sides
+                # run with the module's own default, and the plan says so.
+                seen.add(name)
+                plan.left_to_module.append(f"{module}%{name}")
                 continue
             if (
                 DERIVED.match(str(entry.get("dtype")))
@@ -1047,7 +1075,14 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
     state name, which is a scalar argument of the adapter; a name no state
     answers for makes the component unsupported."""
     by_name = {state.name: state.flat for state in plan.states if not state.extents}
-
+    # A dummy of the subprogram is an argument of the adapter, so an
+    # allocation sized by the allocating routine's dummy of the same name
+    # (``coef_wp4_implicit(1:ngrdcol,1:nz)``, CLUBB) is spelled as written.
+    dummies = {
+        str(a["name"]).lower()
+        for a in plan.subprogram["args"]
+        if not a.get("dims") and not DERIVED.match(str(a["dtype"]))
+    }
     carried = {(obj.name, comp.name): comp.flat for obj in plan.objects for comp in obj.components}
     flat_names = set(carried.values())
 
@@ -1070,8 +1105,8 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
                 return token
             if lowered in by_name:
                 return by_name[lowered]
-            if token in flat_names:
-                return token  # a component of the object, bound just above
+            if token in flat_names or lowered in dummies:
+                return token  # a component bound just above, or a dummy
             missing.append(token)
             return token
 
