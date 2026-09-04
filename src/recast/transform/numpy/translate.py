@@ -422,6 +422,9 @@ class NumpyTranslation(Transform):
                 # The siblings' procedures too: `_wv.wv_sat_svp_water(t)` is a
                 # call, and without these the alias rule would read it as data.
                 | {remote.name for remote in assembler.remotes.values()}
+                # ... and the stubbed modules' (the frontend's list): a call to
+                # a stand-in function is a call, not a read of its name.
+                | {pysafe(name) for name in facts.interface.get("stub_procedures") or ()}
             ),
             "aliases": sorted(
                 {remote.alias for remote in assembler.remotes.values()}
