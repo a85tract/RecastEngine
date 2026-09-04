@@ -149,6 +149,9 @@ class Subprograms:
     companion_globals: dict[str, str] = field(default_factory=dict)
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     remotes: dict[str, Remote] = field(default_factory=dict)
+    stub_procedures: frozenset[str] = frozenset()
+    """Procedures use-imported from a stubbed module; a call to one that no
+    statement stub answers is a raise, not a deferral of its block."""
     function_stubs: dict[str, str] = field(default_factory=dict)
     statement_stubs: dict[str, str] = field(default_factory=dict)
     intrinsics: dict[str, Any] = field(default_factory=dict)
@@ -333,6 +336,7 @@ class Subprograms:
             names,
             expressions,
             externals=self.externals,
+            stub_procedures=self.stub_procedures,
             stubs=dict(self.statement_stubs),
             call_transforms=dict(self.call_transforms),
             poison_undefined=self.poison_undefined,

@@ -122,7 +122,18 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     all_integers = True  # every value of the section so far is an integer literal
 
     def flush() -> None:
-        if not name or not values:
+        if not name:
+            return
+        if not values:
+            # A zero-extent record: a component the run never allocated
+            # (CLUBB's scalar-tracer arrays under sclr_dim = 0), written as
+            # ``name(1,88,0)``. An empty array of that shape is a value.
+            if dims_text and any(t.strip() == "0" for t in dims_text.split(",")):
+                empty: list[int] = []
+                for t in dims_text.split(","):
+                    sized = str(metadata.get(t.strip().lower(), t.strip()))
+                    empty.append(int(sized) if sized.lstrip("-").isdigit() else 0)
+                (inputs if target == "INPUT" else outputs)[name] = np.zeros(tuple(empty), order="F")
             return
         # The recorder writes integer arrays with ``i0`` and reals with an
         # exponent, so a section whose every value is an integer literal is an
@@ -179,6 +190,12 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
                         metadata[key] = whole
                         inputs[key] = np.int32(whole)
                 except ValueError:
+                    # A logical, written ``T`` / ``F`` by the recorder's l1
+                    # format: a value, not a diagnostic.
+                    if text_value.upper() in ("T", "F", ".TRUE.", ".FALSE."):
+                        metadata[key] = text_value.upper().startswith(("T", ".T"))
+                        inputs[key] = np.bool_(metadata[key])
+                        continue
                     # Not a number. Upstream swallows this with a bare
                     # ``except``; narrowed to what can actually be raised
                     # here, which changes no outcome and stops the clause

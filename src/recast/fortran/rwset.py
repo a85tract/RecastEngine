@@ -342,7 +342,15 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         """
         if isinstance(actual, f03.Name):
             writes.add(str(actual).lower())
-        elif isinstance(actual, (f03.Part_Ref, f03.Data_Ref)):
+        elif isinstance(actual, f03.Data_Ref):
+            # ``pdf_params%chi_1`` as an OUT actual (CLUBB's pdf_closure):
+            # the object is written; a component's *subscripts* are read,
+            # the component's name is not a variable of this scope.
+            writes.add(str(actual.children[0]).lower())
+            for comp in actual.children[1:]:
+                if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
+                    reads.update(expr_reads(comp.children[1], scope))
+        elif isinstance(actual, f03.Part_Ref):
             writes.add(str(actual.children[0]).lower())
             for child in actual.children[1:]:
                 reads.update(expr_reads(child, scope))
@@ -395,6 +403,19 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     for x in external["specifics"]
                     if x.get("required", x["args"]) <= len(actuals) <= x["args"]
                 ]
+                if len(fitting) > 1:
+                    # Several fit the count (one's optional tail is the
+                    # other's required one): the ranks of the bare-name
+                    # actuals decide, where a declared rank is known.
+                    def _agrees(x: dict[str, Any]) -> bool:
+                        return all(
+                            not isinstance(a, f03.Name)
+                            or scope.ranks.get(str(a).lower()) is None
+                            or scope.ranks[str(a).lower()] == r
+                            for a, r in zip(actuals, x.get("ranks", []), strict=False)
+                        )
+
+                    fitting = [x for x in fitting if _agrees(x)] or fitting
                 if fitting:
                     external = fitting[0]
             out_positions = set(external.get("out_positions", [])) if external else set()

@@ -362,7 +362,7 @@ def _state_declaration(name: str, root: Path) -> tuple[str, str] | None:
                 continue
             derived = DERIVED.match(str(entry.get("dtype", "")))
             if derived:
-                return derived.group(1).lower(), str(record.get("module", "")).lower()
+                return derived.group(1).lower(), str((record or {}).get("module", "")).lower()
     return None
 
 

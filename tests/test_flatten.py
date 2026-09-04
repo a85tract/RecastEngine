@@ -688,3 +688,21 @@ def test_the_recorder_guards_a_component_the_run_may_not_allocate(tmp_path: Path
     assert "if (allocated(c%coef)) then" in recorder
     assert "'# INPUT: c__coef(0,0)'" in recorder
     assert "merge(size(c%coef, 2), 0, allocated(c%coef))" in recorder
+
+
+def test_the_recorder_writes_the_plain_out_dummies_too(tmp_path: Path) -> None:
+    """CLUBB's advance_* hand back ``wp2``, ``wp3``... as INOUT dummies beside
+    what they write into their objects. Recorded only through the objects,
+    the replay found no value for the required outputs (mono_flux_limiter's
+    ``low_lev_effect``)."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    recorder = recorder_module("solver_mod", [plan])
+    assert "call rec_r1(u_apply, 'INPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder
+    assert "call rec_r1(u_apply, 'OUTPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder

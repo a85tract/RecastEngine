@@ -193,6 +193,9 @@ class Statements:
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Procedures with an audited shim in the externals module."""
 
+    stub_procedures: frozenset[str] = frozenset()
+    """Use-imported from a stubbed module (the frontend's list)."""
+
     call_transforms: dict[str, Any] = field(default_factory=dict)
     """Callee -> a domain package's answer for it; see ``calls.CallSite``."""
 
@@ -1728,6 +1731,15 @@ class Statements:
                 # list says "the engine does not know this intrinsic" rather
                 # than "this tree is missing a library".
                 raise NoRule(f"intrinsic subroutine {name!r} has no rule")
+            if name in self.stub_procedures:
+                # A procedure of a stubbed module that no statement stub
+                # answers (CLUBB's lapack_band_solvex: the LAPACK path the
+                # run does not take). A raise on the statement keeps the
+                # branch around it -- deferring the block dropped the
+                # ``if ( method == lapack )`` with it, and the candidate
+                # raised on the path the run *does* take.
+                reason = f"{name}: procedure of a stubbed module, not ported"
+                return [f"{pad}raise NotImplementedError({reason!r})"]
             raise NoRule(f"call to external subroutine {name!r}")
 
         # Bind actuals to formals BY NAME for keyword arguments: Fortran

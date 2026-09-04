@@ -1356,6 +1356,10 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "buffer_positions": entry.get("buffer_positions", []),
                     "read_positions": entry.get("read_positions", []),
                     "arg_names": entry.get("arg_names", []),
+                    # Two specifics of one arity (CLUBB's tridiag_solve
+                    # with and without its optional rcond) are told apart
+                    # by the ranks of their dummies.
+                    "ranks": [len(a.get("dims") or []) for a in signatures[s]["args"]],
                 }
                 for s, entry in known
             ],

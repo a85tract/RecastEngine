@@ -726,15 +726,16 @@ end module derived_mod
 """
 
 
-def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) -> None:
+def test_a_component_name_is_not_a_read_on_the_out_argument_path(tmp_path: Path) -> None:
     """``b % q`` writes ``b``. On an assignment, ``q`` is an attribute and not
     a symbol; passed to an intent(out) dummy, the pipeline this came from
-    counts it as a read as well.
+    counted it as a read as well.
 
-    The two disagree, and the disagreement is preserved. Resolving it would be
-    a change to answers a bit-exact gate has been run against, and the two
-    sites in CAM where it shows are both in modules with no translation to
-    check the tidier answer against.
+    The disagreement was preserved until a translation showed the tidier
+    answer: CLUBB's pdf_closure passes ``pdf_params%chi_1`` and six more
+    components as OUT actuals, the candidate spells attributes and reads no
+    variable of those names, and the gate scored six blocks as disagreeing
+    over reads of variables the scope does not have.
     """
     from recast.fortran import rwset
 
@@ -747,10 +748,8 @@ def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) 
     )
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
     # ``slot(:)`` is a caller-buffer OUT (#36), so ``b`` is read as well as
-    # written on the call (#38); ``q`` is the pipeline's component read.
-    assert blocks["B001"] == {"id": "B001", "reads": ["b", "n", "q"], "writes": ["b"]}, (
-        "out-argument"
-    )
+    # written on the call (#38); ``q`` is an attribute on both paths.
+    assert blocks["B001"] == {"id": "B001", "reads": ["b", "n"], "writes": ["b"]}, "out-argument"
     assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
 
 
@@ -1954,3 +1953,105 @@ def test_a_keyword_actual_into_a_siblings_generic_lands_on_its_own_position(tmp_
     (block,) = facts.effects["fortran:caller_mod/run"]["blocks"]
     assert "rc" in block["writes"] and "rc" not in block["reads"]
     assert "x" in block["writes"] and "x" in block["reads"]  # INOUT: both
+
+
+RANK_OVERLOADED_SOLVER = """
+module solve_mod
+  implicit none
+  private
+  public :: solve
+  interface solve
+    module procedure solve_one, solve_many
+  end interface solve
+contains
+  subroutine solve_one( n, flag, a, x, rc )
+    integer, intent(in) :: n
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 1.0
+  end subroutine solve_one
+  subroutine solve_many( n, m, flag, a, x )
+    integer, intent(in) :: n, m
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n, m)
+    real, intent(out) :: x(n, m)
+    x = a
+  end subroutine solve_many
+end module solve_mod
+"""
+
+RANK_CALLER = """
+module caller_mod
+  use solve_mod, only: solve
+  implicit none
+contains
+  subroutine run( n, m, flag, a, x )
+    integer, intent(in) :: n, m
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n, m)
+    real, intent(out) :: x(n, m)
+    call solve( n, m, flag, a, x )
+  end subroutine run
+end module caller_mod
+"""
+
+
+def test_specifics_of_one_arity_are_told_apart_by_rank(tmp_path: Path) -> None:
+    """CLUBB's ``tridiag_solve``: the single-rhs specific with its optional
+    ``rcond`` takes as many actuals as the multiple-rhs one without. Picked
+    by count alone the first won, and ``l_implemented`` -- an IN logical on
+    the position where the other specific's ``rhs`` sits -- was scored
+    written. The ranks of the actuals pick the specific whose dummies match."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", RANK_OVERLOADED_SOLVER)
+    _write(tmp_path, "caller.f90", RANK_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:caller_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:caller_mod/run"]["blocks"]
+    assert "flag" not in block["writes"] and "flag" in block["reads"]
+    assert "x" in block["writes"] and "x" not in block["reads"]
+    assert "a" in block["writes"] and "a" in block["reads"]
+
+
+COMPONENT_OUT_CALLER = """
+module pdf_mod
+  implicit none
+  type pdf_type
+    real, allocatable :: chi(:), eta(:)
+  end type pdf_type
+contains
+  subroutine fill( n, chi, eta )
+    integer, intent(in) :: n
+    real, intent(in) :: chi(n)
+    real, intent(out) :: eta(n)
+    eta = chi
+  end subroutine fill
+  subroutine run( n, p )
+    integer, intent(in) :: n
+    type(pdf_type), intent(inout) :: p
+    call fill( n, p%chi, p%eta )
+  end subroutine run
+end module pdf_mod
+"""
+
+
+def test_a_component_out_actual_reads_no_variable_of_the_components_name(tmp_path: Path) -> None:
+    """``call fill( n, p%chi, p%eta )`` (CLUBB's pdf_closure passes
+    ``pdf_params%chi_1`` and friends as OUT actuals): the object is written.
+    The component's bare name was counted as a read of a variable ``eta``
+    that the scope does not have; the translation, spelling the attribute,
+    read no such thing, and the block disagreed."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "pdf.f90", COMPONENT_OUT_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:pdf_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:pdf_mod/run"]["blocks"]
+    assert "p" in block["writes"] and "p" in block["reads"]
+    assert "eta" not in block["reads"] and "chi" not in block["reads"]

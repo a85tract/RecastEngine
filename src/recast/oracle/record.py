@@ -302,6 +302,14 @@ def recorder_module(
                 _dims_text(state.extents),
             )
         lines += ["    else", f"       if (n_{sname} > max_calls) return"]
+        # The plain OUT and INOUT dummies are outputs too (CLUBB's advance_*
+        # return wp2, wp3, ... beside what they write into the objects).
+        for a in originals:
+            if DERIVED.match(str(a["dtype"])) or a["intent"] not in ("OUT", "INOUT"):
+                continue
+            _record_call(
+                lines, u, "OUTPUT", a["name"], a["name"], len(a.get("dims") or ()), str(a["dtype"])
+            )
         for obj in plan.objects:
             for comp in obj.components:
                 if comp.written:
