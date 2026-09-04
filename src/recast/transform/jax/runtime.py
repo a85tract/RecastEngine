@@ -38,6 +38,7 @@ from jax import lax  # noqa: E402
 __all__ = [
     "_f_adjustl",
     "_f_dim",
+    "_f_ecall",
     "_f_epsilon",
     "_f_fori",
     "_f_huge",
@@ -163,6 +164,12 @@ def _f_fori(lo, hi, body, init):
     if isinstance(lo, int) and isinstance(hi, int) and hi <= lo:
         return init
     return lax.fori_loop(lo, hi, body, init)
+
+
+def _f_ecall(fn, *args, **kw):
+    """ELEMENTAL procedure broadcast over array actuals, as the NumPy
+    runtime does with np.vectorize: the scalar kernel per element."""
+    return jnp.vectorize(fn)(*args, **kw)
 
 
 def _f_sqrt(x):

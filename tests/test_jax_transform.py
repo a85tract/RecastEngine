@@ -470,3 +470,56 @@ def test_a_flat_kernel_spells_the_optional_dummy_the_plan_leaves_out(tmp_path: P
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"floor_mod{suffix}", None)
+
+
+PAIRS_IN_A_LOOP = """\
+module pair_demo
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  elemental subroutine split(x, lo, hi)
+    real(r8), intent(in)  :: x
+    real(r8), intent(out) :: lo, hi
+    lo = x - 1.0_r8
+    hi = x + 1.0_r8
+  end subroutine split
+  subroutine bracket(n, nz, x, lo, hi)
+    integer,  intent(in)  :: n, nz
+    real(r8), intent(in)  :: x(n, nz)
+    real(r8), intent(out) :: lo(n, nz), hi(n, nz)
+    integer :: i
+    do i = 1, n
+      call split( x(i, :), lo(i, :), hi(i, :) )
+    end do
+  end subroutine bracket
+end module pair_demo
+"""
+
+
+def test_a_call_result_tuple_inside_a_loop_is_the_bodys_own(tmp_path: Path) -> None:
+    """The anchor spells a two-output call as ``_out = split(...)`` and
+    unpacks it on the next lines. Carried through the fori_loop, ``_out``
+    was read for the initial carry before any assignment
+    (UnboundLocalError; CLUBB's new_hybrid_pdf_driver). A name not bound
+    before the loop is the body's own."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, PAIRS_IN_A_LOOP, "pair_demo")
+    assert "bracket" in candidate.notes["jax"]["kernels"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("pair_demo_jax")
+        import numpy as np
+
+        x = np.array([[1.0, 2.0], [3.0, 4.0]], order="F")
+        lo, hi = (np.asarray(v) for v in module.bracket(2, 2, x))
+        assert lo.tolist() == [[0.0, 1.0], [2.0, 3.0]] and hi.tolist() == [[2.0, 3.0], [4.0, 5.0]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"pair_demo{suffix}", None)

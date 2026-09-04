@@ -271,6 +271,22 @@ class CallRewrite(ast.NodeTransformer):
     def visit_Call(self, node):
         self.generic_visit(node)
         f = node.func
+        if isinstance(f, ast.Name) and f.id == "_f_ecall" and node.args:
+            # ``_f_ecall(split, x[i - 1, :])``: the elemental broadcast of an
+            # emitted kernel is the runtime's jnp.vectorize over the kernel's
+            # implementation, its state closure appended; of a subprogram
+            # not being emitted, a host function no tracer can run.
+            callee = node.args[0]
+            if isinstance(callee, ast.Name) and callee.id in self.map:
+                info = self.map[callee.id]
+                node.args = [
+                    ast.Name(id=f"_{callee.id}_k_impl", ctx=ast.Load()),
+                    *node.args[1:],
+                    *[ast.Name(id=c, ctx=ast.Load()) for c in info["closure"]],
+                ]
+            elif isinstance(callee, ast.Name) and callee.id in self.subs:
+                raise JaxQueue(f"elemental call of non-emitted subprogram {callee.id}")
+            return node
         if isinstance(f, ast.Name):
             if f.id in self.map:
                 info = self.map[f.id]
@@ -481,8 +497,19 @@ class KernelLowerer:
         ast.ImportFrom,
     )
 
-    def __init__(self):
+    def __init__(self, bound=()):
         self.n = 0
+        # The names bound so far, in statement order: a loop carries only a
+        # name that exists before it. One first assigned inside the body
+        # (the anchor's ``_out = callee(...)`` result tuple, unpacked on the
+        # next lines) is the body's own -- carried, its initial value would
+        # be read before any assignment, and its shape may change between
+        # two calls in the same body.
+        self.bound = set(bound)
+
+    def _bind(self, stmts):
+        for name in _assigned_names(stmts):
+            self.bound.add(name)
 
     def lower_block(self, stmts, depth):
         out = []
@@ -502,9 +529,11 @@ class KernelLowerer:
             elif isinstance(s, ast.If):
                 out.extend(self.lower_if(s, depth))
             elif isinstance(s, ast.Assign):
-                out.append(self.lower_assign(s))
+                lowered = self.lower_assign(s)
+                out.extend(lowered if isinstance(lowered, list) else [lowered])
             else:
                 out.append(s)  # Expr (docstring), Return at top level, Pass
+            self._bind([s])
         return out
 
     def lower_assign(self, s):
@@ -515,7 +544,20 @@ class KernelLowerer:
             # multi-output intra-module call: a, b = _callee_k_impl(...)
             if all(isinstance(e, ast.Name) for e in t.elts):
                 return s
-            raise JaxQueue("tuple target with non-name elements")
+            # ``lo[i - 1, :], hi[i - 1, :] = split(...)`` (CLUBB's column
+            # loops): the tuple through a temporary, each element a store
+            # of its own -- a subscript store is lowered on its own line.
+            self.n += 1
+            tmp = f"_t{self.n}"
+            stores = [ast.Assign(targets=[ast.Name(id=tmp, ctx=ast.Store())], value=s.value)]
+            for at, element in enumerate(t.elts):
+                piece = ast.Subscript(
+                    value=ast.Name(id=tmp, ctx=ast.Load()),
+                    slice=ast.Constant(value=at),
+                    ctx=ast.Load(),
+                )
+                stores.append(self.lower_assign(ast.Assign(targets=[element], value=piece)))
+            return stores
         if isinstance(t, ast.Name):
             # strengthen scalar literal inits so fori_loop carries keep a
             # stable strong dtype (0.0 -> jnp.float64(0.0))
@@ -608,9 +650,15 @@ class KernelLowerer:
         else:
             raise JaxQueue("malformed range")
 
+        bound_before = set(self.bound)
+        self.bound.add(s.target.id)
         body = self.lower_block(_cycle_to_else(s.body, []), depth + 1)
         settled = _trace_constant_stores(body)
-        carried = [n for n in _assigned_names(body) if n != s.target.id and n not in settled]
+        carried = [
+            n
+            for n in _assigned_names(body)
+            if n != s.target.id and n not in settled and n in bound_before
+        ]
         if not carried:
             raise JaxQueue("loop with no carried effects")
         self.n += 1
@@ -797,7 +845,7 @@ def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None, writes=())
     _bind_writer_calls(fn, call_map or {})
     ExprMap().visit(fn)
     CallRewrite(call_map or {}, known_subs or set()).visit(fn)
-    fn.body = KernelLowerer().lower_block(fn.body, 0)
+    fn.body = KernelLowerer(bound={a.arg for a in fn.args.args}).lower_block(fn.body, 0)
     ast.fix_missing_locations(fn)
     return ast.unparse(fn)
 
