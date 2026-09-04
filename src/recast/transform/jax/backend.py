@@ -376,10 +376,15 @@ def _assigned_names(stmts):
     return out
 
 
-def _static_test(test):
+def _static_test(test, statics=frozenset()):
     """True for branch conditions decidable at trace time per the
     translate.py grammar: `x is [not] None` (Fortran PRESENT) and bare
-    `want_*` sentinels (optional-output flags, static under jit)."""
+    `want_*` sentinels (optional-output flags, static under jit), and a
+    comparison over module constants and the kernel's static scalar
+    arguments (``statics``: Python ints at trace time under jit). CLUBB's
+    ``if ( sclr_dim > 0 )`` guards stores into arrays the run never
+    allocated; lowered to lax.cond both arms are traced, and the store
+    into a (0, 0) array is an IndexError at trace time."""
     if (
         isinstance(test, ast.Compare)
         and len(test.ops) == 1
@@ -393,7 +398,7 @@ def _static_test(test):
         if isinstance(node, ast.Constant):
             return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
         if isinstance(node, ast.Name):
-            return node.id.isupper() and len(node.id) > 1
+            return node.id in statics or (node.id.isupper() and len(node.id) > 1)
         if isinstance(node, ast.BinOp):
             return constant(node.left) and constant(node.right)
         if isinstance(node, ast.UnaryOp):
@@ -406,7 +411,7 @@ def _static_test(test):
     if isinstance(test, ast.Compare) and len(test.ops) == 1:
         return constant(test.left) and all(constant(c) for c in test.comparators)
     if isinstance(test, ast.BoolOp):
-        return all(_static_test(v) for v in test.values)
+        return all(_static_test(v, statics) for v in test.values)
     return False
 
 
@@ -500,8 +505,9 @@ class KernelLowerer:
         ast.ImportFrom,
     )
 
-    def __init__(self, bound=()):
+    def __init__(self, bound=(), statics=()):
         self.n = 0
+        self.statics = frozenset(statics)
         # The names bound so far, in statement order: a loop carries only a
         # name that exists before it. One first assigned inside the body
         # (the anchor's ``_out = callee(...)`` result tuple, unpacked on the
@@ -726,7 +732,7 @@ class KernelLowerer:
         a None arg — is never traced)."""
         body = self.lower_block(s.body, depth + 1)
         orelse = self.lower_block(s.orelse, depth + 1)
-        if _static_test(s.test):
+        if _static_test(s.test, self.statics):
             return [ast.If(test=s.test, body=body, orelse=orelse or [])]
         carried = _assigned_names(body)
         for n in _assigned_names(orelse):
@@ -800,7 +806,9 @@ def split_params(fn_src):
     return params[:n_req], params[n_req:], fn_src.args.defaults
 
 
-def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None, writes=()):
+def emit_kernel(
+    fn_src, sub, closure, call_map=None, known_subs=None, writes=(), traced_scalars=frozenset()
+):
     """Original numpy FunctionDef -> unparsed _<name>_k_impl source.
 
     Kernel signature: [required..., closure..., optional-with-defaults].
@@ -852,7 +860,11 @@ def emit_kernel(fn_src, sub, closure, call_map=None, known_subs=None, writes=())
     _bind_writer_calls(fn, call_map or {})
     ExprMap().visit(fn)
     CallRewrite(call_map or {}, known_subs or set()).visit(fn)
-    fn.body = KernelLowerer(bound={a.arg for a in fn.args.args}).lower_block(fn.body, 0)
+    nums, _ = static_spec(fn_src, sub, traced_scalars)
+    required, _, _ = split_params(fn_src)
+    statics = {required[pos] for pos in nums}
+    lowerer = KernelLowerer(bound={a.arg for a in fn.args.args}, statics=statics)
+    fn.body = lowerer.lower_block(fn.body, 0)
     ast.fix_missing_locations(fn)
     return ast.unparse(fn)
 
@@ -988,7 +1000,13 @@ def build_module(
             call_map = {k: v for k, v in call_map_all.items() if k != name}
             try:
                 srcs[name] = emit_kernel(
-                    fns[name], subs[name], closures[name], call_map, set(subs), wclosures[name]
+                    fns[name],
+                    subs[name],
+                    closures[name],
+                    call_map,
+                    set(subs),
+                    wclosures[name],
+                    traced_scalars,
                 )
             except JaxQueue as e:
                 failed[name] = f"[emit] {e}"

@@ -675,3 +675,51 @@ def test_an_elemental_call_of_a_companion_broadcasts_its_kernel(tmp_path: Path) 
         for name in list(sys.modules):
             if name.startswith(("bracket_mod", "elem_mod")):
                 sys.modules.pop(name, None)
+
+
+GUARDED_BY_A_STATIC = """\
+module guard_demo
+  implicit none
+contains
+  subroutine first_tracer(n, m, x, y)
+    integer,  intent(in)  :: n, m
+    real(8),  intent(in)  :: x(n, m)
+    real(8),  intent(out) :: y(n)
+    y = 0.0d0
+    if ( m > 0 ) then
+      y(:) = x(:, 1)
+    end if
+  end subroutine first_tracer
+end module guard_demo
+"""
+
+
+def test_a_branch_on_a_static_scalar_is_a_trace_time_if(tmp_path: Path) -> None:
+    """CLUBB guards its scalar-tracer stores with ``if ( sclr_dim > 0 )``.
+    Lowered to lax.cond both arms are traced, and the store into the
+    zero-extent (or never allocated) array is an IndexError at trace time.
+    ``sclr_dim`` is a static argument of the kernel -- a Python int under
+    jit -- so the branch is a Python if."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, GUARDED_BY_A_STATIC, "guard_demo")
+    assert candidate.notes["jax"]["kernels"] == ["first_tracer"]
+    ported = candidate.files[Path("guard_demo_jax.py")].decode()
+    assert "if m > 0:" in ported
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("guard_demo_jax")
+        import numpy as np
+
+        assert np.asarray(module.first_tracer(2, 0, np.zeros((2, 0)))).tolist() == [0.0, 0.0]
+        x = np.array([[1.0, 2.0], [3.0, 4.0]], order="F")
+        assert np.asarray(module.first_tracer(2, 2, x)).tolist() == [1.0, 3.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"guard_demo{suffix}", None)
