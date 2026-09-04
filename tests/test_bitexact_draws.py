@@ -8,14 +8,16 @@ says so in three ways, and none of them is a difference between the two sides:
   so it must not be called on that draw at all.
 * a subscript past a dummy array's declared extent -- the reference, compiled
   without bounds checking, reads memory the call does not own.
-* NaN. Fortran does not say what MIN and MAX return for a NaN operand and
-  gfortran's answer is whichever operand its register allocator made the
-  second one, so a NaN-tainted trial held to the bit compares the compiler's
-  scheduling rather than the translation.
+* NaN on both sides. Fortran does not say what MIN and MAX return for a NaN
+  operand and gfortran's answer is whichever operand its register allocator
+  made the second one, so a NaN-tainted trial held to the bit compares the
+  compiler's scheduling rather than the translation.
 
-Each is a draw to make again, not a comparison that failed -- and the bound on
-how many times is the part that keeps it from being a way to narrow the gate:
-a subprogram whose every draw is refused fails by name.
+Each is a draw to make again, not a comparison that failed -- and the bounds
+are the part that keeps it from being a way to narrow the gate: a subprogram
+whose every draw is refused fails by name, a NaN on one side only is a
+mismatch and not a redraw, and a subprogram compared mostly on extents the
+redraw moved to fails by name as well.
 """
 
 from __future__ import annotations
@@ -129,18 +131,39 @@ def probe(n, lr, r):
 """
 
 
-def test_an_extent_too_small_for_the_body_is_drawn_again(tmp_path: Path) -> None:
+def test_a_subprogram_compared_mostly_on_moved_extents_fails_by_name(tmp_path: Path) -> None:
     """Every unpinned extent defaults to the same number, so a packed
     triangular workspace -- ``n*(n+1)/2`` long for an order ``n`` -- is a
-    subscript past the end. A refusal for a *shape* moves the extents; the
-    values alone would never have got there."""
+    subscript past the end. A refusal for a *shape* moves the extents, and
+    the draws that then fit are the small orders: a pass on those is evidence
+    about n = 1, not about the extents the run was configured with, so the
+    subprogram fails by name and says which extents to pin."""
     verdict = judge(
         tmp_path,
         PACKED,
         SimpleNamespace(w_probe=lambda n, lr, r: float(r[(int(n) * (int(n) + 1)) // 2 - 1])),
     )
+    assert verdict.confidence is Confidence.FAILED
+    detail = verdict.detail or ""
+    # ``n`` is a value, not an extent: the three trials that fit as drawn did
+    # so on an ``n`` the seed made small. ``lr`` is the extent that moved.
+    assert "probe: 7 of 10 trial(s) were compared only after the free extent(s) lr" in detail
+    assert "Pin `dims`" in detail
+
+
+def test_pinned_extents_the_body_takes_are_not_redrawn(tmp_path: Path) -> None:
+    """The same packed workspace at extents that fit -- ``lr`` pinned to
+    ``n(n+1)/2`` for the pinned ``n`` -- is compared as drawn, no redraw and
+    nothing moved."""
+    verdict = judge(
+        tmp_path,
+        PACKED,
+        SimpleNamespace(w_probe=lambda n, lr, r: float(r[(int(n) * (int(n) + 1)) // 2 - 1])),
+        dims={"n": 4, "lr": 10},
+    )
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
-    assert verdict.metrics["subprograms"]["probe"]["redrawn"] > 0
+    assert verdict.metrics["subprograms"]["probe"]["redrawn"] == 0
+    assert verdict.metrics["subprograms"]["probe"]["reshaped"] == 0
 
 
 NAN = """\
@@ -162,19 +185,35 @@ def probe(x):
 """
 
 
-def test_a_nan_tainted_draw_is_drawn_again(tmp_path: Path) -> None:
+def test_a_draw_both_sides_take_to_nan_is_drawn_again(tmp_path: Path) -> None:
     """Both sides compute the NaN; what they do with it afterwards is the
     compiler's business and not the translation's, so the trial is not one to
-    hold either side to. The reference here disagrees on exactly those draws
-    and agrees on every other, which is the shape of the real case."""
+    hold either side to -- and a NaN agreeing with a NaN is not a point of
+    evidence either, so the trial is drawn again rather than counted."""
 
     def w_probe(x: Any) -> Any:
-        return np.sqrt(x) if x >= 0.0 else np.float64(0.0)
+        with np.errstate(invalid="ignore"):
+            return np.sqrt(x)
 
     verdict = judge(tmp_path, NAN, SimpleNamespace(w_probe=w_probe))
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     assert verdict.metrics["subprograms"]["probe"]["redrawn"] > 0
     assert verdict.metrics["nan_mismatch"] == 0
+
+
+def test_a_nan_on_one_side_only_is_a_mismatch_not_a_redraw(tmp_path: Path) -> None:
+    """The candidate goes to NaN where the reference has a number. That is
+    the two sides disagreeing -- a variable read before it was assigned, a
+    guard one side has and the other lost -- and redrawing it away would be
+    exactly the narrowing the bound exists to prevent."""
+
+    def w_probe(x: Any) -> Any:
+        return np.sqrt(x) if x >= 0.0 else np.float64(0.0)
+
+    verdict = judge(tmp_path, NAN, SimpleNamespace(w_probe=w_probe))
+    assert verdict.confidence is Confidence.FAILED
+    assert verdict.metrics["nan_mismatch"] > 0
+    assert "where one side produced NaN and the other a number" in (verdict.detail or "")
 
 
 def test_a_draw_that_needs_no_redrawing_is_the_one_the_seed_names(tmp_path: Path) -> None:
