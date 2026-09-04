@@ -512,7 +512,7 @@ class KernelLowerer:
             self.bound.add(name)
 
     def lower_block(self, stmts, depth):
-        out = []
+        out: list[ast.stmt] = []
         for s in stmts:
             start = len(out)
             if isinstance(s, self.BANNED):
