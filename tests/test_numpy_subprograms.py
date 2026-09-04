@@ -227,7 +227,7 @@ def test_out_arguments_are_allocated_or_zeroed(source: Path) -> None:
     IN argument -- Fortran took the extent from the actual, and the donor is
     the only place that extent still exists."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
-    assert "    out1 = np.empty(np.shape(a), dtype=np.float64)" in lines
+    assert "    out1 = np.zeros(np.shape(a), dtype=np.float64)" in lines
     assert "    opt = 0.0  # optional OUT: may not be assigned" in lines
 
 
@@ -246,7 +246,7 @@ def test_locals_are_determinized(source: Path) -> None:
     undefined. An automatic array allocates off its declared extent, an
     allocatable waits as None, a derived type gets its factory."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
-    assert "    scr = np.empty((n,), dtype=np.float64)" in lines
+    assert "    scr = np.zeros((n,), dtype=np.float64)" in lines
     assert "    dyn = None" in lines
     assert "    box = _make_pack_t()" in lines
     assert "    i = 0" in lines
@@ -256,8 +256,8 @@ def test_poisoning_makes_a_read_before_write_visible(source: Path) -> None:
     """The other half of the test above, and the reason it is not enough.
 
     Determinizing makes an unwritten read reproducible; it does not make it
-    *findable*. ``np.empty`` usually lands on a zero page, so the answer looks
-    stable and the defect survives review. Poisoned, every float Fortran left
+    *findable*. The zero fill is reproducible but says nothing, so the answer
+    looks stable and the defect survives review. Poisoned, every float Fortran left
     undefined starts as NaN, so the read propagates into the outputs the gate
     compares and ``differential.bitexact`` counts it as ``nan_mismatch``.
     """
@@ -277,7 +277,7 @@ def test_the_integer_arm_is_a_second_switch(source: Path) -> None:
     both, _ = build(source, poison=True, poison_integers=True).render(
         node_of(source, "work"), "work"
     )
-    assert "    tally = np.empty((n,), dtype=np.int32)" in plain
+    assert "    tally = np.zeros((n,), dtype=np.int32)" in plain
     assert f"    tally = np.full((n,), {INT_SENTINEL}, dtype=np.int32)" in both
 
 

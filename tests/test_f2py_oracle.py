@@ -87,6 +87,60 @@ def test_wrappers_drop_optionals_and_route_generics() -> None:
     assert "real(8), intent(out) :: p(n)" in text  # dims spelled so f2py can size them
 
 
+def test_out_arguments_are_defined_before_the_call() -> None:
+    """An intent(out) dummy is undefined on entry, and a subprogram that
+    returns early -- a guard rejecting its own arguments -- never assigns it.
+    What f2py hands back is then whatever the buffer it allocated held, which
+    is not a fact about the Fortran and not something a translation can be
+    held to. The wrapper defines it instead, so the reference's output buffers
+    start where the emitted translation's do."""
+    text, _ = wrappers_for(RECORD, ["settle"])
+    body = text[text.index("subroutine w_settle") : text.index("end subroutine w_settle")]
+    assert "  p = 0" in body
+    assert body.index("  p = 0") < body.index("  call settle(")
+    # An input is not touched: it is the harness's value, not the wrapper's.
+    assert "  rho = 0" not in body
+
+
+def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
+    """An intent(out) array the callee cannot size -- ``dy(*)`` -- is the
+    caller's storage on both sides: the gate generates it and hands the same
+    values to the reference and the candidate. Zeroing it in the wrapper would
+    fail every cell the callee never writes, and ``dy = 0`` is not even legal
+    for an assumed-size dummy (SLSQP's ``dcopy`` stopped the oracle build)."""
+    record = {
+        "module": "blas_mod",
+        "subprograms": [
+            {
+                "name": "dcopy",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {
+                        "name": "dx",
+                        "dtype": "float64",
+                        "intent": "IN",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None, "assumed_size": True}],
+                    },
+                    {
+                        "name": "dy",
+                        "dtype": "float64",
+                        "intent": "OUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None, "assumed_size": True}],
+                        "buffer": True,
+                    },
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["dcopy"])
+    body = text[text.index("subroutine w_dcopy") : text.index("end subroutine w_dcopy")]
+    assert "real(8), intent(out) :: dy(*)" in body
+    assert "  dy = 0" not in body
+
+
 def test_a_dtype_the_wrapper_cannot_spell_refuses() -> None:
     broken = {
         "module": "m",
@@ -108,6 +162,150 @@ def test_a_dtype_the_wrapper_cannot_spell_refuses() -> None:
     }
     with pytest.raises(ConfigError, match="cannot spell"):
         wrappers_for(broken, ["s"])
+
+
+CALLBACK_RECORD = {
+    "module": "solve_mod",
+    "generics": {},
+    "interfaces": {
+        "residual": {
+            "kind": "subroutine",
+            "args": [
+                {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                {
+                    "name": "x",
+                    "dtype": "float64",
+                    "intent": "IN",
+                    "optional": False,
+                    "dims": [{"lb": "1", "ub": "n"}],
+                },
+                {
+                    "name": "fvec",
+                    "dtype": "float64",
+                    "intent": "OUT",
+                    "optional": False,
+                    "dims": [{"lb": "1", "ub": "n"}],
+                },
+                {"name": "iflag", "dtype": "int32", "intent": "INOUT", "optional": False},
+            ],
+            "result": None,
+            "result_dtype": None,
+        }
+    },
+    "subprograms": [
+        {
+            "name": "drive",
+            "kind": "subroutine",
+            "args": [
+                {
+                    "name": "fcn",
+                    "dtype": "PROCEDURE",
+                    "intent": "IN",
+                    "optional": False,
+                    "procedure": True,
+                    "interface": "residual",
+                },
+                {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                {
+                    "name": "x",
+                    "dtype": "float64",
+                    "intent": "INOUT",
+                    "optional": False,
+                    "dims": [{"lb": "1", "ub": "n"}],
+                },
+            ],
+        }
+    ],
+}
+
+
+def test_a_procedure_argument_becomes_an_f2py_call_back() -> None:
+    """f2py works a call-back's signature out from a call to it in the body
+    being wrapped, and the wrapper has none -- it hands the procedure straight
+    on. So the call and its argument declarations are written for f2py alone,
+    as ``!f2py`` comments no compiler ever sees."""
+    text, names = wrappers_for(CALLBACK_RECORD, ["drive"])
+    assert names == ["w_drive"]
+    assert "  external fcn" in text
+    assert "!f2py  integer, intent(in), required :: cb_fcn_n" in text
+    assert "!f2py  real(8), dimension(cb_fcn_n), intent(in) :: cb_fcn_x" in text
+    assert "!f2py  real(8), dimension(cb_fcn_n), intent(out) :: cb_fcn_fvec" in text
+    assert "!f2py  integer, intent(in,out) :: cb_fcn_iflag" in text
+    assert "!f2py  call fcn(cb_fcn_n, cb_fcn_x, cb_fcn_fvec, cb_fcn_iflag)" in text
+    # ``n`` sizes another argument, so f2py would make it optional and move it
+    # to the end; the translation calls the same object in declaration order.
+    assert text.count("required") == 1
+
+
+def test_a_procedure_argument_with_no_interface_refuses() -> None:
+    """``procedure() :: fcn`` says a name is callable and nothing about the
+    call. There is nothing to declare, and guessing is not an option."""
+    record = {
+        **CALLBACK_RECORD,
+        "interfaces": {},
+    }
+    with pytest.raises(ConfigError, match="carries no interface"):
+        wrappers_for(record, ["drive"])
+
+
+def test_a_long_argument_list_is_folded_for_free_form() -> None:
+    """gfortran makes a line past column 132 an error, and a subprogram with
+    two dozen arguments writes one."""
+    wide = {
+        "module": "m",
+        "generics": {},
+        "subprograms": [
+            {
+                "name": "wide",
+                "kind": "subroutine",
+                "args": [
+                    {
+                        "name": f"argument_number_{index:02d}",
+                        "dtype": "float64",
+                        "intent": "IN",
+                        "optional": False,
+                    }
+                    for index in range(24)
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(wide, ["wide"])
+    assert all(len(line) <= 132 for line in text.splitlines())
+    assert "&" in text
+
+
+def test_the_harness_builds_one_call_back_for_both_sides() -> None:
+    """The same Python object reaches the reference and the candidate, so a
+    difference between them is a difference in the code under test."""
+    import numpy as np
+
+    from recast.verify.bitexact import callback_for
+
+    interface = CALLBACK_RECORD["interfaces"]["residual"]
+    callback = callback_for(np, "fcn", interface)
+    # Arity is part of the calling convention: f2py reads it off the object.
+    assert callback.__code__.co_argcount == 3  # n, x, iflag -- fvec is returned
+    fvec, iflag = callback(np.int32(3), np.array([0.5, -0.25, 2.0]), np.int32(1))
+    assert fvec.shape == (3,)
+    assert iflag == 1  # a control flag is handed back, not invented
+    again, _ = callback(np.int32(3), np.array([0.5, -0.25, 2.0]), np.int32(1))
+    assert np.array_equal(fvec, again)  # deterministic
+
+
+def test_a_call_back_this_harness_cannot_supply_says_so() -> None:
+    import numpy as np
+
+    from recast.verify.bitexact import callback_for
+
+    opaque = {
+        "kind": "subroutine",
+        "args": [{"name": "grid", "dtype": "UNKNOWN(TYPE(GRID_T))", "intent": "IN"}],
+        "result": None,
+        "result_dtype": None,
+    }
+    with pytest.raises(ValueError, match="cannot supply"):
+        callback_for(np, "fcn", opaque)
 
 
 # --- the verifier fails closed -----------------------------------------------
@@ -946,6 +1144,103 @@ def test_the_translate_spine_ends_bit_exact(tmp_path: Path) -> None:
     assert excused.confidence is Confidence.TOLERANCED
 
 
+CALLBACK_SOURCE = """\
+module toy_solver
+    use iso_fortran_env, only: wp => real64
+    implicit none
+    real(wp), dimension(2), parameter :: limits = [epsilon(1.0_wp), tiny(1.0_wp)]
+    real(wp), parameter :: eps = limits(1)
+
+    abstract interface
+        subroutine residual(n, x, fvec, iflag)
+            import :: wp
+            implicit none
+            integer, intent(in) :: n
+            real(wp), intent(in) :: x(n)
+            real(wp), intent(out) :: fvec(n)
+            integer, intent(inout) :: iflag
+        end subroutine residual
+    end interface
+
+contains
+
+    subroutine sweep(fcn, n, x, Work, Ldw, Iflag)
+        implicit none
+        procedure(residual) :: fcn
+        integer, intent(in) :: n
+        integer, intent(in) :: Ldw
+        real(wp), intent(inout) :: x(n)
+        real(wp), intent(inout) :: Work(Ldw, n)
+        integer, intent(inout) :: Iflag
+        integer :: j
+        real(wp) :: h
+        do j = 1, n
+            call fcn(n, x, Work(1, j), Iflag)
+            h = eps + norm(n, Work(1, j))
+            x(j) = x(j) + h
+        end do
+    end subroutine sweep
+
+    function norm(n, v) result(r)
+        implicit none
+        integer, intent(in) :: n
+        real(wp) :: v(n)
+        real(wp) :: r
+        integer :: i
+        r = 0.0_wp
+        do i = 1, n
+            r = r + v(i)*v(i)
+        end do
+        r = sqrt(r)
+    end function norm
+
+end module toy_solver
+"""
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_a_unit_that_takes_a_procedure_ends_bit_exact(tmp_path: Path) -> None:
+    """The whole chain for a subprogram whose argument is something to call.
+
+    Five things have to hold at once, and each one alone used to stop the
+    unit: the working precision comes from ``iso_fortran_env``; a parameter
+    is an array of type inquiries and the next one subscripts it; ``call
+    fcn(...)`` is bound against an abstract interface; ``Work(1, j)`` is
+    sequence-associated on both an OUT actual and a function argument; and
+    the reference wrapper declares the procedure as an f2py call-back so both
+    sides call the *same* Python object.
+    """
+    (tmp_path / "toy_solver.f90").write_text(CALLBACK_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    gate = ReadWriteSetVerifier().check(unit, candidate, workspace, executor, {})
+    assert gate.passed, gate.detail
+
+    config = {
+        "root": tmp_path,
+        "fc": GFORTRAN,
+        "trials": 3,
+        "dims": {"n": 4, "ldw": 4},
+        "ranges": {"x": (-1.0, 1.0), "work": (-1.0, 1.0), "iflag": (1, 1)},
+    }
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["uncovered"] == []
+    assert verdict.metrics["points"] > 0
+
+
 @pytest.mark.skipif(
     GFORTRAN is None or not MESON,
     reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
@@ -1173,7 +1468,7 @@ def test_a_refused_build_fails_this_stage_and_not_the_run(tmp_path: Path) -> Non
     frontend = FortranFrontend()
     unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:toy_physics")
     facts = frontend.analyze(unit, tmp_path)
-    with pytest.raises(OracleUnavailable, match="did not run the f2py build"):
+    with pytest.raises(OracleUnavailable, match="did not run the reference compile"):
         F2pyGoldenOracle().materialize(
             unit,
             facts,
@@ -1210,12 +1505,27 @@ end module toy_split
 
 
 class _CaptureBuild:
+    """Records every job and lets the reference compiles through.
+
+    The build is two phases -- the compiler over the reference sources, then
+    f2py over the wrapper alone -- and the tokens of both have to be looked
+    at, so the compiles are reported as having succeeded and only the f2py
+    job stops the run.
+    """
+
     name = "capture"
 
     def __init__(self) -> None:
         self.job = None
+        self.jobs: list[object] = []
 
     def run(self, job):
+        self.jobs.append(job)
+        if "numpy.f2py" not in job.argv:
+            for at, token in enumerate(job.argv):
+                if token == "-o":
+                    (job.cwd / job.argv[at + 1]).write_bytes(b"")
+            return JobResult(0, "", "")
         self.job = job
         raise OracleUnavailable("captured before execution")
 
@@ -1260,32 +1570,50 @@ def test_f2py_only_receives_canonical_source_and_include_tokens(
         )
 
     assert capture.job is not None
+    assert all(
+        str(project) not in token and "must-not-be-a-flag" not in token
+        for job in capture.jobs
+        for token in job.argv
+    )
+
+    compiles = [job for job in capture.jobs if job is not capture.job]
+    assert [token for job in compiles for token in job.argv if token.startswith("sources/")] == [
+        "sources/source_0000.f90",
+        "sources/source_0001.f90",
+    ]
+    assert all("-Iincludes/d0000" in job.argv for job in compiles)
+
     argv = list(capture.job.argv)
     assert argv[argv.index("--build-dir") + 1] == "f2py-build"
     assert "--f90flags=-O2 -fcheck=bounds" in argv
     assert "--f77flags=-O2 -fcheck=bounds" in argv
-    assert all(str(project) not in token for token in argv)
-    assert all("must-not-be-a-flag" not in token for token in argv)
 
     compile_index = argv.index("-c")
     module_index = argv.index("-m", compile_index)
     build_inputs = argv[compile_index + 3 : module_index]
-    staged_sources = [token for token in build_inputs if token.startswith("sources/")]
     include_args = [token for token in build_inputs if token.startswith("-I")]
-    assert staged_sources == [
-        "sources/source_0000.f90",
-        "sources/source_0001.f90",
-        "sources/wrappers.f90",
+    # Only the generated wrapper is parsed by f2py; the reference arrives as
+    # objects the compiler already made.
+    assert [token for token in build_inputs if token.endswith(".f90")] == ["sources/wrappers.f90"]
+    assert [token for token in build_inputs if token.endswith(".o")] == [
+        "object_0000.o",
+        "object_0001.o",
     ]
-    assert include_args == ["-Iincludes/d0000"]
-    assert all(" " not in token for token in [*staged_sources, *include_args])
-    assert all((capture.job.cwd / token).is_file() for token in staged_sources)
+    assert include_args == ["-Iincludes/d0000", "-Iincludes/mods"]
+    assert all(" " not in token for token in build_inputs)
+    assert (capture.job.cwd / "sources/wrappers.f90").is_file()
     assert (capture.job.cwd / "includes/d0000").is_dir()
     assert (capture.job.cwd / "f2py-build/includes/d0000").is_dir()
+    assert (capture.job.cwd / "includes/mods").is_dir()
+    assert (capture.job.cwd / "f2py-build/includes/mods").is_dir()
 
 
 class _FailingBuild:
-    """An executor whose f2py run fails the way crackfortran does on bad Fortran."""
+    """An executor whose f2py run fails the way crackfortran does on bad Fortran.
+
+    The reference compiles before it are reported as having succeeded: the
+    build is two phases and this double is about the second one.
+    """
 
     name = "failing"
 
@@ -1294,7 +1622,11 @@ class _FailingBuild:
         self.stderr = stderr
 
     def run(self, job):
-        del job
+        if "numpy.f2py" not in job.argv:
+            for at, token in enumerate(job.argv):
+                if token == "-o":
+                    (job.cwd / job.argv[at + 1]).write_bytes(b"")
+            return JobResult(0, "", "")
         return JobResult(1, self.stdout, self.stderr)
 
 
@@ -1432,6 +1764,29 @@ def test_the_flat_oracle_refuses_an_extra_source_it_cannot_read(tmp_path: Path) 
         F2pyFlatOracle().key(unit, facts, {"root": root, "extra_sources": ["nowhere.f90"]})
 
 
+def test_the_flat_oracle_keeps_an_include_dir_with_a_space_as_one_flag(tmp_path: Path) -> None:
+    """The plan carries the compiler flags as one string and the library
+    build splits it back into argv. A configured include directory with a
+    space in its name used to be appended bare and come apart at the split,
+    leaving ``-I/path`` and a stray ``name`` for gfortran to read as a file."""
+    import shlex
+
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    include = tmp_path / "head ers"
+    include.mkdir()
+    unit, facts = _split_tree(root)
+    config = {"root": root, "include_dirs": [str(include)]}
+
+    plan = F2pyFlatOracle()._plan(unit, facts, config)
+    flags = shlex.split(plan["fflags"])
+    assert f"-I{include}" in flags
+    assert flags.count(f"-I{include}") == 1
+    assert not any(token == "ers" for token in flags)
+
+
 def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
     """The reference is only a reference if everything that can change what it
     computes is in its key. A kinds module edited from real64 to real32 is a
@@ -1474,3 +1829,57 @@ def test_a_lower_bound_is_spelled_in_the_wrapper() -> None:
     assert _extent({"lb": "1", "ub": "n"}) == "n"
     assert _extent({"lb": None, "ub": "n"}) == "n"
     assert _extent({"lb": "0", "ub": "nlev"}) == "0:nlev"
+
+
+BLOCK_SOURCE = """\
+module block_mod
+  use iso_fortran_env, only: wp => real64
+  implicit none
+contains
+  subroutine clamp(n, x, y)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: x(n)
+    real(wp), intent(out) :: y(n)
+    integer :: i
+    main: block
+      do i = 1, n
+        y(i) = x(i)
+        if (y(i) < 0.0_wp) then
+          y(i) = -y(i)
+          cycle
+        end if
+        if (y(i) > 1.0e3_wp) exit main
+      end do
+    end block main
+  end subroutine clamp
+end module block_mod
+"""
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_a_reference_f2py_cannot_parse_is_still_compiled(tmp_path: Path) -> None:
+    """A BLOCK construct is Fortran 2008 and f2py's own parser does not know
+    it: handed the file, crackfortran counts the ``end block`` as closing a
+    group it never opened and takes the whole build down. Only the generated
+    wrapper is f2py's to read; the reference is the compiler's, which is the
+    one thing in this build that understands Fortran."""
+    (tmp_path / "block_mod.f90").write_text(BLOCK_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 3, "ranges": {"x": (-5.0, 5.0)}}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["bit_exact"] == verdict.metrics["points"] > 0

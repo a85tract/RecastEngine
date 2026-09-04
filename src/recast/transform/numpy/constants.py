@@ -254,6 +254,12 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
             spelled.append(_real(token["v"], token["t"] == "real32"))
         elif token["t"] == "call":
             spelled.append(_call(token))
+        elif token["t"] == "array":
+            inner = ", ".join(_expression(element) for element in token["elements"])
+            spelled.append(f"np.array([{inner}])")
+        elif token["t"] == "index":
+            subscripts = ", ".join(f"{_expression(argument)} - 1" for argument in token["args"])
+            spelled.append(f"{token['v'].upper()}[{subscripts}]")
         elif token["t"] == "spelled":
             # Already target text -- an array constructor the classifier
             # rendered whole, because its elements are not an expression this
