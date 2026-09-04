@@ -388,6 +388,19 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         )
         if name in dummies:
             reads.add(name)
+        optional_dummies = (
+            {a["name"].lower() for a in scope.semantics.subprogram["args"] if a.get("optional")}
+            if (scope.semantics is not None)
+            else set()
+        )
+
+        def hands_on_presence(actual: Any) -> None:
+            """The caller's own optional passed to an optional OUT (CLUBB's
+            xm_wpxp_solve hands ``rcond = rcond`` to band_solve): the callee
+            asks whether it is present, which is a read of it on both sides
+            -- ``present(x)`` here, the ``want_x`` sentinel there."""
+            if isinstance(actual, f03.Name) and str(actual).lower() in optional_dummies:
+                reads.add(str(actual).lower())
 
         if callee is None:
             external = scope.externals.get(name)
@@ -430,11 +443,14 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 # callee of this module.
                 formals = [{"name": n} for n in external["arg_names"]]
                 actuals = _bind_actuals({"args": formals}, items)
+            optional_out = set(external.get("optional_out_positions", [])) if external else set()
             for j, actual in enumerate(actuals):
                 if actual is None:
                     continue
                 if j in out_positions:
                     write_target(actual)
+                if j in optional_out:
+                    hands_on_presence(actual)
                 if read_positions is not None:
                     is_read = j in read_positions
                 else:
@@ -457,6 +473,8 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)
+            if formal.get("optional") and formal["intent"] == "OUT":
+                hands_on_presence(actual)
 
     def visit(stmt: Any) -> None:
         if isinstance(stmt, f08.Block_Construct):

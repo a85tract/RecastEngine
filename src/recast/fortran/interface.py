@@ -1321,6 +1321,13 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             # So a keyword actual (``rcond = rcond``, CLUBB's band_solve) lands
             # on its own position and not on whichever comes next.
             "arg_names": [str(argument["name"]).lower() for argument in sub["args"]],
+            # Handing the caller's own optional to one of these queries its
+            # presence -- a read of it, as ``present()`` is.
+            "optional_out_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument.get("optional") and argument["intent"] == "OUT"
+            ],
         }
     # The sibling's generics too: a call spells the generic (CLUBB's
     # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
@@ -1356,6 +1363,7 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "buffer_positions": entry.get("buffer_positions", []),
                     "read_positions": entry.get("read_positions", []),
                     "arg_names": entry.get("arg_names", []),
+                    "optional_out_positions": entry.get("optional_out_positions", []),
                     # Two specifics of one arity (CLUBB's tridiag_solve
                     # with and without its optional rcond) are told apart
                     # by the ranks of their dummies.
