@@ -28,6 +28,7 @@ so emitting JAX code never requires JAX to be installed.
 """
 
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -161,7 +162,8 @@ def _f_fori(lo, hi, body, init):
     trace the body once, and JAX refuses any index into a size-0 axis at
     trace time. A dynamic bound is left to ``fori_loop``.
     """
-    if isinstance(lo, int) and isinstance(hi, int) and hi <= lo:
+    static = (int, np.integer)
+    if isinstance(lo, static) and isinstance(hi, static) and int(hi) <= int(lo):
         return init
     return lax.fori_loop(lo, hi, body, init)
 

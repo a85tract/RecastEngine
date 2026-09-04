@@ -514,6 +514,7 @@ class KernelLowerer:
     def lower_block(self, stmts, depth):
         out = []
         for s in stmts:
+            start = len(out)
             if isinstance(s, self.BANNED):
                 raise JaxQueue(f"unsupported stmt {type(s).__name__}")
             if isinstance(s, ast.Continue | ast.Break):
@@ -533,7 +534,10 @@ class KernelLowerer:
                 out.extend(lowered if isinstance(lowered, list) else [lowered])
             else:
                 out.append(s)  # Expr (docstring), Return at top level, Pass
-            self._bind([s])
+            # Bound by what was *emitted*: a lowered loop or branch binds its
+            # carried names and nothing else -- a body-local of one loop is
+            # not bound for the next.
+            self._bind(out[start:])
         return out
 
     def lower_assign(self, s):
