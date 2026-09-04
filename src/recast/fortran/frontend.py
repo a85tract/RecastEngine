@@ -394,7 +394,12 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import STD, digest, f03
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
-        from recast.fortran.interface import _scope_of, companion_externals, subprogram_key
+        from recast.fortran.interface import (
+            _only_names,
+            _scope_of,
+            companion_externals,
+            subprogram_key,
+        )
         from recast.fortran.rwset import block_rwsets, scope_for
 
         path = self._source_of(unit, Path(root))
@@ -475,6 +480,15 @@ class FortranFrontend(Frontend):
                     table[local] = table[remote]
             for name, entry in table.items():
                 externals.setdefault(name, entry)
+        # A name use-imported from a stubbed module is a call the translation
+        # answers with a stub -- ``pass`` for CLUBB's stats_update -- so on
+        # this side too its actuals are neither read nor written.
+        for statement in record.get("use_statements", ()):
+            match = USE_STATEMENT.match(statement.strip())
+            if match and match.group("module").lower() in self.stub_modules:
+                for name in _only_names(statement):
+                    stubbed = {"kind": "subroutine", "out_positions": [], "buffer_positions": []}
+                    externals.setdefault(name, {**stubbed, "stub": True})
 
         callgraph: dict[str, list[str]] = {}
         effects: dict[str, Any] = {}
