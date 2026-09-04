@@ -6,7 +6,7 @@ a framework the engine has never heard of.
 
 The split that matters here is between the two halves of each entry. That
 ``sqrt`` is a Fortran intrinsic is a fact about the source and lives in
-``recast.fortran.intrinsics``; that it becomes ``math.sqrt`` is a property of
+``recast.fortran.intrinsics``; that it becomes ``_f_sqrt`` is a property of
 this target and lives here. The read/write analysis needed only the first half
 and had to import the whole emitter to get it.
 
@@ -68,7 +68,7 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "dmax1": "max",
     "dmin1": "min",
     "dsin": "math.sin",
-    "dsqrt": "math.sqrt",
+    "dsqrt": "_f_sqrt",
     "epsilon": "_f_epsilon",
     "erf": "math.erf",
     "erfc": "math.erfc",
@@ -111,7 +111,7 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "sign": "_f_sign",
     "sin": "math.sin",
     "sinh": "math.sinh",
-    "sqrt": "math.sqrt",
+    "sqrt": "_f_sqrt",
     "tan": "math.tan",
     "tanh": "math.tanh",
     "tiny": "_f_tiny",

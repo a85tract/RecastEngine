@@ -304,11 +304,15 @@ def _args(facts, sub="legacy_tend"):
 
 
 def test_undeclared_intent_stays_unknown_by_default(fe, tree) -> None:
-    """No table, no guess. This is the state a third of CAM is in."""
+    """No table, no guess -- but a body that only reads a dummy has said what
+    its intent is, and that reading is recorded as one. ``y``, assigned whole,
+    is the case nothing here can settle: the state a third of CAM is in."""
     unit = next(u for u in fe.discover(tree) if u.kind == "module")
     args = _args(fe.analyze(unit, tree))
-    assert args["x"]["intent"] == "UNKNOWN"
-    assert "intent_override" not in args["x"], "an untouched argument grows no extra keys"
+    assert args["y"]["intent"] == "UNKNOWN"
+    assert "intent_override" not in args["y"], "an untouched argument grows no extra keys"
+    assert args["x"]["intent"] == "IN"
+    assert args["x"]["intent_inferred"] == "read-only"
 
 
 def test_an_override_fills_unknown_in_and_says_so(tree) -> None:
@@ -322,7 +326,7 @@ def test_an_override_fills_unknown_in_and_says_so(tree) -> None:
     assert args["x"]["intent"] == "IN"
     assert args["x"]["intent_declared"] == "UNKNOWN"
     assert args["x"]["intent_override"] is True
-    assert args["n"]["intent"] == "UNKNOWN", "an argument the table omits is untouched"
+    assert "intent_override" not in args["n"], "an argument the table omits is untouched"
     # Recorded once, not repeated on every argument.
     assert facts.provenance["intent_overrides"] == {"legacy_tend": {"x": "IN", "y": "OUT"}}
 
