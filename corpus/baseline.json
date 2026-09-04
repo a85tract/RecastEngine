@@ -1933,7 +1933,9 @@
           "max_rel": 0.0,
           "max_ulp": 0,
           "nan_mismatch": 0,
-          "points": 10
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0
          },
          "searchsorted_idp": {
           "error": "candidate raised: NameError: name 'SMALL' is not defined"
@@ -2370,11 +2372,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "8/111 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+3 more)",
+       "detail": "7/106 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+2 more)",
        "metrics": {
-        "blocks_checked": 111,
-        "blocks_deferred": 3,
-        "blocks_matched": 103,
+        "blocks_checked": 106,
+        "blocks_deferred": 8,
+        "blocks_matched": 99,
         "blocks_waived": 0
        },
        "passed": false
