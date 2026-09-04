@@ -779,3 +779,41 @@ def test_module_state_handed_whole_to_a_function_is_carried(tmp_path: Path) -> N
     assert by_name["sponge_profile"].module == "sponge_mod"
     assert [c.name for c in by_name["sponge_profile"].components] == ["tau"]
     assert "sponge_mod%sponge_profile" not in plan.left_to_module
+
+
+def test_a_probe_spans_a_blank_line_inside_a_continued_call(tmp_path: Path) -> None:
+    """cpp leaves blank lines where an ``#ifdef`` stood inside CLUBB's
+    advance_clubb_core call; the probe took the blank line for the end of
+    the statement and found no call site to bracket."""
+    from recast.oracle.record import probe_tree
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    (tmp_path / "caller_mod.f90").write_text(
+        "module caller_mod\n"
+        "  use coefs_mod, only: coefs_type\n"
+        "  use solver_mod, only: apply\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine run( nzt, ngrdcol, c, x )\n"
+        "    integer, intent(in) :: nzt, ngrdcol\n"
+        "    type(coefs_type), intent(in) :: c\n"
+        "    real(8), intent(inout), dimension(ngrdcol, nzt) :: x\n"
+        "    call apply( nzt, ngrdcol, & ! in\n"
+        "\n"
+        "                ! the object\n"
+        "                c, &\n"
+        "\n"
+        "                x )\n"
+        "  end subroutine run\n"
+        "end module caller_mod\n"
+    )
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    sites = probe_tree(tmp_path, tmp_path / "probed", {"solver_mod": [plan]})
+    assert sites == {"apply": 1}
+    probed = (tmp_path / "probed" / "caller_mod.f90").read_text()
+    assert "call rec_apply(0, nzt, ngrdcol, c, x)" in probed
+    assert "call rec_apply(1, nzt, ngrdcol, c, x)" in probed

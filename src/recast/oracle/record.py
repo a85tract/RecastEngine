@@ -353,6 +353,15 @@ def _continues(line: str) -> bool:
     return _strip_comment(line).rstrip().endswith("&")
 
 
+def _last_code(span: list[str]) -> str:
+    """The last line of ``span`` that carries code: blank and comment-only
+    lines do not end a continued statement."""
+    for line in reversed(span):
+        if _strip_comment(line).strip():
+            return line
+    return span[-1]
+
+
 def _split_actuals(text: str) -> list[str]:
     """Split an actual-argument list on top-level commas only."""
     parts: list[str] = []
@@ -398,8 +407,11 @@ def probe_tree(
         i = 0
         while i < len(lines):
             # A call may continue over several lines: gather the statement.
+            # A blank or comment-only line between continuations (what cpp
+            # leaves of an ``#ifdef`` inside CLUBB's advance_clubb_core call)
+            # is part of the statement, not its end.
             span = [lines[i]]
-            while _continues(span[-1]) and i + len(span) < len(lines):
+            while _continues(_last_code(span)) and i + len(span) < len(lines):
                 span.append(lines[i + len(span)])
             # ``a, & ! In`` leaves a space between the ampersand and the
             # comment it trailed: strip blanks before the ampersands.
