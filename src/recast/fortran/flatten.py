@@ -671,6 +671,20 @@ def _accesses(
                     spelled = aliases[spelled].split("%", 1)[0]
                 if spelled in objects or spelled in interesting:
                     mapping[dummy] = spelled
+                elif (
+                    spelled not in declared_here
+                    and spelled not in procedures
+                    and any(
+                        a["name"].lower() == dummy and DERIVED.match(str(a.get("dtype", "")))
+                        for a in callee_record["args"]
+                    )
+                ):
+                    # A module-state object handed whole to a derived-type
+                    # dummy (CLUBB passes sponge_layer_damping's profile to
+                    # its sponge_damp_xm): followed under the callee's
+                    # dummy, so the components the callee reads come back
+                    # under the state's own name and the plan carries them.
+                    mapping[dummy] = spelled
             # A procedure passed as an actual (``hybrid(..., func, ...)``) is
             # called back with the object; its own derived-type dummies are
             # mapped by name, which is how the model spells them.
@@ -1068,16 +1082,20 @@ def _state_vars(
             # the tree or not -- is the run's to say; parameters are not here.
             if name not in wanted or name in seen:
                 continue
+            if (
+                DERIVED.match(str(entry.get("dtype")))
+                or str(entry.get("dtype")) not in FORTRAN_TYPES
+            ):
+                # A derived-type state variable is an *object* of the plan
+                # (carried by component, through the objects path); naming
+                # it here as left to the module misdescribed the sponge
+                # profiles CLUBB's solvers read through a companion.
+                continue
             if default_private and name not in public:
                 # No ``use`` reaches it, so no adapter sets it: both sides
                 # run with the module's own default, and the plan says so.
                 seen.add(name)
                 plan.left_to_module.append(f"{module}%{name}")
-                continue
-            if (
-                DERIVED.match(str(entry.get("dtype")))
-                or str(entry.get("dtype")) not in FORTRAN_TYPES
-            ):
                 continue
             dims = entry.get("dims") or []
             names = [

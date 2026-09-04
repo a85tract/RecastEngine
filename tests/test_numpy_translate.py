@@ -487,3 +487,59 @@ def test_an_optional_handed_on_carries_its_own_presence(tmp_path: Path) -> None:
     finally:
         sys.path.remove(str(out))
         sys.modules.pop("relay_mod_numpy", None)
+
+
+SCALED_CONSTRUCTOR = """
+module fit_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(15)
+contains
+  subroutine polynomial( n, x, y )
+    integer, intent(in) :: n
+    real(r8), intent(in) :: x(n)
+    real(r8), intent(out) :: y(n)
+    real(r8), dimension(3), parameter :: &
+      a = 100._r8 * (/ 6.09868993_r8, 0.499320233_r8, 0.184672631E-01_r8 /)
+    real(r8), dimension(3), parameter :: b = (/ 1._r8, 2._r8, 3._r8 /) / 2._r8
+    integer :: i
+    do i = 1, n
+      y(i) = a(1) + a(2) * x(i) + a(3) * x(i)**2 + b(3)
+    end do
+  end subroutine polynomial
+end module fit_mod
+"""
+
+
+def test_a_constant_expression_over_an_array_constructor_is_a_value(tmp_path: Path) -> None:
+    """CLUBB's saturation and pdf_closure (#26): ``100._core_rknd * (/ ... /)``
+    as a local parameter. The token pass rendered a bare constructor and
+    handed anything around one to the parser, whose literals were never
+    hoisted; the whole subprogram was a NotImplementedError."""
+    import importlib
+    import sys
+
+    (tmp_path / "fit_mod.f90").write_text(SCALED_CONSTRUCTOR)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:fit_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "fit_mod_numpy.py").read_text()
+    assert "a = 100. * np.array([6.09868993, 0.499320233, 0.184672631E-01])" in text
+    assert "b = np.array([1., 2., 3.]) / 2." in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("fit_mod_numpy")
+        import numpy as np
+
+        y = module.polynomial(2, np.array([0.0, 1.0]))
+        a = 100.0 * np.array([6.09868993, 0.499320233, 0.184672631e-01])
+        # To rounding: the point is the constructor, not the summation order.
+        assert np.allclose(y, [a[0] + 1.5, a[0] + a[1] + a[2] + 1.5], rtol=0, atol=1e-9)
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("fit_mod_numpy", None)

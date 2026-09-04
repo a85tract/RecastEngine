@@ -706,3 +706,76 @@ def test_the_recorder_writes_the_plain_out_dummies_too(tmp_path: Path) -> None:
     recorder = recorder_module("solver_mod", [plan])
     assert "call rec_r1(u_apply, 'INPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder
     assert "call rec_r1(u_apply, 'OUTPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder
+
+
+SPONGE_STATE = """\
+module sponge_mod
+  implicit none
+  private
+  public :: profile_type, damp, sponge_profile, init_profile
+  type profile_type
+    real(8), allocatable :: tau(:)
+    integer :: n_sponge = 0
+  end type profile_type
+  type(profile_type), public :: sponge_profile
+contains
+  subroutine init_profile( nz, prof )
+    integer, intent(in) :: nz
+    type(profile_type), intent(inout) :: prof
+    allocate( prof%tau(1:nz) )
+    prof%tau = 1.0d0
+    prof%n_sponge = nz
+  end subroutine init_profile
+  function damp( nzt, x, prof ) result( damped )
+    integer, intent(in) :: nzt
+    real(8), intent(in) :: x(nzt)
+    type(profile_type), intent(in) :: prof
+    real(8) :: damped(nzt)
+    if ( allocated( prof%tau ) ) then
+      damped = x * prof%tau(1:nzt)
+    else
+      damped = x
+    end if
+  end function damp
+end module sponge_mod
+"""
+
+HANDS_STATE_TO_FUNCTION = """\
+module advance_mod
+  use coefs_mod, only: coefs_type
+  use sponge_mod, only: damp, sponge_profile
+  implicit none
+  private
+  public :: advance
+contains
+  subroutine advance( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    integer :: i
+    do i = 1, ngrdcol
+      x(i, :) = damp( nzt, x(i, :), sponge_profile ) * c%coef(i, 1:nzt)
+    end do
+  end subroutine advance
+end module advance_mod
+"""
+
+
+def test_module_state_handed_whole_to_a_function_is_carried(tmp_path: Path) -> None:
+    """CLUBB's advance_xm_wpxp passes sponge_layer_damping's profile object
+    to its sponge_damp_xm function, which reads ``profile%tau_sponge_damp``.
+    The walk followed only the caller's own dummies into callees, so the
+    profile was left to the module and the replay found it unallocated."""
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "sponge_mod.f90").write_text(SPONGE_STATE)
+    (tmp_path / "advance_mod.f90").write_text(HANDS_STATE_TO_FUNCTION)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:advance_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    by_name = {o.name: o for o in plan.objects}
+    assert by_name["sponge_profile"].kind == "state"
+    assert by_name["sponge_profile"].module == "sponge_mod"
+    assert [c.name for c in by_name["sponge_profile"].components] == ["tau"]
+    assert "sponge_mod%sponge_profile" not in plan.left_to_module
