@@ -388,17 +388,32 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             if external and external.get("specifics"):
                 # A sibling's generic: the specific this arity reaches, or the
                 # union when none matches exactly.
-                fitting = [x for x in external["specifics"] if x["args"] == len(actuals)]
+                # An optional dummy may be left off: a specific fits when the
+                # actuals fall between its required and its total count.
+                fitting = [
+                    x
+                    for x in external["specifics"]
+                    if x.get("required", x["args"]) <= len(actuals) <= x["args"]
+                ]
                 if fitting:
                     external = fitting[0]
             out_positions = set(external.get("out_positions", [])) if external else set()
             buffers = set(external.get("buffer_positions", [])) if external else set()
+            read_positions = (
+                set(external["read_positions"])
+                if external and "read_positions" in external
+                else None
+            )
             for j, actual in enumerate(actuals):
                 if j in out_positions:
                     write_target(actual)
-                if j not in out_positions or j in buffers:
+                if read_positions is not None:
+                    is_read = j in read_positions
+                else:
                     # A buffer OUT of a sibling is read as well as written:
                     # the emitter passes the caller's storage in (#38).
+                    is_read = j not in out_positions or j in buffers
+                if is_read:
                     reads.update(expr_reads(actual, scope))
             return
 

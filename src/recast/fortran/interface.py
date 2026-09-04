@@ -1310,6 +1310,14 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "buffer_positions": [
                 at for at, argument in enumerate(sub["args"]) if argument.get("buffer")
             ],
+            # What the caller reads: IN and INOUT actuals, and a buffer OUT.
+            # An INOUT actual is written *and* read; out_positions alone said
+            # only the first.
+            "read_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument["intent"] in ("IN", "INOUT", "UNKNOWN") or argument.get("buffer")
+            ],
         }
     # The sibling's generics too: a call spells the generic (CLUBB's
     # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
@@ -1325,9 +1333,10 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         # argument count, and the scope picks by the actuals it sees. A
         # union over specifics of different arity marked the wrong
         # positions -- CLUBB's tridiag_solve, zm2zt_api.
-        arity = {
-            s: len(next(x for x in record["subprograms"] if x["name"] == s)["args"])
-            for s, _ in known
+        signatures = {s: next(x for x in record["subprograms"] if x["name"] == s) for s, _ in known}
+        arity = {s: len(sig["args"]) for s, sig in signatures.items()}
+        required = {
+            s: sum(1 for a in sig["args"] if not a.get("optional")) for s, sig in signatures.items()
         }
         table[generic] = {
             "kind": known[0][1]["kind"],
@@ -1339,8 +1348,10 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 {
                     "name": s,
                     "args": arity[s],
+                    "required": required[s],
                     "out_positions": entry["out_positions"],
                     "buffer_positions": entry.get("buffer_positions", []),
+                    "read_positions": entry.get("read_positions", []),
                 }
                 for s, entry in known
             ],
