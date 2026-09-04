@@ -375,3 +375,14 @@ def test_a_copy_out_writes_its_target(verify) -> None:
     candidate.files = {Path("demo_numpy.py"): emitted.encode()}
     verdict = verify(candidate)
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+
+
+def test_the_where_constructs_masks_are_scaffolding() -> None:
+    """``_wm``, ``_wn`` and ``_we<depth>_<n>`` are the emitter's masks for a
+    where / masked elsewhere / elsewhere; a real name never looks like one."""
+    from recast.verify.rwset import DISCARD
+
+    for name in ("_wm", "_wm2", "_wn", "_wn2", "_we0_1", "_we1_3", "_", "_g"):
+        assert DISCARD.fullmatch(name), name
+    for name in ("_wet", "_we", "_wn_x", "wn", "_f_copy_out", "x_we0_1"):
+        assert not DISCARD.fullmatch(name), name

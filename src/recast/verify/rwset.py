@@ -52,8 +52,10 @@ HOISTED_LITERAL = re.compile(r"(?:F32|[FI])_[0-9EMP]+")
 a variable read; ``F32_`` marks one written in Fortran's default real kind,
 which is a different value from the same digits suffixed."""
 
-DISCARD = re.compile(r"_wm\d*|_|_g")
-"""Scaffolding targets: a discarded value, a where-mask, a region label."""
+DISCARD = re.compile(r"_wm\d*|_wn\d*|_we\d+_\d+|_|_g")
+"""Scaffolding targets: a discarded value, the where-construct's masks (the
+branch mask ``_wm``, what no branch has claimed ``_wn``, a masked
+elsewhere's own ``_we<depth>_<n>``), a region label."""
 
 PRESENT_SENTINEL = re.compile(r"want_(\w+)")
 """``want_x`` is how an optional output argument is spelled on the target side;

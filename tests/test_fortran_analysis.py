@@ -1800,6 +1800,87 @@ end module self_mod
     ]
 
 
+# --- what a dummy's bound may name ------------------------------------------
+
+LOCAL_PARAMETER_BOUNDS = """\
+module weights_mod
+  implicit none
+  private
+  public :: lhs_weights
+contains
+  subroutine lhs_weights( ngrdcol, nzm, weights, lhs )
+    integer, parameter :: t_above = 1, t_below = 2
+    integer, parameter :: nd = 3
+    integer, intent(in) :: ngrdcol, nzm
+    real, intent(in), dimension(ngrdcol, nzm, t_above:t_below) :: weights
+    real, intent(out), dimension(-nd:nd, ngrdcol) :: lhs
+    lhs = 0.0
+    lhs(0, :) = weights(:, 1, t_above) + weights(:, 1, t_below)
+  end subroutine lhs_weights
+end module weights_mod
+"""
+
+
+def test_a_bound_naming_a_local_parameter_is_folded_to_its_value(tmp_path: Path) -> None:
+    """CLUBB's ``w_term_ma_zt_lhs`` sizes a dummy with the subroutine's own
+    ``integer, parameter :: t_above = 1, t_below = 2``. No consumer of the
+    record can see that name -- the wrapper does not compile, the sampler
+    has no table for it -- and every one can use the value."""
+    record = interface.extract(_write(tmp_path, "weights.f90", LOCAL_PARAMETER_BOUNDS))
+    (sub,) = record["subprograms"]
+    weights = next(a for a in sub["args"] if a["name"] == "weights")
+    assert weights["dims"][2] == {"lb": "1", "ub": "2"}
+    assert sub["folded_bounds"] == {
+        "weights[2].lb": "t_above -> 1",
+        "weights[2].ub": "t_below -> 2",
+        "lhs[0].ub": "nd -> 3",
+    }
+    # ``-nd`` is an expression over a parameter, not the parameter: left as
+    # written, and the wrapper's to refuse or spell.
+    lhs = next(a for a in sub["args"] if a["name"] == "lhs")
+    assert lhs["dims"][0] == {"lb": "- nd", "ub": "3"}  # fparser spaces the unary minus
+
+
+PUBLIC_GENERIC = """\
+module solve_mod
+  implicit none
+  private
+  public :: solve
+  interface solve
+    module procedure solve_one, solve_many
+  end interface
+contains
+  subroutine solve_one( n, x )
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    x = 2.0 * x
+  end subroutine solve_one
+  subroutine solve_many( n, m, x )
+    integer, intent(in) :: n, m
+    real, intent(inout) :: x(n, m)
+    x = 2.0 * x
+  end subroutine solve_many
+  subroutine helper( n, x )
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    x = x
+  end subroutine helper
+end module solve_mod
+"""
+
+
+def test_the_specifics_of_a_public_generic_are_public_through_it(tmp_path: Path) -> None:
+    """CLUBB's banded solvers export one generic over private specifics.
+    Each specific is reachable, so it is gate-visible, and ``public_via``
+    says what the wrapper has to call it through."""
+    record = interface.extract(_write(tmp_path, "solve.f90", PUBLIC_GENERIC))
+    by_name = {s["name"]: s for s in record["subprograms"]}
+    assert by_name["solve_one"]["public"] and by_name["solve_one"]["public_via"] == "solve"
+    assert by_name["solve_many"]["public"] and by_name["solve_many"]["public_via"] == "solve"
+    assert not by_name["helper"]["public"] and "public_via" not in by_name["helper"]
+    assert record["generics"] == {"solve": ["solve_one", "solve_many"]}
+
+
 CALLBACK = """\
 module callback_mod
   implicit none

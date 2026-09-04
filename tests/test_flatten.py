@@ -441,3 +441,46 @@ def test_a_component_written_through_a_companion_call_is_written(tree: Path) -> 
     warm = next(p for p in plans_from_facts(facts) if p.subprogram["name"] == "warm")
     written = {c.name for c in warm.objects[0].components if c.written}
     assert written == {"tleaf", "gs", "ncan"}
+
+
+def test_the_adapter_declares_a_lower_bound_and_calls_through_a_generic() -> None:
+    """A private specific of a public generic is reached through the generic
+    (``public_via``), and an axis declared ``-2:2`` keeps its five rows."""
+    from recast.oracle.flat import _axis, _declare
+
+    assert _axis({"lb": "-2", "ub": "2"}) == "-2:2"
+    assert _axis({"lb": "1", "ub": "ndim"}) == "ndim"
+    assert _axis({"lb": None, "ub": None}) == ":"
+    declared = _declare(
+        {
+            "name": "lhs",
+            "dtype": "float64",
+            "intent": "INOUT",
+            "dims": [{"lb": "-2", "ub": "2"}, {"lb": "1", "ub": "ngrdcol"}],
+        }
+    )
+    assert declared == "    real(8), intent(inout) :: lhs(-2:2, ngrdcol)"
+
+    subprogram = {
+        "name": "solve_one",
+        "public": True,
+        "public_via": "solve",
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {
+                "name": "x",
+                "dtype": "float64",
+                "intent": "INOUT",
+                "optional": False,
+                "dims": [{"lb": "1", "ub": "n"}],
+            },
+        ],
+    }
+    plan = FlatPlan(subprogram=subprogram, objects=[])
+    text = fortran_adapter(
+        "solve_mod", [plan], ["solve_one", "solve_many"], {"solve_many": "solve"}
+    )
+    assert "use solve_mod, only: solve\n" in text  # both specifics, one generic
+    assert "call solve(n=n, x=x)" in text
+    assert "solve_one(" not in text.replace("subroutine solve_one_flat(", "")
