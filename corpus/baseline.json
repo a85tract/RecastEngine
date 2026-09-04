@@ -1390,11 +1390,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_load_state/B003, genrand_load_state/B004 (+2 more)",
+       "detail": "3/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002",
        "metrics": {
         "blocks_checked": 187,
         "blocks_deferred": 3,
-        "blocks_matched": 180,
+        "blocks_matched": 184,
         "blocks_waived": 0
        },
        "passed": false
@@ -2108,11 +2108,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "12/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+7 more)",
+       "detail": "8/111 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+3 more)",
        "metrics": {
         "blocks_checked": 111,
         "blocks_deferred": 3,
-        "blocks_matched": 99,
+        "blocks_matched": 103,
         "blocks_waived": 0
        },
        "passed": false
