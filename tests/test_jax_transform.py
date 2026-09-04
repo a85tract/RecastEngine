@@ -800,3 +800,80 @@ def test_early_returns_of_the_same_tuple_fold_into_the_branches(tmp_path: Path) 
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"early_mod{suffix}", None)
+
+
+RETURNS_IN_A_LOOP = """\
+module loopret_mod
+  implicit none
+  type coefs_type
+    real(8), allocatable :: coef(:, :)
+  end type coefs_type
+contains
+  subroutine init_coefs( nz, ngrdcol, c )
+    integer, intent(in) :: nz, ngrdcol
+    type(coefs_type), intent(inout) :: c
+    allocate( c%coef(1:ngrdcol, 1:nz) )
+    c%coef = 2.0d0
+  end subroutine init_coefs
+  subroutine apply( nzt, ngrdcol, c, x, y, err )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(out), dimension(ngrdcol, nzt) :: y
+    integer, intent(in) :: err(ngrdcol)
+    integer :: i
+    x = x * c%coef(:, 1:nzt)
+    y = x
+    do i = 1, ngrdcol
+      if ( err(i) /= 0 ) then
+        return
+      end if
+      y(i, :) = y(i, :) + 1.0d0
+    end do
+    y = y + 10.0d0
+  end subroutine apply
+end module loopret_mod
+"""
+
+
+def test_an_early_return_inside_a_loop_becomes_a_flag(tmp_path: Path) -> None:
+    """advance_clubb_core checks the error code per column inside a loop and
+    returns. No branch structure holds that; the return sets a flag, every
+    later statement runs under it, and the remaining iterations do nothing."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "loopret_mod.f90").write_text(RETURNS_IN_A_LOOP)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:loopret_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "apply_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("loopret_mod_jax")
+        import numpy as np
+
+        coef = np.full((2, 1), 2.0, order="F")
+
+        def run(err):
+            x = np.ones((2, 1), order="F")
+            _x, y = module.apply_flat(
+                1, 2, x, np.zeros((2, 1), order="F"), np.array(err, dtype=np.int32), 1, coef
+            )
+            return np.asarray(y).ravel().tolist()
+
+        assert run([0, 0]) == [13.0, 13.0]
+        assert run([0, 1]) == [3.0, 2.0]  # the second column returns before its +1 and the +10
+        assert run([1, 0]) == [2.0, 2.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"loopret_mod{suffix}", None)

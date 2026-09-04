@@ -1629,6 +1629,39 @@ def _fold_returns(stmts: list[ast.stmt], rest: list[ast.stmt]) -> list[ast.stmt]
     return [*out, *rest]
 
 
+def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
+    """``return`` -> ``_ret = True``; what follows a statement that may have
+    returned, in the same block, runs under ``if not _ret`` -- recursively
+    through branches and loop bodies."""
+    out: list[ast.stmt] = []
+    exited = False
+    for statement in stmts:
+        if isinstance(statement, ast.Return):
+            rewritten: ast.stmt = ast.copy_location(
+                ast.Assign(
+                    targets=[ast.Name(id="_ret", ctx=ast.Store())],
+                    value=_jnp("bool_", [ast.Constant(True)]),
+                ),
+                statement,
+            )
+        else:
+            rewritten = statement
+            for field in ("body", "orelse"):
+                inner = getattr(statement, field, None)
+                if isinstance(inner, list) and inner:
+                    setattr(statement, field, _guard_after_returns(inner))
+        if exited:
+            rewritten = ast.If(
+                test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
+                body=[rewritten],
+                orelse=[],
+            )
+        out.append(rewritten)
+        if _has_return([statement]):
+            exited = True
+    return out
+
+
 def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     """Early returns -- ``if f0 == 0: root = x0; return root`` -- become a
     flag and a value, every later statement runs under ``if not _ret``, and
@@ -1657,12 +1690,26 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             node.value is not None and ast.dump(node.value) == ast.dump(final_value)
             for node in tuples
         )
-        folded = _fold_returns(body[:-1], []) if same else None
-        if folded is None:
+        if not same:
             raise NotFlat(
                 f"an early return in a function with several outputs: {ast.unparse(tuples[0])}"
             )
-        return [*folded, final]
+        folded = _fold_returns(body[:-1], [])
+        if folded is not None:
+            return [*folded, final]
+        # A return inside a loop (advance_clubb_core checks the error code
+        # per column): a flag instead. The return sets it, every later
+        # statement at every level runs under ``if not _ret``, and the
+        # loop's remaining iterations do nothing; the one return at the
+        # end hands back the outputs as the early return left them.
+        return [
+            ast.Assign(
+                targets=[ast.Name(id="_ret", ctx=ast.Store())],
+                value=_jnp("bool_", [ast.Constant(False)]),
+            ),
+            *_guard_after_returns(body[:-1]),
+            final,
+        ]
 
     class Returns(ast.NodeTransformer):
         def visit_Return(self, node: ast.Return) -> Any:
