@@ -628,5 +628,9 @@ def test_an_extent_the_plan_cannot_spell_becomes_an_argument(tmp_path: Path) -> 
     assert "real(8), intent(in) :: c__coef(ngrdcol, c__coef_n2)" in adapter
     recorder = recorder_module("solver_mod", [plan])
     assert "'# c__coef_n2 = ', size(c%coef, 2)" in recorder
+    # ngrdcol is a dummy of the probe already: declared once, not assigned.
+    probe = recorder[recorder.index("subroutine rec_apply(") :]
+    assert probe.count("integer :: ngrdcol") == 0
+    assert "ngrdcol = " not in probe.split("phase == 0")[0]
     again = FlatPlan.from_dict(plan.to_dict())
     assert again.extent_args == plan.extent_args

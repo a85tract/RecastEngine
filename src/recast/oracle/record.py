@@ -211,7 +211,12 @@ def recorder_module(
                 spelled = FORTRAN_TYPES[str(a["dtype"])]
                 dims = "(" + ",".join(":" for _ in a["dims"]) + ")" if a.get("dims") else ""
                 lines.append(f"    {spelled}, intent(in) :: {a['name']}{dims}")
-        lines.append(f"    integer :: {patch}")
+        passes_patch = any(a["name"].lower() == patch.lower() for a in originals)
+        if not passes_patch:
+            # CLUBB passes ngrdcol as a dummy; then it is already declared and
+            # already the run's value, and a local of the same name would be
+            # a second declaration.
+            lines.append(f"    integer :: {patch}")
         lines.append("    character(len=128) :: dims")
         # The patch count from the first component allocated over it.
         first = next(
@@ -223,7 +228,9 @@ def recorder_module(
             ),
             None,
         )
-        if first is None:
+        if passes_patch:
+            pass
+        elif first is None:
             lines.append(f"    {patch} = 1")
         else:
             lines.append(f"    {patch} = size({first[0].name}%{first[1].name}, 1)")
