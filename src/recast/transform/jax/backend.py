@@ -732,8 +732,38 @@ class KernelLowerer:
         a None arg — is never traced)."""
         body = self.lower_block(s.body, depth + 1)
         orelse = self.lower_block(s.orelse, depth + 1)
-        if _static_test(s.test, self.statics):
+        if _static_test(s.test):
             return [ast.If(test=s.test, body=body, orelse=orelse or [])]
+        if _static_test(s.test, self.statics):
+            # Over the kernel's static scalar arguments: a Python if when
+            # the kernel is called through its jit wrapper (the arguments
+            # are Python ints), and the lax.cond when another kernel calls
+            # the implementation from a traced body (CLUBB's mono_cubic_interp
+            # takes its level indices as arguments, and its caller's loop
+            # index reaches it as a tracer). Decided at trace time by the
+            # runtime's ``_f_concrete``.
+            python_form = [ast.If(test=s.test, body=body, orelse=orelse or [])]
+            try:
+                cond_form = self._cond_form(s, copy.deepcopy(body), copy.deepcopy(orelse))
+            except JaxQueue:
+                return python_form  # nothing a cond could carry: the branch is a guard alone
+            if not cond_form:
+                return python_form
+            return [
+                ast.If(
+                    test=ast.Call(
+                        func=ast.Name(id="_f_concrete", ctx=ast.Load()),
+                        args=[copy.deepcopy(s.test)],
+                        keywords=[],
+                    ),
+                    body=python_form,
+                    orelse=cond_form,
+                )
+            ]
+        return self._cond_form(s, body, orelse)
+
+    def _cond_form(self, s, body, orelse):
+        """The lax.cond lowering of an if whose test is traced."""
         carried = _assigned_names(body)
         for n in _assigned_names(orelse):
             if n not in carried:

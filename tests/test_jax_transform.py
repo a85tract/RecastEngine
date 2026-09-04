@@ -706,7 +706,7 @@ def test_a_branch_on_a_static_scalar_is_a_trace_time_if(tmp_path: Path) -> None:
     candidate = port(tmp_path, GUARDED_BY_A_STATIC, "guard_demo")
     assert candidate.notes["jax"]["kernels"] == ["first_tracer"]
     ported = candidate.files[Path("guard_demo_jax.py")].decode()
-    assert "if m > 0:" in ported
+    assert "if _f_concrete(m > 0):" in ported and "if m > 0:" in ported
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():

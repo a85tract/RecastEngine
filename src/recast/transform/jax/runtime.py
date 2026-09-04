@@ -38,6 +38,7 @@ from jax import lax  # noqa: E402
 # A star-import from the generated module must see the underscore names.
 __all__ = [
     "_f_adjustl",
+    "_f_concrete",
     "_f_dim",
     "_f_ecall",
     "_f_epsilon",
@@ -152,6 +153,15 @@ def _f_vlog10(x):
 
 def _f_vpow(a, b):
     return jnp.asarray(a) ** b
+
+
+def _f_concrete(x):
+    """Whether a value is known at trace time -- a Python or NumPy scalar,
+    or a concrete array -- rather than a tracer. A branch over a kernel's
+    static scalar argument is a Python ``if`` when the kernel runs through
+    its jit wrapper and a ``lax.cond`` when another kernel's traced body
+    calls its implementation; this decides which."""
+    return not isinstance(x, jax.core.Tracer)
 
 
 def _f_fori(lo, hi, body, init):
