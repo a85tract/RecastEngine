@@ -1894,3 +1894,63 @@ def test_a_call_into_a_stubbed_module_reads_and_writes_nothing(tmp_path: Path) -
     blocks = facts.effects["fortran:budget_mod/tend"]["blocks"]
     reads = {name for block in blocks for name in block.get("reads", [])}
     assert "stats_tmp" not in reads and "x_budget" not in reads
+
+
+KEYWORD_CALLER = """\
+module caller_mod
+  use solve_mod, only: solve
+  implicit none
+  private
+  public :: run
+contains
+  subroutine run( n, m, x, rc )
+    integer, intent(in) :: n, m
+    real, intent(inout) :: x(n, m)
+    real, intent(out) :: rc
+    call solve( n, m, x, rcond = rc )
+  end subroutine run
+end module caller_mod
+"""
+
+SOLVER_WITH_OPTIONAL = """\
+module solve_mod
+  implicit none
+  private
+  public :: solve
+  interface solve
+    module procedure solve_one, solve_many
+  end interface
+contains
+  subroutine solve_one( n, x, rcond )
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    real, intent(out), optional :: rcond
+    x = 2.0 * x
+    if ( present( rcond ) ) rcond = 1.0
+  end subroutine solve_one
+  subroutine solve_many( n, m, x, rcond )
+    integer, intent(in) :: n, m
+    real, intent(inout) :: x(n, m)
+    real, intent(out), optional :: rcond
+    x = 2.0 * x
+    if ( present( rcond ) ) rcond = 1.0
+  end subroutine solve_many
+end module solve_mod
+"""
+
+
+def test_a_keyword_actual_into_a_siblings_generic_lands_on_its_own_position(tmp_path: Path) -> None:
+    """``call band_solve( ..., solut, rcond = rcond )`` (CLUBB): the keyword
+    names an optional OUT dummy at the end. Bound by position it fell on the
+    dummy before it and was read; bound by name it is written, not read --
+    and the specific is picked with the optional counted."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", SOLVER_WITH_OPTIONAL)
+    _write(tmp_path, "caller.f90", KEYWORD_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:caller_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:caller_mod/run"]["blocks"]
+    assert "rc" in block["writes"] and "rc" not in block["reads"]
+    assert "x" in block["writes"] and "x" in block["reads"]  # INOUT: both

@@ -404,7 +404,14 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 if external and "read_positions" in external
                 else None
             )
+            if external and external.get("arg_names"):
+                # Keyword actuals by name, positional ones in order, as for a
+                # callee of this module.
+                formals = [{"name": n} for n in external["arg_names"]]
+                actuals = _bind_actuals({"args": formals}, items)
             for j, actual in enumerate(actuals):
+                if actual is None:
+                    continue
                 if j in out_positions:
                     write_target(actual)
                 if read_positions is not None:

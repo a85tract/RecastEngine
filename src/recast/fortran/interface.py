@@ -1318,6 +1318,9 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 for at, argument in enumerate(sub["args"])
                 if argument["intent"] in ("IN", "INOUT", "UNKNOWN") or argument.get("buffer")
             ],
+            # So a keyword actual (``rcond = rcond``, CLUBB's band_solve) lands
+            # on its own position and not on whichever comes next.
+            "arg_names": [str(argument["name"]).lower() for argument in sub["args"]],
         }
     # The sibling's generics too: a call spells the generic (CLUBB's
     # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
@@ -1352,6 +1355,7 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "out_positions": entry["out_positions"],
                     "buffer_positions": entry.get("buffer_positions", []),
                     "read_positions": entry.get("read_positions", []),
+                    "arg_names": entry.get("arg_names", []),
                 }
                 for s, entry in known
             ],
