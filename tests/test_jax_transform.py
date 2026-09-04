@@ -312,3 +312,50 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_delegated(tmp_path: Path) 
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"cycle_demo{suffix}", None)
+
+
+SHIMS = """\
+module shim_demo
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine norms(n, x, root, total, err)
+    integer,  intent(in)  :: n
+    real(r8), intent(in)  :: x(n)
+    real(r8), intent(out) :: root(n), total, err(n)
+    root = sqrt( x )
+    total = sum( x )
+    err = erf( x )
+  end subroutine norms
+end module shim_demo
+"""
+
+
+def test_the_jax_runtime_carries_sqrt_sum_and_erf(tmp_path: Path) -> None:
+    """CLUBB's clipping and PDF closure: ``sqrt``, ``sum`` and ``erf`` reach
+    the kernels as ``_f_sqrt``, ``_f_vsum`` and ``_f_verf``, which the NumPy
+    runtime defines and the JAX one did not -- a NameError at the first
+    call, on every kernel of the unit."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, SHIMS, "shim_demo")
+    assert candidate.notes["jax"]["kernels"] == ["norms"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("shim_demo_jax")
+        import numpy as np
+
+        x = np.array([4.0, 9.0, -1.0])
+        root, total, err = (np.asarray(v) for v in module.norms(3, x))
+        assert root[:2].tolist() == [2.0, 3.0] and np.isnan(root[2])
+        assert total == 12.0
+        assert abs(err[0] - 0.9999999845827421) < 1e-12
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"shim_demo{suffix}", None)

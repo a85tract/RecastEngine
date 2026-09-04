@@ -51,7 +51,11 @@ __all__ = [
     "_f_tiny",
     "_f_trim",
     "_f_vceil",
+    "_f_sqrt",
     "_f_vdot",
+    "_f_verf",
+    "_f_verfc",
+    "_f_vsum",
     "_f_vexp",
     "_f_vfloor",
     "_f_vlog",
@@ -145,6 +149,45 @@ def _f_vlog10(x):
 
 def _f_vpow(a, b):
     return jnp.asarray(a) ** b
+
+
+def _f_sqrt(x):
+    """Fortran SQRT: a NaN for a negative real, not an exception, and the
+    correctly rounded root otherwise -- what the NumPy shim does with
+    math.sqrt, and what jnp.sqrt does by itself."""
+    return jnp.sqrt(x)
+
+
+def _f_vsum(a, axis=None):
+    """Fortran SUM accumulates in element order; a sequential fori_loop
+    keeps the fold order the NumPy anchor uses (its ``_f_vsum``), so the
+    two sides differ by XLA's rounding alone and not by association."""
+    arr = jnp.asarray(a)
+    if axis is None:
+        flat = jnp.ravel(arr, order="F")
+
+        def body(i, s):
+            return s + flat[i]
+
+        return lax.fori_loop(0, flat.shape[0], body, jnp.zeros((), dtype=arr.dtype))
+    moved = jnp.moveaxis(arr, axis, 0)
+
+    def body_axis(i, s):
+        return s + moved[i]
+
+    return lax.fori_loop(0, moved.shape[0], body_axis, jnp.zeros(moved.shape[1:], dtype=arr.dtype))
+
+
+def _f_verf(x):
+    from jax.scipy.special import erf as _erf
+
+    return _erf(x)
+
+
+def _f_verfc(x):
+    from jax.scipy.special import erfc as _erfc
+
+    return _erfc(x)
 
 
 def _f_vdot(a, b):
