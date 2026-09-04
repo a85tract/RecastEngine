@@ -252,3 +252,40 @@ def test_an_integer_parameter_divides_the_way_fortran_does(tmp_path: Path) -> No
     exec(text, namespace)
     assert namespace["NRK"] == 4 and isinstance(namespace["NRK"], int)
     assert namespace["HALF"] == 0.5
+
+
+LOGICAL_ARRAYS = """\
+module valid_mod
+  implicit none
+  private
+  public :: check
+contains
+  subroutine check( n, x, l_bad )
+    integer, intent(in) :: n
+    real, dimension(n), intent(in) :: x
+    logical, intent(out) :: l_bad
+    logical, dimension(n) :: l_ok
+    logical :: l_scalar
+    l_ok = x > 0.0
+    l_scalar = .true.
+    l_bad = any( .not. l_ok .and. x < 1.0 ) .or. .not. l_scalar
+  end subroutine check
+end module valid_mod
+"""
+
+
+def test_logical_operators_on_arrays_are_elementwise(tmp_path: Path) -> None:
+    """``any( .not. l_ok )`` over ``logical, dimension(n) :: l_ok`` (CLUBB's
+    new_pdf) is elementwise in Fortran; Python's ``not`` on an array raises.
+    Outside a WHERE, an array operand still gets ``~`` / ``&`` / ``|``, and a
+    scalar one keeps ``not`` / ``and`` / ``or``."""
+    (tmp_path / "valid_mod.f90").write_text(LOGICAL_ARRAYS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:valid_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    module = candidate.files[Path("valid_mod_numpy.py")].decode()
+    assert "(~(l_ok))" in module
+    assert " & " in module
+    assert "not l_scalar" in module
+    assert "not l_ok" not in module

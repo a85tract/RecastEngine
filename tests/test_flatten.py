@@ -478,7 +478,9 @@ def test_the_adapter_declares_a_lower_bound_and_calls_through_a_generic() -> Non
         ],
     }
     plan = FlatPlan(subprogram=subprogram, objects=[])
-    text = fortran_adapter("solve_mod", [plan], ["solve_one"])
-    assert "use solve_mod, only: solve\n" in text
+    text = fortran_adapter(
+        "solve_mod", [plan], ["solve_one", "solve_many"], {"solve_many": "solve"}
+    )
+    assert "use solve_mod, only: solve\n" in text  # both specifics, one generic
     assert "call solve(n=n, x=x)" in text
     assert "solve_one(" not in text.replace("subroutine solve_one_flat(", "")
