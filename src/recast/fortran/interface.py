@@ -1304,6 +1304,12 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 for at, argument in enumerate(sub["args"])
                 if argument["intent"] in ("OUT", "INOUT")
             ],
+            # A buffer OUT is passed in and returned (the caller's storage),
+            # so the caller reads the actual as well as writing it -- the
+            # same rule the scope applies to its own subprograms (#38).
+            "buffer_positions": [
+                at for at, argument in enumerate(sub["args"]) if argument.get("buffer")
+            ],
         }
     # The sibling's generics too: a call spells the generic (CLUBB's
     # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
@@ -1317,6 +1323,9 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         table[generic] = {
             "kind": known[0]["kind"],
             "out_positions": sorted({at for entry in known for at in entry["out_positions"]}),
+            "buffer_positions": sorted(
+                {at for entry in known for at in entry.get("buffer_positions", [])}
+            ),
         }
     return table
 

@@ -384,10 +384,13 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         if callee is None:
             external = scope.externals.get(name)
             out_positions = set(external.get("out_positions", [])) if external else set()
+            buffers = set(external.get("buffer_positions", [])) if external else set()
             for j, actual in enumerate(actuals):
                 if j in out_positions:
                     write_target(actual)
-                else:
+                if j not in out_positions or j in buffers:
+                    # A buffer OUT of a sibling is read as well as written:
+                    # the emitter passes the caller's storage in (#38).
                     reads.update(expr_reads(actual, scope))
             return
 

@@ -153,6 +153,17 @@ class FlatPlan:
     def name(self) -> str:
         return f"{self.subprogram['name']}_flat"
 
+    def _component_names(self, text: str) -> str:
+        """``obj%comp`` in a bound -> the component's flat name, when the
+        plan carries it; left as written otherwise."""
+        carried = {(o.name, c.name): c.flat for o in self.objects for c in o.components}
+
+        def swap(match: re.Match[str]) -> str:
+            key = (match.group(1).lower(), match.group(2).lower())
+            return carried.get(key, match.group(0))
+
+        return re.sub(r"(\w+)\s*%\s*(\w+)", swap, text)
+
     @property
     def usable(self) -> bool:
         return not self.unsupported and bool(self.objects)
@@ -212,7 +223,11 @@ class FlatPlan:
                 for dim in entry["dims"]:
                     if dim.get("ub"):
                         ub = str(dim["ub"]).strip().lower()
-                        sized.append({**dim, "ub": str(self.dim_constants.get(ub, dim["ub"]))})
+                        # ``thvm(ngrdcol, gr%nzt)`` (CLUBB's calc_pressure): a
+                        # dummy sized by a component of the object, spelled
+                        # by that component's flat name, an argument here.
+                        ub = self._component_names(ub)
+                        sized.append({**dim, "ub": str(self.dim_constants.get(ub, ub))})
                     else:
                         counter = f"{self.counter_prefix}{entry['name'].lower()}"
                         extent = counter if counter in names else self.patch_count
@@ -813,6 +828,10 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
             touched.setdefault(obj, {}).setdefault(member, False)
             if name in writes:
                 touched[obj][member] = True
+        # Every dummy's type first, so a bound in one object's allocation
+        # naming another object's component finds that type on record.
+        for type_name in dummies.values():
+            type_info(type_name)
         for obj in sorted(touched):
             if obj in dummies:
                 flat = FlatObject(name=obj, type_name=dummies[obj], kind="dummy")
@@ -839,15 +858,26 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
                 (type_files[flat.type_name],),
                 kinds,
             )
-            # A component whose allocation is sized by another component of
-            # the same object (``gr%zm(ngrdcol, gr%nzm)``) needs that one
-            # carried too, as an input, whether or not the body reads it.
-            for member, member_axes in bounds.items():
-                if member not in touched[obj]:
-                    continue
-                for ref in re.findall(r"(\w+)\s*%\s*(\w+)", " ".join(member_axes)):
-                    if ref[0].lower() == obj and ref[1].lower() in comps:
-                        touched[obj].setdefault(ref[1].lower(), False)
+            # A component named by a bound is carried as an input whether
+            # or not the body reads it: by a touched component's allocation
+            # (``gr%zm(ngrdcol, gr%nzm)``), by another object's
+            # (``damping_profile%tau_sponge_damp(gr%nzm)``), or by a dummy's
+            # declaration (``thvm(ngrdcol, gr%nzt)``).
+            named_in_bounds = " ".join(
+                " ".join(type_records[dummies[other]][1].get(member) or [])
+                for other, members in touched.items()
+                if other in dummies and dummies[other] in type_records
+                for member in members
+            )
+            named_in_bounds += " " + " ".join(
+                str(d.get(k) or "")
+                for a in sub["args"]
+                for d in (a.get("dims") or ())
+                for k in ("lb", "ub")
+            )
+            for ref in re.findall(r"(\w+)\s*%\s*(\w+)", named_in_bounds):
+                if ref[0].lower() == obj and ref[1].lower() in comps:
+                    touched[obj].setdefault(ref[1].lower(), False)
             for member, written in sorted(touched[obj].items()):
                 spec = comps.get(member)
                 if spec is None:
