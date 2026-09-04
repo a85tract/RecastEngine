@@ -49,6 +49,119 @@ DEFAULT_RANGE = (-1000.0, 1000.0)
 DEFAULT_INTEGER_RANGE = (1, 8)
 DEFAULT_DIMENSION = 8
 SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
+PROCEDURE_DTYPE = "PROCEDURE"
+"""What a dummy *procedure* argument is declared as.
+
+Not a value the harness can sample: it is something to call, and what both
+sides need is the same callable. See :func:`callback_for`.
+"""
+
+
+def _callback_split(interface: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A call-back interface's arguments, split the way a call to it is made.
+
+    The convention is f2py's, and the emitted translation's: the arguments the
+    Fortran side supplies are passed in, in declaration order, and the ones it
+    reads back come out of the return, in declaration order. An ``intent(inout)``
+    argument is in both.
+    """
+    inputs = [a for a in interface["args"] if a["intent"] in ("IN", "INOUT")]
+    outputs = [a for a in interface["args"] if a["intent"] in ("OUT", "INOUT")]
+    return inputs, outputs
+
+
+def callback_for(np: Any, name: str, interface: dict[str, Any]) -> Any:
+    """One deterministic stand-in for a procedure argument.
+
+    A subprogram that takes a procedure -- a residual, a Jacobian, a
+    user-supplied right-hand side -- cannot be compared without one, and there
+    is no such thing as a *sampled* function. So the harness supplies a fixed
+    one, and hands the *same Python object* to both sides: the reference calls
+    it back through f2py, the candidate calls it directly, and any difference
+    between them is therefore a difference in the code under test rather than
+    in what was called.
+
+    What it computes is deliberately dull -- a bounded, smooth function of the
+    values it was given, with a per-position offset so the outputs are not all
+    equal. It is not a physics problem and does not claim to be one; the claim
+    a differential makes is that both sides did the same arithmetic, and any
+    total function of the inputs supports it.
+    """
+    inputs, outputs = _callback_split(interface)
+    unsupported = [
+        f"{a['name']!r}={a['dtype']!r}"
+        for a in interface["args"]
+        if a["dtype"] not in SUPPORTED_DTYPES
+    ]
+    if unsupported:
+        raise ValueError(
+            f"call-back {name!r} takes argument(s) {', '.join(unsupported)}, which this "
+            "harness cannot supply"
+        )
+    if interface["kind"] != "subroutine":
+        raise ValueError(f"call-back {name!r} is a function; this harness supplies subroutines")
+
+    def shape_of(argument: dict[str, Any], bound: dict[str, Any]) -> tuple[int, ...]:
+        axes = []
+        for dim in argument.get("dims") or []:
+            axis = str(dim.get("ub") or "").strip().lower()
+            if axis not in bound:
+                raise ValueError(
+                    f"call-back {name!r} output {argument['name']!r} has extent {axis!r}, "
+                    "which the call does not supply"
+                )
+            axes.append(int(np.asarray(bound[axis]).item()))
+        return tuple(axes)
+
+    def call(*values: Any) -> Any:
+        if len(values) != len(inputs):
+            raise ValueError(
+                f"call-back {name!r} takes {len(inputs)} argument(s), called with {len(values)}"
+            )
+        bound = {a["name"].lower(): v for a, v in zip(inputs, values, strict=True)}
+        # Only the real ``intent(in)`` arguments feed the value. An integer
+        # flag is a mode rather than data; and an ``intent(inout)`` argument
+        # is where an answer goes, so on the first call it holds whatever the
+        # caller's uninitialized buffer held -- reading it would make the
+        # call-back's answer depend on memory neither side defines, which is
+        # a difference between the two sides that is not a difference in the
+        # code under test.
+        supplied = [
+            np.ravel(np.asarray(bound[a["name"].lower()], dtype=np.float64))
+            for a in inputs
+            if a["dtype"] in ("float32", "float64") and a["intent"] == "IN"
+        ]
+        pool = np.concatenate(supplied) if supplied else np.zeros(1)
+        if pool.size == 0:
+            pool = np.zeros(1)
+        produced = []
+        for argument in outputs:
+            if argument["dtype"] in ("int32", "int64", "bool"):
+                # An integer or logical the caller reads back is a control
+                # flag -- ``iflag`` says "keep going" -- and inventing a value
+                # for it would steer the algorithm rather than answer it.
+                produced.append(bound.get(argument["name"].lower(), 0))
+                continue
+            shape = shape_of(argument, bound)
+            count = int(np.prod(shape)) if shape else 1
+            picks = pool[np.arange(count) % pool.size]
+            offsets = (np.arange(count) % 5) * 0.25
+            values_out = picks + 0.5 * picks / (1.0 + picks * picks) - offsets
+            produced.append(np.float64(values_out[0]) if not shape else values_out.reshape(shape))
+        return produced[0] if len(produced) == 1 else tuple(produced)
+
+    # f2py reads the *arity* of the Python object it was handed -- how many
+    # of the call-back's arguments to pass is ``__code__.co_argcount`` -- and
+    # a ``*values`` function reports none, so the reference called it with
+    # nothing. The arity is part of the calling convention, so it is spelled.
+    parameters = ", ".join(f"_cb{index}" for index in range(len(inputs)))
+    namespace: dict[str, Any] = {"_call": call}
+    exec(  # noqa: S102 - the text is this function's own, over generated names
+        f"def _callback({parameters}):\n    return _call({parameters})\n", namespace
+    )
+    callback = namespace["_callback"]
+    callback.__name__ = f"callback_{name}"
+    return callback
 
 
 def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
@@ -116,6 +229,32 @@ class BitexactVerifier(Verifier):
 
     name = "differential.bitexact"
     provides = Confidence.BIT_EXACT
+
+    draws_per_trial: int = 24
+    """How many draws one trial may take before the harness gives up on it.
+
+    A generated draw is not always one the subprogram accepts: an argument
+    outside the domain the source itself declares (``error stop 'invalid
+    mode'``), an extent too small for the subscripts the body forms, a value
+    that drives the arithmetic into NaN. None of those is a difference
+    between the two sides -- the reference cannot even be *called* on the
+    first two without ending the process or reading memory it does not own --
+    so the trial is drawn again, with a fresh seed and fresh unpinned
+    extents, rather than reported as a comparison that failed.
+
+    Bounded, and the bound is the point: a subprogram whose every draw is
+    refused is reported as one that could not be compared, which is what
+    ``uncovered`` and the coverage gate above are for. The number of redraws
+    is recorded per subprogram so the count is never silent.
+
+    Two things a redraw is not for. A NaN on one side only is a mismatch
+    between the sides, not a domain draw, and is counted as one; only a trial
+    where both sides produce NaN at the same points is drawn again. And a
+    trial compared only after a shape refusal moved the free extents is
+    evidence at the extents it landed on, not the configured ones: a
+    subprogram that passes mostly that way fails by name, with the number of
+    such trials recorded as ``reshaped``.
+    """
 
     dominant_at: float | None = None
     """Fraction of a row's maximum above which an element is *dominant*.
@@ -208,7 +347,7 @@ class BitexactVerifier(Verifier):
             translated = self._load_candidate(
                 candidate, workspace, config.get("module_suffix", "_numpy.py")
             )
-        except Exception as error:  # fail closed, whatever broke
+        except (Exception, SystemExit) as error:  # fail closed, whatever broke
             return self._verdict(
                 candidate, Confidence.FAILED, {}, f"candidate does not import: {error}"
             )
@@ -244,11 +383,17 @@ class BitexactVerifier(Verifier):
             tried would fail the whole gate on an init routine's errstring.
             Explicit config still wins -- and then fails loudly.
             """
-            return not any(
-                a["dtype"] == "str" and not a.get("optional")
-                for a in table[name]["args"]
-                if a["intent"] != "OUT"
-            )
+            for a in table[name]["args"]:
+                if a["intent"] == "OUT" or a.get("optional"):
+                    continue
+                if a["dtype"] == "str":
+                    return False
+                if a["dtype"] == PROCEDURE_DTYPE and not isinstance(a.get("interface"), dict):
+                    # A procedure argument the frontend could not resolve an
+                    # interface for: nothing here can say what calling it
+                    # means, so nothing here can supply one.
+                    return False
+            return True
 
         if recorded:
             # A recording names what it is a recording of, so the set to
@@ -290,7 +435,7 @@ class BitexactVerifier(Verifier):
                 wrappers,
                 str(handle.get("arg_naming", "lower")),
             )
-        except Exception as error:  # fail closed
+        except (Exception, SystemExit) as error:  # fail closed
             return self._verdict(candidate, Confidence.FAILED, {}, f"setup call failed: {error}")
 
         per_subprogram: dict[str, dict[str, Any]] = {}
@@ -325,6 +470,7 @@ class BitexactVerifier(Verifier):
                 dominant_at=config.get("dominant_at", self.dominant_at),
                 dominant_axis=config.get("dominant_axis", -1),
                 rel_scale=str(config.get("rel_scale", "element")),
+                draws=int(config.get("draws", self.draws_per_trial)),
                 arg_naming=str(handle.get("arg_naming", "lower")),
                 convention=str(handle.get("return_convention", "f2py")),
                 samples=by_subprogram.get(name) if recorded else None,
@@ -520,6 +666,7 @@ class BitexactVerifier(Verifier):
         dominant_at: float | None = None,
         dominant_axis: Any = -1,
         rel_scale: str = "element",
+        draws: int = 1,
         arg_naming: str = "lower",
         convention: str = "f2py",
         samples: list[dict[str, Any]] | None = None,
@@ -530,7 +677,9 @@ class BitexactVerifier(Verifier):
             return {"error": f"oracle declares unsupported return convention {convention!r}"}
 
         declared_dtypes = [
-            (f"argument {a.get('name', '<unnamed>')!r}", a.get("dtype")) for a in sub["args"]
+            (f"argument {a.get('name', '<unnamed>')!r}", a.get("dtype"))
+            for a in sub["args"]
+            if a.get("dtype") != PROCEDURE_DTYPE
         ]
         if sub["kind"] == "function":
             declared_dtypes.append(("function result", sub.get("result_dtype")))
@@ -588,6 +737,17 @@ class BitexactVerifier(Verifier):
         max_ulp_dominant = 0
         dominant_points = 0
         max_rel = 0.0
+        redrawn = 0
+        # Trials that were compared only after a shape refusal moved the free
+        # extents off the configured ones.
+        reshaped = 0
+        # Extents no operator pinned. A redraw varies these along with the
+        # values, because some of what a subprogram will not accept is a
+        # *shape*: a packed triangular workspace wants an extent that is a
+        # function of the order it goes with, and one drawn independently of
+        # that order is a subscript past the end rather than a comparison.
+        free_extents = sorted(dimension_names - {str(k).lower() for k in dims})
+        attempts = 1 if samples is not None else max(1, int(draws))
         # Replayed samples are the trials, and there are as many as were
         # recorded. ``trials`` is a sampling parameter and does not apply: a
         # recording cannot be asked for more points than it holds, and
@@ -595,193 +755,315 @@ class BitexactVerifier(Verifier):
         # evidence.
         rounds: list[Any] = list(samples) if samples is not None else list(range(trials))
         for round_index, round_item in enumerate(rounds):
-            # hash() is salted per process; a seed must not be.
-            rng = np.random.default_rng(
-                int.from_bytes(f"{name}:{round_index}".encode(), "big") % 2**32
-            )
-            if samples is not None:
-                bound = self._recorded_inputs(np, required, round_item)
-                if isinstance(bound, str):
-                    return {"error": bound}
-                inputs = bound
-            else:
-                inputs = {}
-                for argument in required:
-                    if argument["intent"] == "OUT" and not argument.get("buffer"):
-                        continue
-                    # An intent(out) buffer is the caller's storage: generated
-                    # like an input, handed to the candidate, and compared
-                    # after the call the way any output is.
-                    lowered = argument["name"].lower()
-                    if not argument.get("dims") and (lowered in dimension_names or lowered in dims):
-                        inputs[argument["name"]] = np.int32(_resolve_extent(lowered, dims))
-                    else:
-                        inputs[argument["name"]] = self._value(np, argument, dims, ranges, rng)
+            declined = ""
+            reshape = False
+            for attempt in range(attempts):
+                reason = ""
+                # hash() is salted per process; a seed must not be.
+                salt = f"{name}:{round_index}"
+                if attempt:
+                    salt = f"{salt}:{attempt}"
+                rng = np.random.default_rng(int.from_bytes(salt.encode(), "big") % 2**32)
+                trial_dims = dict(dims)
+                if reshape:
+                    # Only once a draw has been refused for its *shape*. A
+                    # value the subprogram will not take -- a mode it stops
+                    # on, an argument that drives the arithmetic to NaN -- is
+                    # answered by drawing values again, and moving the extents
+                    # as well would break the relations the default choice
+                    # keeps: every unpinned extent is the same number, so a
+                    # leading dimension is never smaller than the order it
+                    # carries.
+                    ceiling = int(dims.get("default_dim", DEFAULT_DIMENSION))
+                    for extent in free_extents:
+                        trial_dims[extent] = int(rng.integers(1, ceiling + 1))
+                staged: list[dict[str, Any]] = []
+                if samples is not None:
+                    bound = self._recorded_inputs(np, required, round_item)
+                    if isinstance(bound, str):
+                        return {"error": bound}
+                    inputs = bound
+                else:
+                    inputs = {}
+                    for argument in required:
+                        if argument["intent"] == "OUT" and not argument.get("buffer"):
+                            continue
+                        # An intent(out) buffer is the caller's storage: generated
+                        # like an input, handed to the candidate, and compared
+                        # after the call the way any output is.
+                        lowered = argument["name"].lower()
+                        if argument.get("dtype") == PROCEDURE_DTYPE:
+                            interface = argument.get("interface")
+                            if not isinstance(interface, dict):
+                                return {
+                                    "error": f"procedure argument {argument['name']!r} carries no "
+                                    "interface; there is nothing to build a call-back from"
+                                }
+                            try:
+                                inputs[argument["name"]] = callback_for(
+                                    np, argument["name"], interface
+                                )
+                            except ValueError as error:
+                                return {"error": str(error)}
+                        elif not argument.get("dims") and (
+                            lowered in dimension_names or lowered in dims
+                        ):
+                            inputs[argument["name"]] = np.int32(
+                                _resolve_extent(lowered, trial_dims)
+                            )
+                        else:
+                            inputs[argument["name"]] = self._value(
+                                np, argument, trial_dims, ranges, rng
+                            )
 
-            recorded_outputs = None
-            if samples is not None:
-                recorded_outputs = round_item.get("outputs")
-                if not isinstance(recorded_outputs, dict):
-                    return {"error": f"{round_item.get('source', 'sample')} has no OUTPUT mapping"}
-                required_output_names = (
-                    [sub.get("result") or "result"]
-                    if sub["kind"] == "function"
-                    else [a["name"] for a in outs_required]
-                )
-                missing_outputs = [
-                    output
-                    for output in required_output_names
-                    if output.lower() not in recorded_outputs
-                ]
-                if missing_outputs:
-                    return {
-                        "error": "the recorded sample carries no value for required output(s) "
-                        f"{', '.join(missing_outputs)}; partial output evidence is not a pass"
-                    }
+                recorded_outputs = None
+                if samples is not None:
+                    recorded_outputs = round_item.get("outputs")
+                    if not isinstance(recorded_outputs, dict):
+                        source = round_item.get("source", "sample")
+                        return {"error": f"{source} has no OUTPUT mapping"}
+                    required_output_names = (
+                        [sub.get("result") or "result"]
+                        if sub["kind"] == "function"
+                        else [a["name"] for a in outs_required]
+                    )
+                    missing_outputs = [
+                        output
+                        for output in required_output_names
+                        if output.lower() not in recorded_outputs
+                    ]
+                    if missing_outputs:
+                        return {
+                            "error": "the recorded sample carries no value for required output(s) "
+                            f"{', '.join(missing_outputs)}; partial output evidence is not a pass"
+                        }
 
-            if prepare is not None and samples is None:
-                # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
-                # rng)`` hook, the way it carries ``_SIGNATURES``: per-name
-                # ranges cannot express structure -- a pressure column must
-                # be monotone, an interface field must bracket its levels --
-                # and unphysical inputs drive both sides into error paths
-                # the production model aborts out of. The hook shapes inputs
-                # into the defined domain; it cannot bias the verdict,
-                # because both sides receive the same shaped inputs.
-                #
-                # It is skipped for a replay, and that is the important half:
-                # the hook exists to drag *generated* inputs into the physical
-                # domain, and recorded inputs are already there by
-                # construction. Running it would let the candidate edit the
-                # production run's own numbers before being judged on them,
-                # which is the one thing a hook supplied by the artifact under
-                # test must never be able to do.
-                prepare(name, inputs, rng)
+                if prepare is not None and samples is None:
+                    # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
+                    # rng)`` hook, the way it carries ``_SIGNATURES``: per-name
+                    # ranges cannot express structure -- a pressure column must
+                    # be monotone, an interface field must bracket its levels --
+                    # and unphysical inputs drive both sides into error paths
+                    # the production model aborts out of. The hook shapes inputs
+                    # into the defined domain; it cannot bias the verdict,
+                    # because both sides receive the same shaped inputs.
+                    #
+                    # It is skipped for a replay, and that is the important half:
+                    # the hook exists to drag *generated* inputs into the physical
+                    # domain, and recorded inputs are already there by
+                    # construction. Running it would let the candidate edit the
+                    # production run's own numbers before being judged on them,
+                    # which is the one thing a hook supplied by the artifact under
+                    # test must never be able to do.
+                    prepare(name, inputs, rng)
 
-            # Keyword calls on both sides: f2py reorders inferred-dimension
-            # scalars into trailing keywords, so positional order is not a
-            # shared vocabulary -- names are.
-            translated_kwargs = {
-                pysafe(a["name"]): inputs[a["name"]]
-                for a in required
-                if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
-            }
-            # How the reference spells an argument is the reference's business,
-            # and it declares which on its handle. f2py lowercases every dummy
-            # name, because Fortran is case-insensitive and the source's
-            # spelling is not a fact about the interface -- a candidate that
-            # reports `sl_prePBL` still reaches the same oracle argument. An
-            # anchor emitted by this engine's own backend spells names the
-            # emitted way instead, because both sides of that comparison came
-            # out of the same emitter.
-            spell = pysafe if arg_naming == "pysafe" else str.lower
-            try:
-                truth_kwargs = {
-                    spell(a["name"]): self._truth_input(np, a, inputs[a["name"]], convention)
+                # Keyword calls on both sides: f2py reorders inferred-dimension
+                # scalars into trailing keywords, so positional order is not a
+                # shared vocabulary -- names are.
+                translated_kwargs = {
+                    pysafe(a["name"]): inputs[a["name"]]
                     for a in required
-                    if a["intent"] != "OUT"
+                    if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
                 }
-            except Exception as error:
-                return {
-                    "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
-                }
-            truth_args = [truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"]
-            try:
-                translated_out = translated_fn(**translated_kwargs)
-            except Exception as error:
-                return {"error": f"candidate raised: {type(error).__name__}: {error}"}
-            if samples is not None:
-                # Nothing to call: the reference already ran, in production,
-                # and what it produced is the recording.
-                truth_out = recorded_outputs
-            else:
+                # How the reference spells an argument is the reference's business,
+                # and it declares which on its handle. f2py lowercases every dummy
+                # name, because Fortran is case-insensitive and the source's
+                # spelling is not a fact about the interface -- a candidate that
+                # reports `sl_prePBL` still reaches the same oracle argument. An
+                # anchor emitted by this engine's own backend spells names the
+                # emitted way instead, because both sides of that comparison came
+                # out of the same emitter.
+                spell = pysafe if arg_naming == "pysafe" else str.lower
                 try:
-                    truth_out = truth_fn(**truth_kwargs)
+                    truth_kwargs = {
+                        spell(a["name"]): self._truth_input(np, a, inputs[a["name"]], convention)
+                        for a in required
+                        if a["intent"] != "OUT"
+                    }
                 except Exception as error:
-                    return {"error": f"oracle raised: {type(error).__name__}: {error}"}
+                    return {
+                        "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
+                    }
+                truth_args = [
+                    truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"
+                ]
+                try:
+                    translated_out = translated_fn(**translated_kwargs)
+                except (SystemExit, IndexError) as error:
+                    # Not a comparison that failed -- a draw the subprogram does
+                    # not take. ``SystemExit`` is a translated ERROR STOP: the
+                    # source itself saying these arguments are not its own, and
+                    # the reference would say the same by ending the process,
+                    # taking every other unit's verdict with it. ``IndexError`` is
+                    # a subscript past a dummy array's declared extent, where the
+                    # reference, compiled without bounds checking, reads memory
+                    # the call does not own. Either way the reference must not be
+                    # called on this draw; draw again.
+                    declined = f"candidate raised: {type(error).__name__}: {error}"
+                    reshape = reshape or isinstance(error, IndexError)
+                    redrawn += 1
+                    continue
+                except Exception as error:
+                    return {"error": f"candidate raised: {type(error).__name__}: {error}"}
+                if samples is not None:
+                    # Nothing to call: the reference already ran, in production,
+                    # and what it produced is the recording.
+                    truth_out = recorded_outputs
+                else:
+                    try:
+                        truth_out = truth_fn(**truth_kwargs)
+                    except Exception as error:
+                        return {"error": f"oracle raised: {type(error).__name__}: {error}"}
 
-            pairs = self._paired_outputs(
-                sub,
-                outs_all,
-                outs_required,
-                required,
-                translated_out,
-                truth_out,
-                truth_args,
-                convention,
-            )
-            if isinstance(pairs, str):
-                return {"error": pairs}
-            output_dtypes = (
-                {sub.get("result") or "result": sub.get("result_dtype")}
-                if sub["kind"] == "function"
-                else {a["name"]: a.get("dtype") for a in outs_all}
-            )
-            for label, ours, theirs in pairs:
-                declared_dtype = output_dtypes.get(label)
-                if declared_dtype in {"int32", "int64"}:
-                    shaped_ours = self._integer_output(
-                        np, ours, declared_dtype, label=label, side="candidate"
-                    )
-                    if isinstance(shaped_ours, str):
-                        return {"error": shaped_ours}
-                    shaped_theirs = self._integer_output(
-                        np, theirs, declared_dtype, label=label, side="oracle"
-                    )
-                    if isinstance(shaped_theirs, str):
-                        return {"error": shaped_theirs}
+                pairs = self._paired_outputs(
+                    sub,
+                    outs_all,
+                    outs_required,
+                    required,
+                    translated_out,
+                    truth_out,
+                    truth_args,
+                    convention,
+                )
+                if isinstance(pairs, str):
+                    return {"error": pairs}
+                output_dtypes = (
+                    {sub.get("result") or "result": sub.get("result_dtype")}
+                    if sub["kind"] == "function"
+                    else {a["name"]: a.get("dtype") for a in outs_all}
+                )
+                for label, ours, theirs in pairs:
+                    declared_dtype = output_dtypes.get(label)
+                    if declared_dtype in {"int32", "int64"}:
+                        shaped_ours = self._integer_output(
+                            np, ours, declared_dtype, label=label, side="candidate"
+                        )
+                        if isinstance(shaped_ours, str):
+                            return {"error": shaped_ours}
+                        shaped_theirs = self._integer_output(
+                            np, theirs, declared_dtype, label=label, side="oracle"
+                        )
+                        if isinstance(shaped_theirs, str):
+                            return {"error": shaped_theirs}
+                        if shaped_ours.shape != shaped_theirs.shape:
+                            return {
+                                "error": f"{label}: shape {shaped_ours.shape} "
+                                f"vs {shaped_theirs.shape}"
+                            }
+                        exact = shaped_ours == shaped_theirs
+                        compared = int(exact.size)
+                        agreed = int(np.count_nonzero(exact))
+                        staged.append(
+                            {
+                                "points": compared,
+                                "bit_exact": agreed,
+                                "integer_points": compared,
+                                "integer_mismatch": compared - agreed,
+                            }
+                        )
+                        continue
+                    if declared_dtype == "bool":
+                        # f2py exposes Fortran LOGICAL as a C int.  A true value
+                        # need only be nonzero: gfortran commonly emits 1/-1/-2,
+                        # and another compiler may choose a different bit pattern.
+                        # Compare the declared logical meaning, not that private
+                        # representation.
+                        shaped_ours = np.asarray(np.asarray(ours) != 0, dtype=np.float64)
+                        shaped_theirs = np.asarray(np.asarray(theirs) != 0, dtype=np.float64)
+                    else:
+                        shaped_ours = np.asarray(ours, dtype=np.float64)
+                        shaped_theirs = np.asarray(theirs, dtype=np.float64)
                     if shaped_ours.shape != shaped_theirs.shape:
                         return {
                             "error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"
                         }
-                    exact = shaped_ours == shaped_theirs
-                    compared = int(exact.size)
-                    agreed = int(np.count_nonzero(exact))
-                    points += compared
-                    bit_exact += agreed
-                    integer_points += compared
-                    integer_mismatch += compared - agreed
+                    a = shaped_ours.ravel()
+                    b = shaped_theirs.ravel()
+                    audit = ulp_audit(
+                        a.tolist(),
+                        b.tolist(),
+                        dominant=self._dominance(np, shaped_theirs, dominant_at, dominant_axis),
+                    )
+                    if samples is None:
+                        nan_ours = np.isnan(a)
+                        nan_theirs = np.isnan(b)
+                        if nan_ours.any() and bool((nan_ours == nan_theirs).all()):
+                            # A draw that put the subprogram outside its numeric
+                            # domain on *both* sides: a square root of a negative,
+                            # a division that overflowed. Fortran does not say
+                            # what MIN and MAX return for a NaN operand, and
+                            # gfortran's answer is whichever operand its register
+                            # allocator made the second one, so what the two
+                            # sides do with the NaN afterwards is the compiler's
+                            # scheduling rather than the translation; the trial is
+                            # drawn again. A NaN on one side where the other has
+                            # a number is not that: it is a ``nan_mismatch``, and
+                            # it fails the unit.
+                            reason = f"{label}: a NaN in the compared values on both sides"
+                            continue
+                    measured: dict[str, Any] = {
+                        "points": audit["total_points"],
+                        "bit_exact": audit["bit_exact"],
+                        "nan_mismatch": audit["nan_mismatch"],
+                        "max_ulp": audit["max_ulp"],
+                    }
+                    if "max_ulp_dominant" in audit:
+                        measured["max_ulp_dominant"] = audit["max_ulp_dominant"]
+                        measured["dominant_points"] = audit["dominant_points"]
+                    if audit["bit_exact"] != audit["total_points"]:
+                        # ``rel_scale``: each element against itself (the default),
+                        # or ``"array"`` -- against the array's largest magnitude,
+                        # for a layout where a cancellation residual of 1e-17 sits
+                        # beside values of order one and its own relative error
+                        # says nothing about the translation.
+                        if rel_scale == "array":
+                            scale = np.maximum(float(np.abs(b).max()) if b.size else 0.0, 1e-300)
+                        else:
+                            scale = np.maximum(np.abs(b), 1e-300)
+                        with np.errstate(invalid="ignore"):
+                            rel = np.abs(a - b) / scale
+                        # A one-sided NaN is counted in ``nan_mismatch``; it has
+                        # no relative error to report.
+                        rel = rel[~np.isnan(rel)]
+                        measured["max_rel"] = float(rel.max()) if rel.size else 0.0
+                    staged.append(measured)
+                if reason:
+                    declined = reason
+                    redrawn += 1
                     continue
-                if declared_dtype == "bool":
-                    # f2py exposes Fortran LOGICAL as a C int.  A true value
-                    # need only be nonzero: gfortran commonly emits 1/-1/-2,
-                    # and another compiler may choose a different bit pattern.
-                    # Compare the declared logical meaning, not that private
-                    # representation.
-                    shaped_ours = np.asarray(np.asarray(ours) != 0, dtype=np.float64)
-                    shaped_theirs = np.asarray(np.asarray(theirs) != 0, dtype=np.float64)
-                else:
-                    shaped_ours = np.asarray(ours, dtype=np.float64)
-                    shaped_theirs = np.asarray(theirs, dtype=np.float64)
-                if shaped_ours.shape != shaped_theirs.shape:
-                    return {"error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"}
-                a = shaped_ours.ravel()
-                b = shaped_theirs.ravel()
-                audit = ulp_audit(
-                    a.tolist(),
-                    b.tolist(),
-                    dominant=self._dominance(np, shaped_theirs, dominant_at, dominant_axis),
-                )
-                points += audit["total_points"]
-                bit_exact += audit["bit_exact"]
-                nan_mismatch += audit["nan_mismatch"]
-                max_ulp = max(max_ulp, audit["max_ulp"])
-                if "max_ulp_dominant" in audit:
-                    max_ulp_dominant = max(max_ulp_dominant, audit["max_ulp_dominant"])
-                    dominant_points += audit["dominant_points"]
-                if audit["bit_exact"] != audit["total_points"]:
-                    # ``rel_scale``: each element against itself (the default),
-                    # or ``"array"`` -- against the array's largest magnitude,
-                    # for a layout where a cancellation residual of 1e-17 sits
-                    # beside values of order one and its own relative error
-                    # says nothing about the translation.
-                    if rel_scale == "array":
-                        scale = np.maximum(float(np.abs(b).max()) if b.size else 0.0, 1e-300)
-                    else:
-                        scale = np.maximum(np.abs(b), 1e-300)
-                    with np.errstate(invalid="ignore"):
-                        rel = float(np.nanmax(np.abs(a - b) / scale))
-                    max_rel = max(max_rel, rel)
+                if reshape:
+                    reshaped += 1
+                for measured in staged:
+                    points += measured["points"]
+                    bit_exact += measured["bit_exact"]
+                    nan_mismatch += measured.get("nan_mismatch", 0)
+                    integer_points += measured.get("integer_points", 0)
+                    integer_mismatch += measured.get("integer_mismatch", 0)
+                    max_ulp = max(max_ulp, measured.get("max_ulp", 0))
+                    if "max_ulp_dominant" in measured:
+                        max_ulp_dominant = max(max_ulp_dominant, measured["max_ulp_dominant"])
+                        dominant_points += measured["dominant_points"]
+                    max_rel = max(max_rel, measured.get("max_rel", 0.0))
+                break
+            else:
+                return {
+                    "error": f"no draw this harness could compare in {attempts} attempt(s): "
+                    + (declined or "reason not recorded")
+                }
+        if samples is None and reshaped * 2 > len(rounds):
+            # A trial compared only after its extents were moved is evidence
+            # about the extents the redraw happened to land on, not the ones
+            # asked for. A subprogram that passes mostly that way -- a packed
+            # workspace whose ``lr`` must be ``n(n+1)/2`` at every order, so the
+            # default extents never work and the redraws that do are n = 1 --
+            # is unverified at the configured extents, and says so by name
+            # rather than passing on the handful of points that did fit.
+            return {
+                "error": f"{reshaped} of {len(rounds)} trial(s) were compared only after the "
+                f"free extent(s) {', '.join(free_extents)} were moved off the configured "
+                f"values; the {points} point(s) that fit are not evidence at those extents. "
+                "Pin `dims` to extents the subprogram takes"
+            }
         outcome = {
             "points": points,
             "bit_exact": bit_exact,
@@ -790,6 +1072,8 @@ class BitexactVerifier(Verifier):
             "nan_mismatch": nan_mismatch,
             "integer_points": integer_points,
             "integer_mismatch": integer_mismatch,
+            "redrawn": redrawn,
+            "reshaped": reshaped,
         }
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
@@ -940,6 +1224,11 @@ class BitexactVerifier(Verifier):
         value.  Array INOUTs already arrive as independent writable copies;
         emitted and recorded references retain their own conventions.
         """
+        if argument.get("dtype") == PROCEDURE_DTYPE:
+            # The same object on both sides. Copying it would be meaningless
+            # and independence is not the point here: what makes the
+            # comparison a comparison is that both sides call the same thing.
+            return value
         if convention == "f2py" and argument["intent"] == "INOUT" and not argument.get("dims"):
             buffered = np.asarray(value).copy()
             if buffered.ndim != 0:
@@ -1147,9 +1436,14 @@ class BitexactVerifier(Verifier):
             return np.asfortranarray(
                 rng.integers(int(low), int(high) + 1, size=shape).astype(dtype)
             )
+        # A logical takes a range like anything else: ``pivot`` decides
+        # whether ``qrfac`` writes ``ipvt`` at all, and an operator with no
+        # way to pin it is comparing an array one side never defined.
+        low, high = ranges.get(name, (0, 1))
+        low, high = min(int(low), int(high)), max(int(low), int(high))
         if shape is None:
-            return np.bool_(rng.integers(0, 2))
-        return np.asfortranarray(rng.integers(0, 2, size=shape).astype(np.bool_))
+            return np.bool_(rng.integers(low, high + 1))
+        return np.asfortranarray(rng.integers(low, high + 1, size=shape).astype(np.bool_))
 
     # -- loading --------------------------------------------------------------
 

@@ -135,6 +135,14 @@ contains
     call ext_sub(s, c)
     call vec2(w(1, j))
     call consume(n, j, flat)
+    call spread_it(2, j, flat)
+    call pick_it(flat)
+    call fillv(a(n))
+    call fillm(a(n))
+    s = pick_norm(2, w(1, j))
+    call tailv(a(n))
+    call tailm(a(n))
+    s = tail_norm(a(n))
   end subroutine calls
 
   subroutine initialised(x)
@@ -294,6 +302,51 @@ contains
     state(1) = x(1, 1)
   end subroutine consume
 
+  subroutine spread_it(Lda, k, x)
+    integer, intent(in) :: Lda, k
+    real(r8), intent(in) :: x(Lda, k)
+    state(1) = x(1, 1)
+  end subroutine spread_it
+
+  subroutine pick_it(x, m)
+    real(r8), intent(in) :: x(m, 2)
+    integer, intent(in), optional :: m
+    state(1) = x(1, 1)
+  end subroutine pick_it
+
+  subroutine fillv(x)
+    real(r8), intent(out) :: x(2)
+    x = 0.0_r8
+  end subroutine fillv
+
+  subroutine fillm(x)
+    real(r8), intent(out) :: x(2, 2)
+    x = 0.0_r8
+  end subroutine fillm
+
+  function pick_norm(m, x) result(r)
+    integer, intent(in) :: m
+    real(r8), intent(in) :: x(m)
+    real(r8) :: r
+    r = x(1)
+  end function pick_norm
+
+  subroutine tailv(x)
+    real(r8), intent(inout) :: x(*)
+    x(1) = 0.0_r8
+  end subroutine tailv
+
+  subroutine tailm(x)
+    real(r8), intent(inout) :: x(2, *)
+    x(1, 1) = 0.0_r8
+  end subroutine tailm
+
+  function tail_norm(x) result(r)
+    real(r8), intent(in) :: x(*)
+    real(r8) :: r
+    r = x(1)
+  end function tail_norm
+
   subroutine scale_scalar(x, f)
     real(r8), intent(inout) :: x
     real(r8), intent(in) :: f
@@ -378,11 +431,52 @@ end module caller_mod
 """
 
 
+CALLBACK = """\
+module callback_mod
+  implicit none
+  abstract interface
+    subroutine func(n, x, fvec, iflag)
+      implicit none
+      integer, intent(in) :: n
+      real, intent(in) :: x(n)
+      real, intent(out) :: fvec(n)
+      integer, intent(inout) :: iflag
+    end subroutine func
+    real function score(v)
+      implicit none
+      real, intent(in) :: v
+    end function score
+  end interface
+contains
+  subroutine sweep(fcn, n, x, work, iflag)
+    procedure(func) :: fcn
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    real, intent(inout) :: work(n)
+    integer, intent(inout) :: iflag
+    call fcn(n, x, work, iflag)
+  end subroutine sweep
+
+  subroutine untyped(fcn, n, x)
+    external :: fcn
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    call fcn(n, x)
+  end subroutine untyped
+end module callback_mod
+"""
+
+
 @pytest.fixture(scope="module")
 def sources(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     root = tmp_path_factory.mktemp("emit")
     paths = {}
-    for name, text in (("emit_mod", SOURCE), ("sibling_mod", COMPANION), ("caller_mod", CALLER)):
+    for name, text in (
+        ("emit_mod", SOURCE),
+        ("sibling_mod", COMPANION),
+        ("caller_mod", CALLER),
+        ("callback_mod", CALLBACK),
+    ):
         paths[name] = root / f"{name}.f90"
         paths[name].write_text(text)
     return paths
@@ -638,8 +732,8 @@ def test_a_goto_with_no_structuring_pattern_is_refused(sources: dict[str, Path])
 
 def test_allocate_takes_the_declared_dtype(sources: dict[str, Path]) -> None:
     statements, nodes = build(sources["emit_mod"], "alloc")
-    assert statements.render(nodes[0], 1) == ["    buf = np.empty((n,), dtype=np.float64)"]
-    assert statements.render(nodes[1], 1) == ["    idx = np.empty((n,), dtype=np.int32)"]
+    assert statements.render(nodes[0], 1) == ["    buf = np.zeros((n,), dtype=np.float64)"]
+    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((n,), dtype=np.int32)"]
 
 
 def test_an_allocate_is_undefined_memory_too_and_is_poisoned_with_the_rest(
@@ -647,12 +741,13 @@ def test_an_allocate_is_undefined_memory_too_and_is_poisoned_with_the_rest(
 ) -> None:
     """``allocate(buf(n))`` leaves ``buf`` undefined exactly as a local
     automatic array is, and the tool this arm came from poisons by patching
-    ``np.empty`` -- which reaches this site along with the prologue's. Covering
-    the prologue alone would report a clean run for a defect here.
+    the one allocation helper -- which reaches this site along with the
+    prologue's. Covering the prologue alone would report a clean run for a
+    defect here.
     """
     statements, nodes = build(sources["emit_mod"], "alloc", poison=True)
     assert statements.render(nodes[0], 1) == ["    buf = np.full((n,), np.nan, dtype=np.float64)"]
-    assert statements.render(nodes[1], 1) == ["    idx = np.empty((n,), dtype=np.int32)"]
+    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((n,), dtype=np.int32)"]
 
     statements, nodes = build(sources["emit_mod"], "alloc", poison=True, poison_integers=True)
     assert statements.render(nodes[1], 1) == [
@@ -665,7 +760,7 @@ def test_an_allocated_lower_bound_shifts_later_subscripts(sources: dict[str, Pat
     shift by 0, not by the 1 its declaration would suggest."""
     statements, nodes = build(sources["emit_mod"], "alloc")
     assert statements.render(nodes[2], 1) == [
-        "    off = np.empty(((n) - (0) + 1,), dtype=np.float64)"
+        "    off = np.zeros(((n) - (0) + 1,), dtype=np.float64)"
     ]
     assert statements.render(nodes[3], 1) == ["    off[(i) - (0)] = 0.0"]
 
@@ -885,6 +980,58 @@ def test_sequence_association_takes_leading_axes_whole(sources: dict[str, Path])
     assert statements.render(pick(nodes, f03.Call_Stmt, 9), 1) == [
         "    consume(n, j, np.reshape(flat, (n, j,), order='F'))"
     ]
+
+
+def test_an_element_for_an_assumed_size_dummy_is_the_tail_of_the_actual(
+    sources: dict[str, Path],
+) -> None:
+    """``x(*)`` spans the caller's storage from the element to the end of the
+    array, and only the caller knows how far that is: ``a(n)`` is ``a[n-1:]``,
+    a view, so what the callee writes in place is in the caller's array and
+    the copy-out onto the same view changes nothing. Rendering the element
+    alone -- what an unbounded dummy used to get -- handed the callee one
+    number to subscript, and an OUT dummy's writes landed on ``None``."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    assert statements.render(pick(nodes, f03.Call_Stmt, 14), 1) == [
+        "    _f_copy_out(a[(n - 1):], np.ravel(tailv(a[(n - 1):]), order='F'))"
+    ]
+    assignments = [n for n in nodes if isinstance(n, f03.Assignment_Stmt)]
+    assert statements.render(assignments[-1], 1) == ["    s = tail_norm(a[(n - 1):])"]
+
+
+def test_an_element_for_a_rank_2_assumed_size_dummy_is_refused(
+    sources: dict[str, Path],
+) -> None:
+    """``x(2, *)`` has no extent to reshape the tail to, so there is no
+    view for the callee's writes to land in; refused, not rendered as a
+    reshape to ``None``."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    with pytest.raises(REFUSED, match="assumed-size dummy"):
+        statements.render(pick(nodes, f03.Call_Stmt, 15), 1)
+
+
+def test_a_reshape_reads_the_callee_s_bound_in_whatever_case_it_was_written(
+    sources: dict[str, Path],
+) -> None:
+    """``x(Lda, k)`` names the dummy ``lda``: Fortran has one name there, not
+    two. Missing the capital rendered the *callee's* parameter in the
+    *caller's* scope -- a name the caller does not have -- instead of the
+    actual it passed."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    assert statements.render(pick(nodes, f03.Call_Stmt, 10), 1) == [
+        "    spread_it(2, j, np.reshape(flat, (2, j,), order='F'))"
+    ]
+
+
+def test_a_dummy_dimension_this_call_never_bound_is_refused(
+    sources: dict[str, Path],
+) -> None:
+    """``x(m, 2)`` with ``m`` an optional the call leaves out: there is no
+    actual to reshape to, and the caller's own ``m`` -- if it has one -- is a
+    different variable. A refusal, not a guess."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    with pytest.raises(REFUSED):
+        statements.render(pick(nodes, f03.Call_Stmt, 11), 1)
 
 
 # --- companions --------------------------------------------------------------
@@ -1280,3 +1427,31 @@ def test_a_call_through_a_procedure_dummy_binds_to_its_interface(tmp_path):
     )
     lines, _ = assembler.render(node, "once")
     assert any(line.strip() == "y = func(x)" for line in lines), lines
+
+
+# --- dummy procedures --------------------------------------------------------
+
+
+def test_a_call_through_a_dummy_procedure_binds_by_its_interface(
+    sources: dict[str, Path],
+) -> None:
+    """``procedure(func) :: fcn`` says what calling ``fcn`` means, so the
+    call is bound like any other -- IN arguments in, OUT arguments back out --
+    and spelled with the argument's own name, which is the parameter the
+    translated subprogram already takes."""
+    statements, nodes = build(sources["callback_mod"], "sweep")
+    assert statements.render(pick(nodes, f03.Call_Stmt), 1) == [
+        "    _out = fcn(n, x, iflag)",
+        "    _f_copy_out(work, _out[0])",
+        "    iflag = _out[1]",
+    ]
+
+
+def test_a_dummy_procedure_with_no_interface_still_refuses(
+    sources: dict[str, Path],
+) -> None:
+    """``external :: fcn`` names no argument list, so there is nothing to bind
+    against; guessing is how an OUT argument silently becomes an IN one."""
+    statements, nodes = build(sources["callback_mod"], "untyped")
+    with pytest.raises(REFUSED, match="call to external subroutine 'fcn'"):
+        statements.render(pick(nodes, f03.Call_Stmt), 1)
