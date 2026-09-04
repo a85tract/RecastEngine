@@ -17,11 +17,14 @@
   stored on ``Facts.extra``;
 * **constant overrides** from the run the reference was recorded under.
 
-All of that is mechanical and none of it is a judgement: a name that has
-no initializer is left out and the rules refuse it, with the reason on the
-block. What *is* the tree's own -- which modules hold constants, which are
-stubs, what the framework answers -- arrives in ``TreeConventions`` from a
-domain extension; the engine has no table of its own.
+All of that is mechanical and none of it is a judgement, and none of it
+is optional: a use-constant the tree does not initialize, a companion whose
+source is not under the root, or a companion that will not translate each
+raise and fail the unit, naming what was missing. A candidate carrying half
+its tree would pass the import and fail on a number, or not fail at all.
+What *is* the tree's own -- which modules hold constants, which are stubs,
+what the framework answers -- arrives in ``TreeConventions`` from a domain
+extension; the engine has no table of its own.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recast.errors import ConfigError
 from recast.fortran.tree import USE, module_sources, named_extents, parameter_names, use_imports
 from recast.plugins.transform import Transform
 
@@ -117,13 +121,16 @@ class TreeTranslation(Transform):
             return None
         resolved: list[dict[str, Any]] = []
         seen: set[str] = set()
-        skipped: list[str] = []
         for name in wanted:
             try:
                 records = resolve([name], files)
-            except UnresolvedConstant:
-                skipped.append(name)
-                continue
+            except UnresolvedConstant as error:
+                # Left out, the name would reach the emitted module unbound
+                # and the candidate would import all the same.
+                raise UnresolvedConstant(
+                    f"{facts.unit} use-imports {name!r} from the tree's constants modules "
+                    f"and it does not resolve: {error}"
+                ) from error
             for entry in records:
                 if entry["name"] not in seen:
                     seen.add(entry["name"])
@@ -137,7 +144,6 @@ class TreeTranslation(Transform):
         return {
             "resolved": resolved,
             "module_name": facts.interface.get("module", "unit"),
-            "unresolved": skipped,
             "sources": [str(s) for s in files],
         }
 
@@ -165,7 +171,6 @@ class TreeTranslation(Transform):
         if use:
             self._note(candidate)["use_constants"] = {
                 "resolved": [e["name"] for e in use["resolved"]],
-                "unresolved": list(use.get("unresolved", ())),
                 "sources": [Path(s).name for s in use.get("sources", ())],
             }
         return candidate
@@ -211,14 +216,19 @@ class TreeTranslation(Transform):
         from recast.registry import REGISTRY
 
         root = Path(config.get("root", ".")).resolve()
+        own_module = str(facts.interface.get("module", "")).lower()
         seen: set[str] = set(config.get("_bundled") or ())
-        seen.add(str(facts.interface.get("module", "")).lower())
+        seen.add(own_module)
         bundled: list[str] = []
         frontend = None
         units: dict[str, Unit] = {}
         for companion in facts.provenance.get("companions") or []:
             module = str(companion.get("module", "")).lower()
             record = companion.get("record") or {}
+            # A companion with no subprograms -- constants, a type, a state
+            # variable -- has nothing to call into; the stand-in written for
+            # its import carries its initialized entities, and its types are
+            # emitted as factories in this module.
             if module in seen or not record.get("subprograms"):
                 continue
             seen.add(module)
@@ -227,7 +237,10 @@ class TreeTranslation(Transform):
                 units = {u.uid: u for u in frontend.discover(root)}
             unit = units.get(f"fortran:{module}")
             if unit is None:
-                continue
+                raise ConfigError(
+                    f"companion {module!r} of {own_module!r} has no unit under {root}: the "
+                    "frontend resolved the use against a tree this root does not hold"
+                )
             try:
                 # The companion resolves its own use-constants: the caller's
                 # table is the caller's, and handing it down would write the
@@ -235,11 +248,14 @@ class TreeTranslation(Transform):
                 # names in it.
                 own = {k: v for k, v in config.items() if k != "use_constants"}
                 inner = self.apply(unit, frontend.analyze(unit, root), {**own, "_bundled": seen})
-            except Exception as error:  # a companion that will not translate is not our failure
-                self._note(candidate).setdefault("not_bundled", {})[module] = (
-                    f"{type(error).__name__}: {error}"[:200]
-                )
-                continue
+            except Exception as error:
+                # Without the companion's translation a call into it reaches
+                # a stand-in that has no such function; the candidate would
+                # carry the gap and its import would not say so.
+                raise ConfigError(
+                    f"companion {module!r} of {own_module!r} did not translate: "
+                    f"{type(error).__name__}: {error}"
+                ) from error
             have = {q.name for q in candidate.files}
             fresh = {p: b for p, b in inner.files.items() if p.name not in have}
             candidate.files = {**fresh, **candidate.files}

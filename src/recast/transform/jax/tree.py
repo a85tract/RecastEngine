@@ -57,6 +57,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from recast.errors import ConfigError
 from recast.fortran.flatten import FlatPlan, plans_from_facts, signature
 from recast.model import Candidate, Facts, Unit
 from recast.transform.jax.translate import KernelToJax, _signatures_of
@@ -2620,7 +2621,10 @@ class TreeToJax(KernelToJax):
             done.add(module)
             unit = units.get(f"fortran:{module}")
             if unit is None:
-                continue
+                raise ConfigError(
+                    f"companion {module!r} of {facts.unit!r} was bundled into the anchor but "
+                    f"has no unit under {root} to port"
+                )
             companion_facts = frontend.analyze(unit, root)
             inner = self.apply(unit, companion_facts, {**config, "_ported": done, "_ports": ports})
             subs = {s["name"]: s for s in companion_facts.interface["subprograms"]}

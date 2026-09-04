@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "ead66c36d184e25c10b505ac6d76a9b36edd5689ac300594868d85e18c0765b0",
+      "candidate": "1940d84ca605e8be68ddef9a4582bed8d89b6aefd2b17b86ec1df03f477fa7e1",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,
@@ -14,9 +14,11 @@
           "confidence": "ulp_bounded",
           "detail": "every one of 85 points within 1 ULP (gate 32)",
           "metrics": {
-            "bit_exact": 76,
+            "bit_exact": 72,
             "candidate_device": "cpu:0",
             "dominant_points": 85,
+            "integer_mismatch": 0,
+            "integer_points": 0,
             "max_rel": 2.2027434888435707e-16,
             "max_ulp": 1,
             "max_ulp_dominant": 1,
