@@ -1432,6 +1432,29 @@ def test_the_flat_oracle_refuses_an_extra_source_it_cannot_read(tmp_path: Path) 
         F2pyFlatOracle().key(unit, facts, {"root": root, "extra_sources": ["nowhere.f90"]})
 
 
+def test_the_flat_oracle_keeps_an_include_dir_with_a_space_as_one_flag(tmp_path: Path) -> None:
+    """The plan carries the compiler flags as one string and the library
+    build splits it back into argv. A configured include directory with a
+    space in its name used to be appended bare and come apart at the split,
+    leaving ``-I/path`` and a stray ``name`` for gfortran to read as a file."""
+    import shlex
+
+    from recast.oracle.flat import F2pyFlatOracle
+
+    root = tmp_path / "root"
+    root.mkdir()
+    include = tmp_path / "head ers"
+    include.mkdir()
+    unit, facts = _split_tree(root)
+    config = {"root": root, "include_dirs": [str(include)]}
+
+    plan = F2pyFlatOracle()._plan(unit, facts, config)
+    flags = shlex.split(plan["fflags"])
+    assert f"-I{include}" in flags
+    assert flags.count(f"-I{include}") == 1
+    assert not any(token == "ers" for token in flags)
+
+
 def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
     """The reference is only a reference if everything that can change what it
     computes is in its key. A kinds module edited from real64 to real32 is a
