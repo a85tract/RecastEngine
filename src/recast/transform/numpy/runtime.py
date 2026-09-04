@@ -237,6 +237,19 @@ def _f_adjustl(s: str) -> str:
     return s.lstrip(" ").ljust(len(s))
 
 
+def _f_sqrt(x: Any) -> Any:
+    """Fortran SQRT of a negative real is a NaN, not an exception.
+
+    ``math.sqrt`` raises ValueError there, which turns a number the Fortran
+    would have carried on computing with into a crash -- and a crash the
+    differential gate reports as "the candidate raised" rather than as the
+    NaN both sides produce. Non-negative arguments go through ``math.sqrt``
+    unchanged: the correctly-rounded hardware square root, bit for bit what
+    the compiled reference does.
+    """
+    return math.sqrt(x) if x >= 0.0 else float("nan")
+
+
 def _f_min(*xs: Any) -> Any:
     """gfortran MIN (SSE minsd order, MEASURED): per fold step the FIRST
     operand's NaN is absorbed, the second's propagates:

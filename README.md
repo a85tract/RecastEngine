@@ -1,6 +1,6 @@
 # RecastEngine
 
-**The modernization engine of [SciRecast](https://github.com/a85tract/SciRecast).**
+**The modernization engine of [SciRecast](https://a85tract.github.io/SciRecast/).**
 
 LLM agents do the labor of modernizing legacy scientific software; RecastEngine
 is the part that is reusable across every such effort, and the part that refuses

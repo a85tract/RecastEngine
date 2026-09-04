@@ -401,6 +401,29 @@ class Semantics:
             return self.rank(node.children[1])
         raise Unanalyzable(f"rank of {type(node).__name__}")
 
+    def dummy_procedure(self, name: str) -> dict[str, Any] | None:
+        """The interface a dummy procedure argument was declared with.
+
+        ``procedure(func) :: fcn`` makes ``fcn`` an argument whose value is
+        something to call, and the abstract interface ``func`` is the only
+        statement of what calling it means. ``None`` for a name that is not a
+        dummy procedure of this subprogram, and for one whose declaration
+        names no interface -- there is nothing to bind actuals against, and
+        guessing is how an OUT argument silently becomes an IN one.
+        """
+        argument = next(
+            (
+                a
+                for a in self.subprogram["args"]
+                if a["name"] == name and a.get("procedure") and a.get("interface")
+            ),
+            None,
+        )
+        if argument is None:
+            return None
+        interfaces: dict[str, dict[str, Any]] = self.module.get("interfaces") or {}
+        return interfaces.get(str(argument["interface"]))
+
     def _arguments(self, node: Any) -> list[Any]:
         if node.children[1] is None:
             return []

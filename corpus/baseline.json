@@ -2,15 +2,35 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 685,
-   "deferred": 5,
+   "blocks": 647,
+   "deferred": 43,
    "refusals": [
+    [
+     "seq-assoc: element of w for an assumed-size dummy is only a view when both are rank-N",
+     25
+    ],
+    [
+     "seq-assoc: element of a for an assumed-size dummy is only a view when both are rank-N",
+     6
+    ],
+    [
+     "seq-assoc: element of g for an assumed-size dummy is only a view when both are rank-N",
+     4
+    ],
+    [
+     "seq-assoc: element of vnikx for an assumed-size dummy is only a view when both are rank-N",
+     2
+    ],
     [
      "size with a dim= or mask= keyword",
      2
     ],
     [
-     "seq-assoc: formal rank > actual rank work",
+     "seq-assoc: element of u for an assumed-size dummy is only a view when both are rank-N",
+     1
+    ],
+    [
+     "seq-assoc target: w is not rank-N and not at a lower bound",
      1
     ],
     [
@@ -57,9 +77,9 @@
      }
     },
     "fortran:bspline_defc_module": {
-     "deferred": 0,
+     "deferred": 38,
      "imports": true,
-     "mechanical": true,
+     "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
@@ -70,11 +90,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/328 blocks disagree: sort_ascending/B002",
+       "detail": "1/290 blocks disagree: sort_ascending/B002",
        "metrics": {
-        "blocks_checked": 328,
-        "blocks_deferred": 0,
-        "blocks_matched": 327,
+        "blocks_checked": 290,
+        "blocks_deferred": 38,
+        "blocks_matched": 289,
         "blocks_waived": 0
        },
        "passed": false
@@ -121,11 +141,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "4/313 blocks disagree: check/B001, dbint4/B036, dbsgq8/B009, dbsgq8/B010",
+       "detail": "3/313 blocks disagree: check/B001, dbsgq8/B009, dbsgq8/B010",
        "metrics": {
         "blocks_checked": 313,
         "blocks_deferred": 5,
-        "blocks_matched": 309,
+        "blocks_matched": 310,
         "blocks_waived": 0
        },
        "passed": false
@@ -872,36 +892,274 @@
   },
   "minpack": {
    "bare_files": 0,
-   "blocks": 92,
-   "deferred": 12,
-   "refusals": [
-    [
-     "call to external subroutine 'X'",
-     12
-    ]
-   ],
+   "blocks": 104,
+   "deferred": 0,
+   "refusals": [],
    "status": "failed",
    "units": {
     "fortran:minpack_module": {
-     "deferred": 12,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
-      "static.rwset": {
-       "detail": "92 blocks match",
+      "differential.bitexact": {
+       "detail": "2 subprogram(s) could not be compared: dogleg: 10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 ",
        "metrics": {
-        "blocks_checked": 92,
-        "blocks_deferred": 12,
-        "blocks_matched": 92,
+        "bit_exact": 17270,
+        "integer_mismatch": 0,
+        "integer_points": 760,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 17270,
+        "subprograms": {
+         "chkder": {
+          "bit_exact": 160,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 160,
+          "redrawn": 19,
+          "reshaped": 0
+         },
+         "dogleg": {
+          "error": "10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "enorm": {
+          "bit_exact": 10,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "fdjac1": {
+          "bit_exact": 890,
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 890,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "fdjac2": {
+          "bit_exact": 810,
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 810,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "hybrd": {
+          "bit_exact": 1380,
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1380,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "hybrd1": {
+          "bit_exact": 250,
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 250,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "hybrj": {
+          "bit_exact": 1390,
+          "integer_mismatch": 0,
+          "integer_points": 30,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1390,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "hybrj1": {
+          "bit_exact": 890,
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 890,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmder": {
+          "bit_exact": 1390,
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1390,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmder1": {
+          "bit_exact": 970,
+          "integer_mismatch": 0,
+          "integer_points": 90,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 970,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmdif": {
+          "bit_exact": 1380,
+          "integer_mismatch": 0,
+          "integer_points": 100,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1380,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmdif1": {
+          "bit_exact": 330,
+          "integer_mismatch": 0,
+          "integer_points": 90,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 330,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmpar": {
+          "bit_exact": 970,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 970,
+          "redrawn": 7,
+          "reshaped": 0
+         },
+         "lmstr": {
+          "bit_exact": 1390,
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1390,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "lmstr1": {
+          "bit_exact": 970,
+          "integer_mismatch": 0,
+          "integer_points": 90,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 970,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "qform": {
+          "bit_exact": 720,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 720,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "qrfac": {
+          "bit_exact": 960,
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 960,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "qrsolv": {
+          "bit_exact": 880,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 880,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "r1mpyq": {
+          "bit_exact": 640,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 640,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "r1updt": {
+          "error": "10 of 10 trial(s) were compared only after the free extent(s) ls, m, n were moved off the configured values; the 122 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "rwupdt": {
+          "bit_exact": 890,
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 890,
+          "redrawn": 0,
+          "reshaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": false
+      },
+      "static.rwset": {
+       "detail": "104 blocks match",
+       "metrics": {
+        "blocks_checked": 104,
+        "blocks_deferred": 0,
+        "blocks_matched": 104,
         "blocks_waived": 0
        },
        "passed": true
@@ -1074,7 +1332,9 @@
           "max_rel": 0.0,
           "max_ulp": 0,
           "nan_mismatch": 0,
-          "points": 10
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0
          }
         },
         "trials": 10
@@ -1668,7 +1928,9 @@
           "max_rel": 0.0,
           "max_ulp": 0,
           "nan_mismatch": 0,
-          "points": 80
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0
          }
         },
         "trials": 10
@@ -1813,7 +2075,7 @@
           "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
          },
          "dpchbs": {
-          "error": "candidate raised: IndexError: index 8 is out of bounds for axis 0 with size 8"
+          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
          },
          "dpchcm": {
           "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
@@ -1860,13 +2122,9 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 434,
-   "deferred": 11,
+   "blocks": 436,
+   "deferred": 9,
    "refusals": [
-    [
-     "seq-assoc: formal rank > actual rank work",
-     2
-    ],
     [
      "call to external subroutine 'X'",
      2
@@ -1903,7 +2161,7 @@
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 11,
+     "deferred": 9,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1916,11 +2174,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "37/434 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
+       "detail": "37/436 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
        "metrics": {
-        "blocks_checked": 434,
-        "blocks_deferred": 11,
-        "blocks_matched": 397,
+        "blocks_checked": 436,
+        "blocks_deferred": 9,
+        "blocks_matched": 399,
         "blocks_waived": 0
        },
        "passed": false
@@ -1931,13 +2189,9 @@
   },
   "quadpack": {
    "bare_files": 0,
-   "blocks": 627,
-   "deferred": 7,
+   "blocks": 628,
+   "deferred": 6,
    "refusals": [
-    [
-     "seq-assoc: formal rank > actual rank work",
-     1
-    ],
     [
      "dqc25c/P001: local parameter x (literal 'X' was never hoisted, so it has no name to emit):",
      1
@@ -1966,7 +2220,7 @@
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 7,
+     "deferred": 6,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1979,11 +2233,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/627 blocks disagree: dqnc79/B023, dgauss8/B019, dgauss8/B024, dsimpson/B016, adaptive_simpson_step/B010 (+2 more)",
+       "detail": "7/628 blocks disagree: dqnc79/B023, dgauss8/B019, dgauss8/B024, dsimpson/B016, adaptive_simpson_step/B010 (+2 more)",
        "metrics": {
-        "blocks_checked": 627,
-        "blocks_deferred": 7,
-        "blocks_matched": 620,
+        "blocks_checked": 628,
+        "blocks_deferred": 6,
+        "blocks_matched": 621,
         "blocks_waived": 0
        },
        "passed": false
@@ -2045,12 +2299,20 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 191,
-   "deferred": 3,
+   "blocks": 186,
+   "deferred": 8,
    "refusals": [
     [
-     "seq-assoc: formal rank > actual rank w",
-     2
+     "seq-assoc: element of a for an assumed-size dummy is only a view when both are rank-N",
+     5
+    ],
+    [
+     "seq-assoc: element of c for an assumed-size dummy is only a view when both are rank-N",
+     1
+    ],
+    [
+     "seq-assoc: element of e for an assumed-size dummy is only a view when both are rank-N",
+     1
     ],
     [
      "linmin/P001: local parameter c (literal 'X' was never hoisted, so it has no name to emit):",
@@ -2085,7 +2347,7 @@
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 3,
+     "deferred": 8,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2098,11 +2360,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "18/111 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+13 more)",
+       "detail": "15/106 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+10 more)",
        "metrics": {
-        "blocks_checked": 111,
-        "blocks_deferred": 3,
-        "blocks_matched": 93,
+        "blocks_checked": 106,
+        "blocks_deferred": 8,
+        "blocks_matched": 91,
         "blocks_waived": 0
        },
        "passed": false
