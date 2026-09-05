@@ -1413,6 +1413,12 @@ class _Rewrite(ast.NodeTransformer):
                 targets.append(ast.Name(id=name, ctx=ast.Store()))
             else:
                 where = slot.get(name)
+                passed_as = actual_by_dummy.get(name.lower())
+                if passed_as is not None and _reshaped_name(passed_as) is not None:
+                    # The actual is a reshaped view of a name (sequence
+                    # association); the output comes back in the callee's
+                    # shape, whatever the anchor's own target spelling.
+                    where = passed_as
                 if where is None:
                     raise NotFlat(f"{callee.subprogram['name']}: output {name} has no target")
                 bound: Any = self.visit(copy.deepcopy(where))
@@ -1422,9 +1428,38 @@ class _Rewrite(ast.NodeTransformer):
                     self.temps += 1
                     temp = f"_t{self.temps}"
                     targets.append(ast.Name(id=temp, ctx=ast.Store()))
-                    follow.append(
-                        ast.Assign(targets=[bound], value=ast.Name(id=temp, ctx=ast.Load()))
-                    )
+                    reshaped = _reshaped_name(bound)
+                    if reshaped is not None:
+                        # ``np.reshape(rhs, (n, m, 1), order='F')`` as the
+                        # actual: sequence association, the anchor's view of
+                        # the array in the callee's shape. What comes back
+                        # is reshaped to the array's own shape, the same
+                        # order, and rebinds it.
+                        follow.append(
+                            ast.Assign(
+                                targets=[ast.Name(id=reshaped, ctx=ast.Store())],
+                                value=ast.Call(
+                                    func=ast.Attribute(
+                                        value=ast.Name(id="jnp", ctx=ast.Load()),
+                                        attr="reshape",
+                                        ctx=ast.Load(),
+                                    ),
+                                    args=[
+                                        ast.Name(id=temp, ctx=ast.Load()),
+                                        ast.Attribute(
+                                            value=ast.Name(id=reshaped, ctx=ast.Load()),
+                                            attr="shape",
+                                            ctx=ast.Load(),
+                                        ),
+                                    ],
+                                    keywords=[ast.keyword(arg="order", value=ast.Constant("F"))],
+                                ),
+                            )
+                        )
+                    else:
+                        follow.append(
+                            ast.Assign(targets=[bound], value=ast.Name(id=temp, ctx=ast.Load()))
+                        )
         if not targets:
             return ast.Expr(value=new_call)
         # One output comes back bare (the flat function returns a name, not
@@ -1765,6 +1800,30 @@ def _rebuilt_objects(lowered: list[ast.stmt], rewrite: _Rewrite) -> list[ast.stm
 
 Affine = tuple[dict[str, int], int]
 """A linear form: ``{name: coefficient}`` and a constant."""
+
+
+def _reshaped_name(node: ast.expr) -> str | None:
+    """``np.reshape(x, shape, order='F')`` / ``jnp.reshape(...)`` /
+    ``x.reshape(...)`` over a bare name: that name."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "reshape"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in ("np", "jnp")
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "reshape"
+        and isinstance(func.value, ast.Name)
+    ):
+        return func.value.id
+    return None
 
 
 def _static_name(name: str, statics: frozenset[str]) -> bool:

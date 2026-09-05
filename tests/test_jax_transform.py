@@ -1689,6 +1689,66 @@ def test_a_window_with_traced_bounds_a_static_distance_apart_is_a_gather(tmp_pat
             sys.modules.pop(f"window_mod{suffix}", None)
 
 
+RESHAPED_ACTUAL = """\
+module reshaped_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine solve( n, k, rhs )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(inout) :: rhs(n, 1)
+    rhs(:, 1) = k%gain * rhs(:, 1)
+  end subroutine solve
+  subroutine step( n, k, x )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(inout) :: x(n)
+    call solve( n, k, x )
+    x = x + 1.0d0
+  end subroutine step
+end module reshaped_mod
+"""
+
+
+def test_an_array_passed_through_a_reshape_comes_back_in_its_own_shape(tmp_path: Path) -> None:
+    """CLUBB hands a 2-d right-hand side to a solver declared over three
+    axes: sequence association, which the anchor spells as
+    ``np.reshape(rhs, (n, m, 1), order='F')`` for the actual. The kernel's
+    output is reshaped back to the array's own shape and rebinds it -- a
+    reshape is no store target."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "reshaped_mod.f90").write_text(RESHAPED_ACTUAL)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:reshaped_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "reshape(x" in candidate.files[Path("reshaped_mod_numpy.py")].decode()
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("reshaped_mod_jax")
+        import numpy as np
+
+        got = module.step_flat(2, np.array([1.0, 3.0]), 2, np.float64(2.0))
+        assert np.asarray(got).tolist() == [3.0, 7.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"reshaped_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
