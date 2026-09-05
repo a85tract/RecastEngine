@@ -967,10 +967,9 @@ GUARDED_CHECK = """\
 module guarded_mod
   use checks_mod, only: complain
   implicit none
-  integer, parameter :: debug_level = 0
 contains
-  subroutine step( n, x, y )
-    integer, intent(in) :: n
+  subroutine step( n, debug_level, x, y )
+    integer, intent(in) :: n, debug_level
     real(8), intent(in) :: x(n)
     real(8), intent(out) :: y(n)
     y = 2.0d0 * x
@@ -1014,7 +1013,7 @@ def test_a_companion_procedure_the_port_left_on_the_host_stays_under_its_guard(
         module = importlib.import_module("guarded_mod_jax")
         import numpy as np
 
-        assert np.asarray(module.step(2, np.array([1.0, -1.0]))).tolist() == [2.0, -2.0]
+        assert np.asarray(module.step(2, 0, np.array([1.0, -1.0]))).tolist() == [2.0, -2.0]
     finally:
         sys.path.remove(str(out))
         for name in list(sys.modules):
