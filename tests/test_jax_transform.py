@@ -1016,3 +1016,78 @@ def test_a_companion_procedure_the_port_left_on_the_host_stays_under_its_guard(
         for name in list(sys.modules):
             if name.startswith(("guarded_mod", "checks_mod")):
                 sys.modules.pop(name, None)
+
+
+OBJECT_CHECK = """\
+module ocheck_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine inspect( n, k, x, msg )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    character(len=*), intent(out) :: msg
+    msg = "fine"
+    if ( any( x < k%gain ) ) msg = "small"
+  end subroutine inspect
+end module ocheck_mod
+"""
+
+GUARDED_OBJECT_CHECK = """\
+module oguarded_mod
+  use ocheck_mod, only: knobs_type, inspect
+  implicit none
+contains
+  subroutine step( n, debug_level, k, x, y )
+    integer, intent(in) :: n, debug_level
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    character(len=16) :: msg
+    y = k%gain * x
+    if ( debug_level >= 2 ) then
+      call inspect( n, k, y, msg )
+    end if
+  end subroutine step
+end module oguarded_mod
+"""
+
+
+def test_a_flat_companion_the_port_left_on_the_host_stays_under_its_guard(tmp_path: Path) -> None:
+    """The same, through the flat-callee path: the check takes the object
+    (advance_clubb_core's parameterization check takes gr and err_info), so
+    it has a plan, and the rewrite of the call into the port's flat kernel
+    found none."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "ocheck_mod.f90").write_text(OBJECT_CHECK)
+    (tmp_path / "oguarded_mod.f90").write_text(GUARDED_OBJECT_CHECK)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:oguarded_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    assert candidate.notes["jax"]["host_calls"] == {"step_flat": ["ocheck_mod.inspect"]}
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("oguarded_mod_jax")
+        import numpy as np
+
+        got = module.step_flat(2, 0, np.array([1.0, -1.0]), np.float64(2.0))
+        assert np.asarray(got).tolist() == [2.0, -2.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("oguarded_mod", "ocheck_mod")):
+                sys.modules.pop(name, None)

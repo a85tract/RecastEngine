@@ -1194,6 +1194,24 @@ class _Rewrite(ast.NodeTransformer):
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
         assert callee is not None and self.plan is not None
+        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+            module = self.spelling.modules.get(call.func.value.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is not None and callee.name not in port["kernels"]:
+                # The companion's port left this flat function on the host
+                # (CLUBB's numerical_check.parameterization_check: character
+                # arguments). The anchor's statement stays as it is, under
+                # whatever guard the anchor put it -- never traced while
+                # the guard holds, failing by name if it ever does -- and
+                # the note names it; refusing the whole kernel for a check
+                # that never runs was the alternative.
+                self.host_calls.append(f"{module}.{callee.name}")
+                kept: ast.stmt = (
+                    ast.Expr(value=call)
+                    if target is None
+                    else ast.Assign(targets=[target], value=call)
+                )
+                return ast.copy_location(kept, call)
         dummies = [a["name"] for a in callee.subprogram["args"]]
         actual_by_dummy: dict[str, ast.expr] = {}
         for at, given in enumerate(call.args):
@@ -1256,8 +1274,6 @@ class _Rewrite(ast.NodeTransformer):
         elif isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
             # A companion's flat function: its port's kernel, or nothing.
             module = self.spelling.modules[call.func.value.id]
-            if callee.name not in self.ports[module]["kernels"]:
-                raise NotFlat(f"calls {module}.{callee.name}, which its port did not lower")
             self.companions.add(call.func.value.id)
             func = ast.Attribute(
                 value=ast.Name(id=f"{call.func.value.id}_jax", ctx=ast.Load()),
