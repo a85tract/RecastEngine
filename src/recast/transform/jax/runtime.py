@@ -27,6 +27,9 @@ imports this module: ``backend.emit_runtime`` reads its text off disk instead,
 so emitting JAX code never requires JAX to be installed.
 """
 
+import re as _re
+from typing import Any
+
 import jax
 import numpy as np
 
@@ -38,14 +41,17 @@ from jax import lax  # noqa: E402
 # A star-import from the generated module must see the underscore names.
 __all__ = [
     "_f_adjustl",
+    "_f_cfold",
     "_f_concrete",
     "_f_dim",
     "_f_ecall",
     "_f_epsilon",
+    "_f_fmt_write",
     "_f_fori",
     "_f_huge",
     "_f_int_div",
     "_f_len_trim",
+    "_f_list_write",
     "_f_max",
     "_f_min",
     "_f_mod",
@@ -55,6 +61,8 @@ __all__ = [
     "_f_pyint",
     "_f_pymax",
     "_f_pymin",
+    "_f_rstep",
+    "_f_rstep_lb",
     "_f_sign",
     "_f_sqrt",
     "_f_tiny",
@@ -351,3 +359,172 @@ def _f_len_trim(s: str) -> int:
 
 def _f_adjustl(s: str) -> str:
     return s.lstrip(" ").ljust(len(s))
+
+
+# -- the NumPy runtime's shims a kernel body still reaches -------------------
+# Character and constant-folding shims are pure Python at trace time; the
+# section shims build Python slices from static bounds. A tracer handed to a
+# writer (a statistics name written from a traced loop index) prints as a
+# placeholder: with statistics off nothing reads the name.
+
+
+def _traced_placeholder(items):
+    return tuple("<traced>" if isinstance(it, jax.core.Tracer) else it for it in items)
+
+
+def _f_cfold(fn: Any, *args: Any) -> Any:
+    """gfortran evaluates constant-argument intrinsics at COMPILE time
+    with MPFR (correctly rounded) — that value matches no runtime libm
+    (proven: gamma(1.8) differs from BOTH libgfortran and glibc)."""
+    import mpmath as mp
+
+    with mp.workprec(200):
+        return float(getattr(mp, fn)(*[mp.mpf(float(a)) for a in args]))
+
+
+def _f_rstep(lo: Any, hi: Any, st: Any) -> Any:
+    """Fortran lo:hi:st (st<0, inclusive, 1-based) -> python slice; the
+    exclusive stop edge underflows at hi==1, which needs None."""
+    return slice(lo - 1, hi - 2 if hi >= 2 else None, st)
+
+
+def _f_rstep_lb(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
+    """Fortran lo:hi:st (st<0, inclusive) with declared lower bound lb.
+
+    Either edge may be None: Fortran lets a section leave one implied."""
+    start = None if lo is None else lo - lb
+    stop = None
+    if hi is not None:
+        index = hi - lb
+        stop = index - 1 if index >= 1 else None
+    return slice(start, stop, st)
+
+
+def _f_list_write(*items: Any) -> Any:
+    """gfortran list-directed internal WRITE shim.
+
+    Byte-exact against reference probes: a record starts with one blank,
+    strings print verbatim, ``int32`` becomes I12 plus a blank separator,
+    ``real(8)`` becomes G25.17E3 plus a blank.
+
+    Percent formatting throughout, deliberately. The point of this function
+    is to reproduce another language's output byte for byte, and ``%`` is
+    the spelling whose width, precision and sign rules match the Fortran
+    edit descriptors it is emulating. Restating them in ``format`` would be
+    a re-derivation of something already validated against real output.
+    """
+    out = " "
+    for it in _traced_placeholder(items):
+        if isinstance(it, str):
+            out += it
+        elif isinstance(it, (int, np.integer)):
+            out += "%12d " % int(it)  # noqa: UP031
+        else:
+            v = float(it)
+            av = abs(v)
+            if v == 0.0 or (0.1 <= av < 1e17):
+                int_digits = 0 if av < 1.0 else len(str(int(av)))
+                out += "%21.*f" % (17 - int_digits, v) + " " * 6  # noqa: UP031
+            else:
+                mant, ex = ("%.16E" % v).split("E")  # noqa: UP031
+                out += ("%sE%+04d" % (mant, int(ex))).rjust(26) + " "  # noqa: UP031
+    return out
+
+
+_FMT_TOKEN = _re.compile(
+    r"\s*(?:(?P<rep>\d+)?\s*(?P<ed>I\d+(?:\.\d+)?|F\d+\.\d+"
+    r"|E[SN]?\d+\.\d+(?:E\d+)?|G\d+\.\d+|A(?:\d+)?|L\d+|\d*X|/"
+    r"|'[^']*'|\"[^\"]*\"))\s*,?",
+    _re.I,
+)
+
+
+def _f_fmt_write(fmt: str, *vals: Any) -> str:
+    """Formatted internal WRITE (#16), for the edit descriptors the corpus
+    uses: ``Iw[.m]``, ``Fw.d``, ``Ew.d`` / ``ESw.d``, ``Gw.d``, ``A[w]``,
+    ``Lw``, ``nX``, ``/``, literals, repeat counts. Fortran field semantics:
+    right-justified, asterisks on overflow, ``Iw.m`` zero-filled to ``m``
+    digits, ``E`` as ``0.dddE+ee``."""
+    body = fmt.strip()
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1]
+    out: list[str] = []
+    values = list(vals)
+    pos = 0
+    while pos < len(body):
+        m = _FMT_TOKEN.match(body, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"_f_fmt_write: cannot parse {fmt!r}")
+        pos = m.end()
+        rep = int(m.group("rep")) if m.group("rep") else 1
+        ed = m.group("ed")
+        for _ in range(rep):
+            u = ed.upper()
+            if u.startswith(("'", '"')):
+                out.append(ed[1:-1])
+            elif u.endswith("X"):
+                out.append(" " * (int(u[:-1]) if u[:-1] else 1))
+            elif u == "/":
+                out.append("\n")
+            else:
+                if not values:
+                    return "".join(out)
+                out.append(_fmt_one(u, values.pop(0)))
+    return "".join(out)
+
+
+def _fmt_one(u: str, v: Any) -> str:
+    def fit(s: str, w: int) -> str:
+        return s.rjust(w) if len(s) <= w else "*" * w
+
+    if u[0] == "I":
+        width, _, minimum = u[1:].partition(".")
+        iv = int(v)
+        digits = str(abs(iv))
+        if minimum:
+            digits = digits.rjust(int(minimum), "0")
+        return fit(("-" if iv < 0 else "") + digits, int(width))
+    if u[0] == "F":
+        width, decimals = u[1:].split(".")
+        s = f"{float(v):.{int(decimals)}f}"
+        if s.startswith("0.") and len(s) > int(width):
+            s = s[1:]
+        elif s.startswith("-0.") and len(s) > int(width):
+            s = "-" + s[2:]
+        return fit(s, int(width))
+    if u[0] == "E":
+        sci = u.startswith("ES")
+        spec = u[2:] if u.startswith(("ES", "EN")) else u[1:]
+        wd, _, ee = spec.partition("E")
+        w, d = (int(x) for x in wd.split("."))
+        ew = int(ee) if ee else 2
+        x = float(v)
+        if x == 0.0:
+            mant, exp = 0.0, 0
+        else:
+            exp = int(np.floor(np.log10(abs(x))))
+            if sci:
+                mant = round(x / 10.0**exp, d)
+                if abs(mant) >= 10.0:
+                    mant /= 10.0
+                    exp += 1
+            else:
+                exp += 1
+                mant = round(x / 10.0**exp, d)
+                if abs(mant) >= 1.0:
+                    mant /= 10.0
+                    exp += 1
+        s = f"{mant:.{d}f}E{'+' if exp >= 0 else '-'}{abs(exp):0{ew}d}"
+        return fit(s, w)
+    if u[0] == "G":
+        width, decimals = u[1:].split(".")
+        return fit(f"{float(v):.{int(decimals)}g}", int(width))
+    if u[0] == "A":
+        s = str(v)
+        if len(u) > 1:
+            w = int(u[1:])
+            return s[:w] if len(s) >= w else s.rjust(w)
+        return s
+    if u[0] == "L":
+        return fit("T" if bool(v) else "F", int(u[1:]))
+    raise ValueError(f"_f_fmt_write: descriptor {u}")
