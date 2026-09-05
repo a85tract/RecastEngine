@@ -1170,12 +1170,12 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 896,
-   "deferred": 57,
+   "blocks": 897,
+   "deferred": 56,
    "refusals": [
     [
      "generic 'X': no match",
-     12
+     11
     ],
     [
      "call to external subroutine 'X'",
@@ -1354,7 +1354,7 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 14,
+     "deferred": 13,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1367,11 +1367,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/66 blocks disagree: csplint/B006, csplint/B012, csplint/B016, csplint_square/B011, csplint_square/B015",
+       "detail": "5/67 blocks disagree: csplint/B006, csplint/B012, csplint/B016, csplint_square/B011, csplint_square/B015",
        "metrics": {
-        "blocks_checked": 66,
-        "blocks_deferred": 14,
-        "blocks_matched": 61,
+        "blocks_checked": 67,
+        "blocks_deferred": 13,
+        "blocks_matched": 62,
         "blocks_waived": 0
        },
        "passed": false
