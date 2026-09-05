@@ -268,9 +268,10 @@ class CallRewrite(ast.NodeTransformer):
     the caller: leaving the bare name would resolve to the host-delegated
     numpy function at trace time and run numpy/math code on tracers."""
 
-    def __init__(self, call_map, known_subs):
+    def __init__(self, call_map, known_subs, host_names=None):
         self.map = call_map
         self.subs = known_subs
+        self.host_names = host_names  # what the anchor module defines; None: unknown
         self.host_calls: list[str] = []
 
     def visit_Call(self, node):
@@ -317,6 +318,12 @@ class CallRewrite(ast.NodeTransformer):
                     pos = pos[: info["nreq"]]
                 node.func = ast.Name(id=f"_{f.id}_k_impl", ctx=ast.Load())
                 node.args = pos + [ast.Name(id=c, ctx=ast.Load()) for c in info["closure"]]
+            elif f.id in self.subs and self.host_names is not None and f.id not in self.host_names:
+                # A flat function the anchor carries no wrapper for (a
+                # private subprogram's): no host to fall back on, and a
+                # line binding it would break the import. The caller is
+                # delegated with it, as before.
+                raise JaxQueue(f"calls non-emitted subprogram {f.id}")
             elif f.id in self.subs:
                 # A subprogram of this module the port could not emit,
                 # called from one it can: the call stays the host's
@@ -1184,6 +1191,13 @@ class KernelLowerer:
             trivial = all(
                 isinstance(st, ast.Pass)
                 or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant | ast.Call))
+                or (
+                    # a statistics name picked by the solve type: a
+                    # trace-time string, nothing a cond could carry
+                    isinstance(st, ast.Assign)
+                    and isinstance(st.value, ast.Constant)
+                    and isinstance(st.value.value, str)
+                )
                 for st in [*body, *orelse]
             )
             if trivial:
@@ -1257,6 +1271,7 @@ def emit_kernel(
     writes=(),
     traced_scalars=frozenset(),
     hosted=None,
+    host_names=None,
 ):
     """Original numpy FunctionDef -> unparsed _<name>_k_impl source.
 
@@ -1308,7 +1323,7 @@ def emit_kernel(
             fn.body[at] = Extend().visit(stmt)
     _bind_writer_calls(fn, call_map or {})
     ExprMap().visit(fn)
-    calls = CallRewrite(call_map or {}, known_subs or set())
+    calls = CallRewrite(call_map or {}, known_subs or set(), host_names)
     calls.visit(fn)
     if hosted is not None:
         hosted.extend(calls.host_calls)
@@ -1443,7 +1458,10 @@ def static_spec(fn_src, sub, traced_scalars=frozenset()):
 
 
 def build_module(
-    interface: dict[str, Any], tree: ast.Module, traced_scalars: frozenset[str] = frozenset()
+    interface: dict[str, Any],
+    tree: ast.Module,
+    traced_scalars: frozenset[str] = frozenset(),
+    host_names: frozenset[str] | None = None,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, list[str]]]:
     """Emit all kernels of one module to a fixpoint.
 
@@ -1501,6 +1519,7 @@ def build_module(
                     wclosures[name],
                     traced_scalars,
                     calls_kept,
+                    host_names,
                 )
             except JaxQueue as e:
                 failed[name] = f"[emit] {e}"

@@ -3371,7 +3371,14 @@ class TreeToJax(KernelToJax):
         flat_tree, interface, flat_notes = flattened_module(
             tree, facts.interface, plans, ported, bundled
         )
-        pieces, jitted, delegated, kept_on_host = build_module(interface, flat_tree, TRACED_SCALARS)
+        # What the anchor module defines: a same-module call the backend
+        # keeps on the host needs its wrapper there.
+        anchor_names = frozenset(
+            f.name for f in tree.body if isinstance(f, ast.FunctionDef | ast.ClassDef)
+        )
+        pieces, jitted, delegated, kept_on_host = build_module(
+            interface, flat_tree, TRACED_SCALARS, anchor_names
+        )
         for name, kept in kept_on_host.items():
             # This module's own subprograms the backend left on the host,
             # beside the companions' the flat rewrite did.
