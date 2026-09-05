@@ -193,7 +193,7 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
-        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
+        self.buffer_outs: dict[str, list[str | None]] = {}  # anchor _out buffers, elided
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -373,11 +373,14 @@ class _Rewrite(ast.NodeTransformer):
             if at >= len(actuals):
                 raise NotFlat(f"{ast.unparse(node)}: the elided buffer has no slot {at}")
             target = node.targets[0]
-            if ast.unparse(target) == actuals[at]:
-                return None
             if isinstance(target, ast.Name) and self.spelling.object_of(target) is not None:
+                return None  # an object: its components bound at the call
+            actual = actuals[at]
+            if actual is None:
+                raise NotFlat(f"{ast.unparse(node)}: the elided buffer's slot {at} has no actual")
+            if ast.unparse(target) == actual:
                 return None
-            bound_value = ast.parse(actuals[at], mode="eval").body
+            bound_value = ast.parse(actual, mode="eval").body
             return self.visit(
                 ast.copy_location(ast.Assign(targets=[target], value=bound_value), node)
             )
@@ -1294,8 +1297,11 @@ class _Rewrite(ast.NodeTransformer):
                 for name in original_outs
                 if name.lower() in actual_by_dummy
             }
+            # Positional, one entry per output the callee returns: the
+            # anchor unpacks ``_out[k]`` by that position, and an object's
+            # outputs (bound by component) leave their slot empty.
             self.buffer_outs[buffered.id] = [
-                ast.unparse(slot[name]) for name in original_outs if name in slot
+                ast.unparse(slot[name]) if name in slot else None for name in original_outs
             ]
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []

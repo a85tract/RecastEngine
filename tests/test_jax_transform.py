@@ -886,11 +886,11 @@ module unpack_mod
     real(8) :: gain = 2.0d0
   end type knobs_type
 contains
-  subroutine scale( nzt, ngrdcol, k, x, y )
+  subroutine scale( nzt, ngrdcol, x, y, k )
     integer, intent(in) :: nzt, ngrdcol
-    type(knobs_type), intent(inout) :: k
     real(8), intent(inout), dimension(ngrdcol, nzt) :: x
     real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    type(knobs_type), intent(inout) :: k
     k%gain = k%gain * 2.0d0
     x = x * 2.0d0
     y = x + 1.0d0
@@ -900,7 +900,7 @@ contains
     type(knobs_type), intent(inout) :: k
     real(8), intent(inout), dimension(ngrdcol, nzt) :: x
     real(8), intent(inout), dimension(ngrdcol, nzt) :: y
-    call scale( nzt, ngrdcol, k, x, y )
+    call scale( nzt, ngrdcol, x, y, k )
     y = y + k%gain
   end subroutine step
 end module unpack_mod
@@ -925,7 +925,7 @@ def test_unpacking_an_object_from_the_elided_call_buffer_is_already_true(tmp_pat
     facts = frontend.analyze(unit, tmp_path)
     candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
     assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
-    assert "_out[0]" in candidate.files[Path("unpack_mod_numpy.py")].decode()
+    assert "k = _out[2]" in candidate.files[Path("unpack_mod_numpy.py")].decode()
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():
