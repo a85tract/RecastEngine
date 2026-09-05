@@ -51,6 +51,8 @@ __all__ = [
     "_f_mod",
     "_f_modulo",
     "_f_nint",
+    "_f_pyfloat",
+    "_f_pyint",
     "_f_pymax",
     "_f_pymin",
     "_f_sign",
@@ -195,6 +197,22 @@ def _f_fori(lo, hi, body, init):
         carry, _ = lax.scan(step, init, indices)
         return carry
     return lax.fori_loop(lo, hi, body, init)
+
+
+def _f_pyint(x):
+    """A trace-time integer as a Python int (a NumPy int32 from the gate,
+    a Python int from the jit wrapper: one kind, whatever the spelling);
+    a tracer, when a traced body reached the kernel, stays one."""
+    if isinstance(x, jax.core.Tracer):
+        return x
+    return int(x)
+
+
+def _f_pyfloat(x):
+    """The same for a trace-time real."""
+    if isinstance(x, jax.core.Tracer):
+        return x
+    return float(x)
 
 
 def _f_pymax(*values):

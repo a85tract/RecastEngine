@@ -415,7 +415,11 @@ class _Rewrite(ast.NodeTransformer):
             # arrive as Python ints through the jit wrapper and as NumPy
             # int32 from the gate, and a return guard's cond that carries
             # the local must see the same type on both arms.
-            kind = "int" if self.inits[target.id] == "int32" else "float"
+            # Through the runtime: a kernel's implementation is also called
+            # from another kernel's traced body (the dual form), where the
+            # "static" arguments are tracers and Python's int() would be a
+            # concretization error; the shim keeps a tracer a tracer.
+            kind = "_f_pyint" if self.inits[target.id] == "int32" else "_f_pyfloat"
             node.value = ast.Call(
                 func=ast.Name(id=kind, ctx=ast.Load()), args=[node.value], keywords=[]
             )
