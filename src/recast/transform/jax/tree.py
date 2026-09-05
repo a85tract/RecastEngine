@@ -660,7 +660,7 @@ class _Rewrite(ast.NodeTransformer):
         # under tracing, and the recorded run it is gated on never did; the
         # check is dropped and named on the candidate, so the evidence says
         # the kernel no longer aborts where the model would.
-        if node.body and all(isinstance(s, (ast.Raise, ast.Expr, ast.Pass)) for s in node.body):
+        if node.body and all(isinstance(s, ast.Raise) or _inert(s) for s in node.body):
             if any(isinstance(s, ast.Raise) for s in node.body):
                 self.aborts.append(ast.unparse(node.test))
                 if not node.orelse:
@@ -673,9 +673,11 @@ class _Rewrite(ast.NodeTransformer):
                     replaced.extend(seen if isinstance(seen, list) else [seen])
                 return replaced or None
         self.generic_visit(node)
-        if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
+        if all(_inert(s) for s in node.body):
             # ``if cond: write(iulog, ...)`` -- a log line the anchor already
-            # left as ``pass``; nothing to carry. An else branch keeps its
+            # left as ``pass``; nothing to carry. A call statement is not
+            # inert: a procedure the port left on the host, under its guard,
+            # must stay where it is. An else branch keeps its
             # guard, inverted: the fold of an early return leaves exactly
             # ``if returned: pass else: <the rest>``, and running the rest
             # unconditionally was the returned path's outputs overwritten.
@@ -1634,6 +1636,14 @@ def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
             if ub.isidentifier() and str(dim.get("lb") or "1").strip() == "1":
                 sources.setdefault(ub, (_py(a["name"]), axis))
     return sources
+
+
+def _inert(statement: ast.stmt) -> bool:
+    """A statement with nothing to carry: ``pass``, or a bare constant (a
+    docstring, a log line the anchor left as a string)."""
+    return isinstance(statement, ast.Pass) or (
+        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+    )
 
 
 def _has_return(stmts: list[ast.stmt]) -> bool:

@@ -949,16 +949,12 @@ CHECKS = """\
 module checks_mod
   implicit none
 contains
-  subroutine complain( n, x, what )
+  subroutine complain( n, x, msg )
     integer, intent(in) :: n
     real(8), intent(in) :: x(n)
-    character(len=*), intent(in) :: what
-    integer :: i
-    i = 1
-    do while ( i <= n )
-      if ( x(i) < 0.0d0 ) print *, what, i
-      i = i + 1
-    end do
+    character(len=*), intent(out) :: msg
+    msg = "fine"
+    if ( any( x < 0.0d0 ) ) msg = "negative"
   end subroutine complain
 end module checks_mod
 """
@@ -972,9 +968,10 @@ contains
     integer, intent(in) :: n, debug_level
     real(8), intent(in) :: x(n)
     real(8), intent(out) :: y(n)
+    character(len=16) :: msg
     y = 2.0d0 * x
     if ( debug_level >= 2 ) then
-      call complain( n, y, "negative y" )
+      call complain( n, y, msg )
     end if
   end subroutine step
 end module guarded_mod
