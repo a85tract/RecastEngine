@@ -1321,12 +1321,13 @@ def test_wrappers_serve_a_file_of_bare_subprograms() -> None:
     assert "real(8), intent(inout) :: t(pcols, pver)" in text
 
 
-def test_the_gate_lets_a_candidate_shape_its_own_inputs(tmp_path: Path) -> None:
+def test_the_project_profile_shapes_the_generated_inputs(tmp_path: Path) -> None:
     """Per-name ranges cannot express structure -- a monotone pressure
-    column, a consistent thickness field. A candidate may carry
-    ``_PREPARE_INPUTS`` the way it carries ``_SIGNATURES``; both sides then
-    receive the same shaped arrays, so it chooses the sampled region without
-    touching the verdict."""
+    column, a consistent thickness field. The project carries a
+    ``recast_inputs.py`` at its root, and its ``prepare`` shapes every
+    generated draw before both sides receive it, so it chooses the sampled
+    region without touching the verdict -- and the candidate, which is the
+    thing under judgement, has no say in it."""
     import numpy as np
 
     module = tmp_path / "candidate"
@@ -1350,14 +1351,20 @@ _SIGNATURES = {
 SEEN = []
 
 
-def _PREPARE_INPUTS(name, inputs, rng):
-    inputs["x"][:] = 2.0        # every trial sees the same shaped input
-
-
 def step(x):
     SEEN.append(float(x[0]))
     return np.asarray(x) * 3.0
 """
+    )
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "recast_inputs.py").write_text(
+        "import numpy as np\n"
+        "\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    assert unit == 'fortran:shaped' and subprogram == 'step'\n"
+        "    inputs['x'] = np.full_like(inputs['x'], 2.0)  # every trial sees the same input\n"
+        "    return inputs\n"
     )
 
     class Truth:
@@ -1382,15 +1389,18 @@ def step(x):
         ref,
         tmp_path / "ws",
         LocalExecutor(),
-        {"trials": 3, "dims": {"n": 4}, "ranges": {"x": (100.0, 200.0)}},
+        {"root": str(root), "trials": 3, "dims": {"n": 4}, "ranges": {"x": (100.0, 200.0)}},
     )
     assert verdict.confidence is Confidence.BIT_EXACT
+    assert verdict.metrics["input_profile"] == "recast_inputs.py"
+    assert verdict.metrics["shaped"] == ["step"]
+    assert verdict.metrics["subprograms"]["step"]["shaped"] == 3
     staged = tmp_path / "ws" / "candidate"
     sys.path.insert(0, str(staged))
     try:
         import shaped_numpy
 
-        # The hook ran: every trial saw 2.0, not a value from the range.
+        # The profile ran: every trial saw 2.0, not a value from the range.
         assert shaped_numpy.SEEN and all(v == 2.0 for v in shaped_numpy.SEEN)
     finally:
         sys.path.remove(str(staged))

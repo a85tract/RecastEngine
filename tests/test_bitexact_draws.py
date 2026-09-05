@@ -224,3 +224,190 @@ def test_a_draw_that_needs_no_redrawing_is_the_one_the_seed_names(tmp_path: Path
     verdict = judge(tmp_path, plain, SimpleNamespace(w_probe=lambda x: x * 2.0))
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     assert verdict.metrics["subprograms"]["probe"]["redrawn"] == 0
+
+
+# -- the project's input profile ----------------------------------------------
+
+
+def profile(tmp_path: Path, body: str) -> Path:
+    """Write ``recast_inputs.py`` at a project root and return that root."""
+    root = tmp_path / "project"
+    root.mkdir(exist_ok=True)
+    (root / "recast_inputs.py").write_text(body)
+    return root
+
+
+PACKED_PROFILE = """\
+import numpy as np
+
+
+def prepare(unit, subprogram, inputs, rng):
+    assert unit == "draw:m" and subprogram == "probe"
+    n = int(inputs["n"])
+    lr = n * (n + 1) // 2
+    inputs["lr"] = np.int32(lr)
+    inputs["r"] = np.asfortranarray(rng.uniform(-1.0, 1.0, size=lr))
+    return inputs
+"""
+
+
+def test_a_shaped_draw_is_compared_as_shaped_and_never_redrawn(tmp_path: Path) -> None:
+    """The packed workspace that fails by name under the generated rules is
+    compared as drawn once the project says how ``lr`` follows ``n``: no
+    redraw, nothing moved, and the trials are recorded as shaped."""
+    root = profile(tmp_path, PACKED_PROFILE)
+    verdict = judge(
+        tmp_path,
+        PACKED,
+        SimpleNamespace(w_probe=lambda n, lr, r: float(r[(int(n) * (int(n) + 1)) // 2 - 1])),
+        root=str(root),
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    probe = verdict.metrics["subprograms"]["probe"]
+    assert (probe["redrawn"], probe["reshaped"], probe["shaped"]) == (0, 0, 10)
+    assert verdict.metrics["input_profile"] == "recast_inputs.py"
+    assert verdict.metrics["shaped"] == ["probe"]
+
+
+def test_a_candidate_that_refuses_a_shaped_draw_has_failed(tmp_path: Path) -> None:
+    """Under the generated rules a translated ERROR STOP is a draw to make
+    again. Under a profile that fixed ``mode`` to a value the source takes,
+    the reference answers and the candidate stops: that is the translation
+    refusing inputs the source accepts, and it fails by name."""
+    root = profile(
+        tmp_path,
+        "import numpy as np\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    inputs['mode'] = np.int32(1)\n"
+        "    return inputs\n",
+    )
+    wrong = MODE.replace("if int(mode) not in (1, 2):", "if int(mode) != 2:")
+    verdict = judge(
+        tmp_path, wrong, SimpleNamespace(w_probe=lambda mode, x: x * 2.0), root=str(root)
+    )
+    assert verdict.confidence is Confidence.FAILED
+    detail = verdict.detail or ""
+    assert "probe: candidate raised on shaped inputs the reference took: SystemExit" in detail
+    assert "redrawn" not in detail
+
+
+def test_shaped_inputs_the_reference_refuses_are_the_profiles_fault(tmp_path: Path) -> None:
+    """The profile asserts the reference takes the draw, so the reference is
+    called first. When it refuses, nothing about the candidate is being
+    judged: the gate stops with the profile, subprogram and trial named."""
+    from recast.errors import InputProfileError
+
+    root = profile(
+        tmp_path,
+        "import numpy as np\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    inputs['mode'] = np.int32(7)\n"
+        "    return inputs\n",
+    )
+
+    def w_probe(mode: Any, x: Any) -> Any:
+        # Standing in for an ERROR STOP the reference would end the process on.
+        if int(mode) not in (1, 2):
+            raise ValueError("invalid mode in probe")
+        return x * 2.0
+
+    with pytest.raises(InputProfileError) as caught:
+        judge(tmp_path, MODE, SimpleNamespace(w_probe=w_probe), root=str(root))
+    message = str(caught.value)
+    assert message.startswith("recast_inputs.py: prepare('draw:m', 'probe') at trial 0")
+    assert "the reference does not take: ValueError: invalid mode in probe" in message
+
+
+def test_a_reference_nan_on_shaped_inputs_is_the_profiles_fault(tmp_path: Path) -> None:
+    """Both sides going to NaN is a redraw under the generated rules. A
+    shaped draw is not drawn again, so a reference NaN on it is the profile
+    having put the source outside its numeric domain."""
+    from recast.errors import InputProfileError
+
+    root = profile(
+        tmp_path,
+        "import numpy as np\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    inputs['x'] = np.float64(-4.0)\n"
+        "    return inputs\n",
+    )
+
+    def w_probe(x: Any) -> Any:
+        with np.errstate(invalid="ignore"):
+            return np.sqrt(x)
+
+    with pytest.raises(InputProfileError, match="the reference produced NaN in y"):
+        judge(tmp_path, NAN, SimpleNamespace(w_probe=w_probe), root=str(root))
+
+
+def test_a_profile_that_returns_none_leaves_the_draw_to_the_generated_rules(
+    tmp_path: Path,
+) -> None:
+    root = profile(
+        tmp_path,
+        "def prepare(unit, subprogram, inputs, rng):\n    return None\n",
+    )
+
+    def w_probe(mode: Any, x: Any) -> Any:
+        assert int(mode) in (1, 2), "the reference was called on a refused draw"
+        return x * 2.0
+
+    verdict = judge(tmp_path, MODE, SimpleNamespace(w_probe=w_probe), root=str(root))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    probe = verdict.metrics["subprograms"]["probe"]
+    assert probe["redrawn"] > 0 and probe["shaped"] == 0
+    assert verdict.metrics["input_profile"] == "recast_inputs.py"
+    assert verdict.metrics["shaped"] == []
+
+
+def test_a_profile_that_edits_in_place_and_returns_none_is_refused(tmp_path: Path) -> None:
+    """The profile sees a copy; the only way its work reaches the comparison
+    is by returning it. Otherwise an edited draw would be judged under the
+    unshaped rules with nobody told."""
+    from recast.errors import InputProfileError
+
+    root = profile(
+        tmp_path,
+        "import numpy as np\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    inputs['mode'] = np.int32(1)\n",
+    )
+    with pytest.raises(InputProfileError, match="edited mode in place and returned None"):
+        judge(tmp_path, MODE, SimpleNamespace(w_probe=lambda mode, x: x * 2.0), root=str(root))
+
+
+def test_a_profile_that_renames_the_arguments_is_refused(tmp_path: Path) -> None:
+    from recast.errors import InputProfileError
+
+    root = profile(
+        tmp_path,
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    return {'mode': inputs['mode'], 'xx': inputs['x']}\n",
+    )
+    with pytest.raises(InputProfileError, match="missing x; unknown xx"):
+        judge(tmp_path, MODE, SimpleNamespace(w_probe=lambda mode, x: x * 2.0), root=str(root))
+
+
+def test_a_profile_that_does_not_import_stops_the_gate(tmp_path: Path) -> None:
+    """A tree with a profile that cannot be read is not a tree without one."""
+    from recast.errors import InputProfileError
+
+    root = profile(tmp_path, "def prepare(unit, subprogram, inputs, rng)\n    return None\n")
+    with pytest.raises(InputProfileError, match=r"recast_inputs\.py does not import: SyntaxError"):
+        judge(tmp_path, MODE, SimpleNamespace(w_probe=lambda mode, x: x * 2.0), root=str(root))
+    root = profile(tmp_path, "PREPARE = None\n")
+    with pytest.raises(InputProfileError, match="defines no callable prepare"):
+        judge(tmp_path, MODE, SimpleNamespace(w_probe=lambda mode, x: x * 2.0), root=str(root))
+
+
+def test_a_root_without_a_profile_is_the_generated_path(tmp_path: Path) -> None:
+    root = tmp_path / "bare"
+    root.mkdir()
+    verdict = judge(
+        tmp_path,
+        NAN.replace("return np.sqrt(x)", "return x * 2.0"),
+        SimpleNamespace(w_probe=lambda x: x * 2.0),
+        root=str(root),
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["input_profile"] is None
