@@ -940,7 +940,11 @@ def test_unpacking_an_object_from_the_elided_call_buffer_is_already_true(tmp_pat
         x = np.ones((1, 2), order="F")
         result = module.step_flat(2, 1, x, np.zeros((1, 2), order="F"), np.float64(2.0))
         got = [np.asarray(v).tolist() for v in result]
-        assert got == [[[2.0, 2.0]], [[7.0, 7.0]], 4.0]
+        # The optional object is absent in the flat world (the plan leaves
+        # optional dummies out, as the adapter calls without them), so the
+        # callee's ``present(k)`` branch does not run: gain stays 2, y is
+        # x * 2 + 1 + 2.
+        assert got == [[[2.0, 2.0]], [[5.0, 5.0]], 2.0]
     finally:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
