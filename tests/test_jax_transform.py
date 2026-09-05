@@ -943,3 +943,80 @@ def test_unpacking_an_object_from_the_elided_call_buffer_is_already_true(tmp_pat
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"unpack_mod{suffix}", None)
+
+
+CHECKS = """\
+module checks_mod
+  implicit none
+contains
+  subroutine complain( n, x, what )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    character(len=*), intent(in) :: what
+    integer :: i
+    i = 1
+    do while ( i <= n )
+      if ( x(i) < 0.0d0 ) print *, what, i
+      i = i + 1
+    end do
+  end subroutine complain
+end module checks_mod
+"""
+
+GUARDED_CHECK = """\
+module guarded_mod
+  use checks_mod, only: complain
+  implicit none
+  integer, parameter :: debug_level = 0
+contains
+  subroutine step( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    y = 2.0d0 * x
+    if ( debug_level >= 2 ) then
+      call complain( n, y, "negative y" )
+    end if
+  end subroutine step
+end module guarded_mod
+"""
+
+
+def test_a_companion_procedure_the_port_left_on_the_host_stays_under_its_guard(
+    tmp_path: Path,
+) -> None:
+    """CLUBB's advance_clubb_core calls numerical_check's parameterization
+    check under ``clubb_at_least_debug_level_api(2)``, false with statistics
+    off; the check takes character arguments and its port leaves it on the
+    host. Refusing the whole step for a call that never runs was the
+    alternative: the call stays the host's under its trace-time guard, and
+    the note names it."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "checks_mod.f90").write_text(CHECKS)
+    (tmp_path / "guarded_mod.f90").write_text(GUARDED_CHECK)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:guarded_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    assert candidate.notes["jax"]["host_calls"] == {"step": ["checks_mod.complain"]}
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("guarded_mod_jax")
+        import numpy as np
+
+        assert np.asarray(module.step(2, np.array([1.0, -1.0]))).tolist() == [2.0, -2.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("guarded_mod", "checks_mod")):
+                sys.modules.pop(name, None)

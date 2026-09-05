@@ -403,6 +403,17 @@ def _static_test(test, statics=frozenset()):
             return constant(node.left) and constant(node.right)
         if isinstance(node, ast.UnaryOp):
             return constant(node.operand)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and all(constant(a) for a in node.args)
+            and not node.keywords
+        ):
+            # ``_error_code.clubb_at_least_debug_level_api(2)``: a stand-in's
+            # function of constants, a Python value at trace time. (A kernel
+            # of constants is a concrete array; ``_f_concrete`` tells.)
+            return True
         return False
 
     # ``RUNGE_KUTTA_TYPE == I_10``: a comparison over module constants
@@ -412,7 +423,9 @@ def _static_test(test, statics=frozenset()):
         return constant(test.left) and all(constant(c) for c in test.comparators)
     if isinstance(test, ast.BoolOp):
         return all(_static_test(v, statics) for v in test.values)
-    return False
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _static_test(test.operand, statics)
+    return constant(test)
 
 
 def _names(ids, ctx):

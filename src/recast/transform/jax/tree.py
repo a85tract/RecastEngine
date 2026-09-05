@@ -194,6 +194,7 @@ class _Rewrite(ast.NodeTransformer):
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
         self.buffer_outs: dict[str, list[str | None]] = {}  # anchor _out buffers, elided
+        self.host_calls: list[str] = []  # companion procedures left on the host, by name
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -901,7 +902,17 @@ class _Rewrite(ast.NodeTransformer):
             # answers, not physics, and are left as they are.
             return node
         if func.attr not in port["kernels"]:
-            raise NotFlat(f"calls {module}.{func.attr}, which its port did not lower")
+            # The companion's port left this one on the host (CLUBB's
+            # numerical_check.parameterization_check: character arguments,
+            # writes). The call stays the host's, under whatever guard the
+            # anchor put it -- ``if clubb_at_least_debug_level_api(2)``, a
+            # stand-in's answer at trace time, false with statistics off --
+            # and is never traced while the guard holds. If the guard ever
+            # lets it through, the trace fails on it by name, which the
+            # gate reports; refusing the whole kernel for a check that
+            # never runs was the alternative.
+            self.host_calls.append(f"{module}.{func.attr}")
+            return node
         closure: list[ast.expr] = []
         for state in port["closures"].get(func.attr, []):
             flat = f"{module}__{state}"
@@ -2683,6 +2694,7 @@ def flattened_module(
     specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
     aborts: dict[str, list[str]] = {}
     masked: dict[str, list[str]] = {}
+    host_calls: dict[str, list[str]] = {}
     static_loops: dict[str, list[str]] = {}
     companions: set[str] = set()
     planned = {p.subprogram["name"] for p in plans}
@@ -2704,6 +2716,8 @@ def flattened_module(
             aborts[plan.name] = rewrite.aborts
         if rewrite.masked:
             masked[plan.name] = rewrite.masked
+        if rewrite.host_calls:
+            host_calls[plan.name] = sorted(set(rewrite.host_calls))
         if rewrite.static_loops:
             static_loops[plan.name] = rewrite.static_loops
         companions |= rewrite.companions
@@ -2726,6 +2740,8 @@ def flattened_module(
             aborts[name] = rewrite.aborts
         if rewrite.masked:
             masked[name] = rewrite.masked
+        if rewrite.host_calls:
+            host_calls[name] = sorted(set(rewrite.host_calls))
         if rewrite.static_loops:
             static_loops[name] = rewrite.static_loops
         if rewrite.state_params:
@@ -2751,6 +2767,7 @@ def flattened_module(
         "aborts_dropped": aborts,
         "masked": masked,
         "static_loops": static_loops,
+        "host_calls": host_calls,
         "companions": sorted(companions),
     }
     return module, {**interface, "subprograms": [*interface["subprograms"], *entries]}, notes
@@ -2851,6 +2868,7 @@ class TreeToJax(KernelToJax):
                     "aborts_dropped": dict(sorted(flat_notes["aborts_dropped"].items())),
                     "masked": dict(sorted(flat_notes["masked"].items())),
                     "static_loops": dict(sorted(flat_notes["static_loops"].items())),
+                    "host_calls": dict(sorted(flat_notes.get("host_calls", {}).items())),
                     "companions": sorted(ported),
                     "runtime": f"{runtime_stem}.py",
                     "_ports": ported,
