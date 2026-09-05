@@ -118,6 +118,15 @@ TRANSFORMATIONAL = frozenset(
         "size",
         "sum",
         "ubound",
+        # Reshape a whole array; the result's rank is the caller's business.
+        "reshape",
+        "spread",
+        "pack",
+        "unpack",
+        "transpose",
+        "cshift",
+        "eoshift",
+        "lbound",
     }
 )
 """Operate on an array as a whole rather than per element.

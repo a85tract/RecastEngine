@@ -375,3 +375,54 @@ def test_a_copy_out_writes_its_target(verify) -> None:
     candidate.files = {Path("demo_numpy.py"): emitted.encode()}
     verdict = verify(candidate)
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+
+
+def test_a_block_that_is_only_an_abort_stub_is_waived(verify) -> None:
+    """``if (.not. readv) call endrun(msg=trim(errCode)//errMsg(...))`` reads
+    three names on the source side and is ``raise RuntimeError('endrun')``
+    on the target, marked ``(infra stub)`` like a ``pass`` for ``ncd_io``.
+    Only ``pass`` counted as a stub line, so every guarded abort in ELM's
+    readParams failed the gate instead of being waived by name."""
+    from recast.verify.rwset import stubbed_blocks
+
+    emitted = EMITTED.replace(
+        "        if flag:\n            out[i] = acc\n",
+        "        if flag:\n            raise RuntimeError('endrun')  # endrun (infra stub)\n",
+    )
+    candidate = _candidate(
+        [
+            _block("B001", [], ["acc"]),
+            _block("B002", ["acc", "flag", "i", "n", "pool"], ["acc", "i"]),
+            {
+                "subprogram": "fill",
+                "block": "B004",
+                "reads": ["errcode", "errmsg", "tstring"],
+                "writes": [],
+                "lines": [7, 7],
+            },
+            _block("B003", ["acc", "cpair", "gam"], ["gam"]),
+        ]
+    )
+    candidate.files = {Path("demo_numpy.py"): emitted.encode()}
+    assert stubbed_blocks(candidate) == {"fill/B004": "framework stub: endrun"}
+    verdict = verify(candidate, waive_stub_blocks=True)
+    assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+    assert "fill/B004: framework stub: endrun" in verdict.detail
+
+
+def test_a_read_a_stub_dropped_is_excused_only_where_the_target_lacks_it(verify) -> None:
+    """``call endrun(msg=trim(errCode)//errMsg(...))`` inside a block that
+    also does physics: the source reads ``errcode`` and ``errmsg``, the
+    ``raise`` the stub emits reads neither. The transform names them as
+    dropped, and the gate excuses exactly those the target does not read."""
+    blocks = [
+        _block("B001", [], ["acc"]),
+        {**_block("B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"]),
+         "dropped_reads": ["errcode", "errmsg", "flag"]},
+        _block("B003", ["acc", "cpair", "gam"], ["gam"]),
+    ]
+    verdict = verify(_candidate(blocks))
+    assert verdict.confidence is Confidence.SAMPLED, verdict.detail
+    assert verdict.metrics["reads_excused_by_stubs"] == 2  # flag is read by the target
+    blocks[1] = _block("B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"])
+    assert verify(_candidate(blocks)).confidence is Confidence.FAILED
