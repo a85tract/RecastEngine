@@ -452,6 +452,25 @@ def _accesses(
                 if isinstance(comp, f03.Part_Ref):
                     comp = comp.children[0]
                 aliases[str(alias).lower()] = f"{str(root).lower()}%{str(comp).lower()}"
+    # A pointer assignment is an alias too -- ``psn_z => photosyns_vars%
+    # psnsun_z_patch`` under one branch and the shade array under the
+    # other -- and a write through it is a write of every target it may
+    # have. Left out, the routine's own outputs (ELM's leaf photosynthesis,
+    # stomatal resistance, ci) were planned read-only and the gate never
+    # compared them.
+    pointed: dict[str, set[str]] = {}
+    for statement in walk(node, f03.Pointer_Assignment_Stmt):
+        target, _, selector = statement.children
+        if not isinstance(target, f03.Name):
+            continue
+        if isinstance(selector, f03.Data_Ref) and len(selector.children) == 2:
+            root, comp = selector.children
+            if isinstance(comp, f03.Part_Ref):
+                comp = comp.children[0]
+            if isinstance(root, f03.Name) and isinstance(comp, f03.Name):
+                pointed.setdefault(str(target).lower(), set()).add(
+                    f"{str(root).lower()}%{str(comp).lower()}"
+                )
     # With the companions' procedures in scope: a call into a sibling
     # module writes its intent(out) actuals, and ``call tridiag(..., t(p,:))``
     # is how a component gets written here. Without them every call scores
@@ -671,6 +690,11 @@ def _accesses(
                         # Module state (``patch%itype``): spelled the same
                         # everywhere, and the callee's reads are ours.
                         target.add(item)
+    for alias, targets in pointed.items():
+        if alias in reads:
+            reads |= targets
+        if alias in writes:
+            writes |= targets
     return aliases, reads, writes
 
 

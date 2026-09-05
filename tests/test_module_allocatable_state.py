@@ -160,3 +160,54 @@ def test_the_recorder_guards_an_array_the_run_may_not_have_allocated(tree: Path)
     assert "if (allocated(vcmax_np1)) then" in text
     assert "spread(nanv, 1, (((mxpft) - (0) + 1)))" in text
     assert text.count("flush (u_scale)") >= 4
+
+
+POINTED = """\
+module pointed_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Fill
+contains
+  subroutine Fill(num, filter, phase, inst)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    character(len=3), intent(in) :: phase
+    type(canopy_type), intent(inout) :: inst
+    real(8), pointer :: view(:)
+    integer :: f, p
+    if (phase == 'sun') then
+       view => inst%gs
+    else
+       view => inst%ncan_r
+    end if
+    do f = 1, num
+       p = filter(f)
+       view(p) = 2.0d0 * inst%gs(p)
+    end do
+  end subroutine Fill
+end module pointed_mod
+"""
+
+
+def test_a_write_through_a_pointer_alias_writes_every_target_it_may_have(tmp_path: Path) -> None:
+    """``psn_z => photosyns_vars%psnsun_z_patch`` under sun, the shade array
+    under shade, then ``psn_z(p,iv) = ...``: the routine's own outputs. An
+    associate alias was followed; a pointer assignment was not, and the
+    plan had them read-only, so the gate never compared them."""
+    types = TYPES.replace(
+        "     real(8), pointer :: gs(:)\n",
+        "     real(8), pointer :: gs(:)\n     real(8), pointer :: ncan_r(:)\n",
+    ).replace(
+        "    allocate(this%gs(begp:endp))\n",
+        "    allocate(this%gs(begp:endp))\n    allocate(this%ncan_r(begp:endp))\n",
+    )
+    (tmp_path / "types_mod.f90").write_text(types)
+    (tmp_path / "pointed_mod.f90").write_text(POINTED)
+    frontend = FortranFrontend(buffer_out_arrays="all")
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:pointed_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    plan = next(p for p in plans_for(facts, tmp_path, FlatConventions()) if p.subprogram["name"].lower() == "fill")
+    inst = next(o for o in plan.objects if o.name == "inst")
+    written = {c.name for c in inst.components if c.written}
+    assert written == {"gs", "ncan_r"}, {c.name: c.written for c in inst.components}
