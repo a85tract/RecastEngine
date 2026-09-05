@@ -152,6 +152,30 @@ def test_single_exit_refuses_a_tuple_return() -> None:
         _single_exit(fn.body)
 
 
+def test_a_subroutines_early_returns_of_its_output_names_merge_on_the_flag() -> None:
+    """A subroutine's translation returns the same tuple of output names at
+    every ``return`` (ELM's ``hybrid``: ``if (f0 == 0) return`` ahead of
+    the loop). Nothing to select through ``jnp.where``: the guarded
+    statements after the flag leave the outputs as they were."""
+    from recast.transform.jax.tree import _single_exit
+
+    fn = ast.parse(
+        "def hybrid(x0, f0):\n"
+        "    gs = 0.0\n"
+        "    if f0 == 0.0:\n"
+        "        return (x0, gs)\n"
+        "    gs = x0 * 2.0\n"
+        "    return (x0, gs)\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = _single_exit(fn.body)
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in body)
+    assert "_ret = False" in text and "_ret = True" in text
+    assert "_r =" not in text and "where" not in text
+    assert text.rstrip().endswith("return (x0, gs)")
+    assert "if not _ret:\n    gs = x0 * 2.0" in text
+
+
 def test_counted_while_needs_the_counter_advanced_every_pass() -> None:
     from recast.transform.jax.tree import _WhileLoops
 
@@ -225,3 +249,69 @@ def test_a_forward_goto_region_becomes_a_skip_flag() -> None:
     assert "_FGoto" not in text and "try" not in text
     assert "_skip_1 = True" in text
     assert "if not _skip_1:" in text and "dead_write" in text
+
+
+SOLVE = """\
+module solve_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Drive
+contains
+  subroutine Solve(x0, root, iter, inst)
+    real(8), intent(in) :: x0
+    real(8), intent(out) :: root
+    integer, intent(out) :: iter
+    type(canopy_type), intent(inout) :: inst
+    iter = 0
+    root = x0
+    if (x0 == 0.0d0) return
+    iter = 1
+    root = x0 * inst%gs(1)
+    inst%gs(1) = root
+  end subroutine Solve
+
+  subroutine Drive(num, filter, dt, inst)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    real(8), intent(in) :: dt
+    type(canopy_type), intent(inout) :: inst
+    integer :: f, p, it
+    real(8) :: r
+    do f = 1, num
+       p = filter(f)
+       call Solve(dt, r, it, inst)
+       inst%gs(p) = inst%gs(p) + r
+    end do
+  end subroutine Drive
+end module solve_mod
+"""
+
+
+def test_a_callee_with_an_out_scalar_before_its_object_is_rewritten_to_its_kernel(
+    tmp_path: Path,
+) -> None:
+    """ELM's ``hybrid(..., gs_mol, iter, atm2lnd_vars, photosyns_vars)``: the
+    anchor's call omits the OUT scalars, and counting them against the
+    callee's dummies shifted the objects (``object photosyns_vars not
+    passed``). The callee's own early ``return`` of its output names merges
+    on the flag alone. Both are lowered now, the caller calling the
+    callee's kernel."""
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "solve_mod.f90").write_text(SOLVE)
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solve_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    ported = candidate.files[Path("solve_mod_jax.py")].decode()
+    assert candidate.notes["jax"]["flat_refused"] == {}, candidate.notes["jax"]["flat_refused"]
+    assert "_JAX_KERNELS = ['drive_flat', 'solve_flat']" in ported
+    drive = next(
+        n
+        for n in ast.walk(ast.parse(ported))
+        if isinstance(n, ast.FunctionDef) and n.name == "_drive_flat_k_impl"
+    )
+    calls = {
+        ast.unparse(n.func) for n in ast.walk(drive) if isinstance(n, ast.Call)
+    }
+    assert "_solve_flat_k_impl" in calls, calls

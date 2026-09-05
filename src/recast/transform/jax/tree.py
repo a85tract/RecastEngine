@@ -1050,7 +1050,15 @@ class _Rewrite(ast.NodeTransformer):
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
         assert callee is not None and self.plan is not None
-        dummies = [a["name"] for a in callee.subprogram["args"]]
+        # The anchor calls its translation by the emitted convention: the
+        # non-OUT, non-optional dummies in declaration order, then the OUT
+        # arrays it hands in as buffers. An OUT scalar before an object
+        # (``hybrid(..., gs_mol, iter, atm2lnd_vars, photosyns_vars)``) is
+        # not in the actual list, and counting it shifted the objects.
+        arguments = callee.subprogram["args"]
+        dummies = [
+            a["name"] for a in arguments if a["intent"] != "OUT" and not a.get("optional")
+        ] + [a["name"] for a in arguments if a["intent"] == "OUT" and a.get("dims")]
         actual_by_dummy: dict[str, ast.expr] = {}
         for at, given in enumerate(call.args):
             if at < len(dummies):
@@ -1503,32 +1511,48 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     early = [s for s in body[:-1] if _has_return([s])]
     if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return body
-    # The merge is one ``jnp.where`` over one value: a function with several
-    # outputs returns a tuple, which ``where`` cannot select.
-    for statement in body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-                raise NotFlat(
-                    f"an early return in a function with several outputs: {ast.unparse(node)}"
-                )
+    final = body[-1]
+    # A subroutine's translation returns the same tuple of its output
+    # names at every return (the emitted convention): nothing to select,
+    # the values are the variables' at the moment of the return, which the
+    # guarded statements after it leave alone. Only the flag is needed.
+    # A function whose returns are expressions merges one value through
+    # ``jnp.where``; several distinct values would need one ``where`` each
+    # and are refused.
+    same_names = isinstance(final.value, ast.Tuple) and all(
+        isinstance(n.value, ast.Tuple) and ast.unparse(n.value) == ast.unparse(final.value)
+        for statement in body
+        for n in ast.walk(statement)
+        if isinstance(n, ast.Return)
+    )
+    if not same_names:
+        for statement in body:
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+                    raise NotFlat(
+                        f"an early return in a function with several outputs: {ast.unparse(node)}"
+                    )
 
     class Returns(ast.NodeTransformer):
         def visit_Return(self, node: ast.Return) -> Any:
+            flag = ast.Assign(
+                targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
+            )
+            if same_names:
+                return [flag]
             value = node.value if node.value is not None else ast.Constant(None)
-            return [
-                ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
-                ast.Assign(
-                    targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
-                ),
-            ]
+            return [ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value), flag]
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
             return node  # a nested function's returns are its own
 
     out: list[ast.stmt] = [
         ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
-        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0)),
     ]
+    if not same_names:
+        out.append(
+            ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0))
+        )
     exited = False
     for statement in body[:-1]:
         had_return = _has_return([statement])  # before the visit rewrites it away
@@ -1553,8 +1577,10 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             out.extend(rewritten)
         if had_return:
             exited = True
-    final = body[-1]
     assert isinstance(final, ast.Return) and final.value is not None
+    if same_names:
+        out.append(final)
+        return out
     merged = _jnp(
         "where",
         [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],
