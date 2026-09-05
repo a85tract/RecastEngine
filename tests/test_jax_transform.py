@@ -1879,6 +1879,73 @@ def test_a_dispatch_on_a_module_constant_through_its_alias_is_static(tmp_path: P
                 sys.modules.pop(name, None)
 
 
+NESTED_WHILE = """\
+module nestedwhile_mod
+  implicit none
+contains
+  subroutine locate( n, m, x, grid, idx )
+    integer, intent(in) :: n, m
+    real(8), intent(in) :: x(n), grid(m)
+    integer, intent(out) :: idx(n)
+    integer :: i, k
+    logical :: calc_done
+    idx = 0
+    do i = 1, n
+      if ( x(i) > 0.0d0 ) then
+        k = 1
+        calc_done = .false.
+        do while ( .not. calc_done .and. k <= m )
+          if ( grid(k) >= x(i) ) then
+            idx(i) = k
+            calc_done = .true.
+          end if
+          k = k + 1
+        end do
+      end if
+    end do
+  end subroutine locate
+end module nestedwhile_mod
+"""
+
+
+def test_a_while_inside_a_branch_inside_a_loop_has_its_flag_before_the_branch(
+    tmp_path: Path,
+) -> None:
+    """interpolation's lin_interp_between_grids: a DO WHILE search under an
+    IF inside a DO. The while's exit flag is a carry of the enclosing cond,
+    so it needs a value before the branch -- at the top of the function,
+    like the goto-region flags -- not only beside its loop."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "nestedwhile_mod.f90").write_text(NESTED_WHILE)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:nestedwhile_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert candidate.notes["jax"]["kernels"] == ["locate"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("nestedwhile_mod_jax")
+        import numpy as np
+
+        x = np.array([0.5, -1.0, 2.5, 9.0])
+        grid = np.array([1.0, 2.0, 3.0])
+        got = np.asarray(module.locate(4, 3, x, grid)).tolist()
+        assert got == [1, 0, 3, 0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"nestedwhile_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

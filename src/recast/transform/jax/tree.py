@@ -1717,9 +1717,11 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
     )
     lowered = _WhileLoops(_integer_inits(fn), int_locals).visit_block(lowered)
-    # The goto-region flags are synthetic locals with no UB-guard init; an
-    # enclosing loop carries them, and the initial carry tuple needs a value
-    # before the loop. Every flag starts False at the top of the function.
+    # The goto-region and while-exit flags are synthetic locals with no
+    # UB-guard init; an enclosing loop or branch carries them (a while inside
+    # an if inside a do: CLUBB's grid interpolation), and the initial carry
+    # tuple needs a value before it. Every flag starts False at the top of
+    # the function; the one beside its loop resets it on every entry.
     flags = sorted(
         {
             n.id
@@ -1727,7 +1729,7 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
             for n in ast.walk(stmt)
             if isinstance(n, ast.Name)
             and isinstance(n.ctx, ast.Store)
-            and re.fullmatch(r"_(?:skip|restart)_\d+", n.id)
+            and re.fullmatch(r"_(?:skip|restart|done)_\d+", n.id)
         }
     )
     lowered = [
@@ -2649,12 +2651,20 @@ class _WhileLoops(ast.NodeTransformer):
                 exited = True
         for statement in guarded:
             ast.fix_missing_locations(statement)
-        carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
-        state = [*carried, done]
         try:
             lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
         except JaxQueue as why:
             raise NotFlat(f"while loop body: {why}") from why
+        # The carries are what the *lowered* body stores: a subscript store
+        # (``idx(i) = k`` in a search loop) is a store to its base only once
+        # lowered. An inner loop's break flag and kept index are the body's
+        # own, initialized beside that loop, never a carry of this one.
+        carried = [
+            n
+            for n in _assigned_names(lowered)  # type: ignore[no-untyped-call]
+            if n != done and not re.fullmatch(r"_(?:brk|kx)_\d+", n)
+        ]
+        state = [*carried, done]
         unpack = ast.Assign(
             targets=[
                 ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Store()) for n in state], ctx=ast.Store())
