@@ -2244,6 +2244,67 @@ def test_a_character_local_is_never_a_carry(tmp_path: Path) -> None:
             sys.modules.pop(f"named_mod{suffix}", None)
 
 
+CONVERTED_UNDER_A_GUARD = """\
+module converted_mod
+  implicit none
+contains
+  subroutine halve_tail( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: k, k0
+    y = x
+    if ( any( x < 0.0d0 ) ) then
+      k0 = int( real( n, 8 ) / 2.0d0 )
+    else
+      k0 = 1
+    end if
+    do k = k0, n
+      y(k) = 2.0d0 * x(k)
+    end do
+  end subroutine halve_tail
+end module converted_mod
+"""
+
+
+def test_an_integer_conversion_stored_under_a_traced_branch_takes_the_guard_type(
+    tmp_path: Path,
+) -> None:
+    """fill_holes' ``start_indx = int(lower_hf_level + dir * n)`` under
+    ``if l_field_below_threshold``: the anchor's integer conversion of a
+    static expression is a Python int at trace time, and a cond arm that
+    stores it beside the int32 guard init has a different output type.
+    Cast like any static-expression store."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "converted_mod.f90").write_text(CONVERTED_UNDER_A_GUARD)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:converted_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert candidate.notes["jax"]["kernels"] == ["halve_tail"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("converted_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, -2.0, 3.0, 4.0])
+        assert np.asarray(module.halve_tail(4, x)).tolist() == [1.0, -4.0, 6.0, 8.0]
+        assert np.asarray(module.halve_tail(4, np.abs(x))).tolist() == [2.0, 4.0, 6.0, 8.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"converted_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

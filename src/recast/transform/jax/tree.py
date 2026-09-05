@@ -2934,6 +2934,24 @@ def _static_expression(node: ast.expr, statics: frozenset[str]) -> bool:
         return _static_expression(node.left, statics) and _static_expression(node.right, statics)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         return _static_expression(node.operand, statics)
+    if (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and not node.keywords
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id in ("int", "float"))
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+                and node.func.attr in ("int32", "int64", "float32", "float64")
+            )
+        )
+    ):
+        # ``int(lower_hf_level + dir * n)``: the anchor's integer conversion
+        # of a static expression is one too (a Python int at trace time --
+        # which is why the store into a guard-typed local needs its cast).
+        return _static_expression(node.args[0], statics)
     return False
 
 
