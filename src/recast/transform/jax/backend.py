@@ -500,13 +500,15 @@ def _assigned_names(stmts):
                 # ``_out`` is the anchor's call-result tuple, assigned and
                 # unpacked on consecutive lines of one block: the block's own,
                 # never a carry (its shape changes from call to call).
+                # ``_`` is a discard (an optional output the caller did not
+                # ask for): never read, so never carried.
                 if isinstance(t, ast.Name) and not re.fullmatch(
-                    r"_(?:hi_|cnt_|lo_|st_|t)\d+|_out", t.id
+                    r"_(?:hi_|cnt_|lo_|st_|t)\d+|_out|_", t.id
                 ):
                     add(t.id)
                 elif isinstance(t, ast.Tuple):
                     for e in t.elts:
-                        if isinstance(e, ast.Name) and not re.fullmatch(r"_t\d+|_out", e.id):
+                        if isinstance(e, ast.Name) and not re.fullmatch(r"_t\d+|_out|_", e.id):
                             add(e.id)
         elif isinstance(s, ast.If):
             for n in _assigned_names(s.body) + _assigned_names(s.orelse):
