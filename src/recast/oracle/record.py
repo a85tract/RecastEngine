@@ -81,6 +81,18 @@ def _flat_view(target: str, rank: int) -> str:
     return f"reshape({target}, (/size({target})/))"
 
 
+POISON = {"int32": "0", "bool": ".false."}
+"""What an absent array is recorded as, per element: NaN for a real (the
+module-level ``nanv``), which any read of it turns into a visible
+mismatch; zero and false where the type has no NaN."""
+
+
+def _fortran_extent(extent: str) -> str:
+    """A plan extent in the recorder's own scope: a flat state name
+    (``elm_varpar__numpft``) is the module variable the recorder ``use``s."""
+    return re.sub(r"\b\w+__(\w+)\b", r"\1", extent)
+
+
 def _record_call(
     lines: list[str],
     unit: str,
@@ -90,18 +102,68 @@ def _record_call(
     rank: int,
     dtype: str,
     dims: str | None = None,
+    guard: str | None = None,
+    fallback: list[str] | None = None,
 ) -> None:
     """One ``call rec_*`` writing ``target`` under ``label``; the extents
-    from ``size()`` at run time unless ``dims`` spells them."""
+    from ``size()`` at run time unless ``dims`` spells them.
+
+    ``guard`` is the test that the array exists (``associated(obj%comp)``,
+    ``allocated(x)``): a component the run never allocated -- a state the
+    configuration leaves off -- is not read by the routine either, but the
+    recorder reading it is a fault. It is recorded instead as ``fallback``
+    extents of poison, so the replay has a value of the planned shape to
+    hand over and any use of it shows.
+    """
     writer = WRITERS.get(dtype, "rec_r1")
+    body: list[str] = []
     if dims is None:
-        lines.extend(_dims_lines_for(target, rank))
+        body.extend(_dims_lines_for(target, rank))
         spelled = "trim(dims)"
     else:
         spelled = f"'{dims}'"
-    lines.append(
+    body.append(
         f"       call {writer}({unit}, '{tag}', '{label}', {spelled}, {_flat_view(target, rank)})"
     )
+    if guard is None:
+        lines.extend(body)
+    else:
+        extents = [_fortran_extent(e) for e in (fallback or [])] or ["1"]
+        count = " * ".join(f"({e})" for e in extents)
+        fill = POISON.get(dtype, "nanv")
+        pieces = ["'('"]
+        for at, extent in enumerate(extents):
+            if at:
+                pieces.append("','")
+            pieces.append(extent)
+        pieces.append("')'")
+        fmt = "(" + ",".join("a" if p.startswith("'") else "i0" for p in pieces) + ")"
+        lines.append(f"       if ({guard}) then")
+        lines.extend("   " + line for line in body)
+        lines.append("       else")
+        lines.append(f"          write (dims, '{fmt}') {', '.join(pieces)}")
+        lines.append(
+            f"          call {writer}({unit}, '{tag}', '{label}', trim(dims), "
+            f"spread({fill}, 1, {count}))"
+        )
+        lines.append("       end if")
+    lines.append(f"       flush ({unit})")
+
+
+def _component_guard(obj: Any, comp: Any) -> tuple[str | None, list[str] | None]:
+    """The existence test for a component the plan found an ALLOCATE for:
+    a pointer is ``associated``, an allocatable ``allocated``; a component
+    of declared shape needs none."""
+    if not comp.bounds:
+        return None, None
+    test = "associated" if comp.pointer else "allocated"
+    return f"{test}({obj.name}%{comp.name})", list(comp.extents)
+
+
+def _state_guard(state: Any) -> tuple[str | None, list[str] | None]:
+    if not state.bounds:
+        return None, None
+    return f"allocated({state.name})", list(state.extents)
 
 
 def recorder_module(
@@ -139,11 +201,13 @@ def recorder_module(
         lines.append(f"  use {type_module or type_name}, only: {type_name}")
     for mod, names in sorted(used.items()):
         lines.append(f"  use {mod}, only: {', '.join(sorted(names))}")
+    lines.append("  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan")
     lines += [
         "  implicit none",
         "  private",
         f"  integer, parameter :: max_calls = {calls}",
         "  character(len=512), public, save :: recast_dump_dir = 'dumps'",
+        "  real(8), save :: nanv  ! what an absent array is recorded as",
     ]
     for plan in plans:
         sub = plan.subprogram["name"]
@@ -158,6 +222,7 @@ def recorder_module(
         "    character(len=*), intent(in) :: name",
         "    integer, intent(in) :: call_no",
         "    character(len=600) :: path",
+        "    nanv = ieee_value(nanv, ieee_quiet_nan)",
         "    write (path, '(a,a,a,a,i4.4,a)') "
         "trim(recast_dump_dir), '/', name, '_', call_no, '.txt'",
         "    open (newunit=unit, file=trim(path), action='write', status='replace')",
@@ -266,6 +331,7 @@ def recorder_module(
                 )
         for obj in plan.objects:
             for comp in obj.components:
+                guard, fallback = _component_guard(obj, comp)
                 _record_call(
                     lines,
                     u,
@@ -274,8 +340,11 @@ def recorder_module(
                     f"{obj.name}%{comp.name}",
                     len(comp.extents),
                     comp.dtype,
+                    guard=guard,
+                    fallback=fallback,
                 )
         for state in plan.states:
+            guard, fallback = _state_guard(state)
             _record_call(
                 lines,
                 u,
@@ -285,11 +354,14 @@ def recorder_module(
                 len(state.extents),
                 state.dtype,
                 _state_dims(state),
+                guard=guard,
+                fallback=fallback,
             )
         lines += ["    else", f"       if (n_{sname} > max_calls) return"]
         for obj in plan.objects:
             for comp in obj.components:
                 if comp.written:
+                    guard, fallback = _component_guard(obj, comp)
                     _record_call(
                         lines,
                         u,
@@ -298,6 +370,8 @@ def recorder_module(
                         f"{obj.name}%{comp.name}",
                         len(comp.extents),
                         comp.dtype,
+                        guard=guard,
+                        fallback=fallback,
                     )
         for a in originals:
             if a.get("dims") and not DERIVED.match(str(a["dtype"])) and a["intent"] != "IN":
@@ -306,6 +380,7 @@ def recorder_module(
                 )
         for state in plan.states:
             if state.written:
+                guard, fallback = _state_guard(state)
                 _record_call(
                     lines,
                     u,
@@ -315,6 +390,8 @@ def recorder_module(
                     len(state.extents),
                     state.dtype,
                     _state_dims(state),
+                    guard=guard,
+                    fallback=fallback,
                 )
         lines += [f"       close ({u})", "    end if", f"  end subroutine rec_{sname}"]
     lines.append(f"end module {name}")

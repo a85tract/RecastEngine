@@ -145,3 +145,18 @@ def test_a_reader_subscripts_the_companions_allocatable_over_its_lower_bound(tre
     physics = candidate.files[Path("physics_mod_numpy.py")].decode()
     assert "vcmax_np1[(itype[p - 1]) - (0)]" in physics
     assert "table[(itype[p - 1]) - (0), 1]" in physics
+
+
+def test_the_recorder_guards_an_array_the_run_may_not_have_allocated(tree: Path) -> None:
+    """A pointer component the configuration never allocated (ELM's CN
+    state under SP) is a fault to read; the probe tests it and records
+    poison of the planned shape instead, so the replay has a value and any
+    use of it shows. A declared-shape array needs no test."""
+    plan = _plan(tree)
+    text = recorder_module("physics_mod", [plan])
+    assert "use, intrinsic :: ieee_arithmetic" in text
+    assert "if (associated(inst%gs)) then" in text
+    assert "spread(nanv, 1, (np_))" in text
+    assert "if (allocated(vcmax_np1)) then" in text
+    assert "spread(nanv, 1, (((mxpft) - (0) + 1)))" in text
+    assert text.count("flush (u_scale)") >= 4
