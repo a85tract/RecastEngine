@@ -1946,6 +1946,63 @@ def test_a_while_inside_a_branch_inside_a_loop_has_its_flag_before_the_branch(
             sys.modules.pop(f"nestedwhile_mod{suffix}", None)
 
 
+EXIT_UNDER_A_GUARD = """\
+module guardedexit_mod
+  implicit none
+contains
+  subroutine first_above( n, m, zlo, z, kfound )
+    integer, intent(in) :: n, m
+    real(8), intent(in) :: zlo(n), z(n, m)
+    integer, intent(out) :: kfound(n)
+    integer :: i, k
+    kfound = -1
+    do i = 1, n
+      if ( zlo(i) > 0.0d0 ) then
+        kfound(i) = 0
+        do k = 1, m
+          if ( z(i, k) > zlo(i) ) then
+            kfound(i) = k
+            exit
+          end if
+        end do
+      end if
+    end do
+  end subroutine first_above
+end module guardedexit_mod
+"""
+
+
+def test_an_exit_inside_a_branch_inside_a_loop_has_its_flag_before_the_branch(
+    tmp_path: Path,
+) -> None:
+    """advance_helper's window search: a DO with an EXIT under an IF inside
+    the column loop. The break flag and the kept index are carries of the
+    enclosing cond and need a value before the branch -- at the top of the
+    function, like the return flag -- not only beside their loop."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, EXIT_UNDER_A_GUARD, "guardedexit_mod")
+    assert candidate.notes["jax"]["kernels"] == ["first_above"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("guardedexit_mod_jax")
+        import numpy as np
+
+        zlo = np.array([2.5, -1.0, 9.0])
+        z = np.asfortranarray([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+        got = np.asarray(module.first_above(3, 3, zlo, z)).tolist()
+        assert got == [3, -1, 0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"guardedexit_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

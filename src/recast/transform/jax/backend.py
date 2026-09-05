@@ -962,8 +962,13 @@ class KernelLowerer:
         carried = [
             n
             for n in _assigned_names(body)
-            if n != s.target.id and n not in settled and n in bound_before
+            if n != s.target.id
+            and n not in settled
+            and (n in bound_before or re.fullmatch(r"_(?:brk|kx)_\d+", n))
         ]
+        # A nested loop's break flag and kept index are initialized at the
+        # top of the function (_flag_inits): bound before every loop, and
+        # carried by each one that encloses a store of them.
         if not carried:
             raise JaxQueue("loop with no carried effects")
         self.n += 1
@@ -1253,8 +1258,38 @@ def emit_kernel(
     statics = {required[pos] for pos in nums}
     lowerer = KernelLowerer(bound={a.arg for a in fn.args.args}, statics=statics)
     fn.body = lowerer.lower_block(fn.body, 0)
+    fn.body = [*_flag_inits(fn.body), *fn.body]
     ast.fix_missing_locations(fn)
     return ast.unparse(fn)
+
+
+def _flag_inits(body):
+    """A break flag and its kept index are initialized beside their loop;
+    when that loop sits in a branch, the enclosing cond carries them and
+    the carry needs a value before the branch. Every one starts at the top
+    of the function (False, index 0), the way the return flag does; the
+    init beside the loop resets it on entry."""
+    flags: dict[str, ast.expr] = {}
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name) or target.id in flags:
+                continue
+            if re.fullmatch(r"_brk_\d+", target.id):
+                flags[target.id] = _jnp_bool(False)
+            elif re.fullmatch(r"_kx_\d+", target.id):
+                flags[target.id] = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="jnp", ctx=ast.Load()), attr="int32", ctx=ast.Load()
+                    ),
+                    args=[ast.Constant(value=0)],
+                    keywords=[],
+                )
+    return [
+        ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=value)
+        for name, value in sorted(flags.items())
+    ]
 
 
 def _bind_writer_calls(fn, call_map):
