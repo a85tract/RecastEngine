@@ -407,6 +407,7 @@ class _Rewrite(ast.NodeTransformer):
             len(node.targets) == 1
             and isinstance(target, ast.Name)
             and target.id in self.inits
+            and target.id not in self.statics  # a trace-time value stays a Python one
             and not isinstance(node.value, ast.Constant)
             and (_constant_expression(node.value, self.loop_vars) or _table_read(node.value))
         ):
@@ -1614,14 +1615,8 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
     casts of those, or a companion scalar kernel called on them
     (``dtime_clm = get_step_size()`` reading the static ``dtstep``). A name
     also stored under a branch or loop is a carried value, not a constant."""
-    nested: set[str] = set()
-    for stmt in fn.body:
-        if isinstance(stmt, ast.Assign):
-            continue
-        for inner in ast.walk(stmt):
-            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
-                nested.add(inner.id)
     concrete: set[str] = set()
+    nested: set[str] = set()
 
     def scalar_port_call(call: ast.Call) -> bool:
         func = call.func
@@ -1646,9 +1641,15 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
 
     def ok(node: ast.expr) -> bool:
         if isinstance(node, ast.Constant):
-            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+            return isinstance(node.value, (int, float, bool))
         if isinstance(node, ast.Name):
             return node.id.isupper() or node.id in rewrite.statics or node.id in concrete
+        if isinstance(node, ast.BoolOp):
+            return all(ok(v) for v in node.values)  # l_a .and. l_b over switches
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return ok(node.operand)
+        if isinstance(node, ast.Compare):
+            return ok(node.left) and all(ok(c) for c in node.comparators)
         if isinstance(node, ast.Attribute):
             flat = rewrite.spelling.of(node)
             return flat is not None and flat in rewrite.statics
@@ -1672,29 +1673,56 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
             return scalar_port_call(node)
         return False
 
-    for stmt in fn.body:
-        if not isinstance(stmt, ast.Assign):
-            continue
-        target = stmt.targets[0]
-        names = [
-            t.id
-            for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
-            if isinstance(t, ast.Name)
-        ]
-        if (
-            len(stmt.targets) == 1
-            and isinstance(target, ast.Name)
-            and target.id not in nested
-            and ok(stmt.value)
-        ):
-            concrete.add(target.id)
-        else:
-            # A later store that is not a concrete scalar (a tuple from a
-            # kernel call, a traced expression) un-makes the name: the
-            # UB-guard ``day = 0`` alone does not a constant make.
-            for name in names:
-                concrete.discard(name)
-    return frozenset(concrete)
+    def stores(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            for inner in ast.walk(stmt):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                    nested.add(inner.id)
+
+    def scan(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, ast.If) and ok(stmt.test):
+                # A branch decided at trace time (CLUBB's ``nrhs`` counted
+                # under its configuration switches): its stores are as
+                # much a trace-time value as the top level's.
+                scan(stmt.body)
+                scan(stmt.orelse)
+                continue
+            if not isinstance(stmt, ast.Assign):
+                stores([stmt])
+                continue
+            target = stmt.targets[0]
+            names = [
+                t.id
+                for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
+                if isinstance(t, ast.Name)
+            ]
+            if (
+                len(stmt.targets) == 1
+                and isinstance(target, ast.Name)
+                and target.id not in nested
+                and ok(stmt.value)
+            ):
+                concrete.add(target.id)
+            else:
+                # A later store that is not a concrete scalar (a tuple from
+                # a kernel call, a traced expression) un-makes the name: the
+                # UB-guard ``day = 0`` alone does not a constant make.
+                for name in names:
+                    concrete.discard(name)
+
+    # To a fixpoint: whether a branch is static may turn on a name the scan
+    # finds concrete, and a store under a loop found later un-makes one.
+    seen: frozenset[str] = frozenset()
+    for _ in range(8):
+        concrete.clear()
+        nested.clear()
+        scan(fn.body)
+        concrete.difference_update(nested)
+        if frozenset(concrete) == seen:
+            break
+        seen = frozenset(concrete)
+    return seen
 
 
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
@@ -1749,7 +1777,12 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
                 and rewrite._is_dynamic(node.upper)
             ):
                 raise NotFlat(f"a dynamic slice outside a store or a sum: {ast.unparse(node)}")
-    return [*_rebuilt_objects(lowered, rewrite), *lowered]
+    # The names that hold a trace-time value ride along to the backend on a
+    # marker it strips: its static tests and its literal strengthening must
+    # know them (a shape counted under switches, ``zeros((n, nrhs))``).
+    marker = ast.Pass()
+    setattr(marker, "recast_statics", frozenset(rewrite.statics))  # noqa: B010
+    return [marker, *_rebuilt_objects(lowered, rewrite), *lowered]
 
 
 def _rebuilt_objects(lowered: list[ast.stmt], rewrite: _Rewrite) -> list[ast.stmt]:
@@ -2982,7 +3015,10 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
         if not a.get("dims")
         and a["intent"] == "IN"
         and _py(a["name"]) not in TRACED_SCALARS
-        and (a["dtype"] == "int32" or (a["dtype"] in ("int64", "float64") and "__" in a["name"]))
+        and (
+            a["dtype"] in ("int32", "bool")  # a logical scalar dummy is a switch
+            or (a["dtype"] in ("int64", "float64") and "__" in a["name"])
+        )
     )
 
 

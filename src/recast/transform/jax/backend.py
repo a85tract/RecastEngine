@@ -776,9 +776,19 @@ class KernelLowerer:
                 stores.append(self.lower_assign(ast.Assign(targets=[element], value=piece)))
             return stores
         if isinstance(t, ast.Name):
+            if t.id in self.statics:
+                # A trace-time value's store is spelled with Python logic:
+                # ``l_ab = l_a and l_b`` over switches stays a Python bool
+                # (jnp.logical_and would stage it into a tracer).
+                s = ast.Assign(targets=s.targets, value=_python_logic(s.value))
             # strengthen scalar literal inits so fori_loop carries keep a
-            # stable strong dtype (0.0 -> jnp.float64(0.0))
-            if isinstance(s.value, ast.Constant) and not isinstance(s.value.value, (bool, str)):
+            # stable strong dtype (0.0 -> jnp.float64(0.0)) -- not for a
+            # trace-time value, which stays a Python one (a shape, a bound)
+            if (
+                isinstance(s.value, ast.Constant)
+                and not isinstance(s.value.value, (bool, str))
+                and t.id not in self.statics
+            ):
                 ctor = (
                     "float64"
                     if isinstance(s.value.value, float)
@@ -1273,6 +1283,10 @@ def emit_kernel(
     nums, _ = static_spec(fn_src, sub, traced_scalars)
     required, _, _ = split_params(fn_src)
     statics = {required[pos] for pos in nums}
+    # The tree's marker names the locals that hold a trace-time value.
+    if fn.body and isinstance(fn.body[0], ast.Pass) and hasattr(fn.body[0], "recast_statics"):
+        statics |= set(getattr(fn.body[0], "recast_statics"))  # noqa: B009
+        fn.body = fn.body[1:]
     lowerer = KernelLowerer(bound={a.arg for a in fn.args.args}, statics=statics)
     fn.body = lowerer.lower_block(fn.body, 0)
     fn.body = [*_flag_inits(fn.body), *fn.body]

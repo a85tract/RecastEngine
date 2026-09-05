@@ -2029,6 +2029,76 @@ def test_an_exit_inside_a_branch_inside_a_loop_has_its_flag_before_the_branch(
             sys.modules.pop(f"guardedexit_mod{suffix}", None)
 
 
+COUNTED_UNDER_SWITCHES = """\
+module counted_mod
+  implicit none
+contains
+  subroutine solve_count( n, sclr_dim, l_a, l_b, x, y )
+    integer, intent(in) :: n, sclr_dim
+    logical, intent(in) :: l_a, l_b
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    real(8), allocatable :: work(:, :)
+    logical :: l_ab
+    integer :: nrhs
+    l_ab = l_a .and. l_b
+    if ( sclr_dim > 0 ) then
+      nrhs = 1
+    else
+      nrhs = 2 + sclr_dim
+      if ( l_a ) then
+        nrhs = nrhs + 2
+        if ( l_ab ) then
+          nrhs = nrhs + 2
+        end if
+      end if
+    end if
+    allocate( work(n, nrhs) )
+    work = 1.0d0
+    y = sum( work, dim = 2 ) * x
+    deallocate( work )
+  end subroutine solve_count
+end module counted_mod
+"""
+
+
+def test_a_shape_counted_under_switches_is_a_trace_time_value(tmp_path: Path) -> None:
+    """advance_xm_wpxp counts its right-hand sides under configuration
+    switches and a local derived from them, then sizes its solver arrays
+    by the count. The count is a trace-time value: its branches are Python
+    ifs, its stores are never strengthened to jnp scalars, and
+    ``jnp.zeros((n, nrhs))`` sees a Python int."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "counted_mod.f90").write_text(COUNTED_UNDER_SWITCHES)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:counted_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "solve_count" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("counted_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 2.0])
+        assert np.asarray(module.solve_count(2, 0, True, True, x)).tolist() == [6.0, 12.0]
+        assert np.asarray(module.solve_count(2, 0, True, False, x)).tolist() == [4.0, 8.0]
+        assert np.asarray(module.solve_count(2, 1, True, True, x)).tolist() == [1.0, 2.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"counted_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
