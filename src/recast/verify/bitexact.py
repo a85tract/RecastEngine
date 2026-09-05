@@ -224,6 +224,25 @@ def _arithmetic(text: str) -> float:
     return walk(ast.parse(text, mode="eval"))
 
 
+def _delegation_chain(name: str, delegated: dict[str, str]) -> str:
+    """The backend's reasons, followed to the root: a wrapper delegated because
+    it ``calls non-emitted subprogram f`` says nothing until f's own reason
+    is beside it."""
+    import re
+
+    parts: list[str] = []
+    seen: set[str] = set()
+    while name in delegated and name not in seen:
+        seen.add(name)
+        why = str(delegated[name])
+        parts.append(f"{name}: {why}" if parts else why)
+        match = re.search(r"calls non-emitted subprogram (\w+)", why)
+        if not match:
+            break
+        name = match.group(1)
+    return f" ({' <- '.join(parts)})" if parts else ""
+
+
 class BitexactVerifier(Verifier):
     """Call both sides on the same inputs; count the bits that disagree."""
 
@@ -449,8 +468,23 @@ class BitexactVerifier(Verifier):
             "integer_points": 0,
             "integer_mismatch": 0,
         }
+        # A backend that says which names it lowered (the JAX module's
+        # ``_JAX_KERNELS``) is judged on those alone. A name it forwarded to
+        # its host module (``f = _host.f``) is the anchor's code, already
+        # judged at the anchor's tier; comparing it here awarded the JAX
+        # port a bit-exact verdict on a kernel it never emitted (ELM's
+        # hydraulic-stress routine). It fails by name, with the backend's
+        # reason, unless declared ungated like any other silence.
+        lowered = getattr(translated, "_JAX_KERNELS", None)
+        delegated = (candidate.notes.get("jax") or {}).get("delegated") or {}
         for name in wanted:
             sub = table[name]
+            if isinstance(lowered, (list, tuple, set)) and name not in lowered:
+                failures.append(
+                    f"{name}: not lowered by this backend, forwarded to its host module"
+                    + _delegation_chain(name, delegated)
+                )
+                continue
             translated_fn = getattr(translated, name, None)
             truth_fn = None if recorded else getattr(truth, wrappers.get(name, f"w_{name}"), None)
             if translated_fn is None or (truth_fn is None and not recorded):
@@ -686,8 +720,12 @@ class BitexactVerifier(Verifier):
         unsupported = [
             f"{place}={dtype!r}"
             for place, dtype in declared_dtypes
-            if not isinstance(dtype, str) or dtype not in SUPPORTED_DTYPES
+            if not isinstance(dtype, str)
+            or (dtype not in SUPPORTED_DTYPES and not (dtype == "str" and convention == "recorded"))
         ]
+        # A character scalar (``phase = 'sun'``) is not sampled, but a
+        # recording carries the value the run passed, and it is replayed
+        # as it was written; no cast, no comparison, an input only.
         if unsupported:
             return {
                 "error": "unsupported declared dtype(s) "

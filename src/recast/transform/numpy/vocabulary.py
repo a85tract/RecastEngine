@@ -166,13 +166,15 @@ REDUCTIONS: dict[str, str] = {
     "minval": "np.min",
     "product": "np.prod",
     "size": "np.size",
-    "sum": "np.sum",
+    "sum": "_f_vsum",
     # With unit lower bounds -- which every translated array has -- the upper
     # bound and the extent are the same number.
     "ubound": "np.size",
 }
-"""Intrinsics that collapse an array. ``dot_product`` is a runtime shim because
-NumPy's is pairwise or BLAS and rounds differently from a left-to-right sum."""
+"""Intrinsics that collapse an array. ``dot_product`` and ``sum`` are runtime
+shims because NumPy's are pairwise or BLAS and round differently from a
+left-to-right sum: ``np.sum`` over ELM's ten soil layers put the hydraulic
+kernel 75 ULP off the recording, and a sequential fold put it at zero."""
 
 ARRAY_TRANSFORM: frozenset[str] = frozenset(
     {"cshift", "eoshift", "maxloc", "minloc", "pack", "reshape", "spread", "transpose", "unpack"}

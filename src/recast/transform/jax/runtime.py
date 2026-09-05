@@ -47,11 +47,14 @@ __all__ = [
     "_f_mod",
     "_f_modulo",
     "_f_nint",
+    "_f_cfold",
     "_f_sign",
+    "_f_sqrt",
     "_f_tiny",
     "_f_trim",
     "_f_vceil",
     "_f_vdot",
+    "_f_vsum",
     "_f_vexp",
     "_f_vfloor",
     "_f_vlog",
@@ -131,6 +134,23 @@ def _f_nint(x):
     return r.astype(jnp.int32)
 
 
+def _f_sqrt(x):
+    """Fortran SQRT: a NaN for a negative real, which ``jnp.sqrt`` gives
+    without being asked (the NumPy runtime guards ``math.sqrt``, which
+    raises)."""
+    return jnp.sqrt(x)
+
+
+def _f_cfold(fn, *args):
+    """gfortran folds a constant-argument intrinsic at compile time with
+    MPFR; the anchor spells that value through mpmath, and a kernel meets
+    it only with Python constants, at trace time."""
+    import mpmath as mp
+
+    with mp.workprec(200):
+        return float(getattr(mp, fn)(*[mp.mpf(float(a)) for a in args]))
+
+
 def _f_vexp(x):
     return jnp.exp(x)
 
@@ -156,6 +176,19 @@ def _f_vdot(a, b):
         return s + af[i] * bf[i]
 
     return lax.fori_loop(0, af.shape[0], body, jnp.float64(0.0))
+
+
+def _f_vsum(a, axis=None):
+    """Fortran SUM accumulates in element order; a sequential fori_loop keeps
+    the fold order, as _f_vdot does. A DIM reduction is XLA's."""
+    if axis is not None:
+        return jnp.sum(a, axis=axis)
+    af = jnp.ravel(a, order="F")
+
+    def body(i, s):
+        return s + af[i]
+
+    return lax.fori_loop(0, af.shape[0], body, jnp.zeros((), af.dtype))
 
 
 def _f_vceil(x):

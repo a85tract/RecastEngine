@@ -38,7 +38,7 @@ from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.interface import emit_name, node_span, subprogram_key
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
-from recast.transform.numpy.expressions import Expressions, Remote
+from recast.transform.numpy.expressions import CONFLICTING_BOUNDS, Expressions, Remote
 from recast.transform.numpy.names import bind_use_statements
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import (
@@ -309,11 +309,22 @@ class Subprograms:
         )
         shadowed = {a["name"] for a in semantics.subprogram["args"]}
         shadowed |= {loc["name"] for loc in semantics.subprogram.get("locals") or ()}
-        allocated = {
-            name: bounds
-            for name, bounds in self.record.get("module_allocate_bounds", {}).items()
-            if name not in shadowed
-        }
+        # A companion's allocatable keeps the lower bound its own ALLOCATE
+        # gave it when this module subscripts it (``vcmax_np1(itype)`` over
+        # pftvarcon's ``allocate (vcmax_np1 (0:mxpft))``): the reader's
+        # declaration is the companion's ``(:)``, which says nothing, and
+        # the blanket one-based shift lands a slot off. Companions that
+        # disagree on a name leave it conflicting; the module's own record
+        # wins over any of them. A USE rename is not followed.
+        allocated: dict[str, Any] = {}
+        for companion in self.companions:
+            for name, bounds in (companion.get("module_allocate_bounds") or {}).items():
+                if name in allocated and allocated[name] != bounds:
+                    allocated[name] = CONFLICTING_BOUNDS
+                else:
+                    allocated[name] = bounds
+        allocated.update(self.record.get("module_allocate_bounds", {}))
+        allocated = {name: bounds for name, bounds in allocated.items() if name not in shadowed}
         expressions = self.expressions_class(
             semantics,
             names,
@@ -531,10 +542,13 @@ class Subprograms:
                 report.append(entry)
                 continue
             try:
+                statements.dropped_reads.clear()
                 body = statements.render(statement, depth)
                 lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]}")
                 lines.extend(body)
                 entry["status"] = "mechanical"
+                if statements.dropped_reads:
+                    entry["dropped_reads"] = sorted(statements.dropped_reads)
             except REFUSED as refusal:
                 filled, why_not = self._fill(
                     emit_name(subprogram), block, statement, span, refusal, statements

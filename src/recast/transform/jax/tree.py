@@ -193,11 +193,13 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
-        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
+        self.buffer_outs: dict[str, list[str | None]] = {}  # anchor _out buffers, elided
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
     # -- what is static under jit ---------------------------------------------
+        self.seeded: list[str] = []
+        self.written_back: list[str] = []
 
     def _is_dynamic(self, expr: ast.expr) -> bool:
         """A bound that is not a literal, a constant, a static argument or an
@@ -354,6 +356,26 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        if (
+            len(node.targets) == 1
+            and isinstance(node.value, ast.Subscript)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id in self.buffer_outs
+            and isinstance(node.value.slice, ast.Constant)
+        ):
+            # ``bsun = _out[1]``: the buffer was elided at its call, and the
+            # slot says what the output bound to -- a temporary for an OUT
+            # scalar, the actual for an array (a self-assignment), nothing
+            # for an object whose components bound at the call.
+            spelled = self.buffer_outs[node.value.value.id][node.value.slice.value]
+            if spelled is None or spelled == ast.unparse(node.targets[0]):
+                return None
+            return self.visit(
+                ast.copy_location(
+                    ast.Assign(targets=node.targets, value=ast.parse(spelled, mode="eval").body),
+                    node,
+                )
+            )
         pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
         if pending:
@@ -380,6 +402,18 @@ class _Rewrite(ast.NodeTransformer):
             # int32 has a different output type. The variable's guard init
             # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is.
             node.value = _jnp(self.inits[target.id], [node.value])
+        elif (
+            len(node.targets) == 1
+            and isinstance(target, ast.Name)
+            and self.inits.get(target.id) == "float64"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, int)
+            and not isinstance(node.value.value, bool)
+        ):
+            # ``nscaler = 1`` into a real: Fortran converts the literal, and
+            # the backend, which types a bare constant by its Python type,
+            # would make this arm an int32 beside a float64 one.
+            node.value = _jnp("float64", [node.value])
 
         if len(node.targets) == 1 and isinstance(target, ast.Subscript):
             # ``x[i, lo:hi] = v`` with a traced ``hi``: the whole axis, masked.
@@ -709,12 +743,14 @@ class _Rewrite(ast.NodeTransformer):
                         ctx=ast.Load(),
                     )
             return node
-        if (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in ("np", "jnp")
-            and node.func.attr == "sum"
-            and len(node.args) == 1
+        if len(node.args) == 1 and (
+            (isinstance(node.func, ast.Name) and node.func.id == "_f_vsum")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+                and node.func.attr == "sum"
+            )
         ):
             # ``sum(x[i, lo:hi] * y[i, lo:hi])`` over a traced ``hi``: the
             # whole axis, the rest zeroed.
@@ -1050,7 +1086,22 @@ class _Rewrite(ast.NodeTransformer):
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
         assert callee is not None and self.plan is not None
-        dummies = [a["name"] for a in callee.subprogram["args"]]
+        # The anchor calls its translation by the emitted convention: the
+        # non-OUT, non-optional dummies in declaration order, then the OUT
+        # arrays it hands in as buffers. An OUT scalar before an object
+        # (``hybrid(..., gs_mol, iter, atm2lnd_vars, photosyns_vars)``) is
+        # not in the actual list, and counting it shifted the objects.
+        arguments = callee.subprogram["args"]
+        # The anchor's positional convention: the dummies in declaration
+        # order, OUT scalars omitted; an OUT array is a buffer the caller
+        # passes *in its place* (``spacf(p, c, x, f, qflx_sun, ...)``).
+        # Appending the buffers after the rest shifted every actual behind
+        # one, and ELM's calcstress handed spacF its qflx for atm2lnd_inst.
+        dummies = [
+            a["name"]
+            for a in arguments
+            if not a.get("optional") and (a["intent"] != "OUT" or a.get("dims"))
+        ]
         actual_by_dummy: dict[str, ast.expr] = {}
         for at, given in enumerate(call.args):
             if at < len(dummies):
@@ -1166,9 +1217,22 @@ class _Rewrite(ast.NodeTransformer):
                 for name in original_outs
                 if name.lower() in actual_by_dummy
             }
-            self.buffer_outs[buffered.id] = [
-                ast.unparse(slot[name]) for name in original_outs if name in slot
-            ]
+            # An OUT scalar has no actual under the emitted convention; the
+            # anchor unpacks it after the call (``bsun = _out[1]``). It binds
+            # to a temporary here, and the unpack reads the temporary. An
+            # object's slot is None: its components bound at the call, and
+            # its unpack (``photosyns_inst = _out[7]``) has nothing to say.
+            buffer: list[str | None] = []
+            for name in original_outs:
+                if name.lower() in objects or name in objects:
+                    buffer.append(None)
+                elif name in slot:
+                    buffer.append(ast.unparse(slot[name]))
+                else:
+                    self.temps += 1
+                    slot[name] = ast.Name(id=f"_t{self.temps}", ctx=ast.Load())
+                    buffer.append(f"_t{self.temps}")
+            self.buffer_outs[buffered.id] = buffer
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
         for name in _outputs(callee):
@@ -1430,7 +1494,168 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
     return frozenset(concrete)
 
 
+def _pure_reference(node: ast.expr) -> bool:
+    """A name or an attribute chain: an alias of something that exists, not
+    a computation."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
+def _seed_pointer_locals(body: list[ast.stmt]) -> list[str]:
+    """A pointer local the anchor starts as ``None`` and points in a branch
+    (``par_z => solarabs_vars%parsun_z_patch`` under ``phase == 'sun'``,
+    the shade array under ``'sha'``) starts the kernel as its first target
+    instead: a ``lax.cond`` carries it, and a carry has to have the same
+    shape on both arms, which ``None`` is not. The value is the branch's
+    own -- the run takes one arm, and the seed is overwritten there; an
+    arm the run never takes leaves a Fortran pointer undefined, and the
+    kernel a view it never reads. Returns the names seeded."""
+    seeded: list[str] = []
+    for at, statement in enumerate(body):
+        if not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and statement.value.value is None
+        ):
+            continue
+        name = statement.targets[0].id
+        first = next(
+            (
+                n.value
+                for later in body[at + 1 :]
+                for n in ast.walk(later)
+                if isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)
+                and n.targets[0].id == name
+            ),
+            None,
+        )
+        if first is not None and _pure_reference(first):
+            statement.value = copy.deepcopy(first)
+            seeded.append(name)
+    return seeded
+
+
+def _pointer_targets(body: list[ast.stmt], names: set[str]) -> dict[str, list[tuple[ast.expr, str]]]:
+    """``alias -> [(condition, target), ...]``: every pointing of a seeded
+    pointer local, with the branch condition it happens under (a chain's
+    later arms carry the negation of the earlier tests). A top-level
+    pointing has the condition ``True``."""
+    found: dict[str, list[tuple[ast.expr, str]]] = {}
+
+    def note(statement: ast.stmt, condition: ast.expr) -> None:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id in names
+            and isinstance(statement.value, ast.Name)
+        ):
+            found.setdefault(statement.targets[0].id, []).append(
+                (copy.deepcopy(condition), statement.value.id)
+            )
+
+    def walk_block(block: list[ast.stmt], condition: ast.expr) -> None:
+        for statement in block:
+            if isinstance(statement, ast.If):
+                own = ast.BoolOp(op=ast.And(), values=[copy.deepcopy(condition), statement.test])
+                walk_block(statement.body, own)
+                negated = ast.BoolOp(
+                    op=ast.And(),
+                    values=[
+                        copy.deepcopy(condition),
+                        ast.UnaryOp(op=ast.Not(), operand=copy.deepcopy(statement.test)),
+                    ],
+                )
+                walk_block(statement.orelse, negated)
+            else:
+                note(statement, condition)
+
+    walk_block(body, ast.Constant(True))
+    return found
+
+
+def _stored(body: list[ast.stmt], name: str, pointings: set[str]) -> bool:
+    """Whether the body writes through ``name``: a subscript store, or a
+    whole-array assignment that is not one of its pointings."""
+    for statement in body:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.ctx, ast.Store)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == name
+            ):
+                return True
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == name
+                and not (isinstance(node.value, ast.Name) and node.value.id in pointings)
+            ):
+                return True
+    return False
+
+
+def _write_back_pointer_locals(lowered: list[ast.stmt], seeded: list[str]) -> list[str]:
+    """A write through a pointer local (``psn_z(p,iv) = ...`` after ``psn_z
+    => photosyns_vars%psnsun_z_patch`` under sun, the shade array under
+    shade) is, in the anchor, a write into the component's own storage;
+    in a kernel it rebinds the local, and the flat output it aliased is
+    returned as it came. Before the kernel's return, every target the
+    local may have pointed at takes the local's value under the condition
+    of that pointing. Returns the aliases written back."""
+    if not lowered or not isinstance(lowered[-1], ast.Return):
+        return []
+    targets = _pointer_targets(lowered, set(seeded))
+    written_back: list[str] = []
+    stores: list[ast.stmt] = []
+    for alias, pointings in targets.items():
+        # The seed at the top of the body points too, unconditionally;
+        # it is the first arm's target and not a selection of its own.
+        arms = [(c, t) for c, t in pointings if not (isinstance(c, ast.Constant) and c.value is True)]
+        if not arms or not _stored(lowered, alias, {t for _, t in pointings}):
+            continue
+        for condition, target in arms:
+            stores.append(
+                ast.Assign(
+                    targets=[ast.Name(id=target, ctx=ast.Store())],
+                    value=_jnp(
+                        "where",
+                        [
+                            _fold_bools(condition),
+                            ast.Name(id=alias, ctx=ast.Load()),
+                            ast.Name(id=target, ctx=ast.Load()),
+                        ],
+                    ),
+                )
+            )
+        written_back.append(alias)
+    if stores:
+        lowered[-1:-1] = [ast.fix_missing_locations(s) for s in stores]
+    return written_back
+
+
+def _fold_bools(node: ast.expr) -> ast.expr:
+    """``True and x`` is ``x``; keeps the write-back conditions readable."""
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        values = [_fold_bools(v) for v in node.values]
+        values = [v for v in values if not (isinstance(v, ast.Constant) and v.value is True)]
+        if not values:
+            return ast.Constant(True)
+        if len(values) == 1:
+            return values[0]
+        return ast.BoolOp(op=ast.And(), values=values)
+    return node
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
+    rewrite.seeded = _seed_pointer_locals(fn.body)
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
     rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
@@ -1442,6 +1667,7 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
+    rewrite.written_back = _write_back_pointer_locals(lowered, rewrite.seeded)
     int_locals = frozenset(_integer_inits(fn)) | frozenset(
         n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
     )
@@ -1491,8 +1717,22 @@ def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return sources
 
 
+def _own_nodes(statement: ast.AST) -> Any:
+    """``ast.walk`` that does not enter a nested function: a statement
+    function's ``return`` (ELM's ``ft(tl, ha) = exp(...)`` inside
+    PhotosynthesisHydraulicStress) is the nested def's own exit, not the
+    kernel's."""
+    stack = [statement]
+    while stack:
+        node = stack.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                stack.append(child)
+
+
 def _has_return(stmts: list[ast.stmt]) -> bool:
-    return any(isinstance(n, ast.Return) for s in stmts for n in ast.walk(s))
+    return any(isinstance(n, ast.Return) for s in stmts for n in _own_nodes(s))
 
 
 def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -1503,32 +1743,48 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     early = [s for s in body[:-1] if _has_return([s])]
     if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return body
-    # The merge is one ``jnp.where`` over one value: a function with several
-    # outputs returns a tuple, which ``where`` cannot select.
-    for statement in body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-                raise NotFlat(
-                    f"an early return in a function with several outputs: {ast.unparse(node)}"
-                )
+    final = body[-1]
+    # A subroutine's translation returns the same tuple of its output
+    # names at every return (the emitted convention): nothing to select,
+    # the values are the variables' at the moment of the return, which the
+    # guarded statements after it leave alone. Only the flag is needed.
+    # A function whose returns are expressions merges one value through
+    # ``jnp.where``; several distinct values would need one ``where`` each
+    # and are refused.
+    same_names = isinstance(final.value, ast.Tuple) and all(
+        isinstance(n.value, ast.Tuple) and ast.unparse(n.value) == ast.unparse(final.value)
+        for statement in body
+        for n in _own_nodes(statement)
+        if isinstance(n, ast.Return)
+    )
+    if not same_names:
+        for statement in body:
+            for node in _own_nodes(statement):
+                if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+                    raise NotFlat(
+                        f"an early return in a function with several outputs: {ast.unparse(node)}"
+                    )
 
     class Returns(ast.NodeTransformer):
         def visit_Return(self, node: ast.Return) -> Any:
+            flag = ast.Assign(
+                targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
+            )
+            if same_names:
+                return [flag]
             value = node.value if node.value is not None else ast.Constant(None)
-            return [
-                ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
-                ast.Assign(
-                    targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
-                ),
-            ]
+            return [ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value), flag]
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
             return node  # a nested function's returns are its own
 
     out: list[ast.stmt] = [
         ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
-        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0)),
     ]
+    if not same_names:
+        out.append(
+            ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0))
+        )
     exited = False
     for statement in body[:-1]:
         had_return = _has_return([statement])  # before the visit rewrites it away
@@ -1553,8 +1809,10 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             out.extend(rewritten)
         if had_return:
             exited = True
-    final = body[-1]
     assert isinstance(final, ast.Return) and final.value is not None
+    if same_names:
+        out.append(final)
+        return out
     merged = _jnp(
         "where",
         [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],
@@ -1716,6 +1974,33 @@ class _WhileLoops(ast.NodeTransformer):
                     return int(bound.value)
                 if isinstance(bound, ast.Name) and bound.id in self.constants:
                     return self.constants[bound.id]
+        return None
+
+    def _break_bound(self, body: list[ast.stmt]) -> int | None:
+        """The trip count of a ``while True`` a counter bounds through a
+        ``break`` -- ``if iter > itmax: ... break`` (or ``==``, ``>=``)
+        anywhere in the body, ``iter`` advanced by a positive constant on
+        every pass at the body's top level, ``itmax`` a known integer.
+        ELM's ``hybrid`` and ``brent``: convergence exits ahead of it, and
+        the iteration cap is what makes the loop finite -- and a fixed
+        count, which lowers to a scan reverse mode can transpose."""
+        for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if not (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], (ast.Gt, ast.GtE, ast.Eq))
+                and isinstance(node.test.left, ast.Name)
+                and any(isinstance(n, ast.Break) for n in node.body)
+            ):
+                continue
+            counter, bound = node.test.left.id, node.test.comparators[0]
+            if not _advances(body, counter):
+                continue
+            if isinstance(bound, ast.Constant) and isinstance(bound.value, int):
+                return int(bound.value)
+            if isinstance(bound, ast.Name) and bound.id in self.constants:
+                return self.constants[bound.id]
         return None
 
     def _unwrap_goto_region(self, node: ast.While) -> str | None:
@@ -1934,6 +2219,9 @@ class _WhileLoops(ast.NodeTransformer):
         done = f"_done_{self.n}"
         forever = isinstance(node.test, ast.Constant) and node.test.value is True
         counted = self._counted_bound(node.test, node.body)
+        # Before the breaks are rewritten into the flag below: the cap is
+        # read off the ``break`` that enforces it.
+        capped = self._break_bound(node.body) if restart is None else None
         if counted is not None and not any(isinstance(n, ast.Break) for n in ast.walk(node)):
             self.n -= 1
             return ast.For(
@@ -1978,6 +2266,31 @@ class _WhileLoops(ast.NodeTransformer):
                 exited = True
         for statement in guarded:
             ast.fix_missing_locations(statement)
+        if capped is not None:
+            # A ``while True`` its counter caps through a ``break``: a fixed
+            # count of passes, each under the done flag the breaks set. The
+            # cap is one more than the bound, the pass the cap's own break
+            # fires on; every pass after a break is a no-op under the flag.
+            self.n -= 1
+            index = f"_w{self.n + 1}"
+            init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
+            going_on: ast.expr = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=done, ctx=ast.Load()))
+            if not forever:
+                # ``while not _ret:`` -- the single-exit flag of a routine
+                # that returned early ahead of the loop, or any condition:
+                # a pass runs only while it holds.
+                going_on = ast.BoolOp(op=ast.And(), values=[going_on, copy.deepcopy(node.test)])
+            loop = ast.For(
+                target=ast.Name(id=index, ctx=ast.Store()),
+                iter=ast.Call(
+                    func=ast.Name(id="range", ctx=ast.Load()),
+                    args=[ast.Constant(0), ast.Constant(capped + 1)],
+                    keywords=[],
+                ),
+                body=[ast.If(test=going_on, body=guarded, orelse=[])],
+                orelse=[],
+            )
+            return [ast.fix_missing_locations(init), ast.fix_missing_locations(loop)]
         carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
         state = [*carried, done]
         try:

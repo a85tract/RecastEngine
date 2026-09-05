@@ -179,11 +179,11 @@ def parse_dump(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
                         metadata[key] = whole
                         inputs[key] = np.int32(whole)
                 except ValueError:
-                    # Not a number. Upstream swallows this with a bare
-                    # ``except``; narrowed to what can actually be raised
-                    # here, which changes no outcome and stops the clause
-                    # hiding a typo in the two lines above it.
-                    pass
+                    # Not a number: a character scalar the probe wrote as
+                    # text (``# phase = sun``), which is the value it is.
+                    # Upstream swallowed this with a bare ``except``.
+                    metadata[key] = text_value
+                    inputs[key] = text_value
             continue
 
         try:

@@ -40,7 +40,7 @@ from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.calls import CallSite
-from recast.transform.numpy.expressions import REFUSED, Expressions
+from recast.transform.numpy.expressions import CONFLICTING_BOUNDS, REFUSED, Expressions
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
@@ -196,6 +196,12 @@ class Statements:
     """How many goto regions are open around the sequence being emitted."""
 
     active_labels: list[Any] = field(default_factory=list)
+    dropped_reads: set[str] = field(default_factory=set)
+    """Names read only in the arguments of a call a framework stub replaced
+    in the block being rendered (``endrun(msg=trim(errCode)//...)`` is a
+    bare ``raise``). The subprogram renderer takes them per block for the
+    read/write protocol, which otherwise counts the source's reads of them
+    against a target that never makes them."""
     """The loop-exit label (or ``None``) of each enclosing ``do``, innermost
     last, with ``("region", label)`` entries for open forward-goto regions.
 
@@ -714,6 +720,19 @@ class Statements:
             lines.extend(self.render(statement, indent + len(triplets)))
         return lines
 
+    def _note_dropped_reads(self, items: list[Any]) -> None:
+        """Every name in a stubbed call's actual arguments, keywords aside."""
+        keywords = {
+            str(a.children[0]).lower() for a in items if isinstance(a, f03.Actual_Arg_Spec)
+        }
+        for item in items:
+            value = item.children[1] if isinstance(item, f03.Actual_Arg_Spec) else item
+            for name in walk(value, f03.Name):
+                if str(name).lower() not in keywords:
+                    self.dropped_reads.add(str(name).lower())
+            if isinstance(value, f03.Name) and str(value).lower() not in keywords:
+                self.dropped_reads.add(str(value).lower())
+
     # -- allocation and pointers ----------------------------------------------
 
     def _allocate(self, node: Any, indent: int) -> list[str]:
@@ -759,9 +778,13 @@ class Statements:
             if isinstance(target, f03.Name) and any(d["lb"] != "1" for d in bounds):
                 key = str(target).lower()
                 previous = self.expressions.allocated_bounds.get(key)
-                if previous is not None and [d["lb"] for d in previous] != [
-                    d["lb"] for d in bounds
-                ]:
+                if previous is not None and (
+                    previous == CONFLICTING_BOUNDS
+                    or [d["lb"] for d in previous] != [d["lb"] for d in bounds]
+                ):
+                    # The module-wide record already found two ALLOCATEs
+                    # that disagree, or one no other subprogram can
+                    # evaluate; this allocation cannot settle it either.
                     raise NoRule(f"conflicting allocate lower bounds for {key}")
                 self.expressions.allocated_bounds[key] = bounds
             if isinstance(target, f03.Name):
@@ -1603,6 +1626,7 @@ class Statements:
             method = str(designator.children[2]).lower()
             stub = self.stubs.get(f"{obj}.{method}")
             if stub is not None:
+                self._note_dropped_reads(items)
                 return [f"{pad}{stub}  # {obj}%{method} (infra stub)"]
             if items:
                 raise NoRule(f"type-bound call {obj}%{method} with arguments")
@@ -1639,6 +1663,7 @@ class Statements:
         # companions and externals alike.
         stub = self.stubs.get(name)
         if stub is not None:
+            self._note_dropped_reads(items)
             return [f"{pad}{stub}  # {name} (infra stub)"]
         if name in self.semantics.generics:
             name = self.semantics.dispatch(name, items)

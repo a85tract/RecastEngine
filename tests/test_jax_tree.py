@@ -152,6 +152,30 @@ def test_single_exit_refuses_a_tuple_return() -> None:
         _single_exit(fn.body)
 
 
+def test_a_subroutines_early_returns_of_its_output_names_merge_on_the_flag() -> None:
+    """A subroutine's translation returns the same tuple of output names at
+    every ``return`` (ELM's ``hybrid``: ``if (f0 == 0) return`` ahead of
+    the loop). Nothing to select through ``jnp.where``: the guarded
+    statements after the flag leave the outputs as they were."""
+    from recast.transform.jax.tree import _single_exit
+
+    fn = ast.parse(
+        "def hybrid(x0, f0):\n"
+        "    gs = 0.0\n"
+        "    if f0 == 0.0:\n"
+        "        return (x0, gs)\n"
+        "    gs = x0 * 2.0\n"
+        "    return (x0, gs)\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = _single_exit(fn.body)
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in body)
+    assert "_ret = False" in text and "_ret = True" in text
+    assert "_r =" not in text and "where" not in text
+    assert text.rstrip().endswith("return (x0, gs)")
+    assert "if not _ret:\n    gs = x0 * 2.0" in text
+
+
 def test_counted_while_needs_the_counter_advanced_every_pass() -> None:
     from recast.transform.jax.tree import _WhileLoops
 
@@ -225,3 +249,282 @@ def test_a_forward_goto_region_becomes_a_skip_flag() -> None:
     assert "_FGoto" not in text and "try" not in text
     assert "_skip_1 = True" in text
     assert "if not _skip_1:" in text and "dead_write" in text
+
+
+SOLVE = """\
+module solve_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Drive
+contains
+  subroutine Solve(x0, root, iter, inst)
+    real(8), intent(in) :: x0
+    real(8), intent(out) :: root
+    integer, intent(out) :: iter
+    type(canopy_type), intent(inout) :: inst
+    iter = 0
+    root = x0
+    if (x0 == 0.0d0) return
+    iter = 1
+    root = x0 * inst%gs(1)
+    inst%gs(1) = root
+  end subroutine Solve
+
+  subroutine Drive(num, filter, dt, inst)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    real(8), intent(in) :: dt
+    type(canopy_type), intent(inout) :: inst
+    integer :: f, p, it
+    real(8) :: r
+    do f = 1, num
+       p = filter(f)
+       call Solve(dt, r, it, inst)
+       inst%gs(p) = inst%gs(p) + r
+    end do
+  end subroutine Drive
+end module solve_mod
+"""
+
+
+def test_a_callee_with_an_out_scalar_before_its_object_is_rewritten_to_its_kernel(
+    tmp_path: Path,
+) -> None:
+    """ELM's ``hybrid(..., gs_mol, iter, atm2lnd_vars, photosyns_vars)``: the
+    anchor's call omits the OUT scalars, and counting them against the
+    callee's dummies shifted the objects (``object photosyns_vars not
+    passed``). The callee's own early ``return`` of its output names merges
+    on the flag alone. Both are lowered now, the caller calling the
+    callee's kernel."""
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "solve_mod.f90").write_text(SOLVE)
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solve_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    ported = candidate.files[Path("solve_mod_jax.py")].decode()
+    assert candidate.notes["jax"]["flat_refused"] == {}, candidate.notes["jax"]["flat_refused"]
+    assert "_JAX_KERNELS = ['drive_flat', 'solve_flat']" in ported
+    drive = next(
+        n
+        for n in ast.walk(ast.parse(ported))
+        if isinstance(n, ast.FunctionDef) and n.name == "_drive_flat_k_impl"
+    )
+    calls = {
+        ast.unparse(n.func) for n in ast.walk(drive) if isinstance(n, ast.Call)
+    }
+    assert "_solve_flat_k_impl" in calls, calls
+
+
+def test_a_pointer_local_pointed_in_a_branch_is_seeded_with_its_first_target() -> None:
+    """The anchor starts a pointer local as ``None`` and points it under
+    ``phase == 'sun'`` or ``'sha'``; a ``lax.cond`` cannot carry ``None``
+    against an array. The kernel starts it as the first arm's target."""
+    from recast.transform.jax.tree import _seed_pointer_locals
+
+    fn = ast.parse(
+        "def f(phase, inst):\n"
+        "    par_z = None\n"
+        "    n = None\n"
+        "    if phase == 'sun':\n"
+        "        par_z = inst.parsun\n"
+        "    elif phase == 'sha':\n"
+        "        par_z = inst.parsha\n"
+        "    n = par_z.shape[0]\n"
+        "    return par_z\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    assert _seed_pointer_locals(fn.body) == ["par_z"]
+    assert ast.unparse(fn.body[0]) == "par_z = inst.parsun"
+    assert ast.unparse(fn.body[1]) == "n = None"  # a computed value is not a seed
+
+
+def test_an_integer_literal_into_a_real_local_is_a_float_in_the_kernel() -> None:
+    """``nscaler = 1`` where ``nscaler`` is real(r8): Fortran converts; the
+    backend typed the bare constant int32 and a ``lax.cond`` arm disagreed
+    with the float64 one beside it (ELM's Photosynthesis, the
+    nu_com_leaf_physiology branch)."""
+    import copy
+
+    from recast.transform.jax.tree import _Rewrite, _Spelling, _guard_inits
+
+    fn = ast.parse(
+        "def f(flag, x):\n"
+        "    nscaler = 0.0\n"
+        "    k = 0\n"
+        "    if flag:\n"
+        "        nscaler = 1\n"
+        "        k = 2\n"
+        "    return nscaler * x + k\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    rewrite = _Rewrite(None, _Spelling(None, {}), {}, {})
+    rewrite.inits = _guard_inits(fn)
+    body = [rewrite.visit(copy.deepcopy(s)) for s in fn.body]
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in body if s is not None)
+    assert "nscaler = jnp.float64(1)" in text
+    assert "k = 2" in text  # an int into an int local is the backend's int32
+
+
+def test_a_while_true_capped_by_a_counter_break_is_a_fixed_count_for() -> None:
+    """ELM's ``hybrid``: ``while True: iter = iter + 1; ...; if
+    converged: break; ...; if iter > itmax: break``. A ``lax.while_loop``
+    has no reverse-mode rule; the cap makes it a fixed count of passes
+    under the done flag, which lowers to a scan reverse mode can transpose."""
+    from recast.transform.jax.tree import _WhileLoops
+
+    fn = ast.parse(
+        "def hybrid(x, f):\n"
+        "    iter = 0\n"
+        "    itmax = 40\n"
+        "    while True:\n"
+        "        iter = iter + 1\n"
+        "        x = x - f * x\n"
+        "        if abs(f * x) < 1e-6:\n"
+        "            break\n"
+        "        if iter > itmax:\n"
+        "            x = 0.0\n"
+        "            break\n"
+        "    return x\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    source = ast.unparse(fn)
+    lowered = _WhileLoops({"iter": 0, "itmax": 40}, frozenset({"iter", "itmax"})).visit_block(
+        fn.body
+    )
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in lowered)
+    assert "while" not in text
+    assert "_done_1 = False" in text and "for _w1 in range(0, 41):" in text
+    assert "if not _done_1:" in text and "_done_1 = True" in text
+    # The same loop after an early return: ``while not _ret`` (the
+    # single-exit flag) is still capped, the flag joining the guard.
+    again = ast.parse(source.replace("while True:", "while not _ret:")).body[0]
+    assert isinstance(again, ast.FunctionDef)
+    lowered = _WhileLoops({"iter": 0, "itmax": 40}, frozenset({"iter", "itmax"})).visit_block(
+        again.body
+    )
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in lowered)
+    assert "while" not in text and "for _w1 in range(0, 41):" in text
+    assert "if not _done_1 and (not _ret):" in text
+
+
+def test_a_write_through_a_branch_pointed_local_reaches_its_targets() -> None:
+    """``psn_z => psnsun_z_patch`` under sun, the shade array under shade,
+    then ``psn_z(p,iv) = ...``: in the anchor a write into the component,
+    in a kernel a rebinding of the local. Before the return every target
+    takes the local under the condition of its pointing."""
+    from recast.transform.jax.tree import _seed_pointer_locals, _write_back_pointer_locals
+
+    fn = ast.parse(
+        "def f(phase, sun, sha, x):\n"
+        "    psn_z = None\n"
+        "    if phase == 'sun':\n"
+        "        psn_z = sun\n"
+        "    elif phase == 'sha':\n"
+        "        psn_z = sha\n"
+        "    psn_z[0] = x\n"
+        "    return (sun, sha)\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    seeded = _seed_pointer_locals(fn.body)
+    assert _write_back_pointer_locals(fn.body, seeded) == ["psn_z"]
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in fn.body)
+    assert "sun = jnp.where(phase == 'sun', psn_z, sun)" in text
+    assert "sha = jnp.where(not phase == 'sun' and phase == 'sha', psn_z, sha)" in text
+    assert text.rstrip().endswith("return (sun, sha)")
+    # a pointed local never written is left alone
+    again = ast.parse(
+        "def g(phase, sun, sha):\n    par_z = None\n    if phase == 'sun':\n"
+        "        par_z = sun\n    else:\n        par_z = sha\n    y = par_z[0]\n    return y\n"
+    ).body[0]
+    assert _write_back_pointer_locals(again.body, _seed_pointer_locals(again.body)) == []
+
+
+STRESS = """\
+module stress_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Drive
+contains
+  subroutine Flux(p, x, f, inst, aux)
+    integer, intent(in) :: p
+    real(8), intent(in) :: x(2)
+    real(8), intent(out) :: f(2)
+    type(canopy_type), intent(in) :: inst
+    type(canopy_type), intent(in) :: aux
+    f(1) = x(1) * inst%gs(p)
+    f(2) = x(2) * inst%gs(p)
+  end subroutine Flux
+
+  subroutine Stress(p, x, bsun, bsha, inst, aux)
+    integer, intent(in) :: p
+    real(8), intent(inout) :: x(2)
+    real(8), intent(out) :: bsun
+    real(8), intent(out) :: bsha
+    type(canopy_type), intent(inout) :: inst
+    type(canopy_type), intent(in) :: aux
+    real(8) :: f(2)
+    call Flux(p, x, f, inst, aux)
+    x(:) = x(:) - f(:)
+    bsun = x(1)
+    bsha = x(2)
+  end subroutine Stress
+
+  subroutine Drive(num, filter, dt, inst, aux)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    real(8), intent(in) :: dt
+    type(canopy_type), intent(inout) :: inst
+    type(canopy_type), intent(in) :: aux
+    integer :: f, p
+    real(8) :: bsun, bsha, xw(2), tl
+    real(8) :: ft
+    ft(tl) = tl * 2.0d0
+    do f = 1, num
+       p = filter(f)
+       xw(:) = dt
+       call Stress(p, xw, bsun, bsha, inst, aux)
+       inst%gs(p) = inst%gs(p) + bsun + bsha + ft(dt)
+    end do
+  end subroutine Drive
+end module stress_mod
+"""
+
+
+def test_the_hydraulic_stress_shape_lowers(tmp_path: Path) -> None:
+    """Three things ELM's PhotosynthesisHydraulicStress chain has and the
+    port refused. An OUT array is a buffer the caller passes in its
+    declared place (``spacf(p, c, x, f, qflx_sun, ...)``); appending the
+    buffers after the other dummies shifted every actual behind one, so
+    calcstress handed spacF a flux for ``atm2lnd_inst`` ("object not
+    passed"). A callee with an INOUT array and OUT
+    scalars is called in the anchor's buffered form, ``_out = calcstress(...)``
+    then ``bsun = _out[1]``, and the OUT scalars had no actual to bind to
+    ("output bsun has no target"): they bind to temporaries the unpacks
+    read. A statement function is a nested def whose ``return`` is its own,
+    not an early return of the kernel ("an early return in a function with
+    several outputs")."""
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "stress_mod.f90").write_text(STRESS)
+    # ELM's convention: an OUT array is a buffer the caller passes.
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True, buffer_out_arrays="all")
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:stress_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    anchor = TreeTranslation(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    numpy = anchor.files[Path("stress_mod_numpy.py")].decode()
+    assert "_out = stress(" in numpy and "bsun = _out[1]" in numpy  # the shape under test
+    candidate = TreeToJax(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    assert candidate.notes["jax"]["flat_refused"] == {}, candidate.notes["jax"]["flat_refused"]
+    ported = candidate.files[Path("stress_mod_jax.py")].decode()
+    assert "'drive_flat'" in ported.split("_JAX_KERNELS = ")[1].splitlines()[0]
+    drive = next(
+        n
+        for n in ast.walk(ast.parse(ported))
+        if isinstance(n, ast.FunctionDef) and n.name == "_drive_flat_k_impl"
+    )
+    text = ast.unparse(drive)
+    assert "_stress_flat_k_impl(" in text
+    assert "bsun = _t" in text and "bsha = _t" in text
+    assert "_out" not in text

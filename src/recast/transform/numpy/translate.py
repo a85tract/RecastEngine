@@ -111,13 +111,23 @@ def companion_tables(
             if companion.get("constants")
             else set()
         )
+        # ``use m, only: a, b => c`` lets ``a`` and ``b`` in and nothing
+        # else; a global the only-list keeps out is not a name this module
+        # can mean (ELM's Photosynthesis associates ``c3psn`` while
+        # pftvarcon, used with an only-list, exports one of the same name).
+        only = companion.get("only")
+        reverse = {v: k for k, v in renames.items()}
+        visible = None if only is None else set(only)
         for parameter in record["module_parameters"]:
             name = parameter["name"]
+            if visible is not None and name not in visible:
+                continue
             attr = pysafe(name.upper()) if name.upper() in defined else pysafe(name)
             globals_.setdefault(name, f"{alias}.{attr}")
         for state in record["module_state"]:
+            if visible is not None and state["name"] not in visible:
+                continue
             globals_.setdefault(state["name"], f"{alias}.{pysafe(state['name'])}")
-        reverse = {v: k for k, v in renames.items()}
         for parameter in record["module_parameters"]:
             local = reverse.get(parameter["name"])
             if local:
@@ -130,7 +140,88 @@ def companion_tables(
             local = reverse.get(state["name"])
             if local:
                 globals_[local] = f"{alias}.{pysafe(state['name'])}"
+    _bind_borrowed_bounds(companions, aliases, globals_, imports)
     return tuple(records), remotes, globals_, tuple(imports)
+
+
+def _bind_borrowed_bounds(
+    companions: list[dict[str, Any]],
+    aliases: dict[int, str],
+    globals_: dict[str, str],
+    imports: list[str],
+) -> None:
+    """A companion's ALLOCATE bound is spelled in the companion's namespace.
+
+    The reader borrows the bound -- its subscripts of the companion's
+    allocatable shift by it -- so it borrows the spelling too. A name in the
+    bound that the reader's own USE lists did not let in (ELM's ColumnType
+    allocates ``dz(begc:endc, -nlevsno+1:nlevgrnd)`` and PhotosynthesisMod
+    imports nothing named ``nlevsno``) is bound to the module that declares
+    it: the companion itself, the module the companion's USE names, or any
+    other companion; a module none of the companions is gets imported under
+    ``_<module>``. Left bare, the subscript was a ``NameError``.
+    """
+    import re
+
+    from recast.transform.numpy.expressions import CONFLICTING_BOUNDS
+    from recast.transform.numpy.names import USE_STATEMENT
+    from recast.transform.numpy.vocabulary import pysafe
+
+    def declares(record: dict[str, Any], name: str) -> bool:
+        return any(p["name"] == name for p in record["module_parameters"]) or any(
+            s["name"] == name for s in record["module_state"]
+        )
+
+    by_module = {
+        _module_of(c): (c.get("alias") or aliases[id(c)], c["record"]) for c in companions
+    }
+    for companion in companions:
+        record = companion["record"]
+        alias = companion.get("alias") or aliases[id(companion)]
+        borrowed = list((record.get("module_allocate_bounds") or {}).values())
+        # A derived-type component's ALLOCATE too (``allocate(this%dz(begc:endc,
+        # -nlevsno+1:nlevgrnd))`` in the type's own init routine).
+        for components in (record.get("types") or {}).values():
+            borrowed += [c["allocated_dims"] for c in components.values() if c.get("allocated_dims")]
+        for bounds in borrowed:
+            if bounds == CONFLICTING_BOUNDS:
+                continue
+            names = {
+                n.lower()
+                for d in bounds
+                for n in re.findall(r"[A-Za-z_]\w*", f"{d['lb']} {d['ub']}")
+            }
+            for name in sorted(names):
+                if name in globals_:
+                    continue
+                if declares(record, name):
+                    globals_[name] = f"{alias}.{pysafe(name)}"
+                    continue
+                for statement in record.get("use_statements", ()):
+                    match = USE_STATEMENT.match(statement)
+                    if not match or not match.group(2):
+                        continue
+                    items = {}
+                    for item in match.group(2).split(","):
+                        local, _, remote = (x.strip().lower() for x in item.partition("=>"))
+                        items[local] = remote or local
+                    if name not in items:
+                        continue
+                    module = match.group(1).lower()
+                    if module in by_module:
+                        home_alias = by_module[module][0]
+                    else:
+                        home_alias = f"_{module}"
+                        line = f"import {module}_numpy as {home_alias}"
+                        if line not in imports:
+                            imports.append(line)
+                    globals_[name] = f"{home_alias}.{pysafe(items[name])}"
+                    break
+                else:
+                    for other_alias, other in by_module.values():
+                        if declares(other, name):
+                            globals_[name] = f"{other_alias}.{pysafe(name)}"
+                            break
 
 
 def _aliases(companions: list[dict[str, Any]]) -> dict[int, str]:
@@ -399,6 +490,10 @@ class NumpyTranslation(Transform):
                     "reads": sets["reads"],
                     "writes": sets["writes"],
                     "lines": entry["py_lines"],
+                    # Names read only as arguments of a call a framework
+                    # stub replaced: the source counts them, the stub drops
+                    # them, and the gate is told which they were.
+                    "dropped_reads": entry.get("dropped_reads") or [],
                 }
             )
         names: dict[str, str] = {}

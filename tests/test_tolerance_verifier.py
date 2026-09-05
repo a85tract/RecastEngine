@@ -235,3 +235,52 @@ def test_nothing_is_recorded_when_neither_side_says(judge: Any) -> None:
     verdict = judge("")
     assert "candidate_device" not in verdict.metrics
     assert "reference_device" not in verdict.metrics
+
+
+def test_a_routine_forwarded_to_the_host_is_not_a_lowered_kernel(tmp_path: Path) -> None:
+    """The JAX module binds what it could not lower to the NumPy anchor
+    (``f = _host.f``) and lists what it did lower in ``_JAX_KERNELS``. The
+    gate judged the forwarded function -- the anchor's own code -- and
+    awarded the port a bit-exact verdict on ELM's hydraulic-stress kernel,
+    which it had never emitted. A name outside the lowered list fails by
+    name, with the backend's reason."""
+
+    def run(kernels: list[str]) -> Any:
+        text = MODULE.format(perturbation="    pass") + f"\n_JAX_KERNELS = {kernels!r}\n"
+        candidate = Candidate(
+            unit="tier:spread",
+            transform="test.tier",
+            files={Path("tier_numpy.py"): text.encode()},
+            notes={
+                "jax": {
+                    "delegated": {
+                        "spread": "[emit] calls non-emitted subprogram inner",
+                        "inner": "a helper needs a state this plan does not carry",
+                    }
+                }
+            },
+        )
+        oracle = OracleRef(
+            unit="tier:spread",
+            oracle="test.python-truth",
+            key="k",
+            handle={"module": SimpleNamespace(w_spread=truth), "wrappers": {"spread": "w_spread"}},
+        )
+        return ToleranceVerifier().verify(
+            Unit(uid="tier:spread", kind="subprogram"),
+            candidate,
+            oracle,
+            tmp_path,
+            LocalExecutor(),
+            {},
+        )
+
+    forwarded = run([])
+    assert forwarded.confidence is Confidence.FAILED
+    assert "spread: not lowered by this backend, forwarded to its host module" in forwarded.detail
+    # the reason is followed to the root: the wrapper's says only whom it calls
+    assert (
+        "([emit] calls non-emitted subprogram inner <- inner: a helper needs a state "
+        "this plan does not carry)"
+    ) in forwarded.detail
+    assert run(["spread"]).confidence is Confidence.BIT_EXACT
