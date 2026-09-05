@@ -156,13 +156,15 @@ def _f_vpow(a, b):
     return jnp.asarray(a) ** b
 
 
-def _f_concrete(x):
-    """Whether a value is known at trace time -- a Python or NumPy scalar,
-    or a concrete array -- rather than a tracer. A branch over a kernel's
-    static scalar argument is a Python ``if`` when the kernel runs through
-    its jit wrapper and a ``lax.cond`` when another kernel's traced body
-    calls its implementation; this decides which."""
-    return not isinstance(x, jax.core.Tracer)
+def _f_concrete(*values):
+    """Whether every value is known at trace time -- a Python or NumPy
+    scalar, or a concrete array -- rather than a tracer. A branch over a
+    kernel's static scalar argument is a Python ``if`` when the kernel runs
+    through its jit wrapper and a ``lax.cond`` when another kernel's traced
+    body calls its implementation; this decides which, over the leaves of
+    the test (its comparisons and names), since the test itself is spelled
+    with Python logic the Python ``if`` evaluates."""
+    return not any(isinstance(x, jax.core.Tracer) for x in values)
 
 
 def _f_fori(lo, hi, body, init):

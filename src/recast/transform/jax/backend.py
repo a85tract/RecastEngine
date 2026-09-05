@@ -495,6 +495,42 @@ def _assigned_names(stmts):
     return out
 
 
+def _jnp_logic(node) -> str | None:
+    """``jnp.logical_not/and/or(...)``: which, or None."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "jnp"
+        and node.func.attr in ("logical_not", "logical_and", "logical_or")
+        and not node.keywords
+    ):
+        return node.func.attr
+    return None
+
+
+def _python_logic(node):
+    """The expression mapping's ``jnp.logical_*`` back to Python's ``not``,
+    ``and``, ``or`` -- for a test a Python ``if`` evaluates at trace time,
+    where a jnp op on a constant would be staged into a tracer."""
+    which = _jnp_logic(node)
+    if which == "logical_not" and len(node.args) == 1:
+        return ast.UnaryOp(op=ast.Not(), operand=_python_logic(node.args[0]))
+    if which in ("logical_and", "logical_or") and len(node.args) == 2:
+        op = ast.And() if which == "logical_and" else ast.Or()
+        return ast.BoolOp(op=op, values=[_python_logic(a) for a in node.args])
+    return node
+
+
+def _logic_leaves(node) -> list[ast.expr]:
+    """The operands under the logical operators: what has to be concrete
+    for the Python form to be evaluable."""
+    which = _jnp_logic(node)
+    if which is not None:
+        return [leaf for a in node.args for leaf in _logic_leaves(a)]
+    return [node]
+
+
 def _module_constant(node) -> bool:
     """``_mod.IIPDF_ADG1``: a use-associated module constant through its
     module alias -- a Python value at trace time, like the bare upper-case
@@ -559,6 +595,10 @@ def _static_test(test, statics=frozenset()):
         return all(_static_test(v, statics) for v in test.values)
     if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
         return _static_test(test.operand, statics)
+    if _jnp_logic(test) is not None:
+        # The expression mapping ran first: ``.not. ( k == I )`` arrived as
+        # ``jnp.logical_not(k == I)``. Static when its operands are.
+        return all(_static_test(a, statics) for a in test.args)
     return constant(test)
 
 
@@ -1030,7 +1070,7 @@ class KernelLowerer:
         if not body:
             body = [ast.Pass()]  # a Python if needs a body; the else is the point
         if _static_test(s.test):
-            return [ast.If(test=s.test, body=body, orelse=orelse or [])]
+            return [ast.If(test=_python_logic(s.test), body=body, orelse=orelse or [])]
         if _static_test(s.test, self.statics):
             # Over the kernel's static scalar arguments: a Python if when
             # the kernel is called through its jit wrapper (the arguments
@@ -1039,7 +1079,13 @@ class KernelLowerer:
             # takes its level indices as arguments, and its caller's loop
             # index reaches it as a tracer). Decided at trace time by the
             # runtime's ``_f_concrete``.
-            python_form: list[ast.stmt] = [ast.If(test=s.test, body=body, orelse=orelse or [])]
+            # The Python if is spelled with Python logic: ``jnp.logical_not``
+            # of a constant is staged under jit like any other op, a tracer
+            # no ``if`` can convert. Whether the leaves (the comparisons,
+            # the names) are concrete is what decides the form.
+            python_form: list[ast.stmt] = [
+                ast.If(test=_python_logic(s.test), body=body, orelse=orelse or [])
+            ]
             try:
                 cond_form = self._cond_form(s, copy.deepcopy(body), copy.deepcopy(orelse))
             except JaxQueue:
@@ -1050,7 +1096,7 @@ class KernelLowerer:
                 ast.If(
                     test=ast.Call(
                         func=ast.Name(id="_f_concrete", ctx=ast.Load()),
-                        args=[copy.deepcopy(s.test)],
+                        args=[copy.deepcopy(leaf) for leaf in _logic_leaves(s.test)],
                         keywords=[],
                     ),
                     body=python_form,

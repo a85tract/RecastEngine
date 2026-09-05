@@ -1803,7 +1803,7 @@ module kinds_mod
   implicit none
   integer, parameter :: I_PLAIN = 1
   integer, parameter :: I_TWICE = 2
-  logical :: l_noisy = .false.
+  logical, parameter :: L_QUINTIC = .false.
 end module kinds_mod
 """
 
@@ -1824,6 +1824,9 @@ contains
     else
       y = 0.0d0
       call complain( n, y )
+    end if
+    if ( .not. ( kind == I_PLAIN ) ) then
+      y = y + 1.0d0
     end if
   end subroutine pick
 end module dispatch_mod
@@ -1849,21 +1852,25 @@ def test_a_dispatch_on_a_module_constant_through_its_alias_is_static(tmp_path: P
     facts = frontend.analyze(unit, tmp_path)
     candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
     assert "pick" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
-    emitted = candidate.files[Path("dispatch_mod_jax.py")].decode()
-    # The dual form: a Python if when the kind is concrete (through the jit
-    # wrapper it is), the lax.cond only for a traced caller.
-    assert "if _f_concrete(kind == _kinds_mod.I_TWICE):" in emitted, emitted
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():
         (out / path.name).write_bytes(content)
+    emitted = candidate.files[Path("dispatch_mod_jax.py")].decode()
+    # The dual form: a Python if when the kind is concrete (through the jit
+    # wrapper it is), the lax.cond only for a traced caller.
+    assert "if _f_concrete(kind == _kinds_mod.I_TWICE):" in emitted, emitted
+    # ``.not. ( kind == I_PLAIN )``: the Python form's test is Python's
+    # ``not``, not jnp.logical_not, which jit stages into a tracer no Python
+    # if can convert (interpolation's ``.not. l_quintic_poly_interp``).
+    assert "if not kind == _kinds_mod.I_PLAIN:" in emitted, emitted
     sys.path.insert(0, str(out))
     try:
         module = importlib.import_module("dispatch_mod_jax")
         import numpy as np
 
         x = np.array([1.0, 3.0])
-        assert np.asarray(module.pick(2, 2, x)).tolist() == [2.0, 6.0]
+        assert np.asarray(module.pick(2, 2, x)).tolist() == [3.0, 7.0]
         assert np.asarray(module.pick(2, 1, x)).tolist() == [1.0, 3.0]
     finally:
         sys.path.remove(str(out))
