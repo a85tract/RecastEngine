@@ -47,7 +47,9 @@ __all__ = [
     "_f_mod",
     "_f_modulo",
     "_f_nint",
+    "_f_cfold",
     "_f_sign",
+    "_f_sqrt",
     "_f_tiny",
     "_f_trim",
     "_f_vceil",
@@ -129,6 +131,23 @@ def _f_nint(x):
     x_ = jnp.asarray(x)
     r = jnp.where(x_ >= 0, jnp.floor(x_ + 0.5), jnp.ceil(x_ - 0.5))
     return r.astype(jnp.int32)
+
+
+def _f_sqrt(x):
+    """Fortran SQRT: a NaN for a negative real, which ``jnp.sqrt`` gives
+    without being asked (the NumPy runtime guards ``math.sqrt``, which
+    raises)."""
+    return jnp.sqrt(x)
+
+
+def _f_cfold(fn, *args):
+    """gfortran folds a constant-argument intrinsic at compile time with
+    MPFR; the anchor spells that value through mpmath, and a kernel meets
+    it only with Python constants, at trace time."""
+    import mpmath as mp
+
+    with mp.workprec(200):
+        return float(getattr(mp, fn)(*[mp.mpf(float(a)) for a in args]))
 
 
 def _f_vexp(x):
