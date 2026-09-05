@@ -111,6 +111,15 @@ def test_a_use_rename_is_carried_so_the_call_can_be_resolved(tree: Path) -> None
     assert found["helper"]["renames"] == {"dbl": "twice"}
 
 
+def test_a_use_only_list_is_carried_as_the_names_this_module_sees(tree: Path) -> None:
+    """``use helper, only: dbl => twice, bump`` lets ``dbl`` and ``bump`` in
+    and nothing else, spelled as this module sees them; a bare use carries
+    ``None``, meaning everything the module exports."""
+    found = {c["module"]: c for c in _facts(tree).provenance["companions"]}
+    assert found["helper"]["only"] == ["bump", "dbl"]
+    assert all("only" in c for c in found.values())
+
+
 def test_an_intrinsic_module_is_not_looked_for_in_the_tree(tree: Path) -> None:
     """The pipeline this came from treats iso_fortran_env as a companion,
     which is one of the defects its author catalogued."""

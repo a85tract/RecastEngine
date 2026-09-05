@@ -1839,3 +1839,26 @@ def test_a_character_parameter_is_a_resolvable_use_constant(tmp_path: Path) -> N
     assert render(records["namep"], real=str, integer=str, name=str) == "'pft'"
     assert _python(records["path"]) == repr("a/b'c")
     assert _python(records["half"]) == "(3 // 2)"
+
+
+def test_a_transformational_intrinsic_is_not_a_read(tmp_path: Path) -> None:
+    """``x(:) = reshape(y, (/n/))`` reads ``y`` and ``n``; ``reshape`` was
+    counted as a read of a variable named reshape (ELM's readParams), and
+    the target side, which spells it ``np.reshape``, never agreed."""
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "rs.f90",
+        "module rs_mod\n  implicit none\ncontains\n"
+        "  subroutine flat(x, y, n)\n    real, intent(out) :: x(:)\n"
+        "    real, intent(in) :: y(:,:)\n    integer, intent(in) :: n\n"
+        "    x(:) = reshape(y, (/n/))\n    x(1) = x(1) + sum(spread(x(2), 1, n))\n"
+        "  end subroutine flat\nend module rs_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = next(s for s in walk(parse(src), f03.Subroutine_Subprogram))
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "flat"))}
+    reads = {name for b in blocks.values() for name in b["reads"]}
+    assert "reshape" not in reads and "spread" not in reads and "sum" not in reads
+    assert {"y", "n", "x"} <= reads

@@ -701,12 +701,28 @@ class FortranFrontend(Frontend):
                     }
                 )
                 continue
+            only = (
+                sorted(
+                    {
+                        item.split("=>", 1)[0].strip().lower()
+                        for item in match.group("only").split(",")
+                        if item.strip()
+                    }
+                )
+                if match.group("only") is not None
+                else None
+            )
             found[module] = {
                 "module": module,
                 "source": str(source.relative_to(resolved_root)),
                 "record": record_of,
                 "constants": constants_of,
                 "renames": renames,
+                # The names a ``use, only:`` lets in, spelled as this module
+                # sees them; ``None`` for a bare use. What is not let in is
+                # not visible here, and a same-named local, alias or
+                # associate of this module must not be mistaken for it.
+                "only": only,
             }
             if self._carries_on(match, record_of):
                 pending.extend(record_of.get("use_statements", ()))

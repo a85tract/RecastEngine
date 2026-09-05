@@ -542,10 +542,13 @@ class Subprograms:
                 report.append(entry)
                 continue
             try:
+                statements.dropped_reads.clear()
                 body = statements.render(statement, depth)
                 lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]}")
                 lines.extend(body)
                 entry["status"] = "mechanical"
+                if statements.dropped_reads:
+                    entry["dropped_reads"] = sorted(statements.dropped_reads)
             except REFUSED as refusal:
                 filled, why_not = self._fill(
                     emit_name(subprogram), block, statement, span, refusal, statements

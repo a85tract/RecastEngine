@@ -78,3 +78,26 @@ def test_a_rename_overrides_a_global_registered_first() -> None:
     }
     _, _, globals_, _ = companion_tables([first, second])
     assert globals_["br"] == "_b.BR"
+
+
+def test_a_use_only_list_keeps_the_other_globals_out() -> None:
+    """``use mgu, only: br`` lets ``br`` in; ``i8`` and ``props`` are not
+    names this module can mean, so a local, an alias or an associate of
+    the same name must not resolve to the companion's (ELM's Photosynthesis
+    associates ``c3psn`` while pftvarcon, used with an only-list, exports
+    one). A rename's local name is let in with the rest."""
+    entry = {
+        "alias": "_mgu",
+        "module_py": "mgu_numpy",
+        "record": RECORD,
+        "constants": _constants("br"),
+        "only": ["br", "p"],
+        "renames": {"p": "props"},
+    }
+    _, _, globals_, _ = companion_tables([entry])
+    assert globals_["br"] == "_mgu.BR"
+    assert "i8" not in globals_
+    assert globals_["p"] == "_mgu.props" and "props" not in globals_
+    bare = {"alias": "_mgu", "module_py": "mgu_numpy", "record": RECORD, "only": None}
+    _, _, globals_, _ = companion_tables([bare])
+    assert {"br", "i8", "props"} <= set(globals_)

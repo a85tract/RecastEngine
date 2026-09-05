@@ -111,13 +111,23 @@ def companion_tables(
             if companion.get("constants")
             else set()
         )
+        # ``use m, only: a, b => c`` lets ``a`` and ``b`` in and nothing
+        # else; a global the only-list keeps out is not a name this module
+        # can mean (ELM's Photosynthesis associates ``c3psn`` while
+        # pftvarcon, used with an only-list, exports one of the same name).
+        only = companion.get("only")
+        reverse = {v: k for k, v in renames.items()}
+        visible = None if only is None else set(only)
         for parameter in record["module_parameters"]:
             name = parameter["name"]
+            if visible is not None and name not in visible:
+                continue
             attr = pysafe(name.upper()) if name.upper() in defined else pysafe(name)
             globals_.setdefault(name, f"{alias}.{attr}")
         for state in record["module_state"]:
+            if visible is not None and state["name"] not in visible:
+                continue
             globals_.setdefault(state["name"], f"{alias}.{pysafe(state['name'])}")
-        reverse = {v: k for k, v in renames.items()}
         for parameter in record["module_parameters"]:
             local = reverse.get(parameter["name"])
             if local:
@@ -399,6 +409,10 @@ class NumpyTranslation(Transform):
                     "reads": sets["reads"],
                     "writes": sets["writes"],
                     "lines": entry["py_lines"],
+                    # Names read only as arguments of a call a framework
+                    # stub replaced: the source counts them, the stub drops
+                    # them, and the gate is told which they were.
+                    "dropped_reads": entry.get("dropped_reads") or [],
                 }
             )
         names: dict[str, str] = {}
