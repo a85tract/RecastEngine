@@ -551,10 +551,10 @@ byte-identical. Three consequences are worth naming because none is obvious:
 * **`trials` does not apply.** A recording holds the points it holds; asking
   for ten against a three-sample recording would be seven invented ones or
   seven copies.
-* **`_PREPARE_INPUTS` is skipped.** The hook exists to drag *generated* inputs
-  into the physical domain, and recorded ones are already there. It also ships
-  inside the artifact under test, so running it on a replay would let the
-  candidate edit the production run's own numbers before being judged on them.
+* **`recast_inputs.py` is skipped.** The project's input profile exists to
+  drag *generated* inputs into the physical domain, and recorded ones are
+  already there. Running it on a replay would let the production run's own
+  numbers be edited before the artifact is judged on them.
 * **Reference-side `setup` is skipped.** A replayed reference has no state to
   set: whatever the run's module state was is folded into what it recorded.
   An operator whose `setup` does not match the run's own initialization gets a

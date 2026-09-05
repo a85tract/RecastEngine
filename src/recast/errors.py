@@ -36,6 +36,17 @@ class OracleUnavailable(RecastError):
     """The reference could not be materialized. Verdicts must be FAILED, not skipped."""
 
 
+class InputProfileError(RecastError):
+    """The project's ``recast_inputs.py`` shaped inputs the reference does not take.
+
+    A shaped draw is the project asserting that these are inputs the source
+    accepts. When the reference cannot run them -- it raises, or computes a
+    NaN -- the assertion is what is wrong, not the translation, so the
+    verification stops here instead of charging the candidate with it or
+    drawing again. Fix the profile; nothing about the engine is being judged.
+    """
+
+
 class ScannerUnavailable(RecastError):
     """A Scanner or Adjudicator could not run at all. The stage is INCOMPLETE.
 
