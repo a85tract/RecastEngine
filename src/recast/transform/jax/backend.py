@@ -977,8 +977,6 @@ class KernelLowerer:
             ]
             self.bound.add(flag)
             self.bound.add(kept)
-        elif s.orelse:
-            raise JaxQueue("for-else without a break")
         bound_before = set(self.bound)
         self.bound.add(s.target.id)
         body = self.lower_block(body_stmts, depth + 1)
@@ -990,10 +988,11 @@ class KernelLowerer:
                     value=ast.Name(id=kept, ctx=ast.Load()),
                 )
             ]
-        if s.orelse and flag is not None:
-            # The for-else stores the DO variable's completion value, a
-            # Python int when the bounds are static; the carry it joins
-            # is the int32 index kept at the exit.
+        if s.orelse:
+            # The for-else stores the DO variable's completion value (the
+            # index is read after the loop), a Python int when the bounds
+            # are static; with a break it joins the int32 index kept at the
+            # exit, under the flag inverted; without one it always runs.
             completion: list[ast.stmt] = []
             for st in s.orelse:
                 if (
@@ -1024,9 +1023,12 @@ class KernelLowerer:
                         ),
                     )
                 completion.append(st)
-            after += self.lower_block(
-                [ast.If(test=_not_flag(flag), body=completion, orelse=[])], depth
-            )
+            if flag is not None:
+                after += self.lower_block(
+                    [ast.If(test=_not_flag(flag), body=completion, orelse=[])], depth
+                )
+            else:
+                after += self.lower_block(completion, depth)
         if not body or all(isinstance(b, ast.Pass) for b in body):
             # A loop whose body lowered to nothing: statistics calls the
             # stand-in dropped, a nested loop that went the same way.

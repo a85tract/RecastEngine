@@ -287,6 +287,16 @@ contains
     end do
     kfound = k
   end subroutine exit_index
+  subroutine run_to_end(n, z, kfound)
+    integer,  intent(in)  :: n
+    real(r8), intent(in)  :: z(n)
+    integer,  intent(out) :: kfound
+    integer :: k
+    do k = 1, n
+      if ( z(k) > 0.0_r8 ) kfound = k
+    end do
+    kfound = kfound + k
+  end subroutine run_to_end
   subroutine next_above(n, m, z, kfound)
     integer,  intent(in)  :: n, m
     real(r8), intent(in)  :: z(m)
@@ -320,6 +330,7 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_a_carried_flag(tmp_path: P
         "exit_index",
         "first_above",
         "next_above",
+        "run_to_end",
     ]
     assert candidate.notes["jax"]["delegated"] == {}
     emitted = candidate.files[Path("cycle_demo_jax.py")].decode()
@@ -346,6 +357,9 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_a_carried_flag(tmp_path: P
         # index): the anchor's Python max over a tracer.
         zz = np.array([-1.0, 2.0, -1.0])
         assert np.asarray(module.next_above(3, 3, zz)).tolist() == [2, 2, 4]
+        # No EXIT at all, the index read after the loop: the for-else's
+        # completion value always runs (advance_xp2_xpyp's solver loops).
+        assert int(module.run_to_end(3, zz)) == 2 + 4
     finally:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
