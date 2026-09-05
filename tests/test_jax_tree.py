@@ -389,6 +389,7 @@ def test_a_while_true_capped_by_a_counter_break_is_a_fixed_count_for() -> None:
         "    return x\n"
     ).body[0]
     assert isinstance(fn, ast.FunctionDef)
+    source = ast.unparse(fn)
     lowered = _WhileLoops({"iter": 0, "itmax": 40}, frozenset({"iter", "itmax"})).visit_block(
         fn.body
     )
@@ -396,3 +397,13 @@ def test_a_while_true_capped_by_a_counter_break_is_a_fixed_count_for() -> None:
     assert "while" not in text
     assert "_done_1 = False" in text and "for _w1 in range(0, 41):" in text
     assert "if not _done_1:" in text and "_done_1 = True" in text
+    # The same loop after an early return: ``while not _ret`` (the
+    # single-exit flag) is still capped, the flag joining the guard.
+    again = ast.parse(source.replace("while True:", "while not _ret:")).body[0]
+    assert isinstance(again, ast.FunctionDef)
+    lowered = _WhileLoops({"iter": 0, "itmax": 40}, frozenset({"iter", "itmax"})).visit_block(
+        again.body
+    )
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in lowered)
+    assert "while" not in text and "for _w1 in range(0, 41):" in text
+    assert "if not _done_1 and (not _ret):" in text

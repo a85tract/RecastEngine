@@ -2049,7 +2049,7 @@ class _WhileLoops(ast.NodeTransformer):
         counted = self._counted_bound(node.test, node.body)
         # Before the breaks are rewritten into the flag below: the cap is
         # read off the ``break`` that enforces it.
-        capped = self._break_bound(node.body) if forever and restart is None else None
+        capped = self._break_bound(node.body) if restart is None else None
         if counted is not None and not any(isinstance(n, ast.Break) for n in ast.walk(node)):
             self.n -= 1
             return ast.For(
@@ -2102,6 +2102,12 @@ class _WhileLoops(ast.NodeTransformer):
             self.n -= 1
             index = f"_w{self.n + 1}"
             init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
+            going_on: ast.expr = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=done, ctx=ast.Load()))
+            if not forever:
+                # ``while not _ret:`` -- the single-exit flag of a routine
+                # that returned early ahead of the loop, or any condition:
+                # a pass runs only while it holds.
+                going_on = ast.BoolOp(op=ast.And(), values=[going_on, copy.deepcopy(node.test)])
             loop = ast.For(
                 target=ast.Name(id=index, ctx=ast.Store()),
                 iter=ast.Call(
@@ -2109,13 +2115,7 @@ class _WhileLoops(ast.NodeTransformer):
                     args=[ast.Constant(0), ast.Constant(capped + 1)],
                     keywords=[],
                 ),
-                body=[
-                    ast.If(
-                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=done, ctx=ast.Load())),
-                        body=guarded,
-                        orelse=[],
-                    )
-                ],
+                body=[ast.If(test=going_on, body=guarded, orelse=[])],
                 orelse=[],
             )
             return [ast.fix_missing_locations(init), ast.fix_missing_locations(loop)]
