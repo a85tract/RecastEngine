@@ -1008,6 +1008,12 @@ class KernelLowerer:
         a None arg — is never traced)."""
         body = self.lower_block(s.body, depth + 1)
         orelse = self.lower_block(s.orelse, depth + 1)
+        if not body and not orelse:
+            # Both arms lowered to nothing (a debug print under a level
+            # check, statistics under their switch): no branch at all.
+            return []
+        if not body:
+            body = [ast.Pass()]  # a Python if needs a body; the else is the point
         if _static_test(s.test):
             return [ast.If(test=s.test, body=body, orelse=orelse or [])]
         if _static_test(s.test, self.statics):

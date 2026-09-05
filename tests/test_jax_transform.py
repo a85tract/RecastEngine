@@ -1749,6 +1749,55 @@ def test_an_array_passed_through_a_reshape_comes_back_in_its_own_shape(tmp_path:
             sys.modules.pop(f"reshaped_mod{suffix}", None)
 
 
+EMPTY_GUARD = """\
+module emptyguard_mod
+  implicit none
+contains
+  subroutine scale( n, level, x, y )
+    integer, intent(in) :: n, level
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    y = 2.0d0 * x
+    if ( level > 0 ) then
+      print *, "scaled", n
+    end if
+    if ( level > 1 ) then
+      print *, "twice"
+    else
+      y = y + 1.0d0
+    end if
+  end subroutine scale
+end module emptyguard_mod
+"""
+
+
+def test_a_static_branch_whose_arms_lowered_to_nothing_is_no_branch(tmp_path: Path) -> None:
+    """``if ( clubb_at_least_debug_level( 0 ) ) then`` around a print: the
+    print is dropped, the static Python if was emitted with no body -- a
+    SyntaxError that took the whole emitted module down. Nothing in both
+    arms is no branch; nothing in one arm is ``pass``."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, EMPTY_GUARD, "emptyguard_mod")
+    assert candidate.notes["jax"]["kernels"] == ["scale"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("emptyguard_mod_jax")
+        import numpy as np
+
+        assert np.asarray(module.scale(2, 0, np.array([1.0, 3.0]))).tolist() == [3.0, 7.0]
+        assert np.asarray(module.scale(2, 2, np.array([1.0, 3.0]))).tolist() == [2.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"emptyguard_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
