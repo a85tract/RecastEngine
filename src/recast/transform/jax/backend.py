@@ -1050,10 +1050,11 @@ class KernelLowerer:
                 )
             else:
                 after += self.lower_block(completion, depth)
-        if not body or all(isinstance(b, ast.Pass) for b in body):
-            # A loop whose body lowered to nothing: statistics calls the
-            # stand-in dropped, a nested loop that went the same way.
-            # Fortran ran it for nothing; nothing is what it becomes.
+        if not body or _trivial(body, self.strings):
+            # A loop whose body lowered to nothing a cond or a carry could
+            # hold: statistics calls the stand-in dropped, a nested loop
+            # that went the same way, a statistics name written from the
+            # index. Fortran ran it for nothing; nothing is what it becomes.
             return []
         settled = _trace_constant_stores(body)
         strings = _string_stores(body) | self.strings

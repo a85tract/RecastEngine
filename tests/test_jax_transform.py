@@ -2331,6 +2331,10 @@ contains
     integer :: k
     idx = ""
     do k = 1, n
+      write( idx, * ) k
+      idx = adjustl( idx )
+    end do
+    do k = 1, n
       if ( x(k) > 0.0d0 ) then
         write( idx, * ) k
         idx = adjustl( idx )
@@ -2348,7 +2352,8 @@ def test_a_character_local_written_from_the_index_is_never_a_carry(tmp_path: Pat
     """pdf_closure_driver writes the scalar index into a statistics name
     (``write( sclr_idx, * ) sclr``, then adjustl): not a literal store, but
     a character local all the same -- its guard init says so -- and no
-    carry of the cond or the loop."""
+    carry of the cond or the loop. A loop that does nothing else is
+    dropped, not refused for carrying nothing."""
     import importlib
     import sys
 
