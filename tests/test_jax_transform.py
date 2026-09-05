@@ -2041,6 +2041,8 @@ contains
     real(8), allocatable :: work(:, :)
     logical :: l_ab
     integer :: nrhs
+    y = x
+    if ( any( x < 0.0d0 ) ) return
     l_ab = l_a .and. l_b
     if ( sclr_dim > 0 ) then
       nrhs = 1
@@ -2093,6 +2095,11 @@ def test_a_shape_counted_under_switches_is_a_trace_time_value(tmp_path: Path) ->
         assert np.asarray(module.solve_count(2, 0, True, True, x)).tolist() == [6.0, 12.0]
         assert np.asarray(module.solve_count(2, 0, True, False, x)).tolist() == [4.0, 8.0]
         assert np.asarray(module.solve_count(2, 1, True, True, x)).tolist() == [1.0, 2.0]
+        # After the early-return check (a traced branch) the count is a
+        # trace-time value still: the guard is the rest of the function.
+        neg = np.array([1.0, -2.0])
+        assert np.asarray(module.solve_count(2, 0, True, True, neg)).tolist() == [1.0, -2.0]
+        assert np.asarray(module.solve_count(np.int32(2), 0, True, True, x)).tolist() == [6.0, 12.0]
     finally:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):

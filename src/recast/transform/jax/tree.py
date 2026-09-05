@@ -407,6 +407,22 @@ class _Rewrite(ast.NodeTransformer):
             len(node.targets) == 1
             and isinstance(target, ast.Name)
             and target.id in self.inits
+            and target.id in self.statics
+            and not isinstance(node.value, ast.Constant)
+        ):
+            # A trace-time value's store is a Python value of the local's
+            # own kind: ``int(gr__k_lb_zt + dir)`` -- the static arguments
+            # arrive as Python ints through the jit wrapper and as NumPy
+            # int32 from the gate, and a return guard's cond that carries
+            # the local must see the same type on both arms.
+            kind = "int" if self.inits[target.id] == "int32" else "float"
+            node.value = ast.Call(
+                func=ast.Name(id=kind, ctx=ast.Load()), args=[node.value], keywords=[]
+            )
+        if (
+            len(node.targets) == 1
+            and isinstance(target, ast.Name)
+            and target.id in self.inits
             and target.id not in self.statics  # a trace-time value stays a Python one
             and not isinstance(node.value, ast.Constant)
             and (
@@ -1690,9 +1706,21 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
                 if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                     nested.add(inner.id)
 
+    def return_guard(test: ast.expr) -> bool:
+        # ``if not _ret``: the rest of the function after a possible early
+        # return, not a branch on data -- a trace-time value stored there
+        # is one still (advance_xm_wpxp counts its right-hand sides after
+        # its error checks).
+        return (
+            isinstance(test, ast.UnaryOp)
+            and isinstance(test.op, ast.Not)
+            and isinstance(test.operand, ast.Name)
+            and test.operand.id == "_ret"
+        )
+
     def scan(stmts: list[ast.stmt]) -> None:
         for stmt in stmts:
-            if isinstance(stmt, ast.If) and ok(stmt.test):
+            if isinstance(stmt, ast.If) and (return_guard(stmt.test) or ok(stmt.test)):
                 # A branch decided at trace time (CLUBB's ``nrhs`` counted
                 # under its configuration switches): its stores are as
                 # much a trace-time value as the top level's.
@@ -2239,60 +2267,60 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             final,
         ]
 
-    class Returns(ast.NodeTransformer):
-        def visit_Return(self, node: ast.Return) -> Any:
-            value = node.value if node.value is not None else ast.Constant(None)
-            return [
-                ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
-                ast.Assign(
-                    targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
-                ),
-            ]
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-            return node  # a nested function's returns are its own
-
     final = body[-1]
     assert isinstance(final, ast.Return) and final.value is not None
+    not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
+
+    def guard(stmts: list[ast.stmt]) -> list[ast.stmt]:
+        """``return v`` -> ``_r = v; _ret = True``; what follows a statement
+        that may have returned, in the same block, runs under one ``if not
+        _ret`` -- the whole remainder as one block, so a trace-time value
+        set after the check is one still where the rest reads it --
+        recursively through branches and loop bodies."""
+        out: list[ast.stmt] = []
+        for at, statement in enumerate(stmts):
+            had_return = _has_return([statement])
+            if isinstance(statement, ast.Return):
+                value = statement.value if statement.value is not None else ast.Constant(None)
+                out.append(
+                    ast.copy_location(
+                        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
+                        statement,
+                    )
+                )
+                out.append(
+                    ast.Assign(
+                        targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                )
+            else:
+                if not isinstance(statement, ast.FunctionDef):
+                    for field in ("body", "orelse"):
+                        inner = getattr(statement, field, None)
+                        if isinstance(inner, list) and inner:
+                            setattr(statement, field, guard(inner))
+                out.append(statement)
+            if had_return:
+                rest = guard(stmts[at + 1 :])
+                if rest:
+                    out.append(ast.If(test=copy.deepcopy(not_returned), body=rest, orelse=[]))
+                return out
+        return out
+
     # The flag and the value the early return hands back, placed before the
     # first statement that may return -- after the guard inits, so the
     # value can be shaped like what the final return hands back (an array
     # output beside a scalar placeholder is a cond with unequal arms).
-    inits: list[ast.stmt] = [
+    first = next(at for at, statement in enumerate(body[:-1]) if _has_return([statement]))
+    out: list[ast.stmt] = [
+        *body[:first],
         ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
         ast.Assign(
             targets=[ast.Name(id="_r", ctx=ast.Store())],
             value=_jnp("zeros_like", [copy.deepcopy(final.value)]),
         ),
+        *guard(body[first:-1]),
     ]
-    out: list[ast.stmt] = []
-    exited = False
-    for statement in body[:-1]:
-        had_return = _has_return([statement])  # before the visit rewrites it away
-        if had_return and inits:
-            out.extend(inits)
-            inits = []
-        rewritten: Any = Returns().visit(statement)
-        rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
-        not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
-        if exited and len(rewritten) == 1 and isinstance(rewritten[0], ast.While):
-            # A loop is not wrapped -- its done flag is the loop's own carry
-            # and must not become an enclosing branch's -- but its condition
-            # takes the flag: a loop after a return does not run.
-            loop = rewritten[0]
-            forever = isinstance(loop.test, ast.Constant) and loop.test.value is True
-            loop.test = (
-                not_returned
-                if forever
-                else ast.BoolOp(op=ast.And(), values=[loop.test, copy.deepcopy(not_returned)])
-            )
-            out.append(loop)
-        elif exited:
-            out.append(ast.If(test=not_returned, body=rewritten, orelse=[]))
-        else:
-            out.extend(rewritten)
-        if had_return:
-            exited = True
     merged = _jnp(
         "where",
         [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],
