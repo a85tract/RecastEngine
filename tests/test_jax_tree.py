@@ -338,3 +338,30 @@ def test_a_pointer_local_pointed_in_a_branch_is_seeded_with_its_first_target() -
     assert _seed_pointer_locals(fn.body) == ["par_z"]
     assert ast.unparse(fn.body[0]) == "par_z = inst.parsun"
     assert ast.unparse(fn.body[1]) == "n = None"  # a computed value is not a seed
+
+
+def test_an_integer_literal_into_a_real_local_is_a_float_in_the_kernel() -> None:
+    """``nscaler = 1`` where ``nscaler`` is real(r8): Fortran converts; the
+    backend typed the bare constant int32 and a ``lax.cond`` arm disagreed
+    with the float64 one beside it (ELM's Photosynthesis, the
+    nu_com_leaf_physiology branch)."""
+    import copy
+
+    from recast.transform.jax.tree import _Rewrite, _Spelling, _guard_inits
+
+    fn = ast.parse(
+        "def f(flag, x):\n"
+        "    nscaler = 0.0\n"
+        "    k = 0\n"
+        "    if flag:\n"
+        "        nscaler = 1\n"
+        "        k = 2\n"
+        "    return nscaler * x + k\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    rewrite = _Rewrite(None, _Spelling(None, {}), {}, {})
+    rewrite.inits = _guard_inits(fn)
+    body = [rewrite.visit(copy.deepcopy(s)) for s in fn.body]
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in body if s is not None)
+    assert "nscaler = jnp.float64(1)" in text
+    assert "k = 2" in text  # an int into an int local is the backend's int32

@@ -381,6 +381,18 @@ class _Rewrite(ast.NodeTransformer):
             # int32 has a different output type. The variable's guard init
             # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is.
             node.value = _jnp(self.inits[target.id], [node.value])
+        elif (
+            len(node.targets) == 1
+            and isinstance(target, ast.Name)
+            and self.inits.get(target.id) == "float64"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, int)
+            and not isinstance(node.value.value, bool)
+        ):
+            # ``nscaler = 1`` into a real: Fortran converts the literal, and
+            # the backend, which types a bare constant by its Python type,
+            # would make this arm an int32 beside a float64 one.
+            node.value = _jnp("float64", [node.value])
 
         if len(node.targets) == 1 and isinstance(target, ast.Subscript):
             # ``x[i, lo:hi] = v`` with a traced ``hi``: the whole axis, masked.
