@@ -251,7 +251,14 @@ def test_a_routine_forwarded_to_the_host_is_not_a_lowered_kernel(tmp_path: Path)
             unit="tier:spread",
             transform="test.tier",
             files={Path("tier_numpy.py"): text.encode()},
-            notes={"jax": {"delegated": {"spread": "a helper needs a state this plan does not carry"}}},
+            notes={
+                "jax": {
+                    "delegated": {
+                        "spread": "[emit] calls non-emitted subprogram inner",
+                        "inner": "a helper needs a state this plan does not carry",
+                    }
+                }
+            },
         )
         oracle = OracleRef(
             unit="tier:spread",
@@ -271,5 +278,9 @@ def test_a_routine_forwarded_to_the_host_is_not_a_lowered_kernel(tmp_path: Path)
     forwarded = run([])
     assert forwarded.confidence is Confidence.FAILED
     assert "spread: not lowered by this backend, forwarded to its host module" in forwarded.detail
-    assert "a helper needs a state this plan does not carry" in forwarded.detail
+    # the reason is followed to the root: the wrapper's says only whom it calls
+    assert (
+        "([emit] calls non-emitted subprogram inner <- inner: a helper needs a state "
+        "this plan does not carry)"
+    ) in forwarded.detail
     assert run(["spread"]).confidence is Confidence.BIT_EXACT
