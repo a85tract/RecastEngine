@@ -1691,6 +1691,13 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         if isinstance(node, ast.Compare):
             return ok(node.left) and all(ok(c) for c in node.comparators)
         if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id.startswith("_")
+                and node.attr.isupper()
+                and len(node.attr) > 1
+            ):
+                return True  # ``_mod.IIPDF_NEW``: a module constant through its alias
             flat = rewrite.spelling.of(node)
             return flat is not None and flat in rewrite.statics
         if isinstance(node, ast.BinOp) and isinstance(
