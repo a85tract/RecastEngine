@@ -1639,10 +1639,14 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         )
         return closure_static and all(ok(a) for a in call.args)
 
+    banned: set[str] = set()  # found stored under a loop or a traced branch, any pass
+
     def ok(node: ast.expr) -> bool:
         if isinstance(node, ast.Constant):
             return isinstance(node.value, (int, float, bool))
         if isinstance(node, ast.Name):
+            if node.id in banned:
+                return False
             return node.id.isupper() or node.id in rewrite.statics or node.id in concrete
         if isinstance(node, ast.BoolOp):
             return all(ok(v) for v in node.values)  # l_a .and. l_b over switches
@@ -1701,6 +1705,7 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
                 len(stmt.targets) == 1
                 and isinstance(target, ast.Name)
                 and target.id not in nested
+                and target.id not in banned
                 and ok(stmt.value)
             ):
                 concrete.add(target.id)
@@ -1718,7 +1723,8 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         concrete.clear()
         nested.clear()
         scan(fn.body)
-        concrete.difference_update(nested)
+        banned |= nested  # a name a branch's staticness leaned on may be one of them
+        concrete.difference_update(banned)
         if frozenset(concrete) == seen:
             break
         seen = frozenset(concrete)
@@ -1728,7 +1734,15 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
-    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
+    # Concreteness is judged on the body as the exits leave it: a store
+    # after an early return sits under the return's guard, a traced branch,
+    # and is a carried value there, whatever its expression.
+    probe = copy.deepcopy(fn)
+    try:
+        probe.body = _single_exit([copy.deepcopy(s) for s in fn.body])
+    except NotFlat:
+        pass  # the rewrite below refuses the same way; judge the body as it is
+    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(probe, rewrite)
     lowered: list[ast.stmt] = []
     body = [copy.deepcopy(s) for s in fn.body]
     # Fixed-length windows with traced bounds first, so the mask rules never
@@ -2231,13 +2245,26 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
         def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
             return node  # a nested function's returns are its own
 
-    out: list[ast.stmt] = [
+    final = body[-1]
+    assert isinstance(final, ast.Return) and final.value is not None
+    # The flag and the value the early return hands back, placed before the
+    # first statement that may return -- after the guard inits, so the
+    # value can be shaped like what the final return hands back (an array
+    # output beside a scalar placeholder is a cond with unequal arms).
+    inits: list[ast.stmt] = [
         ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
-        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0)),
+        ast.Assign(
+            targets=[ast.Name(id="_r", ctx=ast.Store())],
+            value=_jnp("zeros_like", [copy.deepcopy(final.value)]),
+        ),
     ]
+    out: list[ast.stmt] = []
     exited = False
     for statement in body[:-1]:
         had_return = _has_return([statement])  # before the visit rewrites it away
+        if had_return and inits:
+            out.extend(inits)
+            inits = []
         rewritten: Any = Returns().visit(statement)
         rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
         not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
@@ -2259,8 +2286,6 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
             out.extend(rewritten)
         if had_return:
             exited = True
-    final = body[-1]
-    assert isinstance(final, ast.Return) and final.value is not None
     merged = _jnp(
         "where",
         [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],

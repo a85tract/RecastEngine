@@ -2099,6 +2099,70 @@ def test_a_shape_counted_under_switches_is_a_trace_time_value(tmp_path: Path) ->
             sys.modules.pop(f"counted_mod{suffix}", None)
 
 
+AFTER_A_CHECK = """\
+module aftercheck_mod
+  implicit none
+contains
+  subroutine scale_tail( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: k, k0
+    y = x
+    if ( any( x < 0.0d0 ) ) return
+    k0 = n - 1
+    do k = k0, n
+      y(k) = 2.0d0 * x(k)
+    end do
+  end subroutine scale_tail
+end module aftercheck_mod
+"""
+
+
+def test_a_store_after_a_traced_return_is_a_carried_value(tmp_path: Path) -> None:
+    """mixing_length's ``start_index = gr%k_lb_zt + gr%grid_dir_indx`` after
+    its error check: a trace-time expression, but under the return's guard
+    -- a traced branch -- it is a carried value, and a carry of a NumPy
+    int32 beside a Python int is a cond with unequal arms. Judged on the
+    body as the exits leave it, it is strengthened like any carry."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "aftercheck_mod.f90").write_text(AFTER_A_CHECK)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:aftercheck_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "scale_tail" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("aftercheck_mod_jax")
+        import numpy as np
+
+        n = np.int32(3)  # the gate hands static scalars over as NumPy ints
+        assert np.asarray(module.scale_tail(n, np.array([1.0, 2.0, 3.0]))).tolist() == [
+            1.0,
+            4.0,
+            6.0,
+        ]
+        assert np.asarray(module.scale_tail(n, np.array([1.0, -2.0, 3.0]))).tolist() == [
+            1.0,
+            -2.0,
+            3.0,
+        ]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"aftercheck_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
