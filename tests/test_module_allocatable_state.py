@@ -218,3 +218,79 @@ def test_a_write_through_a_pointer_alias_writes_every_target_it_may_have(tmp_pat
     assert written == {"gs", "ncan_r"}, {c.name: c.written for c in inst.components}
     # the alias only read through is pointed, not written: its targets are inputs
     assert {c.name for c in inst.components if not c.written} == {"lai", "lai_sha"}
+
+
+# --- a bound spelled in the companion's namespace -----------------------------
+
+DIMS = """\
+module dims_mod
+  implicit none
+  integer :: nsno = 2
+end module dims_mod
+"""
+
+LAYERS = """\
+module layers_mod
+  use dims_mod, only: nsno
+  implicit none
+  integer :: nlev = 6
+  type :: column_type
+     real(8), pointer :: depth(:,:)
+  end type column_type
+  type(column_type), public :: col
+contains
+  subroutine init_layers(begc, endc)
+    integer, intent(in) :: begc, endc
+    allocate( col%depth(begc:endc, -nsno+1:nlev) )
+    col%depth(:,:) = 0.5d0
+  end subroutine init_layers
+end module layers_mod
+"""
+
+READER = """\
+module reader_mod
+  use types_mod, only: canopy_type
+  use layers_mod, only: col
+  implicit none
+  private
+  public :: Sink
+contains
+  subroutine Sink(num, filter, layer, inst)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    integer, intent(in) :: layer(:)
+    type(canopy_type), intent(inout) :: inst
+    integer :: f, p
+    associate(depth => col%depth)
+    do f = 1, num
+       p = filter(f)
+       inst%gs(p) = inst%gs(p) + depth(p, layer(p))
+    end do
+    end associate
+  end subroutine Sink
+end module reader_mod
+"""
+
+
+def test_a_borrowed_bound_is_spelled_in_the_companions_namespace(tmp_path: Path) -> None:
+    """ELM's ColumnType allocates ``dz(begc:endc, -nlevsno+1:nlevgrnd)`` and
+    PhotosynthesisMod, which subscripts ``dz`` over that bound, imports
+    nothing named ``nlevsno``. The bound's name is the companion's, so its
+    spelling is too: bound to the module that declares it, imported if the
+    reader has not. Left bare it was ``NameError: name 'nlevsno' is not
+    defined`` at the first call."""
+    from recast.transform.numpy.tree import TreeConventions, TreeTranslation
+
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "dims_mod.f90").write_text(DIMS)
+    (tmp_path / "layers_mod.f90").write_text(LAYERS)
+    (tmp_path / "reader_mod.f90").write_text(READER)
+    frontend = FortranFrontend(buffer_out_arrays="all", flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:reader_mod")
+    candidate = TreeTranslation(TreeConventions()).apply(
+        unit, frontend.analyze(unit, tmp_path), {"root": str(tmp_path)}
+    )
+    reader = candidate.files[Path("reader_mod_numpy.py")].decode()
+    assert "depth[p - 1, (layer[p - 1]) - (- _dims_mod.nsno + 1)]" in reader
+    assert "import dims_mod_numpy as _dims_mod" in reader
+    assert "(- nsno + 1)" not in reader
