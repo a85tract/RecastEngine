@@ -1646,7 +1646,55 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
                 and rewrite._is_dynamic(node.upper)
             ):
                 raise NotFlat(f"a dynamic slice outside a store or a sum: {ast.unparse(node)}")
-    return lowered
+    return [*_rebuilt_objects(lowered, rewrite), *lowered]
+
+
+def _rebuilt_objects(lowered: list[ast.stmt], rewrite: _Rewrite) -> list[ast.stmt]:
+    """A dummy object the body still hands whole to the host -- a stand-in's
+    query on it (``var_on_stats_list(stats, name)``), a check the port left
+    on the host under its guard -- is rebuilt once, at entry, from the
+    components the kernel takes, the way the NumPy flat wrapper rebuilds
+    it before its call. A Python record at trace time; the components are
+    what flow, and nothing carries the record."""
+    if rewrite.plan is None:
+        return []
+    # An optional dummy the plan leaves out is absent (``k = None`` at the
+    # top, by _absent_optionals): the body's ``present(k)`` must stay false.
+    optional = {
+        _py(a["name"]) for a in rewrite.plan.subprogram.get("args") or () if a.get("optional")
+    }
+    whole = {
+        node.id
+        for statement in lowered
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    rebuilt: list[ast.stmt] = []
+    for obj in rewrite.plan.objects:
+        if obj.kind != "dummy" or obj.name not in whole or obj.name in optional:
+            continue
+        if not obj.components:
+            continue
+        rebuilt.append(
+            ast.fix_missing_locations(
+                ast.Assign(
+                    targets=[ast.Name(id=obj.name, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id="_host", ctx=ast.Load()),
+                            attr="_Record",
+                            ctx=ast.Load(),
+                        ),
+                        args=[],
+                        keywords=[
+                            ast.keyword(arg=c.name, value=ast.Name(id=c.flat, ctx=ast.Load()))
+                            for c in obj.components
+                        ],
+                    ),
+                )
+            )
+        )
+    return rebuilt
 
 
 def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:

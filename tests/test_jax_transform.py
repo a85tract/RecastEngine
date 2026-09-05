@@ -1113,6 +1113,83 @@ def test_a_flat_companion_the_port_left_on_the_host_stays_under_its_guard(tmp_pa
                 sys.modules.pop(name, None)
 
 
+OBJECT_QUERY = """\
+module oquery_mod
+  use ocheck_mod, only: knobs_type
+  use stats_query_mod, only: var_on_list
+  implicit none
+contains
+  subroutine step( n, k, x, y )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    y = k%gain * x
+    if ( var_on_list( k, "gain" ) ) then
+      y = y + k%gain
+    end if
+  end subroutine step
+end module oquery_mod
+"""
+
+STATS_QUERY = """\
+module stats_query_mod
+  use ocheck_mod, only: knobs_type
+  implicit none
+contains
+  logical function var_on_list( k, name )
+    type(knobs_type), intent(in) :: k
+    character(len=*), intent(in) :: name
+    var_on_list = .true.
+  end function var_on_list
+end module stats_query_mod
+"""
+
+
+def test_an_object_handed_whole_to_the_host_is_rebuilt_at_entry(tmp_path: Path) -> None:
+    """``if ( var_on_stats_list( stats, "rsat" ) )``: the query is a
+    framework stand-in's, and it takes the object whole -- which the kernel
+    took apart into components. Rebuilt once at entry from them, as the
+    NumPy flat wrapper does, instead of an UnboundLocalError on a name the
+    kernel never bound."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "ocheck_mod.f90").write_text(OBJECT_CHECK)
+    (tmp_path / "oquery_mod.f90").write_text(OBJECT_QUERY)
+    (tmp_path / "stats_query_mod.f90").write_text(STATS_QUERY)
+    frontend = FortranFrontend(flatten=True, stub_modules=["stats_query_mod"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:oquery_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    conventions = TreeConventions(
+        stub_modules=frozenset({"stats_query_mod"}),
+        framework={"stats_query_mod": "def var_on_list(k, name):\n    return name == 'gain'\n"},
+    )
+    candidate = TreeToJax(conventions).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    emitted = candidate.files[Path("oquery_mod_jax.py")].decode()
+    assert "k = _host._Record(gain=k__gain)" in emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("oquery_mod_jax")
+        import numpy as np
+
+        got = module.step_flat(2, np.array([1.0, -1.0]), np.zeros(2), 2, np.float64(2.0))
+        assert np.asarray(got).tolist() == [4.0, 0.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("oquery_mod", "ocheck_mod", "stats_query_mod")):
+                sys.modules.pop(name, None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
