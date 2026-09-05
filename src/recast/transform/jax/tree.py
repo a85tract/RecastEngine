@@ -1206,6 +1206,10 @@ class _Rewrite(ast.NodeTransformer):
                 # the note names it; refusing the whole kernel for a check
                 # that never runs was the alternative.
                 self.host_calls.append(f"{module}.{callee.name}")
+                if isinstance(target, ast.Name):
+                    # The anchor's result buffer is the host's now; the
+                    # unpacks that follow read it, under the same guard.
+                    self.buffer_outs.pop(target.id, None)
                 kept: ast.stmt = (
                     ast.Expr(value=call)
                     if target is None

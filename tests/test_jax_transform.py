@@ -1027,11 +1027,12 @@ module ocheck_mod
 contains
   subroutine inspect( n, k, x, msg )
     integer, intent(in) :: n
-    type(knobs_type), intent(in) :: k
+    type(knobs_type), intent(inout) :: k
     real(8), intent(in) :: x(n)
     character(len=*), intent(out) :: msg
     msg = "fine"
     if ( any( x < k%gain ) ) msg = "small"
+    k%gain = k%gain + 1.0d0
   end subroutine inspect
 end module ocheck_mod
 """
@@ -1043,7 +1044,7 @@ module oguarded_mod
 contains
   subroutine step( n, debug_level, k, x, y )
     integer, intent(in) :: n, debug_level
-    type(knobs_type), intent(in) :: k
+    type(knobs_type), intent(inout) :: k
     real(8), intent(in) :: x(n)
     real(8), intent(out) :: y(n)
     character(len=16) :: msg
@@ -1051,6 +1052,7 @@ contains
     if ( debug_level >= 2 ) then
       call inspect( n, k, y, msg )
     end if
+    y = y + k%gain
   end subroutine step
 end module oguarded_mod
 """
@@ -1085,7 +1087,8 @@ def test_a_flat_companion_the_port_left_on_the_host_stays_under_its_guard(tmp_pa
         import numpy as np
 
         got = module.step_flat(2, 0, np.array([1.0, -1.0]), np.zeros(2), 1, np.float64(2.0))
-        assert np.asarray(got).tolist() == [2.0, -2.0]
+        y, gain = (np.asarray(v).tolist() for v in got)
+        assert y == [4.0, 0.0] and gain == 2.0
     finally:
         sys.path.remove(str(out))
         for name in list(sys.modules):
