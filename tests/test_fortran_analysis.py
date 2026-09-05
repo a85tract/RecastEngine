@@ -1264,6 +1264,43 @@ end module f77ish
     assert intents["onward"] == "UNKNOWN"  # only passed on; its fate is the callee's
 
 
+def test_a_dummy_handed_to_what_might_write_it_is_not_read_only(tmp_path: Path) -> None:
+    """Read-only is proved, not assumed. A dummy passed whole to a function
+    this file does not define (a use-associated one parses exactly like a
+    subscript), written as an internal unit, or aliased by an ASSOCIATE stays
+    UNKNOWN; a subscript of a declared array and an expression actual, which
+    is a temporary, are reads."""
+    source = """
+module escapes
+  use elsewhere, only: g
+  implicit none
+  real, dimension(8) :: tbl
+contains
+  subroutine rates(a, b, c, buf, d, e, out)
+    real :: a, b, c, d, e
+    integer :: buf
+    real :: out
+    real :: local(4)
+    local = 0.0
+    out = g(a) + tbl(int(b)) + local(int(c)) + g(e + 1.0)
+    write(buf, '(i5)') 3
+    associate (alias => d)
+      alias = 1.0
+    end associate
+  end subroutine rates
+end module escapes
+"""
+    record = interface.extract(_write(tmp_path, "escapes.f90", source), kind_assumptions=KINDS)
+    intents = {arg["name"]: arg["intent"] for arg in record["subprograms"][0]["args"]}
+    assert intents["a"] == "UNKNOWN"  # g is not this file's; it may write a
+    assert intents["b"] == "IN"  # a subscript of a module array
+    assert intents["c"] == "IN"  # a subscript of a local array
+    assert intents["buf"] == "UNKNOWN"  # the internal unit of a WRITE
+    assert intents["d"] == "UNKNOWN"  # assigned through its ASSOCIATE alias
+    assert intents["e"] == "IN"  # ``e + 1.0`` is a temporary; g cannot write e
+    assert intents["out"] == "OUT"
+
+
 def test_a_module_allocatable_records_the_lower_bound_its_allocate_gave_it(
     tmp_path: Path,
 ) -> None:
