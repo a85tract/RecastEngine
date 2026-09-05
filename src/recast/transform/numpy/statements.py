@@ -40,7 +40,7 @@ from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.calls import CallSite
-from recast.transform.numpy.expressions import REFUSED, Expressions
+from recast.transform.numpy.expressions import CONFLICTING_BOUNDS, REFUSED, Expressions
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
@@ -759,9 +759,13 @@ class Statements:
             if isinstance(target, f03.Name) and any(d["lb"] != "1" for d in bounds):
                 key = str(target).lower()
                 previous = self.expressions.allocated_bounds.get(key)
-                if previous is not None and [d["lb"] for d in previous] != [
-                    d["lb"] for d in bounds
-                ]:
+                if previous is not None and (
+                    previous == CONFLICTING_BOUNDS
+                    or [d["lb"] for d in previous] != [d["lb"] for d in bounds]
+                ):
+                    # The module-wide record already found two ALLOCATEs
+                    # that disagree, or one no other subprogram can
+                    # evaluate; this allocation cannot settle it either.
                     raise NoRule(f"conflicting allocate lower bounds for {key}")
                 self.expressions.allocated_bounds[key] = bounds
             if isinstance(target, f03.Name):

@@ -299,6 +299,8 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
 
 
 def _python(expr: Expr) -> str:
+    if expr.kind == "str":
+        return repr(expr.text)  # no arithmetic to fold; a slash in it is text
     text = render(
         expr,
         real=lambda text: f"np.float64('{text}')",

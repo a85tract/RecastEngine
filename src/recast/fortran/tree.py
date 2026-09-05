@@ -168,7 +168,7 @@ def _evaluate(
                 integer=lambda t: t,
                 name=lambda t: t.upper(),
             )
-            if "float(" not in text:
+            if "float(" not in text and entry["expr"].kind != "str":
                 # Integer arithmetic throughout: Fortran's ``/`` truncates.
                 text = text.replace("/", "//")
             env[entry["name"].upper()] = eval(text, {"__builtins__": {}}, dict(env))  # noqa: S307

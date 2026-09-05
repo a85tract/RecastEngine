@@ -686,8 +686,12 @@ class BitexactVerifier(Verifier):
         unsupported = [
             f"{place}={dtype!r}"
             for place, dtype in declared_dtypes
-            if not isinstance(dtype, str) or dtype not in SUPPORTED_DTYPES
+            if not isinstance(dtype, str)
+            or (dtype not in SUPPORTED_DTYPES and not (dtype == "str" and convention == "recorded"))
         ]
+        # A character scalar (``phase = 'sun'``) is not sampled, but a
+        # recording carries the value the run passed, and it is replayed
+        # as it was written; no cast, no comparison, an input only.
         if unsupported:
             return {
                 "error": "unsupported declared dtype(s) "
