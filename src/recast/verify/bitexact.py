@@ -224,6 +224,25 @@ def _arithmetic(text: str) -> float:
     return walk(ast.parse(text, mode="eval"))
 
 
+def _delegation_chain(name: str, delegated: dict[str, str]) -> str:
+    """The backend's reasons, followed to the root: a wrapper delegated because
+    it ``calls non-emitted subprogram f`` says nothing until f's own reason
+    is beside it."""
+    import re
+
+    parts: list[str] = []
+    seen: set[str] = set()
+    while name in delegated and name not in seen:
+        seen.add(name)
+        why = str(delegated[name])
+        parts.append(f"{name}: {why}" if parts else why)
+        match = re.search(r"calls non-emitted subprogram (\w+)", why)
+        if not match:
+            break
+        name = match.group(1)
+    return f" ({' <- '.join(parts)})" if parts else ""
+
+
 class BitexactVerifier(Verifier):
     """Call both sides on the same inputs; count the bits that disagree."""
 
@@ -461,10 +480,9 @@ class BitexactVerifier(Verifier):
         for name in wanted:
             sub = table[name]
             if isinstance(lowered, (list, tuple, set)) and name not in lowered:
-                why = delegated.get(name)
                 failures.append(
                     f"{name}: not lowered by this backend, forwarded to its host module"
-                    + (f" ({why})" if why else "")
+                    + _delegation_chain(name, delegated)
                 )
                 continue
             translated_fn = getattr(translated, name, None)
