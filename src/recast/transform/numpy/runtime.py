@@ -203,6 +203,20 @@ def _f_vdot(a: Any, b: Any) -> Any:
     return np.dot(a, b)
 
 
+def _f_vsum(a: Any, axis: Any = None) -> Any:
+    """Fortran SUM accumulates in array element order; np.sum is pairwise
+    (eight partial sums past eight elements) and rounds differently. The
+    whole-array sum folds left over the elements in Fortran order; a DIM
+    reduction keeps NumPy's, which the ULP gate judges."""
+    if axis is None and _LIBM_STRICT:
+        flat = np.ravel(a, order="F")
+        s = flat.dtype.type(0) if flat.dtype.kind in "fc" else 0
+        for x in flat:
+            s = s + x
+        return s
+    return np.sum(a, axis=axis)
+
+
 def _fstr_eq(a: str, b: str) -> bool:
     """Fortran character equality: pad shorter operand with blanks."""
     return a.rstrip(" ") == b.rstrip(" ")
