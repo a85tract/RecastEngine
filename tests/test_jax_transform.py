@@ -361,9 +361,12 @@ contains
     integer,  intent(in)  :: n
     real(r8), intent(in)  :: x(n)
     real(r8), intent(out) :: root(n), total, err(n)
+    integer :: i
     root = sqrt( x )
     total = sum( x )
-    err = erf( x )
+    do i = 1, n
+      err(i) = erf( x(i) )
+    end do
   end subroutine norms
 end module shim_demo
 """
@@ -373,7 +376,9 @@ def test_the_jax_runtime_carries_sqrt_sum_and_erf(tmp_path: Path) -> None:
     """CLUBB's clipping and PDF closure: ``sqrt``, ``sum`` and ``erf`` reach
     the kernels as ``_f_sqrt``, ``_f_vsum`` and ``_f_verf``, which the NumPy
     runtime defines and the JAX one did not -- a NameError at the first
-    call, on every kernel of the unit."""
+    call, on every kernel of the unit. A scalar ``erf`` arrives as
+    ``math.erf``, which the math-to-jnp mapping cannot spell (jax.numpy has
+    no erf): it goes through the same shim."""
     import importlib
     import sys
 

@@ -213,6 +213,10 @@ class ExprMap(ast.NodeTransformer):
     def visit_Attribute(self, node):
         self.generic_visit(node)
         if isinstance(node.value, ast.Name):
+            if node.value.id == "math" and node.attr in ("erf", "erfc"):
+                # jax.numpy has no erf; the runtime's shim reaches
+                # jax.scipy.special (CLUBB's cloud fraction, scalar erf).
+                return ast.copy_location(ast.Name(id=f"_f_v{node.attr}", ctx=node.ctx), node)
             if node.value.id == "math":
                 return ast.copy_location(
                     ast.Attribute(
