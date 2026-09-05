@@ -1813,3 +1813,29 @@ def test_a_dummy_procedure_passed_on_is_a_read_not_a_call(tmp_path: Path) -> Non
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
     assert "fcn" in blocks["B001"]["reads"]
     assert blocks["B001"]["writes"] == ["iflag", "work", "x"]
+
+
+def test_a_character_parameter_is_a_resolvable_use_constant(tmp_path: Path) -> None:
+    """``namep = 'pft'`` names a level to an abort message; a tree that
+    use-imports it was refused with ``unsupported initializer node
+    Char_Literal_Constant``. A character parameter is a value: built as a
+    ``str`` node carrying the unquoted value, rendered by ``repr`` for
+    Python, and never put through the integer-division fold."""
+    from recast.fortran.expr import Expr, build, render
+    from recast.fortran.use import resolve
+    from recast.transform.numpy.constants import _python
+
+    (tmp_path / "varcon.f90").write_text(
+        "module varcon\n"
+        "  implicit none\n"
+        "  character(len=16), parameter :: namep = 'pft'\n"
+        "  character(len=8), parameter :: path = 'a/b''c'\n"
+        "  integer, parameter :: half = 3 / 2\n"
+        "end module varcon\n"
+    )
+    records = {r["name"]: r["expr"] for r in resolve(["namep", "path", "half"], [tmp_path / "varcon.f90"])}
+    assert records["namep"] == Expr("str", "pft")
+    assert records["path"] == Expr("str", "a/b'c")
+    assert render(records["namep"], real=str, integer=str, name=str) == "'pft'"
+    assert _python(records["path"]) == repr("a/b'c")
+    assert _python(records["half"]) == "(3 // 2)"

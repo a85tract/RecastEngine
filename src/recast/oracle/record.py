@@ -9,7 +9,7 @@ this module makes one.
 From the same ``FlatPlan`` the adapters come from, it generates:
 
 * a Fortran **recorder module** with one probe per adapted subprogram,
-  ``rec_<name>(phase, <original dummies>)``: phase 0, before the call, opens
+  ``rec_<name>(recast_phase, <original dummies>)``: phase 0, before the call, opens
   a dump file and writes the scalar dummies, the patch count and every
   touched component as ``# INPUT``; phase 1, after the call, writes the
   written components as ``# OUTPUT``. The first ``calls`` calls of each
@@ -63,6 +63,14 @@ def _dims_lines_for(target: str, rank: int) -> list[str]:
     pieces.append("')'")
     fmt = "(" + ",".join("a" if p.startswith("'") else "i0" for p in pieces) + ")"
     return [f"       write (dims, '{fmt}') {', '.join(pieces)}"]
+
+
+def _state_dims(state: Any) -> str | None:
+    """The plan's extents where they are numbers; ``None`` -- the run's
+    ``size()`` -- where a module allocatable's extent is a run-time name."""
+    if any(not re.fullmatch(r"\d+", e) for e in state.extents):
+        return None
+    return _dims_text(state.extents)
 
 
 def _flat_view(target: str, rank: int) -> str:
@@ -200,15 +208,20 @@ def recorder_module(
         dummies = ", ".join(a["name"] for a in originals)
         lines += [
             "",
-            f"  subroutine rec_{sname}(phase, {dummies})",
-            "    integer, intent(in) :: phase",
+            # The probe's own argument is spelled so it cannot collide with a
+            # dummy of the routine it records (ELM's Photosynthesis takes
+            # ``phase``, the sun/shade selector).
+            f"  subroutine rec_{sname}(recast_phase, {dummies})",
+            "    integer, intent(in) :: recast_phase",
         ]
         for a in originals:
             derived = DERIVED.match(str(a["dtype"]))
             if derived:
                 lines.append(f"    type({derived.group(1).lower()}) :: {a['name']}")
             else:
-                spelled = FORTRAN_TYPES[str(a["dtype"])]
+                spelled = {"str": "character(len=*)"}.get(str(a["dtype"])) or FORTRAN_TYPES[
+                    str(a["dtype"])
+                ]
                 dims = "(" + ",".join(":" for _ in a["dims"]) + ")" if a.get("dims") else ""
                 lines.append(f"    {spelled}, intent(in) :: {a['name']}{dims}")
         lines.append(f"    integer :: {patch}")
@@ -232,7 +245,7 @@ def recorder_module(
             _, counter, lo, hi = window
             lines.append(f"    if ({counter} < {lo} .or. {counter} > {hi}) return")
         lines += [
-            "    if (phase == 0) then",
+            "    if (recast_phase == 0) then",
             f"       n_{sname} = n_{sname} + 1",
             f"       if (n_{sname} > max_calls) return",
             f"       call rec_open({u}, '{sname}_flat', n_{sname})",
@@ -241,8 +254,9 @@ def recorder_module(
         for a in originals:
             if DERIVED.match(str(a["dtype"])) or a.get("dims"):
                 continue
-            fmt = {"int32": "i0", "bool": "l1"}.get(str(a["dtype"]), "es25.17e3")
-            lines.append(f"       write ({u}, '(a,{fmt})') '# {a['name']} = ', {a['name']}")
+            fmt = {"int32": "i0", "bool": "l1", "str": "a"}.get(str(a["dtype"]), "es25.17e3")
+            value = f"trim({a['name']})" if str(a["dtype"]) == "str" else a["name"]
+            lines.append(f"       write ({u}, '(a,{fmt})') '# {a['name']} = ', {value}")
         lines.append(f"       write ({u}, '(a,i0)') '# {patch} = ', {patch}")
 
         for a in originals:
@@ -270,7 +284,7 @@ def recorder_module(
                 state.name,
                 len(state.extents),
                 state.dtype,
-                _dims_text(state.extents),
+                _state_dims(state),
             )
         lines += ["    else", f"       if (n_{sname} > max_calls) return"]
         for obj in plan.objects:
@@ -300,7 +314,7 @@ def recorder_module(
                     state.name,
                     len(state.extents),
                     state.dtype,
-                    _dims_text(state.extents),
+                    _state_dims(state),
                 )
         lines += [f"       close ({u})", "    end if", f"  end subroutine rec_{sname}"]
     lines.append(f"end module {name}")

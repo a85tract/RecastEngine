@@ -63,6 +63,10 @@ __all__ = [
 
 DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.IGNORECASE)
 ALLOCATE_THIS = re.compile(r"allocate\s*\(\s*this\s*%\s*(\w+)\s*\(([^()]*)\)", re.I)
+ALLOCATE_STMT = re.compile(r"^\s*allocate\s*\((.*)\)\s*(?:!.*)?$", re.I | re.M)
+ALLOCATION = re.compile(r"(?<![%\w])(\w+)\s*\(([^()]*)\)")
+"""One ``name(bounds)`` inside an ALLOCATE: a module variable, not a
+``this%`` component (the ``%`` look-behind) -- those are ``ALLOCATE_THIS``."""
 FORTRAN_TYPES = {"float64": "real(8)", "float32": "real(4)", "int32": "integer", "bool": "logical"}
 
 
@@ -130,6 +134,11 @@ class StateVar:
     dtype: str
     extents: list[str]
     written: bool = False
+    bounds: list[tuple[str, str]] = field(default_factory=list)
+    """Per axis ``(lb, ub)`` for an *allocatable* module array, from the
+    module's own ALLOCATE: the adapter allocates it so before assigning,
+    because ``x = flat`` alone would give it a lower bound of one. Empty for
+    an array whose declaration carries its shape."""
 
     @property
     def flat(self) -> str:
@@ -176,7 +185,10 @@ class FlatPlan:
             )
             for o in data["objects"]
         ]
-        states = [StateVar(**s) for s in data.get("states", [])]
+        states = [
+            StateVar(**{**s, "bounds": [tuple(b) for b in s.get("bounds", [])]})
+            for s in data.get("states", [])
+        ]
         return cls(
             subprogram=data["subprogram"],
             objects=objects,
@@ -193,8 +205,11 @@ class FlatPlan:
         args: list[dict[str, Any]] = []
         names = {a["name"].lower() for a in self.subprogram["args"]}
         for argument in self.subprogram["args"]:
-            if str(argument["dtype"]) in ("PROCEDURE", "str"):
-                continue  # never flat: a callback is specialized, a message dropped
+            if str(argument["dtype"]) == "PROCEDURE":
+                continue  # never flat: a callback is specialized
+            if str(argument["dtype"]) == "str" and argument.get("dims"):
+                continue  # a character array is not spelled; a scalar is a value
+
             if DERIVED.match(str(argument["dtype"])) or argument.get("optional"):
                 # The object is what the adapter exists to replace; an optional
                 # is left absent on both sides, the way the engine's own
@@ -322,6 +337,25 @@ def _allocation_bounds(path: Path) -> dict[str, list[str]]:
     for match in ALLOCATE_THIS.finditer(path.read_text(errors="replace")):
         out.setdefault(match.group(1).lower(), [b.strip() for b in match.group(2).split(",")])
     return out
+
+
+_MODULE_ALLOCATIONS: dict[Path, dict[str, list[str]]] = {}
+
+
+def _module_allocation_bounds(path: Path) -> dict[str, list[str]]:
+    """``variable -> [axis bound text, ...]`` from every ``allocate (x (…))``
+    of a plain name in the module: a module allocatable's shape is what its
+    own init routine gave it (``allocate (vcmax_np1 (0:mxpft))`` in
+    ``pftconrd``), which its declaration ``(:)`` does not say."""
+    if path not in _MODULE_ALLOCATIONS:
+        out: dict[str, list[str]] = {}
+        for statement in ALLOCATE_STMT.finditer(path.read_text(errors="replace")):
+            for match in ALLOCATION.finditer(statement.group(1)):
+                out.setdefault(
+                    match.group(1).lower(), [b.strip() for b in match.group(2).split(",")]
+                )
+        _MODULE_ALLOCATIONS[path] = out
+    return _MODULE_ALLOCATIONS[path]
 
 
 def _axis(
@@ -853,7 +887,7 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
             named_extents([sub]), root, conventions.constant_modules, (source,), kinds
         )
         for argument in plan.flat_args:
-            if str(argument["dtype"]) not in FORTRAN_TYPES:
+            if str(argument["dtype"]) not in FORTRAN_TYPES and str(argument["dtype"]) != "str":
                 plan.unsupported.append(f"{argument['name']}: {argument['dtype']} is not flat")
         plans.append(plan)
     return plans
@@ -910,6 +944,7 @@ def _state_vars(
     modules.discard(own_module)
     found: list[StateVar] = []
     seen: set[str] = set()
+    symbolic: set[str] = set()
     for path in module_sources(root, frozenset(modules)):
         record = _module_record(path, conventions.kind_assumptions)
         if not record:
@@ -927,6 +962,18 @@ def _state_vars(
             ):
                 continue
             dims = entry.get("dims") or []
+            allocated: list[tuple[str, str]] | None = None
+            if any(d.get("ub") is None for d in dims):
+                # Deferred shape: the ALLOCATE in the module is the shape.
+                axes = _module_allocation_bounds(path).get(name)
+                if axes and len(axes) == len(dims):
+                    allocated = [
+                        (a.split(":", 1)[0].strip(), a.split(":", 1)[1].strip())
+                        if ":" in a
+                        else ("1", a.strip())
+                        for a in axes
+                    ]
+                    dims = [{"lb": lb, "ub": ub} for lb, ub in allocated]
             names = [
                 t.lower()
                 for d in dims
@@ -940,16 +987,30 @@ def _state_vars(
                 conventions.kind_assumptions,
             )
             extents: list[str] = []
+            bounds: list[tuple[str, str]] = []
             ok = True
             for d in dims:
                 lb = str(d.get("lb") or "1").strip().lower()
                 ub = str(d.get("ub") or "").strip().lower()
                 low = constants.get(lb, int(lb) if re.fullmatch(r"-?\d+", lb) else None)
                 high = constants.get(ub, int(ub) if re.fullmatch(r"-?\d+", ub) else None)
-                if low is None or high is None:
+                if low is not None and high is not None:
+                    extents.append(str(high - low + 1))
+                    bounds.append((str(low), str(high)))
+                elif allocated is not None and ub:
+                    # A run-time extent: spelled by the module variables that
+                    # size it, which are the run's state like any other and
+                    # are bound to their flat names after the scan.
+                    spelled_lb = str(low) if low is not None else lb
+                    spelled_ub = str(high) if high is not None else ub
+                    extents.append(f"(({spelled_ub}) - ({spelled_lb}) + 1)")
+                    bounds.append((spelled_lb, spelled_ub))
+                    symbolic.update(
+                        t.lower() for t in re.findall(r"[A-Za-z_]\w*", f"{spelled_lb} {spelled_ub}")
+                    )
+                else:
                     ok = False
                     break
-                extents.append(str(high - low + 1))
             if not ok:
                 plan.unsupported.append(f"{module}%{name}: extent {dims} not resolvable")
                 continue
@@ -961,8 +1022,16 @@ def _state_vars(
                     dtype=str(entry["dtype"]),
                     extents=extents,
                     written=name in written,
+                    bounds=bounds if allocated is not None else [],
                 )
             )
+    # The names a run-time extent uses are module variables the run set:
+    # inputs of the adapter like any other state, found by one more scan.
+    needed = symbolic - {v.name for v in found} - wanted
+    if needed:
+        return _state_vars(
+            touched | {f"r:{n}" for n in needed}, facts, root, plan, conventions
+        )
     return sorted(found, key=lambda v: (v.module, v.name))
 
 
@@ -987,6 +1056,23 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
 
         out = re.sub(r"[A-Za-z_]\w*", swap, text)
         return None if missing else out
+
+    kept_states = []
+    for state in plan.states:
+        if not any(re.search(r"[A-Za-z_]", e) for e in state.extents):
+            kept_states.append(state)
+            continue
+        extents = [bind(e) for e in state.extents]
+        bounds = [(bind(lo), bind(hi)) for lo, hi in state.bounds]
+        if any(e is None for e in extents) or any(
+            lo is None or hi is None for lo, hi in bounds
+        ):
+            plan.unsupported.append(f"{state.module}%{state.name}: extent names no run state")
+            continue
+        state.extents = [e for e in extents if e is not None]
+        state.bounds = [(lo, hi) for lo, hi in bounds if lo is not None and hi is not None]
+        kept_states.append(state)
+    plan.states = kept_states
 
     for obj in plan.objects:
         kept = []

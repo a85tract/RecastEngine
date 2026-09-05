@@ -259,7 +259,7 @@ def test_recorder_probes_the_original_signature(tree: Path) -> None:
     text = recorder_module("physics_mod", [_warm(tree)], calls=5)
     assert f"module {RECORDER_MODULE}" in text
     assert "integer, parameter :: max_calls = 5" in text
-    assert "subroutine rec_warm(phase, num, filter, dt, inst)" in text
+    assert "subroutine rec_warm(recast_phase, num, filter, dt, inst)" in text
     assert "type(canopy_type) :: inst" in text
     assert "np_ = size(inst%gs, 1)" in text
     assert "'# PROBE physics_mod.warm_flat: call='" in text
@@ -281,7 +281,7 @@ def test_recorder_window_records_only_the_steps_it_names(tree: Path) -> None:
     assert "use clock_mod, only: step" in text
     body = text[text.index("subroutine rec_warm(") :]
     guard = body.index("if (step < 673 .or. step > 720) return")
-    assert guard < body.index("if (phase == 0) then")  # both phases, before the count
+    assert guard < body.index("if (recast_phase == 0) then")  # both phases, before the count
     assert "window" not in recorder_module("physics_mod", [_warm(tree)], calls=5)
 
 
