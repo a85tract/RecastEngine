@@ -2031,6 +2031,7 @@ def test_an_exit_inside_a_branch_inside_a_loop_has_its_flag_before_the_branch(
 
 COUNTED_UNDER_SWITCHES = """\
 module counted_mod
+  use debug_mod, only: at_least_level
   implicit none
 contains
   subroutine solve_count( n, sclr_dim, l_a, l_b, x, y )
@@ -2044,14 +2045,17 @@ contains
     y = x
     if ( any( x < 0.0d0 ) ) return
     l_ab = l_a .and. l_b
-    if ( sclr_dim > 0 ) then
-      nrhs = 1
-    else
-      nrhs = 2 + sclr_dim
-      if ( l_a ) then
-        nrhs = nrhs + 2
-        if ( l_ab ) then
+    nrhs = 0
+    if ( at_least_level( 0 ) ) then
+      if ( sclr_dim > 0 ) then
+        nrhs = 1
+      else
+        nrhs = 2 + sclr_dim
+        if ( l_a ) then
           nrhs = nrhs + 2
+          if ( l_ab ) then
+            nrhs = nrhs + 2
+          end if
         end if
       end if
     end if
@@ -2061,6 +2065,17 @@ contains
     deallocate( work )
   end subroutine solve_count
 end module counted_mod
+"""
+
+DEBUG_LEVEL = """\
+module debug_mod
+  implicit none
+contains
+  logical function at_least_level( level )
+    integer, intent(in) :: level
+    at_least_level = .true.
+  end function at_least_level
+end module debug_mod
 """
 
 
@@ -2077,10 +2092,15 @@ def test_a_shape_counted_under_switches_is_a_trace_time_value(tmp_path: Path) ->
     from recast.transform.numpy.tree import TreeConventions
 
     (tmp_path / "counted_mod.f90").write_text(COUNTED_UNDER_SWITCHES)
-    frontend = FortranFrontend(flatten=True)
+    (tmp_path / "debug_mod.f90").write_text(DEBUG_LEVEL)
+    frontend = FortranFrontend(flatten=True, stub_modules=["debug_mod"])
     unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:counted_mod")
     facts = frontend.analyze(unit, tmp_path)
-    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    conventions = TreeConventions(
+        stub_modules=frozenset({"debug_mod"}),
+        framework={"debug_mod": "def at_least_level(level):\n    return True\n"},
+    )
+    candidate = TreeToJax(conventions).apply(unit, facts, {"root": str(tmp_path)})
     assert "solve_count" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
     out = tmp_path / "emitted"
     out.mkdir()
@@ -2102,8 +2122,9 @@ def test_a_shape_counted_under_switches_is_a_trace_time_value(tmp_path: Path) ->
         assert np.asarray(module.solve_count(np.int32(2), 0, True, True, x)).tolist() == [6.0, 12.0]
     finally:
         sys.path.remove(str(out))
-        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
-            sys.modules.pop(f"counted_mod{suffix}", None)
+        for name in list(sys.modules):
+            if name.startswith(("counted_mod", "debug_mod")):
+                sys.modules.pop(name, None)
 
 
 AFTER_A_CHECK = """\

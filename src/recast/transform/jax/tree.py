@@ -1664,6 +1664,15 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
 
     banned: set[str] = set()  # found stored under a loop or a traced branch, any pass
 
+    def stand_in_call(call: ast.Call) -> bool:
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return False
+        module = rewrite.spelling.modules.get(func.value.id)
+        if module is None or module in rewrite.ports or module in rewrite.bundled:
+            return False
+        return not call.keywords and all(ok(a) for a in call.args)
+
     def ok(node: ast.expr) -> bool:
         if isinstance(node, ast.Constant):
             return isinstance(node.value, (int, float, bool))
@@ -1689,6 +1698,12 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
                 return ok(node.args[0])
+            if stand_in_call(node):
+                # ``_error_code.clubb_at_least_debug_level_api(0)``: a
+                # framework stand-in's function of trace-time values, a
+                # Python value at trace time -- the backend's static test
+                # takes it, so a count under it is a trace-time value.
+                return True
             if (
                 isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
