@@ -723,12 +723,14 @@ class _Rewrite(ast.NodeTransformer):
                         ctx=ast.Load(),
                     )
             return node
-        if (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in ("np", "jnp")
-            and node.func.attr == "sum"
-            and len(node.args) == 1
+        if len(node.args) == 1 and (
+            (isinstance(node.func, ast.Name) and node.func.id == "_f_vsum")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+                and node.func.attr == "sum"
+            )
         ):
             # ``sum(x[i, lo:hi] * y[i, lo:hi])`` over a traced ``hi``: the
             # whole axis, the rest zeroed.

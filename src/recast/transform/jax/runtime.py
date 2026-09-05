@@ -54,6 +54,7 @@ __all__ = [
     "_f_trim",
     "_f_vceil",
     "_f_vdot",
+    "_f_vsum",
     "_f_vexp",
     "_f_vfloor",
     "_f_vlog",
@@ -175,6 +176,19 @@ def _f_vdot(a, b):
         return s + af[i] * bf[i]
 
     return lax.fori_loop(0, af.shape[0], body, jnp.float64(0.0))
+
+
+def _f_vsum(a, axis=None):
+    """Fortran SUM accumulates in element order; a sequential fori_loop keeps
+    the fold order, as _f_vdot does. A DIM reduction is XLA's."""
+    if axis is not None:
+        return jnp.sum(a, axis=axis)
+    af = jnp.ravel(a, order="F")
+
+    def body(i, s):
+        return s + af[i]
+
+    return lax.fori_loop(0, af.shape[0], body, jnp.zeros((), af.dtype))
 
 
 def _f_vceil(x):
