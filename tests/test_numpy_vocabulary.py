@@ -30,18 +30,17 @@ def test_every_name_this_backend_spells_is_one_the_frontend_knows() -> None:
     assert spelled <= intrinsics.ALL, sorted(spelled - intrinsics.ALL)
 
 
-def test_the_array_transforms_are_deliberately_not_in_that_set() -> None:
+def test_the_array_transforms_are_intrinsics_to_the_analysis_too() -> None:
     """The pipeline this came from kept them in a fourth table that its
     read/write analysis never consulted, so ``transpose``, ``minloc`` and
-    ``cshift`` are reported as variable reads -- seven sites across the thirty
-    CAM modules, none of them in a module that was ever translated.
-
-    That is a divergence between the analysis and the emitter, and this
-    repository keeps it. The pipeline's answers are the ones a bit-exact gate
-    has been run against; the tidier answer has not, and none of the seven
-    sites has a translation to check it against.
-    """
-    assert not (vocabulary.ARRAY_TRANSFORM & intrinsics.ALL)
+    ``cshift`` were reported as variable reads -- a divergence this
+    repository kept while no bit-exact gate had run over a use of one.
+    ELM's PhotosynthesisMod is that run: readParams reshapes its parameter
+    tables, and with ``reshape`` a read of a variable named reshape the
+    read/write gate failed on eight blocks that match with it an intrinsic.
+    The two tables agree now, and every array transform the emitter spells
+    is a name the analysis does not count as a read."""
+    assert vocabulary.ARRAY_TRANSFORM <= intrinsics.ALL
 
 
 def test_every_array_variant_has_a_scalar_one() -> None:
