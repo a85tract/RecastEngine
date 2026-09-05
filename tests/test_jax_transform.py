@@ -1100,3 +1100,67 @@ def test_a_flat_companion_the_port_left_on_the_host_stays_under_its_guard(tmp_pa
         for name in list(sys.modules):
             if name.startswith(("oguarded_mod", "ocheck_mod")):
                 sys.modules.pop(name, None)
+
+
+SILENT_CHECK = """\
+module silent_mod
+  implicit none
+contains
+  subroutine complain( n, x )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    if ( any( x < 0.0d0 ) ) print *, "negative", n
+  end subroutine complain
+end module silent_mod
+"""
+
+TRACED_GUARD_CHECK = """\
+module tguarded_mod
+  use silent_mod, only: complain
+  implicit none
+contains
+  subroutine step( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    y = 2.0d0 * x
+    if ( y(1) < 0.0d0 ) then
+      call complain( n, y )
+    end if
+  end subroutine step
+end module tguarded_mod
+"""
+
+
+def test_a_host_only_call_under_a_traced_guard_carries_nothing(tmp_path: Path) -> None:
+    """The same check under a guard on the data (``any(err_code == fatal)``):
+    the branch binds nothing and nothing in it could run under a tracer, so
+    the lowering carries nothing rather than refusing the kernel."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "silent_mod.f90").write_text(SILENT_CHECK)
+    (tmp_path / "tguarded_mod.f90").write_text(TRACED_GUARD_CHECK)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:tguarded_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("tguarded_mod_jax")
+        import numpy as np
+
+        assert np.asarray(module.step(2, np.array([-1.0, 1.0]))).tolist() == [-2.0, 2.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("tguarded_mod", "silent_mod")):
+                sys.modules.pop(name, None)

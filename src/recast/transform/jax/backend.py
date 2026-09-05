@@ -782,13 +782,18 @@ class KernelLowerer:
             if n not in carried:
                 carried.append(n)
         if not carried:
+            # A guard around dropped logs/aborts, or around a call statement
+            # whose result nothing binds (a check the port left on the host,
+            # under a traced guard -- CLUBB's parameterization check under
+            # ``any(err_code == fatal)``): nothing to carry, and nothing a
+            # tracer could run. The tree's notes name the host calls.
             trivial = all(
                 isinstance(st, ast.Pass)
-                or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))
+                or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant | ast.Call))
                 for st in [*body, *orelse]
             )
             if trivial:
-                return []  # a guard around dropped logs/aborts: nothing to carry
+                return []
             raise JaxQueue("IF with no carried effects")
         self.n += 1
         t_name, f_name = f"_true_{self.n}", f"_false_{self.n}"
