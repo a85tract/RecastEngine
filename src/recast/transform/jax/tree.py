@@ -409,12 +409,19 @@ class _Rewrite(ast.NodeTransformer):
             and target.id in self.inits
             and target.id not in self.statics  # a trace-time value stays a Python one
             and not isinstance(node.value, ast.Constant)
-            and (_constant_expression(node.value, self.loop_vars) or _table_read(node.value))
+            and (
+                _constant_expression(node.value, self.loop_vars)
+                or _table_read(node.value)
+                or _static_expression(node.value, frozenset(self.statics))
+            )
         ):
             # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
             # ``lax.cond`` arm that assigns it beside one that keeps an
             # int32 has a different output type. The variable's guard init
-            # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is.
+            # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is. An
+            # expression over static arguments the same: those arrive as
+            # Python ints through the jit wrapper and as NumPy int32 from
+            # the gate, and the arm must not follow the spelling.
             node.value = _jnp(self.inits[target.id], [node.value])
 
         if len(node.targets) == 1 and isinstance(target, ast.Subscript):

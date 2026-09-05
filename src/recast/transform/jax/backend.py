@@ -623,6 +623,33 @@ def _names(ids, ctx):
     return [ast.Name(id=i, ctx=ctx()) for i in ids]
 
 
+def _string_stores(stmts) -> set[str]:
+    """Names whose every store in these statements is a string literal: a
+    character local (a statistics name picked by the solve type). No JAX
+    type carries a string; with statistics off nothing reads it but the
+    dropped calls. It stays a trace-time value -- the last traced store --
+    and is never a carry."""
+    stores: dict[str, bool] = {}
+
+    def take(node, ok: bool) -> None:
+        if isinstance(node, ast.Name):
+            stores[node.id] = stores.get(node.id, True) and ok
+
+    for st in stmts:
+        for node in ast.walk(st):
+            if isinstance(node, ast.Assign):
+                literal = isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+                for target in node.targets:
+                    if isinstance(target, ast.Tuple):
+                        for e in target.elts:
+                            take(e, False)
+                    else:
+                        take(target, literal)
+            elif isinstance(node, ast.AugAssign):
+                take(node.target, False)
+    return {name for name, ok in stores.items() if ok}
+
+
 def _trace_constant_stores(stmts):
     """Names whose every store is a trace-time constant (a literal, an
     upper-case constant expression, or ``int()`` of one): re-established
@@ -986,11 +1013,13 @@ class KernelLowerer:
             # Fortran ran it for nothing; nothing is what it becomes.
             return []
         settled = _trace_constant_stores(body)
+        strings = _string_stores(body)
         carried = [
             n
             for n in _assigned_names(body)
             if n != s.target.id
             and n not in settled
+            and n not in strings
             and (n in bound_before or re.fullmatch(r"_(?:brk|kx)_\d+", n))
         ]
         # A nested loop's break flag and kept index are initialized at the
@@ -1139,8 +1168,11 @@ class KernelLowerer:
 
     def _cond_form(self, s, body, orelse):
         """The lax.cond lowering of an if whose test is traced."""
-        carried = _assigned_names(body)
+        strings = _string_stores([*body, *orelse])
+        carried = [n for n in _assigned_names(body) if n not in strings]
         for n in _assigned_names(orelse):
+            if n in strings:
+                continue
             if n not in carried:
                 carried.append(n)
         if not carried:

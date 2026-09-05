@@ -2163,6 +2163,59 @@ def test_a_store_after_a_traced_return_is_a_carried_value(tmp_path: Path) -> Non
             sys.modules.pop(f"aftercheck_mod{suffix}", None)
 
 
+NAMED_BRANCH = """\
+module named_mod
+  implicit none
+contains
+  subroutine label( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    character(len=8) :: name
+    integer :: k
+    name = ""
+    do k = 1, n
+      if ( x(k) < 0.0d0 ) then
+        name = "negative"
+        y(k) = -x(k)
+      else
+        name = "positive"
+        y(k) = x(k)
+      end if
+    end do
+    if ( name == "negative" ) print *, "last was negative"
+  end subroutine label
+end module named_mod
+"""
+
+
+def test_a_character_local_is_never_a_carry(tmp_path: Path) -> None:
+    """advance_xm_wpxp picks statistics names by the solve type under a
+    traced branch. No JAX type carries a string; with statistics off
+    nothing reads it but the dropped calls. It is a trace-time value, not
+    a carry of the cond or the loop."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, NAMED_BRANCH, "named_mod")
+    assert candidate.notes["jax"]["kernels"] == ["label"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("named_mod_jax")
+        import numpy as np
+
+        got = np.asarray(module.label(3, np.array([1.0, -2.0, 3.0]))).tolist()
+        assert got == [1.0, 2.0, 3.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"named_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
