@@ -449,8 +449,24 @@ class BitexactVerifier(Verifier):
             "integer_points": 0,
             "integer_mismatch": 0,
         }
+        # A backend that says which names it lowered (the JAX module's
+        # ``_JAX_KERNELS``) is judged on those alone. A name it forwarded to
+        # its host module (``f = _host.f``) is the anchor's code, already
+        # judged at the anchor's tier; comparing it here awarded the JAX
+        # port a bit-exact verdict on a kernel it never emitted (ELM's
+        # hydraulic-stress routine). It fails by name, with the backend's
+        # reason, unless declared ungated like any other silence.
+        lowered = getattr(translated, "_JAX_KERNELS", None)
+        delegated = (candidate.notes.get("jax") or {}).get("delegated") or {}
         for name in wanted:
             sub = table[name]
+            if isinstance(lowered, (list, tuple, set)) and name not in lowered:
+                why = delegated.get(name)
+                failures.append(
+                    f"{name}: not lowered by this backend, forwarded to its host module"
+                    + (f" ({why})" if why else "")
+                )
+                continue
             translated_fn = getattr(translated, name, None)
             truth_fn = None if recorded else getattr(truth, wrappers.get(name, f"w_{name}"), None)
             if translated_fn is None or (truth_fn is None and not recorded):
