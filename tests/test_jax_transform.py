@@ -2592,3 +2592,93 @@ def test_a_host_only_call_under_a_traced_guard_carries_nothing(tmp_path: Path) -
         for name in list(sys.modules):
             if name.startswith(("tguarded_mod", "silent_mod")):
                 sys.modules.pop(name, None)
+
+
+PASSES_AN_OPTIONAL_COUNTER = """\
+module optcount_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine scale_count( n, k, y, hits, top )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(inout) :: y(n)
+    integer, intent(inout), optional :: hits
+    real(8), intent(out), optional :: top
+    integer :: i
+    do i = 1, n
+      y(i) = k%gain * y(i)
+    end do
+    if ( present( hits ) ) hits = hits + 1
+    if ( present( top ) ) top = y(n)
+  end subroutine scale_count
+  subroutine step( n, k, x, y, z, count, peak )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n), z(n)
+    integer, intent(out) :: count
+    real(8), intent(out) :: peak
+    count = 0
+    peak = 0.0d0
+    y = x
+    z = x
+    call scale_count( n, k, y, hits = count )
+    call scale_count( n, k, z, count, peak )
+    call scale_count( n, k, z )
+  end subroutine step
+end module optcount_mod
+"""
+
+
+def test_an_optional_inout_or_out_a_caller_passes_comes_back(tmp_path: Path) -> None:
+    """advance_xm_wpxp hands xm_wpxp_clipping_and_stats its clipping counter
+    by keyword (``wpxp_cl_num = wprtp_cl_num``, an optional INOUT the callee
+    increments); the flat kernel took only optional IN dummies, so the
+    counter started absent, the increment never traced and the caller's
+    count stayed where it was -- silently. The flat kernel takes optional
+    INOUT dummies as parameters and optional OUT dummies as their
+    ``want_<name>`` sentinels, returns both after the plan's outputs, a
+    kernel calling it binds the ones it passed, and the wrapper the adapter
+    calls still returns what the numpy signature promised."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "optcount_mod.f90").write_text(PASSES_AN_OPTIONAL_COUNTER)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:optcount_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    emitted = candidate.files[Path("optcount_mod_jax.py")].decode()
+    assert "hits=None, want_top=False" in emitted, emitted
+    assert "hits=count" in emitted, emitted
+    assert "want_top=True" in emitted, emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("optcount_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 2.0, 3.0])
+        got = module.step_flat(3, x, np.zeros(3), np.zeros(3), 3, np.float64(2.0))
+        y, z, count, peak = got
+        assert np.asarray(y).tolist() == [2.0, 4.0, 6.0]
+        assert np.asarray(z).tolist() == [4.0, 8.0, 12.0]
+        assert int(count) == 2
+        assert float(peak) == 6.0
+        # The callee's wrapper hands back the plan's outputs only.
+        alone = module.scale_count_flat(3, x, 3, np.float64(2.0))
+        assert np.asarray(alone).tolist() == [2.0, 4.0, 6.0], alone
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"optcount_mod{suffix}", None)

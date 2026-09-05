@@ -753,7 +753,7 @@ class _Rewrite(ast.NodeTransformer):
         if self.plan is None:
             self.generic_visit(node)
             return node
-        outs = _outputs(self.plan)
+        outs = _returns(self.plan)
         if self.plan.subprogram["kind"] == "function":
             value = self.visit(node.value) if node.value is not None else ast.Constant(None)
             result = ast.Assign(targets=[ast.Name(id="_result", ctx=ast.Store())], value=value)
@@ -1088,9 +1088,9 @@ class _Rewrite(ast.NodeTransformer):
         inner.specialized = self.specialized
         body = _rewritten_body(fn, inner)
         if not body or not isinstance(body[-1], ast.Return):
-            body.append(ast.Return(value=_tuple(_outputs(plan))))
+            body.append(ast.Return(value=_tuple(_returns(plan))))
         taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
-        optional = _optional_params(plan)
+        optional, optional_defaults = _optional_signature(plan)
         body = [*_absent_optionals(plan, [*taken, *optional]), *body]
         flat = ast.FunctionDef(
             name=plan.name,
@@ -1101,7 +1101,7 @@ class _Rewrite(ast.NodeTransformer):
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=[ast.Constant(value=None) for _ in optional],
+                defaults=optional_defaults,
             ),
             body=body,
             decorator_list=[],
@@ -1463,8 +1463,26 @@ class _Rewrite(ast.NodeTransformer):
             args[pos] = self.visit(copy.deepcopy(where))  # the call holds this same list
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
-        for name in _outputs(callee):
-            if "__" in name and name.split("__", 1)[0] in absent:
+        optional_outs = set(_optional_outputs(callee))
+        for name in _returns(callee):
+            if name in optional_outs and (
+                name.lower() not in actual_by_dummy and f"want_{name}" not in actual_by_dummy
+            ):
+                # An optional the caller left out comes back as None: dropped.
+                targets.append(ast.Name(id="_", ctx=ast.Store()))
+            elif (
+                name in optional_outs
+                and name.lower() not in actual_by_dummy
+                and isinstance(buffered, ast.Name)
+            ):
+                # An optional OUT asked for through ``want_<name>``: the
+                # anchor takes it from the buffer (``rcond = _out[k]``), so
+                # a temporary holds it and that unpack rebinds from it.
+                self.temps += 1
+                temp = f"_t{self.temps}"
+                targets.append(ast.Name(id=temp, ctx=ast.Store()))
+                self.buffer_outs[buffered.id][original_outs.index(name)] = temp
+            elif "__" in name and name.split("__", 1)[0] in absent:
                 targets.append(ast.Name(id="_", ctx=ast.Store()))
             elif "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
@@ -3170,21 +3188,58 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     )
 
 
-def _optional_params(plan: FlatPlan) -> list[str]:
-    """The optional IN dummies the flat kernel takes as parameters
-    defaulting to None: the plan's adapter leaves every optional out (the
-    recorder calls without them), but a kernel calling another kernel
-    passes the ones the caller passed (saturation's ``start_index_in``
-    from the mixing length), and the callee's ``present()`` must see
-    them. Derived-type, character and procedure dummies stay out."""
+def _optional_dummies(plan: FlatPlan) -> list[dict[str, Any]]:
+    """The optional dummies a flat kernel can take: derived-type, character
+    and procedure dummies stay out (absent, as the plan leaves them)."""
     return [
-        _py(a["name"])
+        a
         for a in plan.subprogram.get("args") or ()
         if a.get("optional")
-        and a.get("intent") == "IN"
         and str(a["dtype"]) not in ("PROCEDURE", "str")
         and not DERIVED.match(str(a["dtype"]))
     ]
+
+
+def _optional_signature(plan: FlatPlan) -> tuple[list[str], list[ast.expr]]:
+    """The optional dummies the flat kernel takes as parameters, and their
+    defaults: the plan's adapter leaves every optional out (the recorder
+    calls without them), but a kernel calling another kernel passes the
+    ones the caller passed, and the callee's ``present()`` must see them.
+    An optional IN or INOUT dummy is a parameter of its own name defaulting
+    to None (saturation's ``start_index_in`` from the mixing length; the
+    clipping counter ``wpxp_cl_num`` advance_xm_wpxp hands
+    xm_wpxp_clipping_and_stats by keyword, which comes back incremented).
+    An optional OUT dummy is its ``want_<name>`` presence sentinel, the
+    anchor's convention, defaulting to False; the value itself starts
+    absent and is returned whatever the caller asked."""
+    names: list[str] = []
+    defaults: list[ast.expr] = []
+    for a in _optional_dummies(plan):
+        if a.get("intent") == "OUT":
+            names.append(f"want_{_py(a['name'])}")
+            defaults.append(ast.Constant(value=False))
+        else:
+            names.append(_py(a["name"]))
+            defaults.append(ast.Constant(value=None))
+    return names, defaults
+
+
+def _optional_params(plan: FlatPlan) -> list[str]:
+    return _optional_signature(plan)[0]
+
+
+def _optional_outputs(plan: FlatPlan) -> list[str]:
+    """The optional OUT/INOUT dummies the flat kernel returns after the
+    plan's outputs (None when absent). The wrapper the adapter calls drops
+    them (``optional_returns`` on the interface record); a kernel calling
+    the kernel binds the ones it passed."""
+    return [_py(a["name"]) for a in _optional_dummies(plan) if a.get("intent") in ("OUT", "INOUT")]
+
+
+def _returns(plan: FlatPlan) -> list[str]:
+    """What the flat kernel returns: the plan's outputs, then the optional
+    OUT/INOUT dummies."""
+    return [*_outputs(plan), *_optional_outputs(plan)]
 
 
 def _absent_optionals(plan: FlatPlan, taken: list[str]) -> list[ast.stmt]:
@@ -3208,7 +3263,7 @@ def _absent_optionals(plan: FlatPlan, taken: list[str]) -> list[ast.stmt]:
         out.append(
             ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=ast.Constant(value=None))
         )
-        if a.get("intent") == "OUT":
+        if a.get("intent") == "OUT" and f"want_{name}" not in taken:
             out.append(
                 ast.Assign(
                     targets=[ast.Name(id=f"want_{name}", ctx=ast.Store())],
@@ -3244,9 +3299,9 @@ def flat_function(
         rewrite.specialized = specialized
     body = _rewritten_body(fn, rewrite)
     if not body or not isinstance(body[-1], ast.Return):
-        body.append(ast.Return(value=_tuple(_outputs(plan))))
+        body.append(ast.Return(value=_tuple(_returns(plan))))
     taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
-    optional = _optional_params(plan)
+    optional, optional_defaults = _optional_signature(plan)
     body = [*_absent_optionals(plan, [*taken, *optional]), *body]
     flat = ast.FunctionDef(
         name=plan.name,
@@ -3257,7 +3312,7 @@ def flat_function(
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[ast.Constant(value=None) for _ in optional],
+            defaults=optional_defaults,
         ),
         body=body,
         decorator_list=[],
@@ -3312,6 +3367,7 @@ def _entry(plan: FlatPlan, calls: list[str]) -> dict[str, Any]:
         "module_state_written": [],
         "calls": calls,
         "present_calls": [],
+        "optional_returns": len(_optional_outputs(plan)),
     }
 
 

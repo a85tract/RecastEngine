@@ -1575,7 +1575,11 @@ def build_module(
         sig = req + [f"{p}={ast.unparse(d)}" for p, d in zip(opt, defaults, strict=False)]
         call = req + host + [f"{p}={p}" for p in opt]
         writes = wclosures[name]
-        if not writes:
+        # The flat kernel returns its optional OUT/INOUT dummies after the
+        # plan's outputs (for a kernel calling it); the wrapper hands the
+        # caller what the numpy signature promised.
+        n_opt = int(rec.get("optional_returns") or 0)
+        if not writes and not n_opt:
             pieces.append(
                 "\n".join(
                     [
@@ -1602,6 +1606,7 @@ def build_module(
                 if final is not None and isinstance(final.value, ast.Tuple)
                 else (1 if final is not None else 0)
             )
+            n_keep = n_orig - n_opt
             lines = [
                 f"def {name}({', '.join(sig)}):",
                 '    """Host wrapper: state threads through; writes land on the host."""',
@@ -1611,12 +1616,12 @@ def build_module(
                 lines.append("    _res = (_res,)")
             for at, w in enumerate(writes):
                 lines.append(f"    _host.{w} = _res[{n_orig + at}]")
-            if n_orig == 0:
+            if n_keep == 0:
                 lines.append("    return None")
-            elif n_orig == 1:
+            elif n_keep == 1:
                 lines.append("    return _res[0]")
             else:
-                lines.append(f"    return _res[:{n_orig}]")
+                lines.append(f"    return _res[:{n_keep}]")
             pieces.append("\n".join(lines))
         jitted.append(name)
     for rec in interface["subprograms"]:
