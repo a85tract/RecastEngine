@@ -193,7 +193,7 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
-        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
+        self.buffer_outs: dict[str, list[str | None]] = {}  # anchor _out buffers, elided
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -356,6 +356,26 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        if (
+            len(node.targets) == 1
+            and isinstance(node.value, ast.Subscript)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id in self.buffer_outs
+            and isinstance(node.value.slice, ast.Constant)
+        ):
+            # ``bsun = _out[1]``: the buffer was elided at its call, and the
+            # slot says what the output bound to -- a temporary for an OUT
+            # scalar, the actual for an array (a self-assignment), nothing
+            # for an object whose components bound at the call.
+            spelled = self.buffer_outs[node.value.value.id][node.value.slice.value]
+            if spelled is None or spelled == ast.unparse(node.targets[0]):
+                return None
+            return self.visit(
+                ast.copy_location(
+                    ast.Assign(targets=node.targets, value=ast.parse(spelled, mode="eval").body),
+                    node,
+                )
+            )
         pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
         if pending:
@@ -1072,9 +1092,16 @@ class _Rewrite(ast.NodeTransformer):
         # (``hybrid(..., gs_mol, iter, atm2lnd_vars, photosyns_vars)``) is
         # not in the actual list, and counting it shifted the objects.
         arguments = callee.subprogram["args"]
+        # The anchor's positional convention: the dummies in declaration
+        # order, OUT scalars omitted; an OUT array is a buffer the caller
+        # passes *in its place* (``spacf(p, c, x, f, qflx_sun, ...)``).
+        # Appending the buffers after the rest shifted every actual behind
+        # one, and ELM's calcstress handed spacF its qflx for atm2lnd_inst.
         dummies = [
-            a["name"] for a in arguments if a["intent"] != "OUT" and not a.get("optional")
-        ] + [a["name"] for a in arguments if a["intent"] == "OUT" and a.get("dims")]
+            a["name"]
+            for a in arguments
+            if not a.get("optional") and (a["intent"] != "OUT" or a.get("dims"))
+        ]
         actual_by_dummy: dict[str, ast.expr] = {}
         for at, given in enumerate(call.args):
             if at < len(dummies):
@@ -1190,9 +1217,22 @@ class _Rewrite(ast.NodeTransformer):
                 for name in original_outs
                 if name.lower() in actual_by_dummy
             }
-            self.buffer_outs[buffered.id] = [
-                ast.unparse(slot[name]) for name in original_outs if name in slot
-            ]
+            # An OUT scalar has no actual under the emitted convention; the
+            # anchor unpacks it after the call (``bsun = _out[1]``). It binds
+            # to a temporary here, and the unpack reads the temporary. An
+            # object's slot is None: its components bound at the call, and
+            # its unpack (``photosyns_inst = _out[7]``) has nothing to say.
+            buffer: list[str | None] = []
+            for name in original_outs:
+                if name.lower() in objects or name in objects:
+                    buffer.append(None)
+                elif name in slot:
+                    buffer.append(ast.unparse(slot[name]))
+                else:
+                    self.temps += 1
+                    slot[name] = ast.Name(id=f"_t{self.temps}", ctx=ast.Load())
+                    buffer.append(f"_t{self.temps}")
+            self.buffer_outs[buffered.id] = buffer
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
         for name in _outputs(callee):
@@ -1677,8 +1717,22 @@ def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return sources
 
 
+def _own_nodes(statement: ast.AST) -> Any:
+    """``ast.walk`` that does not enter a nested function: a statement
+    function's ``return`` (ELM's ``ft(tl, ha) = exp(...)`` inside
+    PhotosynthesisHydraulicStress) is the nested def's own exit, not the
+    kernel's."""
+    stack = [statement]
+    while stack:
+        node = stack.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                stack.append(child)
+
+
 def _has_return(stmts: list[ast.stmt]) -> bool:
-    return any(isinstance(n, ast.Return) for s in stmts for n in ast.walk(s))
+    return any(isinstance(n, ast.Return) for s in stmts for n in _own_nodes(s))
 
 
 def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -1700,12 +1754,12 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     same_names = isinstance(final.value, ast.Tuple) and all(
         isinstance(n.value, ast.Tuple) and ast.unparse(n.value) == ast.unparse(final.value)
         for statement in body
-        for n in ast.walk(statement)
+        for n in _own_nodes(statement)
         if isinstance(n, ast.Return)
     )
     if not same_names:
         for statement in body:
-            for node in ast.walk(statement):
+            for node in _own_nodes(statement):
                 if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
                     raise NotFlat(
                         f"an early return in a function with several outputs: {ast.unparse(node)}"

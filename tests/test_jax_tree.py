@@ -439,3 +439,92 @@ def test_a_write_through_a_branch_pointed_local_reaches_its_targets() -> None:
         "        par_z = sun\n    else:\n        par_z = sha\n    y = par_z[0]\n    return y\n"
     ).body[0]
     assert _write_back_pointer_locals(again.body, _seed_pointer_locals(again.body)) == []
+
+
+STRESS = """\
+module stress_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Drive
+contains
+  subroutine Flux(p, x, f, inst, aux)
+    integer, intent(in) :: p
+    real(8), intent(in) :: x(2)
+    real(8), intent(out) :: f(2)
+    type(canopy_type), intent(in) :: inst
+    type(canopy_type), intent(in) :: aux
+    f(1) = x(1) * inst%gs(p)
+    f(2) = x(2) * inst%gs(p)
+  end subroutine Flux
+
+  subroutine Stress(p, x, bsun, bsha, inst, aux)
+    integer, intent(in) :: p
+    real(8), intent(inout) :: x(2)
+    real(8), intent(out) :: bsun
+    real(8), intent(out) :: bsha
+    type(canopy_type), intent(inout) :: inst
+    type(canopy_type), intent(in) :: aux
+    real(8) :: f(2)
+    call Flux(p, x, f, inst, aux)
+    x(:) = x(:) - f(:)
+    bsun = x(1)
+    bsha = x(2)
+  end subroutine Stress
+
+  subroutine Drive(num, filter, dt, inst, aux)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    real(8), intent(in) :: dt
+    type(canopy_type), intent(inout) :: inst
+    type(canopy_type), intent(in) :: aux
+    integer :: f, p
+    real(8) :: bsun, bsha, xw(2), tl
+    real(8) :: ft
+    ft(tl) = tl * 2.0d0
+    do f = 1, num
+       p = filter(f)
+       xw(:) = dt
+       call Stress(p, xw, bsun, bsha, inst, aux)
+       inst%gs(p) = inst%gs(p) + bsun + bsha + ft(dt)
+    end do
+  end subroutine Drive
+end module stress_mod
+"""
+
+
+def test_the_hydraulic_stress_shape_lowers(tmp_path: Path) -> None:
+    """Three things ELM's PhotosynthesisHydraulicStress chain has and the
+    port refused. An OUT array is a buffer the caller passes in its
+    declared place (``spacf(p, c, x, f, qflx_sun, ...)``); appending the
+    buffers after the other dummies shifted every actual behind one, so
+    calcstress handed spacF a flux for ``atm2lnd_inst`` ("object not
+    passed"). A callee with an INOUT array and OUT
+    scalars is called in the anchor's buffered form, ``_out = calcstress(...)``
+    then ``bsun = _out[1]``, and the OUT scalars had no actual to bind to
+    ("output bsun has no target"): they bind to temporaries the unpacks
+    read. A statement function is a nested def whose ``return`` is its own,
+    not an early return of the kernel ("an early return in a function with
+    several outputs")."""
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "stress_mod.f90").write_text(STRESS)
+    # ELM's convention: an OUT array is a buffer the caller passes.
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True, buffer_out_arrays="all")
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:stress_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    anchor = TreeTranslation(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    numpy = anchor.files[Path("stress_mod_numpy.py")].decode()
+    assert "_out = stress(" in numpy and "bsun = _out[1]" in numpy  # the shape under test
+    candidate = TreeToJax(CONVENTIONS).apply(unit, facts, {"root": str(tmp_path)})
+    assert candidate.notes["jax"]["flat_refused"] == {}, candidate.notes["jax"]["flat_refused"]
+    ported = candidate.files[Path("stress_mod_jax.py")].decode()
+    assert "'drive_flat'" in ported.split("_JAX_KERNELS = ")[1].splitlines()[0]
+    drive = next(
+        n
+        for n in ast.walk(ast.parse(ported))
+        if isinstance(n, ast.FunctionDef) and n.name == "_drive_flat_k_impl"
+    )
+    text = ast.unparse(drive)
+    assert "_stress_flat_k_impl(" in text
+    assert "bsun = _t" in text and "bsha = _t" in text
+    assert "_out" not in text
