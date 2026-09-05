@@ -1804,6 +1804,33 @@ class _WhileLoops(ast.NodeTransformer):
                     return self.constants[bound.id]
         return None
 
+    def _break_bound(self, body: list[ast.stmt]) -> int | None:
+        """The trip count of a ``while True`` a counter bounds through a
+        ``break`` -- ``if iter > itmax: ... break`` (or ``==``, ``>=``)
+        anywhere in the body, ``iter`` advanced by a positive constant on
+        every pass at the body's top level, ``itmax`` a known integer.
+        ELM's ``hybrid`` and ``brent``: convergence exits ahead of it, and
+        the iteration cap is what makes the loop finite -- and a fixed
+        count, which lowers to a scan reverse mode can transpose."""
+        for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if not (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], (ast.Gt, ast.GtE, ast.Eq))
+                and isinstance(node.test.left, ast.Name)
+                and any(isinstance(n, ast.Break) for n in node.body)
+            ):
+                continue
+            counter, bound = node.test.left.id, node.test.comparators[0]
+            if not _advances(body, counter):
+                continue
+            if isinstance(bound, ast.Constant) and isinstance(bound.value, int):
+                return int(bound.value)
+            if isinstance(bound, ast.Name) and bound.id in self.constants:
+                return self.constants[bound.id]
+        return None
+
     def _unwrap_goto_region(self, node: ast.While) -> str | None:
         """``while True: try: ... break; except _FGoto: pass`` -- the numpy
         side's backward-goto region. The raise restarts the loop; spelled as
@@ -2020,6 +2047,9 @@ class _WhileLoops(ast.NodeTransformer):
         done = f"_done_{self.n}"
         forever = isinstance(node.test, ast.Constant) and node.test.value is True
         counted = self._counted_bound(node.test, node.body)
+        # Before the breaks are rewritten into the flag below: the cap is
+        # read off the ``break`` that enforces it.
+        capped = self._break_bound(node.body) if forever and restart is None else None
         if counted is not None and not any(isinstance(n, ast.Break) for n in ast.walk(node)):
             self.n -= 1
             return ast.For(
@@ -2064,6 +2094,31 @@ class _WhileLoops(ast.NodeTransformer):
                 exited = True
         for statement in guarded:
             ast.fix_missing_locations(statement)
+        if capped is not None:
+            # A ``while True`` its counter caps through a ``break``: a fixed
+            # count of passes, each under the done flag the breaks set. The
+            # cap is one more than the bound, the pass the cap's own break
+            # fires on; every pass after a break is a no-op under the flag.
+            self.n -= 1
+            index = f"_w{self.n + 1}"
+            init = ast.Assign(targets=[ast.Name(id=done, ctx=ast.Store())], value=ast.Constant(False))
+            loop = ast.For(
+                target=ast.Name(id=index, ctx=ast.Store()),
+                iter=ast.Call(
+                    func=ast.Name(id="range", ctx=ast.Load()),
+                    args=[ast.Constant(0), ast.Constant(capped + 1)],
+                    keywords=[],
+                ),
+                body=[
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=done, ctx=ast.Load())),
+                        body=guarded,
+                        orelse=[],
+                    )
+                ],
+                orelse=[],
+            )
+            return [ast.fix_missing_locations(init), ast.fix_missing_locations(loop)]
         carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
         state = [*carried, done]
         try:

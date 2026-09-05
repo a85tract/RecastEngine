@@ -365,3 +365,34 @@ def test_an_integer_literal_into_a_real_local_is_a_float_in_the_kernel() -> None
     text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in body if s is not None)
     assert "nscaler = jnp.float64(1)" in text
     assert "k = 2" in text  # an int into an int local is the backend's int32
+
+
+def test_a_while_true_capped_by_a_counter_break_is_a_fixed_count_for() -> None:
+    """ELM's ``hybrid``: ``while True: iter = iter + 1; ...; if
+    converged: break; ...; if iter > itmax: break``. A ``lax.while_loop``
+    has no reverse-mode rule; the cap makes it a fixed count of passes
+    under the done flag, which lowers to a scan reverse mode can transpose."""
+    from recast.transform.jax.tree import _WhileLoops
+
+    fn = ast.parse(
+        "def hybrid(x, f):\n"
+        "    iter = 0\n"
+        "    itmax = 40\n"
+        "    while True:\n"
+        "        iter = iter + 1\n"
+        "        x = x - f * x\n"
+        "        if abs(f * x) < 1e-6:\n"
+        "            break\n"
+        "        if iter > itmax:\n"
+        "            x = 0.0\n"
+        "            break\n"
+        "    return x\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    lowered = _WhileLoops({"iter": 0, "itmax": 40}, frozenset({"iter", "itmax"})).visit_block(
+        fn.body
+    )
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in lowered)
+    assert "while" not in text
+    assert "_done_1 = False" in text and "for _w1 in range(0, 41):" in text
+    assert "if not _done_1:" in text and "_done_1 = True" in text

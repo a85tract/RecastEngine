@@ -89,7 +89,7 @@ def test_core_imports_no_domain_packages() -> None:
         # them. Nothing here is imported by the engine -- the emitter is pure
         # AST work and reads the runtime's text off disk rather than importing
         # it, so translating to JAX does not require JAX.
-        "recast.transform.jax": {"jax", "numpy"},
+        "recast.transform.jax": {"jax", "numpy", "mpmath"},
         # The Numba backend, same rule again: numba and numpy are the target's
         # libraries and the emitted kernels import them. The engine imports
         # neither -- the emitter reads the runtime's text off disk, so
