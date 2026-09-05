@@ -2787,6 +2787,14 @@ def _static_expression(node: ast.expr, statics: frozenset[str]) -> bool:
         return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
     if isinstance(node, ast.Name):
         return node.id.isupper() or node.id in statics
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id.startswith("_")
+        and node.attr.isupper()
+        and len(node.attr) > 1
+    ):
+        return True  # ``_mod.IIPDF_ADG1``: a module constant through its alias
     if isinstance(node, ast.BinOp) and isinstance(
         node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
     ):

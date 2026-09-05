@@ -495,6 +495,19 @@ def _assigned_names(stmts):
     return out
 
 
+def _module_constant(node) -> bool:
+    """``_mod.IIPDF_ADG1``: a use-associated module constant through its
+    module alias -- a Python value at trace time, like the bare upper-case
+    spelling of one the translation resolved."""
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id.startswith("_")
+        and node.attr.isupper()
+        and len(node.attr) > 1
+    )
+
+
 def _static_test(test, statics=frozenset()):
     """True for branch conditions decidable at trace time per the
     translate.py grammar: `x is [not] None` (Fortran PRESENT) and bare
@@ -518,6 +531,8 @@ def _static_test(test, statics=frozenset()):
             return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
         if isinstance(node, ast.Name):
             return node.id in statics or (node.id.isupper() and len(node.id) > 1)
+        if _module_constant(node):
+            return True
         if isinstance(node, ast.BinOp):
             return constant(node.left) and constant(node.right)
         if isinstance(node, ast.UnaryOp):

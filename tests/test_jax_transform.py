@@ -1798,6 +1798,82 @@ def test_a_static_branch_whose_arms_lowered_to_nothing_is_no_branch(tmp_path: Pa
             sys.modules.pop(f"emptyguard_mod{suffix}", None)
 
 
+PDF_KINDS = """\
+module kinds_mod
+  implicit none
+  integer, parameter :: I_PLAIN = 1
+  integer, parameter :: I_TWICE = 2
+  logical :: l_noisy = .false.
+end module kinds_mod
+"""
+
+DISPATCHES_ON_A_KIND = """\
+module dispatch_mod
+  use kinds_mod, only: I_PLAIN, I_TWICE
+  use silent_mod, only: complain
+  implicit none
+contains
+  subroutine pick( n, kind, x, y )
+    integer, intent(in) :: n, kind
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    if ( kind == I_TWICE ) then
+      y = 2.0d0 * x
+    else if ( kind == I_PLAIN ) then
+      y = x
+    else
+      y = 0.0d0
+      call complain( n, y )
+    end if
+  end subroutine pick
+end module dispatch_mod
+"""
+
+
+def test_a_dispatch_on_a_module_constant_through_its_alias_is_static(tmp_path: Path) -> None:
+    """``iipdf_type == _mod.IIPDF_ADG1``: pdf_closure picks its PDF by a
+    constant of model_flags, spelled through the module alias. Static, the
+    way the bare upper-case spelling is, so the arm the run never takes --
+    with its host call -- is never traced."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "kinds_mod.f90").write_text(PDF_KINDS)
+    (tmp_path / "silent_mod.f90").write_text(SILENT_CHECK)
+    (tmp_path / "dispatch_mod.f90").write_text(DISPATCHES_ON_A_KIND)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:dispatch_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "pick" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    emitted = candidate.files[Path("dispatch_mod_jax.py")].decode()
+    anchor_src = candidate.files[Path("dispatch_mod_numpy.py")].decode()
+    assert "lax.cond(kind ==" not in emitted, emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("dispatch_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 3.0])
+        assert np.asarray(module.pick(2, 2, x)).tolist() == [2.0, 6.0]
+        assert np.asarray(module.pick(2, 1, x)).tolist() == [1.0, 3.0]
+        print(
+            "ANCHOR_SPELLING", [line for line in anchor_src.splitlines() if "I_TWICE" in line][:2]
+        )
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("dispatch_mod", "kinds_mod", "silent_mod")):
+                sys.modules.pop(name, None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none
