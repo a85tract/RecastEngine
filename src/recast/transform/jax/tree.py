@@ -1299,10 +1299,13 @@ class _Rewrite(ast.NodeTransformer):
             anchor_targets = list(target.elts)
         elif target is not None:
             anchor_targets = [target]
+        # Every OUT/INOUT dummy, the optional ones included: the anchor's
+        # return tuple has a slot for each (an absent optional's is ``_``),
+        # and the unpacks that follow index it by position -- CLUBB's
+        # ``stats = _out[3]`` after calc_brunt_vaisala_freq_sqd, whose
+        # ``stats`` is an optional INOUT object.
         original_outs = [
-            _py(a["name"])
-            for a in callee.subprogram["args"]
-            if a["intent"] in ("OUT", "INOUT") and not a.get("optional")
+            _py(a["name"]) for a in callee.subprogram["args"] if a["intent"] in ("OUT", "INOUT")
         ]
         if callee.subprogram["kind"] == "function":
             original_outs = ["_result", *original_outs]

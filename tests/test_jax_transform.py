@@ -890,8 +890,8 @@ contains
     integer, intent(in) :: nzt, ngrdcol
     real(8), intent(inout), dimension(ngrdcol, nzt) :: x
     real(8), intent(inout), dimension(ngrdcol, nzt) :: y
-    type(knobs_type), intent(inout) :: k
-    k%gain = k%gain * 2.0d0
+    type(knobs_type), intent(inout), optional :: k
+    if ( present( k ) ) k%gain = k%gain * 2.0d0
     x = x * 2.0d0
     y = x + 1.0d0
   end subroutine scale
@@ -912,7 +912,9 @@ def test_unpacking_an_object_from_the_elided_call_buffer_is_already_true(tmp_pat
     ``stats = _out[0]``, ``pdf_params = _out[4]`` -- from the buffer the
     flat rewrite elides at the call: the flat outputs bound to the actuals,
     so the object's unpack is already true and the statement goes; an
-    array's is the actual it names."""
+    array's is the actual it names. The object here is an *optional* INOUT
+    (calc_brunt_vaisala_freq_sqd's ``stats``): its slot is in the anchor's
+    tuple all the same, and was not in the rewrite's list."""
     import importlib
     import sys
 
