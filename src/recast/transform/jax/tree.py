@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.errors import ConfigError
-from recast.fortran.flatten import FlatPlan, plans_from_facts, signature
+from recast.fortran.flatten import DERIVED, FlatPlan, plans_from_facts, signature
 from recast.model import Candidate, Facts, Unit
 from recast.transform.jax.translate import KernelToJax, _signatures_of
 from recast.transform.numpy.tree import TreeConventions, TreeTranslation
@@ -1079,17 +1079,18 @@ class _Rewrite(ast.NodeTransformer):
         if not body or not isinstance(body[-1], ast.Return):
             body.append(ast.Return(value=_tuple(_outputs(plan))))
         taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
-        body = [*_absent_optionals(plan, taken), *body]
+        optional = _optional_params(plan)
+        body = [*_absent_optionals(plan, [*taken, *optional]), *body]
         flat = ast.FunctionDef(
             name=plan.name,
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=n) for n in taken],
+                args=[ast.arg(arg=n) for n in [*taken, *optional]],
                 vararg=None,
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=[],
+                defaults=[ast.Constant(value=None) for _ in optional],
             ),
             body=body,
             decorator_list=[],
@@ -1289,6 +1290,7 @@ class _Rewrite(ast.NodeTransformer):
             obj.name: {c.name: c.flat for c in obj.components} for obj in self.plan.objects
         }
         args: list[ast.expr] = []
+        missing_out: dict[int, str] = {}  # arg position -> OUT dummy the anchor did not pass
         for entry in callee.flat_args:
             name = entry["name"]
             if entry["intent"] == "OUT":
@@ -1350,6 +1352,17 @@ class _Rewrite(ast.NodeTransformer):
             else:
                 actual = actual_by_dummy.get(name.lower())
                 if actual is None:
+                    original = next(
+                        (a for a in callee.subprogram["args"] if _py(a["name"]) == name), None
+                    )
+                    if original is not None and original.get("intent") == "OUT":
+                        # An OUT array the anchor does not pass (it takes
+                        # the result back instead): the flat signature's
+                        # caller-buffer is the anchor's own destination,
+                        # bound once the targets are known below.
+                        missing_out[len(args)] = name
+                        args.append(ast.Constant(value=None))
+                        continue
                     raise NotFlat(f"{callee.subprogram['name']}: no actual for {name}")
                 rewritten: Any = self.visit(copy.deepcopy(actual))
                 if str(entry["dtype"]).startswith("float") and _integer_constant_expression(
@@ -1374,7 +1387,12 @@ class _Rewrite(ast.NodeTransformer):
             )
         else:
             self.calls.append(callee.name)
-        new_call = ast.Call(func=func, args=args, keywords=[])
+        passed_optionals = [
+            ast.keyword(arg=name, value=self.visit(copy.deepcopy(actual_by_dummy[name])))
+            for name in _optional_params(callee)
+            if name in actual_by_dummy
+        ]
+        new_call = ast.Call(func=func, args=args, keywords=passed_optionals)
         # Outputs back onto the caller's names. The anchor's target tuple
         # lists the callee's OUT/INOUT dummies in declaration order, objects
         # included (the emitted convention); an original output lands on the
@@ -1427,6 +1445,11 @@ class _Rewrite(ast.NodeTransformer):
             self.buffer_outs[buffered.id] = [
                 ast.unparse(slot[name]) if name in slot else None for name in original_outs
             ]
+        for pos, name in missing_out.items():
+            where = slot.get(name)
+            if where is None:
+                raise NotFlat(f"{callee.subprogram['name']}: output {name} has no target")
+            args[pos] = self.visit(copy.deepcopy(where))  # the call holds this same list
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
         for name in _outputs(callee):
@@ -3136,6 +3159,23 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
     )
 
 
+def _optional_params(plan: FlatPlan) -> list[str]:
+    """The optional IN dummies the flat kernel takes as parameters
+    defaulting to None: the plan's adapter leaves every optional out (the
+    recorder calls without them), but a kernel calling another kernel
+    passes the ones the caller passed (saturation's ``start_index_in``
+    from the mixing length), and the callee's ``present()`` must see
+    them. Derived-type, character and procedure dummies stay out."""
+    return [
+        _py(a["name"])
+        for a in plan.subprogram.get("args") or ()
+        if a.get("optional")
+        and a.get("intent") == "IN"
+        and str(a["dtype"]) not in ("PROCEDURE", "str")
+        and not DERIVED.match(str(a["dtype"]))
+    ]
+
+
 def _absent_optionals(plan: FlatPlan, taken: list[str]) -> list[ast.stmt]:
     """Bindings for the optional dummies the flat signature leaves out.
 
@@ -3195,17 +3235,18 @@ def flat_function(
     if not body or not isinstance(body[-1], ast.Return):
         body.append(ast.Return(value=_tuple(_outputs(plan))))
     taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
-    body = [*_absent_optionals(plan, taken), *body]
+    optional = _optional_params(plan)
+    body = [*_absent_optionals(plan, [*taken, *optional]), *body]
     flat = ast.FunctionDef(
         name=plan.name,
         args=ast.arguments(
             posonlyargs=[],
-            args=[ast.arg(arg=n) for n in taken],
+            args=[ast.arg(arg=n) for n in [*taken, *optional]],
             vararg=None,
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[],
+            defaults=[ast.Constant(value=None) for _ in optional],
         ),
         body=body,
         decorator_list=[],

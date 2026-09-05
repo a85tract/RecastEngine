@@ -508,7 +508,10 @@ def test_a_flat_kernel_spells_the_optional_dummy_the_plan_leaves_out(tmp_path: P
     facts = frontend.analyze(unit, tmp_path)
     candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
     ported = candidate.files[Path("floor_mod_jax.py")].decode()
-    assert "floor = None" in ported
+    # The optional IN dummy is a parameter defaulting to None now (a kernel
+    # calling this kernel passes it); absent through the wrapper, present()
+    # is still false.
+    assert "floor=None" in ported
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():
@@ -2374,6 +2377,83 @@ def test_a_character_local_written_from_the_index_is_never_a_carry(tmp_path: Pat
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"written_mod{suffix}", None)
+
+
+PASSES_AN_OPTIONAL = """\
+module optpass_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine scale_from( n, k, x, y, start_in )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer, intent(in), optional :: start_in
+    integer :: i, s
+    if ( present( start_in ) ) then
+      s = start_in
+    else
+      s = 1
+    end if
+    y = x
+    do i = s, n
+      y(i) = k%gain * x(i)
+    end do
+  end subroutine scale_from
+  subroutine step( n, k, x, y, z )
+    integer, intent(in) :: n
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n), z(n)
+    call scale_from( n, k, x, y, 2 )
+    call scale_from( n, k, x, z )
+  end subroutine step
+end module optpass_mod
+"""
+
+
+def test_an_optional_a_caller_passes_reaches_the_flat_callee(tmp_path: Path) -> None:
+    """The mixing length calls saturation's sat_mixrat_liq_2d with its
+    optional start index; the plan's adapter leaves every optional out (the
+    recorder calls without them), and the flat kernel silently computed
+    from level 1 -- the whole step's first divergence. The flat kernel takes
+    optional IN dummies as parameters defaulting to None, a call passes
+    the ones the caller passed, and present() sees them."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "optpass_mod.f90").write_text(PASSES_AN_OPTIONAL)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:optpass_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    emitted = candidate.files[Path("optpass_mod_jax.py")].decode()
+    assert "start_in=2" in emitted or "start_in=jnp.int32(2)" in emitted, candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("optpass_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 2.0, 3.0])
+        got = module.step_flat(3, x, np.zeros(3), np.zeros(3), 3, np.float64(2.0))
+        y, z = (np.asarray(v).tolist() for v in got)
+        assert y == [1.0, 4.0, 6.0]
+        assert z == [2.0, 4.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"optpass_mod{suffix}", None)
 
 
 SILENT_CHECK = """\
