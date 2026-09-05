@@ -1084,7 +1084,7 @@ def test_a_flat_companion_the_port_left_on_the_host_stays_under_its_guard(tmp_pa
         module = importlib.import_module("oguarded_mod_jax")
         import numpy as np
 
-        got = module.step_flat(2, 0, np.array([1.0, -1.0]), np.float64(2.0))
+        got = module.step_flat(2, 0, np.array([1.0, -1.0]), np.zeros(2), 1, np.float64(2.0))
         assert np.asarray(got).tolist() == [2.0, -2.0]
     finally:
         sys.path.remove(str(out))
