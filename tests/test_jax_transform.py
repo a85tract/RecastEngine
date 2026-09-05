@@ -1627,6 +1627,68 @@ def test_a_subprogram_of_the_module_the_port_could_not_emit_stays_on_the_host(
             sys.modules.pop(f"ownswitch_mod{suffix}", None)
 
 
+WINDOWED = """\
+module window_mod
+  implicit none
+contains
+  subroutine fill( n, w, dir, x, y )
+    integer, intent(in) :: n, w, dir
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: k, lo, hi
+    y = x
+    do k = 1 + w, n - w
+      lo = k - dir * w
+      hi = k + dir * w
+      if ( any( x(lo:hi:dir) < 0.0d0 ) ) then
+        y(k) = -1.0d0
+      else
+        y(k) = maxval( x(lo:hi:dir) )
+      end if
+    end do
+  end subroutine fill
+end module window_mod
+"""
+
+
+def test_a_window_with_traced_bounds_a_static_distance_apart_is_a_gather(tmp_path: Path) -> None:
+    """CLUBB's sliding-window hole filler reads ``field(i, k_start:k_end:dir)``
+    with ``k_start = k - dir * n`` and ``k_end = k + dir * n``: bounds that
+    trace (the loop index), a distance apart that does not. The slice is a
+    gather at ``lo + arange(trips) * step`` -- the mask rules, for a slice
+    whose length depends on a traced bound, never see it."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "window_mod.f90").write_text(WINDOWED)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:window_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert candidate.notes["jax"]["kernels"] == ["fill"], candidate.notes["jax"]
+    emitted = candidate.files[Path("window_mod_jax.py")].decode()
+    assert "jnp.arange(_f_trips(0, " in emitted, emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("window_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 5.0, 2.0, -3.0, 4.0, 6.0])
+        got = np.asarray(module.fill(6, 1, 1, x)).tolist()
+        assert got == [1.0, 5.0, -1.0, -1.0, -1.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"window_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

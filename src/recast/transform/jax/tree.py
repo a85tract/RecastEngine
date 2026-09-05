@@ -1667,9 +1667,13 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.inits = _guard_inits(fn)
     rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
     lowered: list[ast.stmt] = []
+    body = [copy.deepcopy(s) for s in fn.body]
+    # Fixed-length windows with traced bounds first, so the mask rules never
+    # see them: ``x(k-w:k+w)`` is a gather at ``lo + arange(2w+1)``.
+    _window_slices(body, frozenset(rewrite.statics))
     # Single exit first, on the anchor's own returns: the flat return that
     # replaces them is one statement at the end.
-    for statement in _single_exit([copy.deepcopy(s) for s in fn.body]):
+    for statement in _single_exit(body):
         result = rewrite.visit(statement)
         if result is None:
             continue
@@ -1757,6 +1761,220 @@ def _rebuilt_objects(lowered: list[ast.stmt], rewrite: _Rewrite) -> list[ast.stm
             )
         )
     return rebuilt
+
+
+Affine = tuple[dict[str, int], int]
+"""A linear form: ``{name: coefficient}`` and a constant."""
+
+
+def _static_name(name: str, statics: frozenset[str]) -> bool:
+    return name in statics or (name.isupper() and len(name) > 1)
+
+
+def _static_atom(node: ast.expr, statics: frozenset[str]) -> bool:
+    """An expression over static names and constants only -- ``dir * n``,
+    a Python int at trace time -- taken whole as one term of a form."""
+    names = [n for n in ast.walk(node) if isinstance(n, ast.Name)]
+    return bool(names) and all(_static_name(n.id, statics) for n in names)
+
+
+def _affine(
+    node: ast.expr, env: dict[str, ast.expr | None], statics: frozenset[str], depth: int = 0
+) -> Affine | None:
+    """The linear form of an integer expression: ``{term: coefficient}``
+    and a constant, a term being a traced name or a static atom (spelled
+    ``@<text>``, over static names only). A local that was assigned an
+    affine expression in scope (``k_start = k - dir * n``) is
+    substituted; None where the expression is not linear."""
+    if depth > 8:
+        return None
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int) and not isinstance(node.value, bool):
+            return {}, int(node.value)
+        return None
+    if isinstance(node, ast.Name):
+        bound = env.get(node.id)
+        if bound is not None:
+            inner = _affine(bound, env, statics, depth + 1)
+            if inner is not None:
+                return inner
+        if _static_name(node.id, statics):
+            return {f"@{node.id}": 1}, 0
+        return {node.id: 1}, 0
+    if not isinstance(node, ast.Name | ast.Constant) and _static_atom(node, statics):
+        return {f"@{ast.unparse(node)}": 1}, 0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
+        inner = _affine(node.operand, env, statics, depth)
+        if inner is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return inner
+        return {k: -v for k, v in inner[0].items()}, -inner[1]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Sub | ast.Mult):
+        left = _affine(node.left, env, statics, depth)
+        right = _affine(node.right, env, statics, depth)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Mult):
+            if not left[0]:
+                scale, form = left[1], right
+            elif not right[0]:
+                scale, form = right[1], left
+            else:
+                return None
+            return {k: v * scale for k, v in form[0].items()}, form[1] * scale
+        sign = 1 if isinstance(node.op, ast.Add) else -1
+        coeffs = dict(left[0])
+        for k, v in right[0].items():
+            coeffs[k] = coeffs.get(k, 0) + sign * v
+        return {k: v for k, v in coeffs.items() if v}, left[1] + sign * right[1]
+    if (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and not node.keywords
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "int")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("int32", "int64")
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+            )
+        )
+    ):
+        return _affine(node.args[0], env, statics, depth)
+    return None
+
+
+def _affine_ast(form: Affine) -> ast.expr:
+    """``2 * (dir * n) + 1`` back as an expression, over static atoms only."""
+    coeffs, const = form
+    out: ast.expr = ast.Constant(value=const)
+    for key in sorted(coeffs):
+        atom: ast.expr = ast.parse(key[1:], mode="eval").body
+        term: ast.expr = ast.BinOp(left=ast.Constant(value=coeffs[key]), op=ast.Mult(), right=atom)
+        out = ast.BinOp(left=out, op=ast.Add(), right=term)
+    return out
+
+
+class _Windows(ast.NodeTransformer):
+    """``x[i - 1, k_start - 1:k_end:dir]`` where ``k_start`` and ``k_end``
+    are ``k -+ dir * n``: bounds that trace, a distance apart that does not.
+    The slice becomes the index ``lo + arange(trips) * step`` -- a gather
+    of static length at a traced offset, a scatter when stored -- with
+    the trip count the runtime's ``_f_trips(0, distance, step)`` over
+    static names, a Python int at trace time. Fortran's windows (CLUBB's
+    hole filler draws ``num_hf_draw_points`` levels either side of ``k``)
+    are this; a slice whose length depends on a traced bound is the mask
+    rules' business and is left to them."""
+
+    def __init__(self, env: dict[str, ast.expr | None], statics: frozenset[str]) -> None:
+        self.env = env
+        self.statics = statics
+
+    def _dynamic(self, node: ast.expr) -> bool:
+        return any(
+            isinstance(n, ast.Name) and not _static_name(n.id, self.statics) for n in ast.walk(node)
+        )
+
+    def _window(self, element: ast.Slice) -> ast.expr | None:
+        if element.upper is None:
+            return None
+        lower: ast.expr = element.lower if element.lower is not None else ast.Constant(0)
+        if not (self._dynamic(lower) or self._dynamic(element.upper)):
+            return None
+        if element.step is not None and self._dynamic(element.step):
+            return None
+        hi = _affine(element.upper, self.env, self.statics)
+        lo = _affine(lower, self.env, self.statics)
+        if hi is None or lo is None:
+            return None
+        coeffs = dict(hi[0])
+        for k, v in lo[0].items():
+            coeffs[k] = coeffs.get(k, 0) - v
+        coeffs = {k: v for k, v in coeffs.items() if v}
+        if any(not k.startswith("@") for k in coeffs):
+            return None  # a traced term survives: the length traces too
+        distance = _affine_ast((coeffs, hi[1] - lo[1]))
+        step: ast.expr = (
+            copy.deepcopy(element.step) if element.step is not None else ast.Constant(1)
+        )
+        trips = ast.Call(
+            func=ast.Name(id="_f_trips", ctx=ast.Load()),
+            args=[ast.Constant(0), distance, step],
+            keywords=[],
+        )
+        offsets: ast.expr = _jnp("arange", [trips])
+        if not (isinstance(step, ast.Constant) and step.value == 1):
+            offsets = ast.BinOp(left=offsets, op=ast.Mult(), right=copy.deepcopy(step))
+        return ast.BinOp(left=copy.deepcopy(lower), op=ast.Add(), right=offsets)
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        self.generic_visit(node)
+        elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        changed = False
+        out: list[ast.expr] = []
+        for element in elts:
+            window = self._window(element) if isinstance(element, ast.Slice) else None
+            if window is None:
+                out.append(element)
+            else:
+                out.append(window)
+                changed = True
+        if changed:
+            node.slice = ast.Tuple(elts=out, ctx=ast.Load()) if len(out) > 1 else out[0]
+        return node
+
+
+def _window_slices(stmts: list[ast.stmt], statics: frozenset[str]) -> None:
+    """Rewrite the windows in a block in place, an affine local's
+    definition in scope where a bound names one."""
+
+    def block(body: list[ast.stmt], env: dict[str, ast.expr | None]) -> set[str]:
+        assigned: set[str] = set()
+        for st in body:
+            if isinstance(st, ast.Assign):
+                _Windows(env, statics).visit(st)
+                for target in st.targets:
+                    if isinstance(target, ast.Name):
+                        affine = _affine(st.value, env, statics) is not None
+                        env[target.id] = st.value if affine else None
+                        assigned.add(target.id)
+            elif isinstance(st, ast.AugAssign):
+                _Windows(env, statics).visit(st)
+                if isinstance(st.target, ast.Name):
+                    env[st.target.id] = None
+                    assigned.add(st.target.id)
+            elif isinstance(st, ast.If | ast.While):
+                _Windows(env, statics).visit(st.test)
+                inner = block(st.body, dict(env)) | block(st.orelse, dict(env))
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            elif isinstance(st, ast.For):
+                _Windows(env, statics).visit(st.iter)
+                scope = dict(env)
+                if isinstance(st.target, ast.Name):
+                    scope[st.target.id] = None
+                inner = block(st.body, scope) | block(st.orelse, dict(scope))
+                if isinstance(st.target, ast.Name):
+                    inner.add(st.target.id)
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            elif isinstance(st, ast.Try):
+                inner = block(st.body, dict(env))
+                for handler in st.handlers:
+                    inner |= block(handler.body, dict(env))
+                inner |= block(st.orelse, dict(env)) | block(st.finalbody, dict(env))
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            else:
+                _Windows(env, statics).visit(st)
+        return assigned
+
+    block(stmts, {})
 
 
 def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
