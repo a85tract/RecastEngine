@@ -267,6 +267,9 @@ def test_a_shaped_draw_is_compared_as_shaped_and_never_redrawn(tmp_path: Path) -
     assert (probe["redrawn"], probe["reshaped"], probe["shaped"]) == (0, 0, 10)
     assert verdict.metrics["input_profile"] == "recast_inputs.py"
     assert verdict.metrics["shaped"] == ["probe"]
+    # The root is a checkout whose cleanliness is checked: reading the
+    # profile must not drop bytecode into it.
+    assert sorted(entry.name for entry in root.iterdir()) == ["recast_inputs.py"]
 
 
 def test_a_candidate_that_refuses_a_shaped_draw_has_failed(tmp_path: Path) -> None:
