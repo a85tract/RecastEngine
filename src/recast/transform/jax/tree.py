@@ -198,6 +198,7 @@ class _Rewrite(ast.NodeTransformer):
         self.static_loops: list[str] = []  # loops whose trip count became static
 
     # -- what is static under jit ---------------------------------------------
+        self.seeded: list[str] = []
 
     def _is_dynamic(self, expr: ast.expr) -> bool:
         """A bound that is not a literal, a constant, a static argument or an
@@ -1438,7 +1439,54 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
     return frozenset(concrete)
 
 
+def _pure_reference(node: ast.expr) -> bool:
+    """A name or an attribute chain: an alias of something that exists, not
+    a computation."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
+def _seed_pointer_locals(body: list[ast.stmt]) -> list[str]:
+    """A pointer local the anchor starts as ``None`` and points in a branch
+    (``par_z => solarabs_vars%parsun_z_patch`` under ``phase == 'sun'``,
+    the shade array under ``'sha'``) starts the kernel as its first target
+    instead: a ``lax.cond`` carries it, and a carry has to have the same
+    shape on both arms, which ``None`` is not. The value is the branch's
+    own -- the run takes one arm, and the seed is overwritten there; an
+    arm the run never takes leaves a Fortran pointer undefined, and the
+    kernel a view it never reads. Returns the names seeded."""
+    seeded: list[str] = []
+    for at, statement in enumerate(body):
+        if not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and statement.value.value is None
+        ):
+            continue
+        name = statement.targets[0].id
+        first = next(
+            (
+                n.value
+                for later in body[at + 1 :]
+                for n in ast.walk(later)
+                if isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)
+                and n.targets[0].id == name
+            ),
+            None,
+        )
+        if first is not None and _pure_reference(first):
+            statement.value = copy.deepcopy(first)
+            seeded.append(name)
+    return seeded
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
+    rewrite.seeded = _seed_pointer_locals(fn.body)
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
     rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)

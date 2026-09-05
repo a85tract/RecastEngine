@@ -315,3 +315,26 @@ def test_a_callee_with_an_out_scalar_before_its_object_is_rewritten_to_its_kerne
         ast.unparse(n.func) for n in ast.walk(drive) if isinstance(n, ast.Call)
     }
     assert "_solve_flat_k_impl" in calls, calls
+
+
+def test_a_pointer_local_pointed_in_a_branch_is_seeded_with_its_first_target() -> None:
+    """The anchor starts a pointer local as ``None`` and points it under
+    ``phase == 'sun'`` or ``'sha'``; a ``lax.cond`` cannot carry ``None``
+    against an array. The kernel starts it as the first arm's target."""
+    from recast.transform.jax.tree import _seed_pointer_locals
+
+    fn = ast.parse(
+        "def f(phase, inst):\n"
+        "    par_z = None\n"
+        "    n = None\n"
+        "    if phase == 'sun':\n"
+        "        par_z = inst.parsun\n"
+        "    elif phase == 'sha':\n"
+        "        par_z = inst.parsha\n"
+        "    n = par_z.shape[0]\n"
+        "    return par_z\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    assert _seed_pointer_locals(fn.body) == ["par_z"]
+    assert ast.unparse(fn.body[0]) == "par_z = inst.parsun"
+    assert ast.unparse(fn.body[1]) == "n = None"  # a computed value is not a seed
