@@ -630,6 +630,24 @@ def _names(ids, ctx):
     return [ast.Name(id=i, ctx=ctx()) for i in ids]
 
 
+def _trivial(stmts) -> bool:
+    """Nothing a cond could carry: dropped logs and aborts (``pass``), a
+    call statement whose result nothing binds (a check the port left on
+    the host under a traced guard), a statistics name picked by the solve
+    type (a string store, never a carry), and a static branch over those."""
+    return all(
+        isinstance(st, ast.Pass)
+        or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant | ast.Call))
+        or (
+            isinstance(st, ast.Assign)
+            and isinstance(st.value, ast.Constant)
+            and isinstance(st.value.value, str)
+        )
+        or (isinstance(st, ast.If) and _trivial([*st.body, *st.orelse]))
+        for st in stmts
+    )
+
+
 def _string_stores(stmts) -> set[str]:
     """Names whose every store in these statements is a string literal: a
     character local (a statistics name picked by the solve type). No JAX
@@ -1188,19 +1206,7 @@ class KernelLowerer:
             # under a traced guard -- CLUBB's parameterization check under
             # ``any(err_code == fatal)``): nothing to carry, and nothing a
             # tracer could run. The tree's notes name the host calls.
-            trivial = all(
-                isinstance(st, ast.Pass)
-                or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant | ast.Call))
-                or (
-                    # a statistics name picked by the solve type: a
-                    # trace-time string, nothing a cond could carry
-                    isinstance(st, ast.Assign)
-                    and isinstance(st.value, ast.Constant)
-                    and isinstance(st.value.value, str)
-                )
-                for st in [*body, *orelse]
-            )
-            if trivial:
+            if _trivial([*body, *orelse]):
                 return []
             raise JaxQueue("IF with no carried effects")
         self.n += 1
