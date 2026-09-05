@@ -2456,6 +2456,80 @@ def test_an_optional_a_caller_passes_reaches_the_flat_callee(tmp_path: Path) -> 
             sys.modules.pop(f"optpass_mod{suffix}", None)
 
 
+BUFFER_REUSED = """\
+module reused_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine scale( nzt, ngrdcol, k, x, y )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(in) :: k
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x, y
+    x = k%gain * x
+    y = k%gain * y
+  end subroutine scale
+  subroutine bracket( nzt, ngrdcol, x, lo, hi )
+    integer, intent(in) :: nzt, ngrdcol
+    real(8), intent(in), dimension(ngrdcol, nzt) :: x
+    real(8), intent(out), dimension(ngrdcol, nzt) :: lo, hi
+    lo = x - 1.0d0
+    hi = x + 1.0d0
+  end subroutine bracket
+  subroutine step( nzt, ngrdcol, k, x, y, lo, hi )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(in) :: k
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x, y, lo, hi
+    call scale( nzt, ngrdcol, k, x, y )
+    call bracket( nzt, ngrdcol, x, lo, hi )
+  end subroutine step
+end module reused_mod
+"""
+
+
+def test_the_result_buffer_rebound_by_a_plain_kernel_keeps_its_copies(tmp_path: Path) -> None:
+    """xm_wpxp_clipping_and_stats: a flat callee's call elides the anchor's
+    ``_out`` buffer (its outputs bind at the call), then a plain companion
+    kernel's ``_out = clip_covar(...)`` is followed by the real copies
+    ``_f_copy_out(wpxp, _out[0])``. The stale elision dropped them, and the
+    whole step kept the unclipped fluxes."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "reused_mod.f90").write_text(BUFFER_REUSED)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:reused_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    anchor_src = candidate.files[Path("reused_mod_numpy.py")].decode()
+    assert "_f_copy_out(lo, _out[0])" in anchor_src, anchor_src
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("reused_mod_jax")
+        import numpy as np
+
+        one = np.ones((1, 2), order="F")
+        got = module.step_flat(
+            2, 1, one, one.copy(), np.zeros((1, 2)), np.zeros((1, 2)), np.float64(2.0)
+        )
+        x, y, lo, hi = (np.asarray(v).tolist() for v in got)
+        assert (x, y) == ([[2.0, 2.0]], [[2.0, 2.0]])
+        assert (lo, hi) == ([[1.0, 1.0]], [[3.0, 3.0]])
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"reused_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

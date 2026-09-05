@@ -355,6 +355,17 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        if (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in self.buffer_outs
+        ):
+            # The anchor's result buffer rebound by something other than a
+            # flat callee (a plain companion kernel: ``_out = clip_covar``):
+            # the elision belonged to the earlier call, and the copies that
+            # follow this one are real -- a stale entry dropped them, and
+            # the whole step kept the unclipped fluxes.
+            self.buffer_outs.pop(node.targets[0].id)
         value = node.value
         if (
             len(node.targets) == 1
