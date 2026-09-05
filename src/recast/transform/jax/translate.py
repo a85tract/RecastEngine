@@ -63,12 +63,7 @@ class KernelToJax(Transform):
 
         source = anchor.files[Path(f"{module}_numpy.py")].decode()
         tree = ast.parse(source)
-        anchor_names = frozenset(
-            f.name for f in tree.body if isinstance(f, ast.FunctionDef | ast.ClassDef)
-        )
-        pieces, jitted, delegated, hosted = build_module(
-            facts.interface, tree, host_names=anchor_names
-        )
+        pieces, jitted, delegated, hosted = build_module(facts.interface, tree)
         emitted = (
             HEADER.format(module=module, constants=constants_stem, runtime=runtime_stem)
             + _signatures_of(tree)
