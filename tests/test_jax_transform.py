@@ -2319,6 +2319,58 @@ def test_an_integer_conversion_stored_under_a_traced_branch_takes_the_guard_type
             sys.modules.pop(f"converted_mod{suffix}", None)
 
 
+WRITTEN_NAME = """\
+module written_mod
+  implicit none
+contains
+  subroutine tag_loop( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    character(len=8) :: idx
+    integer :: k
+    idx = ""
+    do k = 1, n
+      if ( x(k) > 0.0d0 ) then
+        write( idx, * ) k
+        idx = adjustl( idx )
+        y(k) = 2.0d0 * x(k)
+      else
+        y(k) = x(k)
+      end if
+    end do
+  end subroutine tag_loop
+end module written_mod
+"""
+
+
+def test_a_character_local_written_from_the_index_is_never_a_carry(tmp_path: Path) -> None:
+    """pdf_closure_driver writes the scalar index into a statistics name
+    (``write( sclr_idx, * ) sclr``, then adjustl): not a literal store, but
+    a character local all the same -- its guard init says so -- and no
+    carry of the cond or the loop."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, WRITTEN_NAME, "written_mod")
+    assert candidate.notes["jax"]["kernels"] == ["tag_loop"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("written_mod_jax")
+        import numpy as np
+
+        got = np.asarray(module.tag_loop(3, np.array([1.0, -2.0, 3.0]))).tolist()
+        assert got == [2.0, -2.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"written_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

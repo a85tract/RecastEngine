@@ -625,21 +625,38 @@ def _names(ids, ctx):
     return [ast.Name(id=i, ctx=ctx()) for i in ids]
 
 
-def _trivial(stmts) -> bool:
+def _trivial(stmts, strings=frozenset()) -> bool:
     """Nothing a cond could carry: dropped logs and aborts (``pass``), a
     call statement whose result nothing binds (a check the port left on
     the host under a traced guard), a statistics name picked by the solve
-    type (a string store, never a carry), and a static branch over those."""
+    type or written from a loop index (a store to a character local, never
+    a carry), and a static branch over those."""
     return all(
         isinstance(st, ast.Pass)
         or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant | ast.Call))
         or (
             isinstance(st, ast.Assign)
-            and isinstance(st.value, ast.Constant)
-            and isinstance(st.value.value, str)
+            and (
+                (isinstance(st.value, ast.Constant) and isinstance(st.value.value, str))
+                or all(isinstance(t, ast.Name) and t.id in strings for t in st.targets)
+            )
         )
-        or (isinstance(st, ast.If) and _trivial([*st.body, *st.orelse]))
+        or (isinstance(st, ast.If) and _trivial([*st.body, *st.orelse], strings))
         for st in stmts
+    )
+
+
+def _string_inits(body) -> frozenset[str]:
+    """Locals whose guard init at the top of the body is a string: the
+    character locals."""
+    return frozenset(
+        st.targets[0].id
+        for st in body
+        if isinstance(st, ast.Assign)
+        and len(st.targets) == 1
+        and isinstance(st.targets[0], ast.Name)
+        and isinstance(st.value, ast.Constant)
+        and isinstance(st.value.value, str)
     )
 
 
@@ -756,9 +773,13 @@ class KernelLowerer:
         ast.ImportFrom,
     )
 
-    def __init__(self, bound=(), statics=()):
+    def __init__(self, bound=(), statics=(), strings=()):
         self.n = 0
         self.statics = frozenset(statics)
+        # Character locals (a string guard init): trace-time values, never
+        # a carry, whatever their later stores spell (an internal WRITE of
+        # a loop index into a statistics name).
+        self.strings = frozenset(strings)
         # The names bound so far, in statement order: a loop carries only a
         # name that exists before it. One first assigned inside the body
         # (the anchor's ``_out = callee(...)`` result tuple, unpacked on the
@@ -1035,7 +1056,7 @@ class KernelLowerer:
             # Fortran ran it for nothing; nothing is what it becomes.
             return []
         settled = _trace_constant_stores(body)
-        strings = _string_stores(body)
+        strings = _string_stores(body) | self.strings
         carried = [
             n
             for n in _assigned_names(body)
@@ -1190,7 +1211,7 @@ class KernelLowerer:
 
     def _cond_form(self, s, body, orelse):
         """The lax.cond lowering of an if whose test is traced."""
-        strings = _string_stores([*body, *orelse])
+        strings = _string_stores([*body, *orelse]) | self.strings
         carried = [n for n in _assigned_names(body) if n not in strings]
         for n in _assigned_names(orelse):
             if n in strings:
@@ -1203,7 +1224,7 @@ class KernelLowerer:
             # under a traced guard -- CLUBB's parameterization check under
             # ``any(err_code == fatal)``): nothing to carry, and nothing a
             # tracer could run. The tree's notes name the host calls.
-            if _trivial([*body, *orelse]):
+            if _trivial([*body, *orelse], self.strings):
                 return []
             raise JaxQueue("IF with no carried effects")
         self.n += 1
@@ -1336,7 +1357,9 @@ def emit_kernel(
     if fn.body and isinstance(fn.body[0], ast.Pass) and hasattr(fn.body[0], "recast_statics"):
         statics |= set(getattr(fn.body[0], "recast_statics"))  # noqa: B009
         fn.body = fn.body[1:]
-    lowerer = KernelLowerer(bound={a.arg for a in fn.args.args}, statics=statics)
+    lowerer = KernelLowerer(
+        bound={a.arg for a in fn.args.args}, statics=statics, strings=_string_inits(fn.body)
+    )
     fn.body = lowerer.lower_block(fn.body, 0)
     fn.body = [*_flag_inits(fn.body), *fn.body]
     ast.fix_missing_locations(fn)

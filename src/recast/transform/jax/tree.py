@@ -1823,7 +1823,11 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     int_locals = frozenset(_integer_inits(fn)) | frozenset(
         n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
     )
-    lowered = _WhileLoops(_integer_inits(fn), int_locals).visit_block(lowered)
+    from recast.transform.jax.backend import _string_inits
+
+    lowered = _WhileLoops(_integer_inits(fn), int_locals, _string_inits(fn.body)).visit_block(
+        lowered
+    )
     # The goto-region and while-exit flags are synthetic locals with no
     # UB-guard init; an enclosing loop or branch carries them (a while inside
     # an if inside a do: CLUBB's grid interpolation), and the initial carry
@@ -2472,10 +2476,12 @@ class _WhileLoops(ast.NodeTransformer):
         self,
         constants: dict[str, int] | None = None,
         int_locals: frozenset[str] | None = None,
+        strings: frozenset[str] | None = None,
     ) -> None:
         self.n = 0
         self.constants = constants or {}
         self.int_locals = int_locals or frozenset()
+        self.strings = strings or frozenset()  # character locals: never a carry
 
     def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
         out: list[ast.stmt] = []
@@ -2775,7 +2781,7 @@ class _WhileLoops(ast.NodeTransformer):
         for statement in guarded:
             ast.fix_missing_locations(statement)
         try:
-            lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
+            lowered = KernelLowerer(strings=self.strings).lower_block(guarded, 1)  # type: ignore[no-untyped-call]
         except JaxQueue as why:
             raise NotFlat(f"while loop body: {why}") from why
         # The carries are what the *lowered* body stores: a subscript store
@@ -2785,7 +2791,7 @@ class _WhileLoops(ast.NodeTransformer):
         carried = [
             n
             for n in _assigned_names(lowered)  # type: ignore[no-untyped-call]
-            if n != done and not re.fullmatch(r"_(?:brk|kx)_\d+", n)
+            if n != done and n not in self.strings and not re.fullmatch(r"_(?:brk|kx)_\d+", n)
         ]
         state = [*carried, done]
         unpack = ast.Assign(
