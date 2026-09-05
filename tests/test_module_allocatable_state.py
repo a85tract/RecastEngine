@@ -176,14 +176,17 @@ contains
     type(canopy_type), intent(inout) :: inst
     real(8), pointer :: view(:)
     integer :: f, p
+    real(8), pointer :: seen(:)
     if (phase == 'sun') then
        view => inst%gs
+       seen => inst%lai
     else
        view => inst%ncan_r
+       seen => inst%lai_sha
     end if
     do f = 1, num
        p = filter(f)
-       view(p) = 2.0d0 * inst%gs(p)
+       view(p) = 2.0d0 * seen(p)
     end do
   end subroutine Fill
 end module pointed_mod
@@ -197,10 +200,12 @@ def test_a_write_through_a_pointer_alias_writes_every_target_it_may_have(tmp_pat
     plan had them read-only, so the gate never compared them."""
     types = TYPES.replace(
         "     real(8), pointer :: gs(:)\n",
-        "     real(8), pointer :: gs(:)\n     real(8), pointer :: ncan_r(:)\n",
+        "     real(8), pointer :: gs(:)\n     real(8), pointer :: ncan_r(:)\n"
+        "     real(8), pointer :: lai(:)\n     real(8), pointer :: lai_sha(:)\n",
     ).replace(
         "    allocate(this%gs(begp:endp))\n",
-        "    allocate(this%gs(begp:endp))\n    allocate(this%ncan_r(begp:endp))\n",
+        "    allocate(this%gs(begp:endp))\n    allocate(this%ncan_r(begp:endp))\n"
+        "    allocate(this%lai(begp:endp))\n    allocate(this%lai_sha(begp:endp))\n",
     )
     (tmp_path / "types_mod.f90").write_text(types)
     (tmp_path / "pointed_mod.f90").write_text(POINTED)
@@ -211,3 +216,5 @@ def test_a_write_through_a_pointer_alias_writes_every_target_it_may_have(tmp_pat
     inst = next(o for o in plan.objects if o.name == "inst")
     written = {c.name for c in inst.components if c.written}
     assert written == {"gs", "ncan_r"}, {c.name: c.written for c in inst.components}
+    # the alias only read through is pointed, not written: its targets are inputs
+    assert {c.name for c in inst.components if not c.written} == {"lai", "lai_sha"}

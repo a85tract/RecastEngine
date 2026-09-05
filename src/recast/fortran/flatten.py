@@ -690,10 +690,22 @@ def _accesses(
                         # Module state (``patch%itype``): spelled the same
                         # everywhere, and the callee's reads are ours.
                         target.add(item)
+    # The pointer assignment itself counts as a write of the alias in the
+    # read/write sets; a target is written only where the alias is the
+    # left-hand side of an assignment (``psn_z(p,iv) = ...``), not merely
+    # pointed. Otherwise every sun/shade input read through an alias
+    # (``par_z``, ``lai_z``) is planned as an output and echoed unchanged.
+    assigned: set[str] = set()
+    for statement in walk(node, f03.Assignment_Stmt):
+        lhs = statement.children[0]
+        while isinstance(lhs, (f03.Part_Ref, f03.Data_Ref)):
+            lhs = lhs.children[0]
+        if isinstance(lhs, f03.Name):
+            assigned.add(str(lhs).lower())
     for alias, targets in pointed.items():
         if alias in reads:
             reads |= targets
-        if alias in writes:
+        if alias in writes and alias in assigned:
             writes |= targets
     return aliases, reads, writes
 
