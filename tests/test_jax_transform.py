@@ -822,6 +822,7 @@ contains
     real(8), intent(out), dimension(ngrdcol, nzt) :: y
     integer, intent(in) :: err(ngrdcol)
     integer :: i
+    real(8) :: lo, hi
     x = x * c%coef(:, 1:nzt)
     y = x
     do i = 1, ngrdcol
@@ -831,7 +832,15 @@ contains
       y(i, :) = y(i, :) + 1.0d0
     end do
     y = y + 10.0d0
+    call bracket( x(1, 1), lo, hi )
+    y = y + lo + hi
   end subroutine apply
+  elemental subroutine bracket( v, lo, hi )
+    real(8), intent(in)  :: v
+    real(8), intent(out) :: lo, hi
+    lo = v - 1.0d0
+    hi = v + 1.0d0
+  end subroutine bracket
 end module loopret_mod
 """
 
@@ -870,8 +879,10 @@ def test_an_early_return_inside_a_loop_becomes_a_flag(tmp_path: Path) -> None:
             )
             return np.asarray(y).ravel().tolist()
 
-        assert run([0, 0]) == [13.0, 13.0]
-        assert run([0, 1]) == [3.0, 2.0]  # the second column returns before its +1 and the +10
+        # x(1,1) is 2 after scaling: lo + hi = 4 on the path that reaches the
+        # bracket call (an elemental with two outputs, the anchor's _out).
+        assert run([0, 0]) == [17.0, 17.0]
+        assert run([0, 1]) == [3.0, 2.0]  # the second column returns before its +1 and the rest
         assert run([1, 0]) == [2.0, 2.0]
     finally:
         sys.path.remove(str(out))

@@ -1708,13 +1708,17 @@ def _fold_returns(stmts: list[ast.stmt], rest: list[ast.stmt]) -> list[ast.stmt]
 
 def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
     """``return`` -> ``_ret = True``; what follows a statement that may have
-    returned, in the same block, runs under ``if not _ret`` -- recursively
-    through branches and loop bodies."""
+    returned, in the same block, runs under one ``if not _ret`` -- the whole
+    remainder as one block, so a call's result buffer (``_out``, never a
+    carry) and its unpacks stay together -- recursively through branches
+    and loop bodies."""
     out: list[ast.stmt] = []
-    exited = False
-    for statement in stmts:
+    for at, statement in enumerate(stmts):
         had_return = _has_return([statement])  # before the rewrite takes the returns away
         if isinstance(statement, ast.Return):
+            # ``jnp.bool_(True)``, not the literal: a literal store is a
+            # trace-time constant to the backend, which would not carry the
+            # flag out of the loop or the branch that set it.
             rewritten: ast.stmt = ast.copy_location(
                 ast.Assign(
                     targets=[ast.Name(id="_ret", ctx=ast.Store())],
@@ -1728,15 +1732,18 @@ def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
                 inner = getattr(statement, field, None)
                 if isinstance(inner, list) and inner:
                     setattr(statement, field, _guard_after_returns(inner))
-        if exited:
-            rewritten = ast.If(
-                test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
-                body=[rewritten],
-                orelse=[],
-            )
         out.append(rewritten)
         if had_return:
-            exited = True
+            rest = _guard_after_returns(stmts[at + 1 :])
+            if rest:
+                out.append(
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
+                        body=rest,
+                        orelse=[],
+                    )
+                )
+            return out
     return out
 
 
