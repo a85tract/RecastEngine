@@ -354,6 +354,33 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        value = node.value
+        if (
+            len(node.targets) == 1
+            and isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in self.buffer_outs
+            and isinstance(value.slice, ast.Constant)
+            and isinstance(value.slice.value, int)
+        ):
+            # ``stats = _out[0]`` after ``_out = callee(...)`` (the anchor
+            # unpacking an object or an array the callee handed back): the
+            # buffer was elided at the call and the flat outputs bound to
+            # the actuals directly, so an object's unpack is already true
+            # and an array's is the actual it names -- itself, usually.
+            actuals = self.buffer_outs[value.value.id]
+            at = value.slice.value
+            if at >= len(actuals):
+                raise NotFlat(f"{ast.unparse(node)}: the elided buffer has no slot {at}")
+            target = node.targets[0]
+            if ast.unparse(target) == actuals[at]:
+                return None
+            if isinstance(target, ast.Name) and self.spelling.object_of(target) is not None:
+                return None
+            bound_value = ast.parse(actuals[at], mode="eval").body
+            return self.visit(
+                ast.copy_location(ast.Assign(targets=[target], value=bound_value), node)
+            )
         pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
         if pending:

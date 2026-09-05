@@ -877,3 +877,69 @@ def test_an_early_return_inside_a_loop_becomes_a_flag(tmp_path: Path) -> None:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"loopret_mod{suffix}", None)
+
+
+UNPACKS_AN_OBJECT = """\
+module unpack_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine scale( nzt, ngrdcol, k, x, y )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(inout) :: k
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    k%gain = k%gain * 2.0d0
+    x = x * 2.0d0
+    y = x + 1.0d0
+  end subroutine scale
+  subroutine step( nzt, ngrdcol, k, x, y )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(inout) :: k
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    call scale( nzt, ngrdcol, k, x, y )
+    y = y + k%gain
+  end subroutine step
+end module unpack_mod
+"""
+
+
+def test_unpacking_an_object_from_the_elided_call_buffer_is_already_true(tmp_path: Path) -> None:
+    """advance_clubb_core's anchor unpacks what a solver hands back --
+    ``stats = _out[0]``, ``pdf_params = _out[4]`` -- from the buffer the
+    flat rewrite elides at the call: the flat outputs bound to the actuals,
+    so the object's unpack is already true and the statement goes; an
+    array's is the actual it names."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "unpack_mod.f90").write_text(UNPACKS_AN_OBJECT)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:unpack_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    assert "_out[0]" in candidate.files[Path("unpack_mod_numpy.py")].decode()
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("unpack_mod_jax")
+        import numpy as np
+
+        x = np.ones((1, 2), order="F")
+        result = module.step_flat(2, 1, x, np.zeros((1, 2), order="F"), np.float64(2.0))
+        got = [np.asarray(v).tolist() for v in result]
+        assert got == [[[2.0, 2.0]], [[7.0, 7.0]], 4.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"unpack_mod{suffix}", None)
