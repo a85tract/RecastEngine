@@ -279,21 +279,26 @@ def test_an_oracle_that_supplies_no_samples_fails_closed(tmp_path: Path) -> None
     assert "handed over no samples" in verdict.detail
 
 
-def test_a_candidate_hook_cannot_edit_the_recorded_inputs(tmp_path: Path) -> None:
-    """``_PREPARE_INPUTS`` shapes *generated* inputs and must not touch these.
+def test_the_project_profile_cannot_edit_the_recorded_inputs(tmp_path: Path) -> None:
+    """``recast_inputs.py`` shapes *generated* inputs and must not touch these.
 
-    The hook ships inside the artifact under test. Letting it rewrite the
-    production run's own numbers before the artifact is judged on them would
-    let the candidate choose its own exam.
+    A recording's inputs are the production run's own numbers. Letting
+    anything rewrite them before the artifact is judged on them would let
+    the exam be rewritten, so a replay never loads the profile -- not even
+    one that would refuse to load.
     """
     path = tmp_path / "toy_numpy.py"
     path.write_text(
         "import numpy as np\n"
         f"_SIGNATURES = {SIGNATURES!r}\n"
-        "def _PREPARE_INPUTS(name, inputs, rng):\n"
-        "    inputs['x'] = inputs['x'] * 0.0\n"
         "def scale_by_two(n, x):\n"
         "    return x * 2.0\n"
+    )
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "recast_inputs.py").write_text(
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    raise AssertionError('the profile ran on a replay')\n"
     )
     candidate = Candidate(
         unit="toy",
@@ -308,10 +313,11 @@ def test_a_candidate_hook_cannot_edit_the_recorded_inputs(tmp_path: Path) -> Non
     )
     from recast.verify.bitexact import BitexactVerifier
 
-    verdict = BitexactVerifier().verify(_unit(), candidate, ref, tmp_path, _executor(), {})
-    # If the hook had run, x would be zeros and the recording's 2/4/6 would
-    # not be reproduced.
-    assert verdict.confidence is Confidence.BIT_EXACT
+    verdict = BitexactVerifier().verify(
+        _unit(), candidate, ref, tmp_path, _executor(), {"root": str(root)}
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["input_profile"] is None
 
 
 # -- the example, end to end --------------------------------------------------

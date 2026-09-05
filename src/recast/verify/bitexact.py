@@ -22,9 +22,13 @@ from the interface's dimensions resolved against the operator's ``dims``
 table, values from per-name ``ranges``. The physical ranges that make a model
 kernels behave -- temperatures in kelvin, pressures in pascals -- are domain
 knowledge and arrive in config; the engine's defaults are only wide, not
-wise. Subprograms with deferred blocks are skipped and said so: their
-translation raises ``NotImplementedError`` by construction, and the gate's
-job is to judge translations, not queues.
+wise. Structure that no per-name range can express -- a packed workspace
+whose extent is ``n(n+1)/2``, a mode the source stops on, a column that must
+be monotone -- comes from the project itself: a ``recast_inputs.py`` at the
+root, whose ``prepare(unit, subprogram, inputs, rng)`` shapes each generated
+draw before both sides receive it. Subprograms with deferred blocks are
+skipped and said so: their translation raises ``NotImplementedError`` by
+construction, and the gate's job is to judge translations, not queues.
 """
 
 from __future__ import annotations
@@ -34,10 +38,12 @@ import importlib.util
 import operator
 import re
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from recast.errors import InputProfileError
 from recast.model import Candidate, Confidence, OracleRef, Unit, Verdict
 from recast.plugins.executor import Executor
 from recast.plugins.verifier import Verifier
@@ -50,6 +56,16 @@ DEFAULT_INTEGER_RANGE = (1, 8)
 DEFAULT_DIMENSION = 8
 SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
 PROCEDURE_DTYPE = "PROCEDURE"
+INPUT_PROFILE = "recast_inputs.py"
+"""The project's input profile, looked for at the root the run was given.
+
+Its ``prepare(unit, subprogram, inputs, rng)`` receives the inputs this
+harness drew for one trial, by argument name, and returns them shaped into
+the source's domain -- or ``None`` to leave that subprogram's draw as it is.
+A shaped draw is an assertion that the reference takes it, and is judged as
+one: it is never redrawn, a candidate that refuses it has failed, and a
+reference that refuses it means the profile is wrong.
+"""
 """What a dummy *procedure* argument is declared as.
 
 Not a value the harness can sample: it is something to call, and what both
@@ -254,6 +270,13 @@ class BitexactVerifier(Verifier):
     evidence at the extents it landed on, not the configured ones: a
     subprogram that passes mostly that way fails by name, with the number of
     such trials recorded as ``reshaped``.
+
+    None of this applies to a draw the project's ``recast_inputs.py`` shaped.
+    That draw is the project saying the source takes it, so there is nothing
+    to draw again: the reference is called first, and if it refuses, the
+    profile is wrong and the verification stops there
+    (``InputProfileError``); if it answers and the candidate refuses, the
+    candidate has failed on inputs the source takes.
     """
 
     dominant_at: float | None = None
@@ -351,6 +374,8 @@ class BitexactVerifier(Verifier):
             return self._verdict(
                 candidate, Confidence.FAILED, {}, f"candidate does not import: {error}"
             )
+
+        profile = None if recorded else self._load_input_profile(config)
 
         table = getattr(translated, "_SIGNATURES", None)
         if not isinstance(table, dict) or not table:
@@ -466,7 +491,8 @@ class BitexactVerifier(Verifier):
                 trials,
                 dims,
                 ranges,
-                prepare=getattr(translated, "_PREPARE_INPUTS", None),
+                profile=profile,
+                unit_uid=unit.uid,
                 dominant_at=config.get("dominant_at", self.dominant_at),
                 dominant_axis=config.get("dominant_axis", -1),
                 rel_scale=str(config.get("rel_scale", "element")),
@@ -529,6 +555,8 @@ class BitexactVerifier(Verifier):
             "trials": trials,
             "skipped": skipped,
             "uncovered": uncovered,
+            "input_profile": INPUT_PROFILE if profile is not None else None,
+            "shaped": sorted(name for name, out in per_subprogram.items() if out.get("shaped")),
             "max_rel": worst_rel,
             **({"ungated": declared} if declared else {}),
             **totals,
@@ -662,7 +690,8 @@ class BitexactVerifier(Verifier):
         trials: int,
         dims: dict[str, int],
         ranges: dict[str, tuple[float, float]],
-        prepare: Any = None,
+        profile: Any = None,
+        unit_uid: str = "",
         dominant_at: float | None = None,
         dominant_axis: Any = -1,
         rel_scale: str = "element",
@@ -741,6 +770,8 @@ class BitexactVerifier(Verifier):
         # Trials that were compared only after a shape refusal moved the free
         # extents off the configured ones.
         reshaped = 0
+        # Trials the project's input profile shaped. Those are never redrawn.
+        shaped_trials = 0
         # Extents no operator pinned. A redraw varies these along with the
         # values, because some of what a subprogram will not accept is a
         # *shape*: a packed triangular workspace wants an extent that is a
@@ -838,24 +869,19 @@ class BitexactVerifier(Verifier):
                             f"{', '.join(missing_outputs)}; partial output evidence is not a pass"
                         }
 
-                if prepare is not None and samples is None:
-                    # The candidate may carry a ``_PREPARE_INPUTS(name, inputs,
-                    # rng)`` hook, the way it carries ``_SIGNATURES``: per-name
-                    # ranges cannot express structure -- a pressure column must
-                    # be monotone, an interface field must bracket its levels --
-                    # and unphysical inputs drive both sides into error paths
-                    # the production model aborts out of. The hook shapes inputs
-                    # into the defined domain; it cannot bias the verdict,
-                    # because both sides receive the same shaped inputs.
-                    #
-                    # It is skipped for a replay, and that is the important half:
-                    # the hook exists to drag *generated* inputs into the physical
-                    # domain, and recorded inputs are already there by
-                    # construction. Running it would let the candidate edit the
-                    # production run's own numbers before being judged on them,
-                    # which is the one thing a hook supplied by the artifact under
-                    # test must never be able to do.
-                    prepare(name, inputs, rng)
+                shaped = False
+                if profile is not None and samples is None:
+                    # The project's profile shapes *generated* inputs only. A
+                    # recording's inputs are already in the domain by
+                    # construction, and letting anything edit the production
+                    # run's own numbers before the artifact is judged on them
+                    # would let the exam be rewritten.
+                    inputs, shaped = self._shape_inputs(
+                        np, profile, unit_uid, name, round_index, inputs, rng
+                    )
+                    if shaped:
+                        shaped_trials += 1
+                site = _profile_site(unit_uid, name, round_index)
 
                 # Keyword calls on both sides: f2py reorders inferred-dimension
                 # scalars into trailing keywords, so positional order is not a
@@ -881,39 +907,67 @@ class BitexactVerifier(Verifier):
                         if a["intent"] != "OUT"
                     }
                 except Exception as error:
+                    if shaped:
+                        raise InputProfileError(
+                            f"{site} returned inputs the reference does not take: "
+                            f"{type(error).__name__}: {error}"
+                        ) from error
                     return {
                         "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
                     }
                 truth_args = [
                     truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"
                 ]
-                try:
-                    translated_out = translated_fn(**translated_kwargs)
-                except (SystemExit, IndexError) as error:
-                    # Not a comparison that failed -- a draw the subprogram does
-                    # not take. ``SystemExit`` is a translated ERROR STOP: the
-                    # source itself saying these arguments are not its own, and
-                    # the reference would say the same by ending the process,
-                    # taking every other unit's verdict with it. ``IndexError`` is
-                    # a subscript past a dummy array's declared extent, where the
-                    # reference, compiled without bounds checking, reads memory
-                    # the call does not own. Either way the reference must not be
-                    # called on this draw; draw again.
-                    declined = f"candidate raised: {type(error).__name__}: {error}"
-                    reshape = reshape or isinstance(error, IndexError)
-                    redrawn += 1
-                    continue
-                except Exception as error:
-                    return {"error": f"candidate raised: {type(error).__name__}: {error}"}
-                if samples is not None:
-                    # Nothing to call: the reference already ran, in production,
-                    # and what it produced is the recording.
-                    truth_out = recorded_outputs
-                else:
+                if shaped:
+                    # The profile asserts the reference takes this draw, so the
+                    # reference goes first and decides. Refused there, the
+                    # assertion is what is wrong and nothing about the
+                    # candidate is being judged; taken there and refused by the
+                    # candidate, the candidate has failed on inputs the source
+                    # accepts -- not a draw to make again.
                     try:
                         truth_out = truth_fn(**truth_kwargs)
                     except Exception as error:
-                        return {"error": f"oracle raised: {type(error).__name__}: {error}"}
+                        raise InputProfileError(
+                            f"{site} returned inputs the reference does not take: "
+                            f"{type(error).__name__}: {error}"
+                        ) from error
+                    try:
+                        translated_out = translated_fn(**translated_kwargs)
+                    except (Exception, SystemExit) as error:
+                        return {
+                            "error": "candidate raised on shaped inputs the reference took: "
+                            f"{type(error).__name__}: {error}"
+                        }
+                else:
+                    try:
+                        translated_out = translated_fn(**translated_kwargs)
+                    except (SystemExit, IndexError) as error:
+                        # Not a comparison that failed -- a draw the subprogram
+                        # does not take. ``SystemExit`` is a translated ERROR
+                        # STOP: the source itself saying these arguments are not
+                        # its own, and the reference would say the same by
+                        # ending the process, taking every other unit's verdict
+                        # with it. ``IndexError`` is a subscript past a dummy
+                        # array's declared extent, where the reference, compiled
+                        # without bounds checking, reads memory the call does
+                        # not own. Either way the reference must not be called
+                        # on this draw; draw again.
+                        declined = f"candidate raised: {type(error).__name__}: {error}"
+                        reshape = reshape or isinstance(error, IndexError)
+                        redrawn += 1
+                        continue
+                    except Exception as error:
+                        return {"error": f"candidate raised: {type(error).__name__}: {error}"}
+                    if samples is not None:
+                        # Nothing to call: the reference already ran, in
+                        # production, and what it produced is the recording.
+                        truth_out = recorded_outputs
+                    else:
+                        try:
+                            truth_out = truth_fn(**truth_kwargs)
+                        except Exception as error:
+                            return {"error": f"oracle raised: {type(error).__name__}: {error}"}
 
                 pairs = self._paired_outputs(
                     sub,
@@ -987,6 +1041,13 @@ class BitexactVerifier(Verifier):
                     if samples is None:
                         nan_ours = np.isnan(a)
                         nan_theirs = np.isnan(b)
+                        if shaped and nan_theirs.any():
+                            raise InputProfileError(
+                                f"{site} returned inputs on which the reference produced "
+                                f"NaN in {label}; a NaN-tainted trial compares the compiler's "
+                                "scheduling rather than the translation, and a shaped draw "
+                                "is not drawn again"
+                            )
                         if nan_ours.any() and bool((nan_ours == nan_theirs).all()):
                             # A draw that put the subprogram outside its numeric
                             # domain on *both* sides: a square root of a negative,
@@ -1074,6 +1135,7 @@ class BitexactVerifier(Verifier):
             "integer_mismatch": integer_mismatch,
             "redrawn": redrawn,
             "reshaped": reshaped,
+            "shaped": shaped_trials,
         }
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
@@ -1091,7 +1153,7 @@ class BitexactVerifier(Verifier):
         A verdict that does not record it cannot be re-argued later.
 
         Asked for rather than detected, and by the same convention as
-        ``_SIGNATURES`` and ``_PREPARE_INPUTS``: the emitted module declares
+        ``_SIGNATURES``: the emitted module declares
         ``_DEVICE`` if it knows, and an Oracle puts one on its handle. Reaching
         for ``jax.devices()`` here instead would put an accelerator import in
         the core, which is the one thing the core does not do.
@@ -1448,6 +1510,96 @@ class BitexactVerifier(Verifier):
     # -- loading --------------------------------------------------------------
 
     @staticmethod
+    def _load_input_profile(config: dict[str, Any]) -> Callable[..., Any] | None:
+        """The project's ``recast_inputs.py``, when the tree carries one.
+
+        Looked for at the root the run was given -- the same root the
+        sources were read from, so the profile is part of the source
+        artifact and travels, and is digested, with it. A tree without one
+        is the generated path unchanged. A tree with one that does not
+        import, or defines no ``prepare``, is a project whose assertion
+        about its own inputs cannot be read, and that stops the gate rather
+        than being taken as "no profile".
+        """
+        root = config.get("root")
+        if root is None:
+            return None
+        path = Path(root) / INPUT_PROFILE
+        if not path.is_file():
+            return None
+        # Compiled and run by hand rather than through the import machinery:
+        # a SourceFileLoader would drop ``__pycache__/`` into the project
+        # root, and the root is a checkout whose cleanliness is checked.
+        module = types.ModuleType("recast_inputs")
+        module.__file__ = str(path)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise InputProfileError(
+                f"{INPUT_PROFILE} could not be read: {type(error).__name__}: {error}"
+            ) from error
+        try:
+            exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
+        except (Exception, SystemExit) as error:
+            raise InputProfileError(
+                f"{INPUT_PROFILE} does not import: {type(error).__name__}: {error}"
+            ) from error
+        prepare: Callable[..., Any] | None = getattr(module, "prepare", None)
+        if not callable(prepare):
+            raise InputProfileError(
+                f"{INPUT_PROFILE} defines no callable prepare(unit, subprogram, inputs, rng)"
+            )
+        return prepare
+
+    @staticmethod
+    def _shape_inputs(
+        np: Any,
+        prepare: Callable[..., Any],
+        unit_uid: str,
+        name: str,
+        trial: int,
+        drawn: dict[str, Any],
+        rng: Any,
+    ) -> tuple[dict[str, Any], bool]:
+        """Hand one trial's draw to the profile; say whether it shaped it.
+
+        The profile sees a copy, so the only way its work reaches the
+        comparison is by returning it: a hook that edits the draw in place
+        and returns ``None`` would otherwise be a shaped trial judged under
+        the unshaped rules, silently. Returned inputs must name exactly the
+        arguments drawn -- the profile shapes values, it does not rewrite
+        the interface.
+        """
+        site = _profile_site(unit_uid, name, trial)
+        offered = {key: _copy_input(value) for key, value in drawn.items()}
+        try:
+            shaped = prepare(unit_uid, name, offered, rng)
+        except Exception as error:
+            raise InputProfileError(f"{site} raised {type(error).__name__}: {error}") from error
+        if shaped is None:
+            edited = sorted(key for key in drawn if not _same_input(np, offered[key], drawn[key]))
+            if edited:
+                raise InputProfileError(
+                    f"{site} edited {', '.join(edited)} in place and returned None; "
+                    "return the shaped inputs, or None to leave the draw as it is"
+                )
+            return drawn, False
+        if not isinstance(shaped, dict):
+            raise InputProfileError(
+                f"{site} returned {type(shaped).__name__}; return the inputs by argument "
+                "name, or None"
+            )
+        if set(shaped) != set(drawn):
+            missing = sorted(set(drawn) - set(shaped))
+            extra = sorted(set(shaped) - set(drawn))
+            raise InputProfileError(
+                f"{site} returned inputs that do not name the arguments drawn"
+                + (f"; missing {', '.join(missing)}" if missing else "")
+                + (f"; unknown {', '.join(extra)}" if extra else "")
+            )
+        return shaped, True
+
+    @staticmethod
     def _load_candidate(candidate: Candidate, workspace: Path, suffix: str = "_numpy.py") -> Any:
         """Write the candidate's files and import its generated module.
 
@@ -1500,6 +1652,24 @@ class BitexactVerifier(Verifier):
             metrics=metrics,
             detail=detail,
         )
+
+
+def _profile_site(unit_uid: str, name: str, trial: int) -> str:
+    return f"{INPUT_PROFILE}: prepare({unit_uid!r}, {name!r}) at trial {trial}"
+
+
+def _copy_input(value: Any) -> Any:
+    copy = getattr(value, "copy", None)
+    return copy() if callable(copy) else value
+
+
+def _same_input(np: Any, offered: Any, drawn: Any) -> bool:
+    if offered is drawn:
+        return True
+    try:
+        return bool(np.array_equal(np.asarray(offered), np.asarray(drawn), equal_nan=True))
+    except (TypeError, ValueError):
+        return False
 
 
 def factory(**_config: Any) -> BitexactVerifier:

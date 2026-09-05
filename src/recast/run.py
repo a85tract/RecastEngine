@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from recast import OUTPUT_DIRNAME, WORKSPACE_DIRNAME, __version__
-from recast.errors import ConfigError, RecastError, ScannerUnavailable
+from recast.errors import ConfigError, InputProfileError, RecastError, ScannerUnavailable
 from recast.model import (
     Candidate,
     Disclosure,
@@ -1094,6 +1094,12 @@ def _walk_stage(
             verdict = verifier.verify(
                 unit, unit_run.candidate, unit_run.oracle, workspace, executor, config
             )
+        except InputProfileError:
+            # The project's recast_inputs.py shaped a draw the reference
+            # refused. That is the profile's fault, not this unit's: handed
+            # down as a unit failure it would read as a translation defect
+            # and send a repair agent after the engine. The walk ends on it.
+            raise
         except Exception as error:
             # Fail closed: a verifier that crashed has not compared anything,
             # and the unit fails on that rather than the walk ending here.
