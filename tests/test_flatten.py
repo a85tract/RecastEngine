@@ -441,3 +441,66 @@ def test_a_component_written_through_a_companion_call_is_written(tree: Path) -> 
     warm = next(p for p in plans_from_facts(facts) if p.subprogram["name"] == "warm")
     written = {c.name for c in warm.objects[0].components if c.written}
     assert written == {"tleaf", "gs", "ncan"}
+
+
+# --- module state of a private type ------------------------------------------
+
+STRESS = """\
+module stress_mod
+  use types_mod, only: canopy_type
+  implicit none
+  private
+  public :: Stress, InitParams, params_inst
+  integer, parameter :: npft = 4
+  type :: params_type
+     real(8), pointer :: k(:) => null()
+  contains
+     procedure, public :: allocParams
+  end type params_type
+  type(params_type), public, protected :: params_inst
+contains
+  subroutine allocParams(this)
+    class(params_type) :: this
+    allocate(this%k(0:npft))
+  end subroutine allocParams
+
+  subroutine InitParams()
+    call params_inst%allocParams()
+    params_inst%k(:) = 2.0d0
+  end subroutine InitParams
+
+  subroutine Stress(num, filter, inst)
+    integer, intent(in) :: num
+    integer, intent(in) :: filter(:)
+    type(canopy_type), intent(inout) :: inst
+    integer :: f, p
+    do f = 1, num
+       p = filter(f)
+       inst%gs(p) = inst%gs(p) * params_inst%k(p)
+    end do
+  end subroutine Stress
+end module stress_mod
+"""
+
+
+def test_module_state_of_a_private_type_is_reached_by_its_name(tmp_path: Path) -> None:
+    """ELM's ``params_inst`` is public and protected while its type,
+    ``photo_params_type``, is private to PhotosynthesisMod. The adapter and
+    the recorder reach it by use-associating the variable; naming the type
+    would not compile ("Symbol 'photo_params_type' not found in module")."""
+    (tmp_path / "types_mod.f90").write_text(TYPES)
+    (tmp_path / "stress_mod.f90").write_text(STRESS)
+    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:stress_mod")
+    plan = next(
+        p for p in plans_from_facts(frontend.analyze(unit, tmp_path)) if p.subprogram["name"] == "stress"
+    )
+    assert sorted((o.kind, o.name) for o in plan.objects) == [("dummy", "inst"), ("state", "params_inst")]
+    for text in (
+        fortran_adapter("stress_mod", [plan], ["stress"]),
+        recorder_module("stress_mod", [plan], calls=3),
+    ):
+        assert "use types_mod, only: canopy_type" in text
+        assert "use stress_mod, only: params_inst" in text
+        assert "params_type" not in text
+        assert "params_inst%k" in text

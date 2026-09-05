@@ -188,7 +188,8 @@ def recorder_module(
     types: dict[str, str | None] = {}
     for plan in plans:
         for obj in plan.objects:
-            types[obj.type_name] = obj.type_module
+            if obj.kind == "dummy":
+                types[obj.type_name] = obj.type_module  # declared; state is reached by name
             if obj.kind == "state" and obj.module:
                 used.setdefault(obj.module, set()).add(obj.name)
         for state in plan.states:
