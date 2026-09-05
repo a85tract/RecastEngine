@@ -1665,11 +1665,15 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
     banned: set[str] = set()  # found stored under a loop or a traced branch, any pass
 
     def stand_in_call(call: ast.Call) -> bool:
+        # ``_error_code.clubb_at_least_debug_level_api(0)``: a module
+        # function of trace-time values, the backend's static test's own
+        # rule (a ported kernel's call goes through scalar_port_call and
+        # is never spelled this way in a body the rewrite has visited).
         func = call.func
         if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
             return False
         module = rewrite.spelling.modules.get(func.value.id)
-        if module is None or module in rewrite.ports or module in rewrite.bundled:
+        if module is not None and module in rewrite.ports:
             return False
         return not call.keywords and all(ok(a) for a in call.args)
 
