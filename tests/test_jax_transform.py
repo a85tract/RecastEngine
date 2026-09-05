@@ -287,6 +287,18 @@ contains
     end do
     kfound = k
   end subroutine exit_index
+  subroutine next_above(n, m, z, kfound)
+    integer,  intent(in)  :: n, m
+    real(r8), intent(in)  :: z(m)
+    integer,  intent(out) :: kfound(n)
+    integer :: i, k
+    do i = 1, n
+      do k = i, m
+        if ( z(k) > 0.0_r8 ) exit
+      end do
+      kfound(i) = k
+    end do
+  end subroutine next_above
 end module cycle_demo
 """
 
@@ -303,7 +315,12 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_a_carried_flag(tmp_path: P
     import sys
 
     candidate = port(tmp_path, CYCLES, "cycle_demo")
-    assert candidate.notes["jax"]["kernels"] == ["clip_below", "exit_index", "first_above"]
+    assert candidate.notes["jax"]["kernels"] == [
+        "clip_below",
+        "exit_index",
+        "first_above",
+        "next_above",
+    ]
     assert candidate.notes["jax"]["delegated"] == {}
     emitted = candidate.files[Path("cycle_demo_jax.py")].decode()
     assert "continue" not in emitted.replace("continuation", "")
@@ -325,6 +342,10 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_a_carried_flag(tmp_path: P
         assert int(module.first_above(4, 9.0, z)) == 0
         assert int(module.exit_index(4, 2.5, z)) == 3
         assert int(module.exit_index(4, 9.0, z)) == 5  # ran to completion: n + 1
+        # The completion value of an inner DO whose bounds trace (the outer
+        # index): the anchor's Python max over a tracer.
+        zz = np.array([-1.0, 2.0, -1.0])
+        assert np.asarray(module.next_above(3, 3, zz)).tolist() == [2, 2, 4]
     finally:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):

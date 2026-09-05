@@ -51,6 +51,8 @@ __all__ = [
     "_f_mod",
     "_f_modulo",
     "_f_nint",
+    "_f_pymax",
+    "_f_pymin",
     "_f_sign",
     "_f_sqrt",
     "_f_tiny",
@@ -193,6 +195,27 @@ def _f_fori(lo, hi, body, init):
         carry, _ = lax.scan(step, init, indices)
         return carry
     return lax.fori_loop(lo, hi, body, init)
+
+
+def _f_pymax(*values):
+    """Python's ``max`` where every value is a Python or NumPy scalar (a
+    static bound stays a Python int), ``jnp.maximum`` folded otherwise."""
+    if all(isinstance(v, (int, float, np.integer, np.floating)) for v in values):
+        return max(values)
+    out = values[0]
+    for v in values[1:]:
+        out = jnp.maximum(out, v)
+    return out
+
+
+def _f_pymin(*values):
+    """Python's ``min`` the same way, ``jnp.minimum`` folded."""
+    if all(isinstance(v, (int, float, np.integer, np.floating)) for v in values):
+        return min(values)
+    out = values[0]
+    for v in values[1:]:
+        out = jnp.minimum(out, v)
+    return out
 
 
 def _f_trips(lo, hi, step):

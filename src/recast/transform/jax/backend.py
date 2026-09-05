@@ -270,6 +270,19 @@ class CallRewrite(ast.NodeTransformer):
         self.host_calls: list[str] = []
 
     def visit_Call(self, node):
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in ("max", "min") and not node.keywords:
+            # The anchor's Python ``max``/``min`` (a DO variable's completion
+            # value, ``max(0, (ub - lb) // step)``): Python's on tracers is a
+            # boolean conversion. The runtime's keeps Python scalars Python
+            # (a static bound stays static) and folds tracers elementwise.
+            self.generic_visit(node)
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id=f"_f_py{f.id}", ctx=ast.Load()), args=node.args, keywords=[]
+                ),
+                node,
+            )
         self.generic_visit(node)
         f = node.func
         if isinstance(f, ast.Name) and f.id == "_f_ecall" and node.args:
