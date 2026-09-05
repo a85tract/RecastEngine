@@ -62,7 +62,8 @@ __all__ = [
 ]
 
 DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.IGNORECASE)
-ALLOCATE_THIS = re.compile(r"allocate\s*\(\s*this\s*%\s*(\w+)\s*\(([^()]*)\)", re.I)
+ALLOCATE_STMT = re.compile(r"\ballocate\s*\(", re.I)
+COMPONENT_ALLOCATION = re.compile(r"(\w+)\s*%\s*(\w+)\s*\(([^()]*)\)")
 FORTRAN_TYPES = {"float64": "real(8)", "float32": "real(4)", "int32": "integer", "bool": "logical"}
 
 
@@ -145,12 +146,37 @@ class FlatPlan:
     dim_constants: dict[str, int] = field(default_factory=dict)
     """Named extents of the original dummies that are tree constants
     (``a(nrk,nrk)``), so the flat signature can spell them as numbers."""
+    extent_args: dict[str, list[Any]] = field(default_factory=dict)
+    """``{name: [object, component, axis]}``: an integer argument of the
+    adapter carrying an extent the plan could not spell -- an allocation
+    sized by the allocating routine's dummy when the planned subprogram
+    has none of that name (CLUBB's ``coef_wp4_implicit(1:ngrdcol, 1:nz)``
+    under ``advance_wp2_wp3``, which takes ``nzm`` and ``nzt``). The
+    recorder writes it from ``size()``; the sampled gate sizes it like any
+    scalar an array's dims name."""
+
+    left_to_module: list[str] = field(default_factory=list)
+    """What the body reaches that the adapter does not carry: module state
+    its module keeps private (CLUBB's ``error_code % clubb_debug_level``),
+    a character component (``err_info % err_header``). Both sides run with
+    the default, and the plan says so rather than failing."""
     patch_count: str = "np_"
     counter_prefix: str = "num_"
 
     @property
     def name(self) -> str:
         return f"{self.subprogram['name']}_flat"
+
+    def _component_names(self, text: str) -> str:
+        """``obj%comp`` in a bound -> the component's flat name, when the
+        plan carries it; left as written otherwise."""
+        carried = {(o.name, c.name): c.flat for o in self.objects for c in o.components}
+
+        def swap(match: re.Match[str]) -> str:
+            key = (match.group(1).lower(), match.group(2).lower())
+            return carried.get(key, match.group(0))
+
+        return re.sub(r"(\w+)\s*%\s*(\w+)", swap, text)
 
     @property
     def usable(self) -> bool:
@@ -183,6 +209,8 @@ class FlatPlan:
             unsupported=list(data.get("unsupported", [])),
             states=states,
             dim_constants=dict(data.get("dim_constants", {})),
+            left_to_module=list(data.get("left_to_module", [])),
+            extent_args={k: list(v) for k, v in (data.get("extent_args") or {}).items()},
             patch_count=data.get("patch_count", "np_"),
             counter_prefix=data.get("counter_prefix", "num_"),
         )
@@ -211,22 +239,33 @@ class FlatPlan:
                 for dim in entry["dims"]:
                     if dim.get("ub"):
                         ub = str(dim["ub"]).strip().lower()
-                        sized.append({**dim, "ub": str(self.dim_constants.get(ub, dim["ub"]))})
+                        # ``thvm(ngrdcol, gr%nzt)`` (CLUBB's calc_pressure): a
+                        # dummy sized by a component of the object, spelled
+                        # by that component's flat name, an argument here.
+                        ub = self._component_names(ub)
+                        sized.append({**dim, "ub": str(self.dim_constants.get(ub, ub))})
                     else:
                         counter = f"{self.counter_prefix}{entry['name'].lower()}"
                         extent = counter if counter in names else self.patch_count
                         sized.append({"lb": "1", "ub": extent})
                 entry["dims"] = sized
             args.append(entry)
-        args.append(
-            {
-                "name": self.patch_count,
-                "dtype": "int32",
-                "intent": "IN",
-                "optional": False,
-                "dims": None,
-            }
-        )
+        if not any(a["name"].lower() == self.patch_count for a in args):
+            # CLUBB passes ngrdcol explicitly: the driver's extent is a dummy
+            # already there, and declaring it twice does not compile.
+            args.append(
+                {
+                    "name": self.patch_count,
+                    "dtype": "int32",
+                    "intent": "IN",
+                    "optional": False,
+                    "dims": None,
+                }
+            )
+        for name in self.extent_args:
+            args.append(
+                {"name": name, "dtype": "int32", "intent": "IN", "optional": False, "dims": None}
+            )
         for obj in self.objects:
             for comp in obj.components:
                 args.append(
@@ -313,14 +352,51 @@ def _state_declaration(name: str, root: Path) -> tuple[str, str] | None:
                 continue  # a dummy of that type, not the module's variable
             module = MODULE_DEFINITION.search(text)
             return match.group(1).lower(), (module.group(1).lower() if module else "")
+    # Declared in a list over several lines (CLUBB's four sponge settings
+    # under one ``type(sponge_damp_settings), public :: &``): the module
+    # record has read the declaration whole.
+    for path in sources(root):
+        record = _module_record(path, {})
+        for entry in (record or {}).get("module_state", ()):
+            if str(entry.get("name", "")).lower() != name.lower():
+                continue
+            derived = DERIVED.match(str(entry.get("dtype", "")))
+            if derived:
+                return derived.group(1).lower(), str((record or {}).get("module", "")).lower()
     return None
 
 
 def _allocation_bounds(path: Path) -> dict[str, list[str]]:
-    """``component -> [axis bound text, ...]`` from ``allocate (this%c (…))``."""
+    """``component -> [axis bound text, ...]`` from the module's ALLOCATE
+    statements: ``allocate (this%c (…))`` in the CLM family, and CLUBB's
+    ``allocate( gr%zm(ngrdcol,gr%nzm), gr%zt(ngrdcol,gr%nzt), … )`` -- one
+    statement over many components of an object named however the setup
+    routine names its dummy. Continuation lines and comments are folded
+    first; the first allocation of a component wins."""
     out: dict[str, list[str]] = {}
-    for match in ALLOCATE_THIS.finditer(path.read_text(errors="replace")):
-        out.setdefault(match.group(1).lower(), [b.strip() for b in match.group(2).split(",")])
+    text = path.read_text(errors="replace")
+    for start in ALLOCATE_STMT.finditer(text):
+        # The statement: from ``allocate(`` to its matching parenthesis,
+        # across ``&`` continuations, with trailing comments dropped.
+        depth, at = 0, start.end() - 1
+        while at < len(text):
+            character = text[at]
+            if character == "!":
+                at = text.find("\n", at)
+                if at < 0:
+                    break
+                continue
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            at += 1
+        body = text[start.end() : at]
+        for item in COMPONENT_ALLOCATION.finditer(body.replace("&", " ")):
+            axes = [b.strip() for b in item.group(3).split(",")]
+            out.setdefault(item.group(2).lower(), axes)
     return out
 
 
@@ -340,6 +416,11 @@ def _axis(
             return text
         if text in constants:
             return str(constants[text])
+        # A scalar component of the object itself -- CLUBB allocates
+        # ``gr%zm(ngrdcol, gr%nzm)`` -- spelled by that component's flat
+        # name once the plan's objects are known (``_bind_symbolic_extents``).
+        if re.fullmatch(r"\w+\s*%\s*\w+", text):
+            return text
         # An arithmetic bound over constants: ``-nlevsno+1``.
         expression = re.sub(
             r"[A-Za-z_]\w*", lambda m: str(constants.get(m.group(0).lower(), m.group(0))), text
@@ -363,6 +444,8 @@ def _axis(
         extent = patch if low == "1" else None
     elif re.fullmatch(r"-?\d+", low) and re.fullmatch(r"-?\d+", high):
         extent = str(int(high) - int(low) + 1)
+    elif low == "1":
+        extent = high
     else:
         extent = f"({high}) - ({low}) + 1"
     if extent is None:
@@ -531,13 +614,39 @@ def _accesses(
         interesting = objects | set(aliases)
         # ``dummy = hybrid(...)`` parses as any of three node kinds depending
         # on what fparser could tell about the name.
+        # A call spelled by a generic (CLUBB's ``zt2zm_api`` over grid_class's
+        # specifics) is followed into every specific: which one Fortran
+        # picks depends on ranks this walk does not resolve, and the union
+        # of what they touch is what the adapter has to carry.
+        generics: dict[str, list[str]] = {}
+        for _path, module_record_, _sub in procedures.values():
+            for generic, specifics in (module_record_.get("generics") or {}).items():
+                generics.setdefault(generic.lower(), [n.lower() for n in specifics])
+        expanded: list[tuple[Any, str]] = []
         for call in [
             *walk(node, f03.Call_Stmt),
             *walk(node, f03.Part_Ref),
             *walk(node, f03.Function_Reference),
             *walk(node, f03.Structure_Constructor),
         ]:
-            callee = str(call.children[0]).lower()
+            spelled_callee = str(call.children[0]).lower()
+            candidates = generics.get(spelled_callee)
+            if candidates is None:
+                expanded.append((call, spelled_callee))
+                continue
+            # The specifics a call of this arity can reach: Fortran picks by
+            # rank too, which this walk does not resolve, so the union of
+            # what the arity-compatible ones touch is what the adapter carries.
+            given = len(call.children[1].children) if call.children[1] is not None else 0
+            arity = {
+                specific: len(procedures[specific][2]["args"])
+                for specific in candidates
+                if specific in procedures
+            }
+            exact = [n for n, count in arity.items() if count == given]
+            fitting = exact or [n for n, count in arity.items() if count >= given]
+            expanded.extend((call, callee) for callee in fitting)
+        for call, callee in expanded:
             if callee not in procedures:
                 continue
             path, module_record, callee_record = procedures[callee]
@@ -561,6 +670,20 @@ def _accesses(
                 if spelled in aliases:
                     spelled = aliases[spelled].split("%", 1)[0]
                 if spelled in objects or spelled in interesting:
+                    mapping[dummy] = spelled
+                elif (
+                    spelled not in declared_here
+                    and spelled not in procedures
+                    and any(
+                        a["name"].lower() == dummy and DERIVED.match(str(a.get("dtype", "")))
+                        for a in callee_record["args"]
+                    )
+                ):
+                    # A module-state object handed whole to a derived-type
+                    # dummy (CLUBB passes sponge_layer_damping's profile to
+                    # its sponge_damp_xm): followed under the callee's
+                    # dummy, so the components the callee reads come back
+                    # under the state's own name and the plan carries them.
                     mapping[dummy] = spelled
             # A procedure passed as an actual (``hybrid(..., func, ...)``) is
             # called back with the object; its own derived-type dummies are
@@ -612,6 +735,7 @@ def _accesses(
             visited.add(key)
             callee_node = _subprogram_node(path, callee)
             if callee_node is None:
+                visited.discard(key)
                 continue
             _, inner_reads, inner_writes = _accesses(
                 callee_node,
@@ -625,6 +749,9 @@ def _accesses(
                 externals,
                 companions,
             )
+            # A guard against cycles, not a memo: the same callee followed
+            # from another site, under another mapping, is followed again.
+            visited.discard(key)
             callee_dummies = {a["name"].lower() for a in callee_record["args"]}
             for inner, target in ((inner_reads, reads), (inner_writes, writes)):
                 for item in inner:
@@ -776,6 +903,10 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
             touched.setdefault(obj, {}).setdefault(member, False)
             if name in writes:
                 touched[obj][member] = True
+        # Every dummy's type first, so a bound in one object's allocation
+        # naming another object's component finds that type on record.
+        for type_name in dummies.values():
+            type_info(type_name)
         for obj in sorted(touched):
             if obj in dummies:
                 flat = FlatObject(name=obj, type_name=dummies[obj], kind="dummy")
@@ -802,10 +933,36 @@ def plans_for(facts: Any, root: Path, conventions: FlatConventions | None = None
                 (type_files[flat.type_name],),
                 kinds,
             )
+            # A component named by a bound is carried as an input whether
+            # or not the body reads it: by a touched component's allocation
+            # (``gr%zm(ngrdcol, gr%nzm)``), by another object's
+            # (``damping_profile%tau_sponge_damp(gr%nzm)``), or by a dummy's
+            # declaration (``thvm(ngrdcol, gr%nzt)``).
+            named_in_bounds = " ".join(
+                " ".join(type_records[dummies[other]][1].get(member) or [])
+                for other, members in touched.items()
+                if other in dummies and dummies[other] in type_records
+                for member in members
+            )
+            named_in_bounds += " " + " ".join(
+                str(d.get(k) or "")
+                for a in sub["args"]
+                for d in (a.get("dims") or ())
+                for k in ("lb", "ub")
+            )
+            for ref in re.findall(r"(\w+)\s*%\s*(\w+)", named_in_bounds):
+                if ref[0].lower() == obj and ref[1].lower() in comps:
+                    touched[obj].setdefault(ref[1].lower(), False)
             for member, written in sorted(touched[obj].items()):
                 spec = comps.get(member)
                 if spec is None:
                     plan.unsupported.append(f"{obj}%{member}: no such component")
+                    continue
+                if str(spec.get("dtype")) not in FORTRAN_TYPES:
+                    # A character component (CLUBB's err_info%err_header): the
+                    # adapter has no flat spelling for it and the physics reads
+                    # it only to print. Left at the object's default, and said.
+                    plan.left_to_module.append(f"{obj}%{member}: {spec.get('dtype')} not carried")
                     continue
                 found_axes = bounds.get(member)
                 if found_axes is None and spec.get("dims"):
@@ -915,6 +1072,10 @@ def _state_vars(
         if not record:
             continue
         module = str(record.get("module", "")).lower()
+        public = {str(n).lower() for n in record.get("public") or ()}
+        default_private = bool(
+            re.search(r"^\s*private\s*(?:!.*)?$", path.read_text(errors="replace"), re.I | re.M)
+        )
         for entry in record.get("module_state", ()):
             name = str(entry["name"]).lower()
             # Every module *variable* the run may have set -- initialized in
@@ -925,6 +1086,16 @@ def _state_vars(
                 DERIVED.match(str(entry.get("dtype")))
                 or str(entry.get("dtype")) not in FORTRAN_TYPES
             ):
+                # A derived-type state variable is an *object* of the plan
+                # (carried by component, through the objects path); naming
+                # it here as left to the module misdescribed the sponge
+                # profiles CLUBB's solvers read through a companion.
+                continue
+            if default_private and name not in public:
+                # No ``use`` reaches it, so no adapter sets it: both sides
+                # run with the module's own default, and the plan says so.
+                seen.add(name)
+                plan.left_to_module.append(f"{module}%{name}")
                 continue
             dims = entry.get("dims") or []
             names = [
@@ -971,9 +1142,30 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
     state name, which is a scalar argument of the adapter; a name no state
     answers for makes the component unsupported."""
     by_name = {state.name: state.flat for state in plan.states if not state.extents}
+    # A dummy of the subprogram is an argument of the adapter, so an
+    # allocation sized by the allocating routine's dummy of the same name
+    # (``coef_wp4_implicit(1:ngrdcol,1:nz)``, CLUBB) is spelled as written.
+    dummies = {
+        str(a["name"]).lower()
+        for a in plan.subprogram["args"]
+        if not a.get("dims") and not DERIVED.match(str(a["dtype"]))
+    }
+    carried = {(obj.name, comp.name): comp.flat for obj in plan.objects for comp in obj.components}
+    flat_names = set(carried.values())
 
-    def bind(text: str) -> str | None:
+    def bind(text: str, synthetic: str | None = None) -> str | None:
+        """``synthetic`` names the extent argument to stand in when the
+        text is one identifier nothing else answers for."""
         missing: list[str] = []
+
+        def component(match: re.Match[str]) -> str:
+            key = (match.group(1).lower(), match.group(2).lower())
+            if key in carried:
+                return carried[key]
+            missing.append(match.group(0))
+            return match.group(0)
+
+        text = re.sub(r"(\w+)\s*%\s*(\w+)", component, text)
 
         def swap(match: re.Match[str]) -> str:
             token = match.group(0)
@@ -982,17 +1174,30 @@ def _bind_symbolic_extents(plan: FlatPlan) -> None:
                 return token
             if lowered in by_name:
                 return by_name[lowered]
+            if token in flat_names or lowered in dummies:
+                return token  # a component bound just above, or a dummy
             missing.append(token)
             return token
 
         out = re.sub(r"[A-Za-z_]\w*", swap, text)
+        if missing and synthetic is not None:
+            bare = text.strip().strip("()").strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", bare) and bare.lower() == missing[0].lower():
+                return synthetic
         return None if missing else out
 
     for obj in plan.objects:
         kept = []
         for comp in obj.components:
-            extents = [bind(e) for e in comp.extents]
-            bounds = [(bind(lo), bind(hi)) for lo, hi in comp.bounds]
+            names = [f"{comp.flat}_n{axis + 1}" for axis in range(len(comp.extents))]
+            extents = [bind(e, names[axis]) for axis, e in enumerate(comp.extents)]
+            bounds = [
+                (bind(lo), bind(hi, names[axis]) if lo.strip() == "1" else bind(hi))
+                for axis, (lo, hi) in enumerate(comp.bounds)
+            ]
+            for axis, extent in enumerate(extents):
+                if extent == names[axis]:
+                    plan.extent_args[names[axis]] = [obj.name, comp.name, axis + 1]
             if any(e is None for e in extents) or any(
                 lo is None or hi is None for lo, hi in bounds
             ):

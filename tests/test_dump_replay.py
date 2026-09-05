@@ -361,3 +361,23 @@ def test_the_shipped_example_replays_bit_exact(tmp_path: Path) -> None:
     assert set(compared) == {"settle", "column_mass"}
     assert all(outcome["points"] > 0 for outcome in compared.values())
     assert verdict.metrics["uncovered"] == []
+
+
+def test_a_logical_header_scalar_is_an_input() -> None:
+    """CLUBB's ``l_implemented``: the recorder writes a logical ``T``/``F``.
+    The parser took only numbers, so the replay had no value for it."""
+    inputs, _ = parse_dump("# PROBE m.s: call=1\n# l_on = T\n# l_off = F\n# INPUT: x(1)\n1.0\n")
+    assert inputs["l_on"] is not None and bool(inputs["l_on"]) is True
+    assert bool(inputs["l_off"]) is False
+    assert inputs["l_on"].dtype == np.bool_
+
+
+def test_a_zero_extent_array_is_a_value() -> None:
+    """A component the run never allocated (CLUBB's scalar tracers under
+    ``sclr_dim = 0``) is written ``name(1,3,0)`` with nothing under it.
+    Dropped, the replay said the record carried no value for it."""
+    text = "# PROBE m.s: call=1\n# INPUT: s(1,3,0)\n# OUTPUT: t(0)\n# OUTPUT: y(1)\n2.0\n"
+    inputs, outputs = parse_dump(text)
+    assert inputs["s"].shape == (1, 3, 0)
+    assert outputs["t"].shape == (0,)
+    assert outputs["y"].tolist() == [2.0]

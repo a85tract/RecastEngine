@@ -484,3 +484,336 @@ def test_the_adapter_declares_a_lower_bound_and_calls_through_a_generic() -> Non
     assert "use solve_mod, only: solve\n" in text  # both specifics, one generic
     assert "call solve(n=n, x=x)" in text
     assert "solve_one(" not in text.replace("subroutine solve_one_flat(", "")
+
+
+# --- a CLUBB-shaped object: many components in one ALLOCATE, sized by itself
+
+GRID = """\
+module grid_class
+  implicit none
+  private
+  public :: grid, setup_grid
+  integer, parameter :: t_above = 1, t_below = 2
+  type grid
+    integer :: nzm, nzt
+    real(8), allocatable, dimension(:,:) :: zm, zt
+    real(8), allocatable, dimension(:,:,:) :: weights_zt2zm
+    real(8) :: grid_dir
+  end type grid
+contains
+  subroutine setup_grid( ngrdcol, nzmax, gr )
+    integer, intent(in) :: ngrdcol, nzmax
+    type(grid), intent(inout) :: gr
+    integer :: ierr
+    gr%nzm = nzmax
+    gr%nzt = nzmax - 1
+    allocate( gr%zm(ngrdcol,gr%nzm), gr%zt(ngrdcol,gr%nzt), & ! two at once
+              gr%weights_zt2zm(ngrdcol,gr%nzm,t_above:t_below), &
+              stat=ierr )
+    gr%grid_dir = 1.0d0
+  end subroutine setup_grid
+end module grid_class
+"""
+
+COLUMN = """\
+module column_mod
+  use grid_class, only: grid
+  implicit none
+  private
+  public :: ddz
+contains
+  subroutine ddz( nzm, ngrdcol, gr, x, dxdz )
+    integer, intent(in) :: nzm, ngrdcol
+    type(grid), intent(in) :: gr
+    real(8), intent(in), dimension(ngrdcol, nzm) :: x
+    real(8), intent(out), dimension(ngrdcol, nzm) :: dxdz
+    integer :: i, k
+    do k = 1, nzm
+      do i = 1, ngrdcol
+        dxdz(i,k) = gr%grid_dir * x(i,k) * gr%zm(i,k) * gr%weights_zt2zm(i,k,1)
+      end do
+    end do
+  end subroutine ddz
+end module column_mod
+"""
+
+CLUBB_CONVENTIONS = FlatConventions(patch_count="ngrdcol", bounds_pattern=r"^ngrdcol$")
+
+
+def test_an_object_allocated_many_at_once_and_sized_by_itself(tmp_path: Path) -> None:
+    """CLUBB's grid: one ALLOCATE over every component, the object named by
+    the setup routine's dummy rather than ``this``, an axis sized by another
+    component of the same object (``gr%nzm``) and one by the module's
+    private parameters (``t_above:t_below``). The plan carries ``nzm`` as an
+    input the body never reads, spells the extents by it, and declares the
+    driver's extent once, because ``ngrdcol`` is a dummy already."""
+    (tmp_path / "grid_class.f90").write_text(GRID)
+    (tmp_path / "column_mod.f90").write_text(COLUMN)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:column_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    (gr,) = plan.objects
+    by_name = {c.name: c for c in gr.components}
+    assert set(by_name) == {"grid_dir", "zm", "weights_zt2zm", "nzm"}
+    assert by_name["nzm"].written is False
+    assert by_name["zm"].extents == ["ngrdcol", "gr__nzm"]
+    assert by_name["weights_zt2zm"].extents == ["ngrdcol", "gr__nzm", "2"]
+    assert by_name["weights_zt2zm"].bounds[2] == ("1", "2")
+    names = [a["name"] for a in plan.flat_args]
+    assert names.count("ngrdcol") == 1
+    assert names.index("gr__nzm") < names.index("gr__zm")
+    text = fortran_adapter("column_mod", [plan], [])
+    assert "real(8), intent(in) :: gr__zm(ngrdcol, gr__nzm)" in text
+    assert "allocate(gr%zm(1:ngrdcol, 1:gr__nzm))" in text
+
+
+COEFS = """\
+module coefs_mod
+  implicit none
+  private
+  public :: coefs_type, init_coefs
+  type coefs_type
+    real(8), allocatable, dimension(:,:) :: coef
+  end type coefs_type
+contains
+  subroutine init_coefs( ngrdcol, nz, c )
+    integer, intent(in) :: ngrdcol, nz
+    type(coefs_type), intent(out) :: c
+    allocate( c%coef(1:ngrdcol,1:nz) )
+    c%coef = 0.0d0
+  end subroutine init_coefs
+end module coefs_mod
+"""
+
+USES_COEFS = """\
+module solver_mod
+  use coefs_mod, only: coefs_type
+  implicit none
+  private
+  public :: apply
+contains
+  subroutine apply( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    x = x * c%coef(:, 1:nzt)
+  end subroutine apply
+end module solver_mod
+"""
+
+
+def test_an_extent_the_plan_cannot_spell_becomes_an_argument(tmp_path: Path) -> None:
+    """``coef`` is allocated ``(1:ngrdcol, 1:nz)`` by the initializer's dummy
+    ``nz``; the planned subprogram takes ``nzt``, not ``nz``. The extent is
+    the run's own: the plan makes it an integer argument, the recorder writes
+    it from ``size()``, and the adapters declare the component by it."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    assert plan.extent_args == {"c__coef_n2": ["c", "coef", 2]}
+    (coef,) = plan.objects[0].components
+    assert coef.extents == ["ngrdcol", "c__coef_n2"]
+    names = [a["name"] for a in plan.flat_args]
+    assert names.index("c__coef_n2") < names.index("c__coef")
+    adapter = fortran_adapter("solver_mod", [plan], [])
+    assert "integer, intent(in) :: c__coef_n2" in adapter
+    assert "real(8), intent(in) :: c__coef(ngrdcol, c__coef_n2)" in adapter
+    recorder = recorder_module("solver_mod", [plan])
+    assert "'# c__coef_n2 = ', merge(size(c%coef, 2), 0, allocated(c%coef))" in recorder
+    # ngrdcol is a dummy of the probe already: declared once, not assigned.
+    probe = recorder[recorder.index("subroutine rec_apply(") :]
+    assert probe.count("integer :: ngrdcol") == 0
+    assert "ngrdcol = " not in probe.split("phase == 0")[0]
+    again = FlatPlan.from_dict(plan.to_dict())
+    assert again.extent_args == plan.extent_args
+
+
+def test_a_call_continued_with_trailing_comments_is_probed_whole(tmp_path: Path) -> None:
+    """CLUBB continues its calls as ``a, b, & ! In`` on every line: the
+    comment after the ampersand left a blank the joiner did not strip, and
+    the probe carried ``&`` into its argument list."""
+    from recast.oracle.record import probe_tree
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    (tmp_path / "driver_mod.f90").write_text(
+        """\
+module driver_mod
+  use coefs_mod, only: coefs_type
+  use solver_mod, only: apply
+  implicit none
+contains
+  subroutine step( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    call apply( nzt, ngrdcol, & ! In
+                c, &        ! In
+                x )         ! In/out
+  end subroutine step
+end module driver_mod
+"""
+    )
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    plans = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    sites = probe_tree(tmp_path, tmp_path / "probed", {"solver_mod": plans})
+    assert sites == {"apply": 1}
+    probed = (tmp_path / "probed" / "driver_mod.f90").read_text()
+    assert "call rec_apply(0, nzt, ngrdcol, c, x)" in probed
+    assert "&" not in probed.split("call rec_apply(0")[1].split("\n")[0]
+
+
+def test_the_recorder_guards_a_component_the_run_may_not_allocate(tmp_path: Path) -> None:
+    """CLUBB allocates its scalar-tracer coefficients only when sclr_dim > 0;
+    reshape of an unallocated component faulted the recording run."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    recorder = recorder_module("solver_mod", [plan])
+    assert "if (allocated(c%coef)) then" in recorder
+    assert "'# INPUT: c__coef(0,0)'" in recorder
+    assert "merge(size(c%coef, 2), 0, allocated(c%coef))" in recorder
+
+
+def test_the_recorder_writes_the_plain_out_dummies_too(tmp_path: Path) -> None:
+    """CLUBB's advance_* hand back ``wp2``, ``wp3``... as INOUT dummies beside
+    what they write into their objects. Recorded only through the objects,
+    the replay found no value for the required outputs (mono_flux_limiter's
+    ``low_lev_effect``)."""
+    from recast.oracle.record import recorder_module
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    recorder = recorder_module("solver_mod", [plan])
+    assert "call rec_r1(u_apply, 'INPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder
+    assert "call rec_r1(u_apply, 'OUTPUT', 'x', trim(dims), reshape(x, (/size(x)/)))" in recorder
+
+
+SPONGE_STATE = """\
+module sponge_mod
+  implicit none
+  private
+  public :: profile_type, damp, sponge_profile, init_profile
+  type profile_type
+    real(8), allocatable :: tau(:)
+    integer :: n_sponge = 0
+  end type profile_type
+  type(profile_type), public :: sponge_profile
+contains
+  subroutine init_profile( nz, prof )
+    integer, intent(in) :: nz
+    type(profile_type), intent(inout) :: prof
+    allocate( prof%tau(1:nz) )
+    prof%tau = 1.0d0
+    prof%n_sponge = nz
+  end subroutine init_profile
+  function damp( nzt, x, prof ) result( damped )
+    integer, intent(in) :: nzt
+    real(8), intent(in) :: x(nzt)
+    type(profile_type), intent(in) :: prof
+    real(8) :: damped(nzt)
+    if ( allocated( prof%tau ) ) then
+      damped = x * prof%tau(1:nzt)
+    else
+      damped = x
+    end if
+  end function damp
+end module sponge_mod
+"""
+
+HANDS_STATE_TO_FUNCTION = """\
+module advance_mod
+  use coefs_mod, only: coefs_type
+  use sponge_mod, only: damp, sponge_profile
+  implicit none
+  private
+  public :: advance
+contains
+  subroutine advance( nzt, ngrdcol, c, x )
+    integer, intent(in) :: nzt, ngrdcol
+    type(coefs_type), intent(in) :: c
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    integer :: i
+    do i = 1, ngrdcol
+      x(i, :) = damp( nzt, x(i, :), sponge_profile ) * c%coef(i, 1:nzt)
+    end do
+  end subroutine advance
+end module advance_mod
+"""
+
+
+def test_module_state_handed_whole_to_a_function_is_carried(tmp_path: Path) -> None:
+    """CLUBB's advance_xm_wpxp passes sponge_layer_damping's profile object
+    to its sponge_damp_xm function, which reads ``profile%tau_sponge_damp``.
+    The walk followed only the caller's own dummies into callees, so the
+    profile was left to the module and the replay found it unallocated."""
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "sponge_mod.f90").write_text(SPONGE_STATE)
+    (tmp_path / "advance_mod.f90").write_text(HANDS_STATE_TO_FUNCTION)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:advance_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    assert plan.usable, plan.unsupported
+    by_name = {o.name: o for o in plan.objects}
+    assert by_name["sponge_profile"].kind == "state"
+    assert by_name["sponge_profile"].module == "sponge_mod"
+    assert [c.name for c in by_name["sponge_profile"].components] == ["tau"]
+    assert "sponge_mod%sponge_profile" not in plan.left_to_module
+
+
+def test_a_probe_spans_a_blank_line_inside_a_continued_call(tmp_path: Path) -> None:
+    """cpp leaves blank lines where an ``#ifdef`` stood inside CLUBB's
+    advance_clubb_core call; the probe took the blank line for the end of
+    the statement and found no call site to bracket."""
+    from recast.oracle.record import probe_tree
+
+    (tmp_path / "coefs_mod.f90").write_text(COEFS)
+    (tmp_path / "solver_mod.f90").write_text(USES_COEFS)
+    (tmp_path / "caller_mod.f90").write_text(
+        "module caller_mod\n"
+        "  use coefs_mod, only: coefs_type\n"
+        "  use solver_mod, only: apply\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine run( nzt, ngrdcol, c, x )\n"
+        "    integer, intent(in) :: nzt, ngrdcol\n"
+        "    type(coefs_type), intent(in) :: c\n"
+        "    real(8), intent(inout), dimension(ngrdcol, nzt) :: x\n"
+        "    call apply( nzt, ngrdcol, & ! in\n"
+        "\n"
+        "                ! the object\n"
+        "                c, &\n"
+        "\n"
+        "                x )\n"
+        "  end subroutine run\n"
+        "end module caller_mod\n"
+    )
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (plan,) = plans_for(facts, tmp_path, CLUBB_CONVENTIONS)
+    sites = probe_tree(tmp_path, tmp_path / "probed", {"solver_mod": [plan]})
+    assert sites == {"apply": 1}
+    probed = (tmp_path / "probed" / "caller_mod.f90").read_text()
+    assert "call rec_apply(0, nzt, ngrdcol, c, x)" in probed
+    assert "call rec_apply(1, nzt, ngrdcol, c, x)" in probed

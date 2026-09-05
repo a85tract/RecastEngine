@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.errors import ConfigError
-from recast.fortran.flatten import FlatPlan, plans_from_facts, signature
+from recast.fortran.flatten import DERIVED, FlatPlan, plans_from_facts, signature
 from recast.model import Candidate, Facts, Unit
 from recast.transform.jax.translate import KernelToJax, _signatures_of
 from recast.transform.numpy.tree import TreeConventions, TreeTranslation
@@ -193,7 +193,8 @@ class _Rewrite(ast.NodeTransformer):
         self.inits: dict[str, str] = {}  # local -> "int32" | "float64", from its guard init
         self.loop_vars: set[str] = set()  # loop counters: int64 under x64, cast when stored
         self.state_params: list[str] = []  # a helper's module state, taken as parameters
-        self.buffer_outs: dict[str, list[str]] = {}  # anchor _out buffers, elided
+        self.buffer_outs: dict[str, list[str | None]] = {}  # anchor _out buffers, elided
+        self.host_calls: list[str] = []  # companion procedures left on the host, by name
         self.masked: list[str] = []  # statements whose dynamic slices became masks
         self.static_loops: list[str] = []  # loops whose trip count became static
 
@@ -354,6 +355,51 @@ class _Rewrite(ast.NodeTransformer):
             return None
         if isinstance(node.value, ast.Call) and self._flat_callee(node.value) is not None:
             return self._rewrite_call(node.targets[0], node.value)
+        if (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in self.buffer_outs
+        ):
+            # The anchor's result buffer rebound by something other than a
+            # flat callee (a plain companion kernel: ``_out = clip_covar``):
+            # the elision belonged to the earlier call, and the copies that
+            # follow this one are real -- a stale entry dropped them, and
+            # the whole step kept the unclipped fluxes.
+            self.buffer_outs.pop(node.targets[0].id)
+        value = node.value
+        if (
+            len(node.targets) == 1
+            and isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in self.buffer_outs
+            and isinstance(value.slice, ast.Constant)
+            and isinstance(value.slice.value, int)
+        ):
+            # ``stats = _out[0]`` after ``_out = callee(...)`` (the anchor
+            # unpacking an object or an array the callee handed back): the
+            # buffer was elided at the call and the flat outputs bound to
+            # the actuals directly, so an object's unpack is already true
+            # and an array's is the actual it names -- itself, usually.
+            actuals = self.buffer_outs[value.value.id]
+            at = value.slice.value
+            if at >= len(actuals):
+                raise NotFlat(f"{ast.unparse(node)}: the elided buffer has no slot {at}")
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == "_":
+                # ``_ = _out[4]``: an output the anchor discards (an optional
+                # OUT the caller did not ask for, absent on both sides).
+                return None
+            if isinstance(target, ast.Name) and self.spelling.object_of(target) is not None:
+                return None  # an object: its components bound at the call
+            actual = actuals[at]
+            if actual is None:
+                raise NotFlat(f"{ast.unparse(node)}: the elided buffer's slot {at} has no actual")
+            if ast.unparse(target) == actual:
+                return None
+            bound_value = ast.parse(actual, mode="eval").body
+            return self.visit(
+                ast.copy_location(ast.Assign(targets=[target], value=bound_value), node)
+            )
         pending = self._companion_writes(node.value) if isinstance(node.value, ast.Call) else []
         self.generic_visit(node)
         if pending:
@@ -372,13 +418,41 @@ class _Rewrite(ast.NodeTransformer):
             len(node.targets) == 1
             and isinstance(target, ast.Name)
             and target.id in self.inits
+            and target.id in self.statics
             and not isinstance(node.value, ast.Constant)
-            and (_constant_expression(node.value, self.loop_vars) or _table_read(node.value))
+        ):
+            # A trace-time value's store is a Python value of the local's
+            # own kind: ``int(gr__k_lb_zt + dir)`` -- the static arguments
+            # arrive as Python ints through the jit wrapper and as NumPy
+            # int32 from the gate, and a return guard's cond that carries
+            # the local must see the same type on both arms.
+            # Through the runtime: a kernel's implementation is also called
+            # from another kernel's traced body (the dual form), where the
+            # "static" arguments are tracers and Python's int() would be a
+            # concretization error; the shim keeps a tracer a tracer.
+            kind = "_f_pyint" if self.inits[target.id] == "int32" else "_f_pyfloat"
+            node.value = ast.Call(
+                func=ast.Name(id=kind, ctx=ast.Load()), args=[node.value], keywords=[]
+            )
+        if (
+            len(node.targets) == 1
+            and isinstance(target, ast.Name)
+            and target.id in self.inits
+            and target.id not in self.statics  # a trace-time value stays a Python one
+            and not isinstance(node.value, ast.Constant)
+            and (
+                _constant_expression(node.value, self.loop_vars)
+                or _table_read(node.value)
+                or _static_expression(node.value, frozenset(self.statics))
+            )
         ):
             # ``l1 = NL - 1``: a Python int under x64 is an int64, and a
             # ``lax.cond`` arm that assigns it beside one that keeps an
             # int32 has a different output type. The variable's guard init
-            # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is.
+            # (``l1 = 0``, ``obu0 = 0.0``) says which strong type it is. An
+            # expression over static arguments the same: those arrive as
+            # Python ints through the jit wrapper and as NumPy int32 from
+            # the gate, and the arm must not follow the spelling.
             node.value = _jnp(self.inits[target.id], [node.value])
 
         if len(node.targets) == 1 and isinstance(target, ast.Subscript):
@@ -425,6 +499,10 @@ class _Rewrite(ast.NodeTransformer):
         call = node.value
         if isinstance(call, ast.Call) and self._flat_callee(call) is not None:
             return self._rewrite_call(None, call)
+        if isinstance(call, ast.Call):
+            bound = self._bind_buffer_outputs(node, call)
+            if bound is not None:
+                return bound
         # ``_f_copy_out(dst, src)``: an in-place copy is an assignment here.
         if (
             isinstance(call, ast.Call)
@@ -625,7 +703,7 @@ class _Rewrite(ast.NodeTransformer):
         # under tracing, and the recorded run it is gated on never did; the
         # check is dropped and named on the candidate, so the evidence says
         # the kernel no longer aborts where the model would.
-        if node.body and all(isinstance(s, (ast.Raise, ast.Expr, ast.Pass)) for s in node.body):
+        if node.body and all(isinstance(s, ast.Raise) or _inert(s) for s in node.body):
             if any(isinstance(s, ast.Raise) for s in node.body):
                 self.aborts.append(ast.unparse(node.test))
                 if not node.orelse:
@@ -638,10 +716,24 @@ class _Rewrite(ast.NodeTransformer):
                     replaced.extend(seen if isinstance(seen, list) else [seen])
                 return replaced or None
         self.generic_visit(node)
-        if all(isinstance(s, (ast.Pass, ast.Expr)) for s in node.body):
+        if all(_inert(s) for s in node.body):
             # ``if cond: write(iulog, ...)`` -- a log line the anchor already
-            # left as ``pass``; nothing to carry.
-            return [*node.orelse] if node.orelse else None
+            # left as ``pass``; nothing to carry. A call statement is not
+            # inert: a procedure the port left on the host, under its guard,
+            # must stay where it is. An else branch keeps its
+            # guard, inverted: the fold of an early return leaves exactly
+            # ``if returned: pass else: <the rest>``, and running the rest
+            # unconditionally was the returned path's outputs overwritten.
+            if not node.orelse:
+                return None
+            return ast.copy_location(
+                ast.If(
+                    test=ast.UnaryOp(op=ast.Not(), operand=node.test),
+                    body=list(node.orelse),
+                    orelse=[],
+                ),
+                node,
+            )
         return node
 
     def visit_Raise(self, node: ast.Raise) -> Any:
@@ -661,7 +753,7 @@ class _Rewrite(ast.NodeTransformer):
         if self.plan is None:
             self.generic_visit(node)
             return node
-        outs = _outputs(self.plan)
+        outs = _returns(self.plan)
         if self.plan.subprogram["kind"] == "function":
             value = self.visit(node.value) if node.value is not None else ast.Constant(None)
             result = ast.Assign(targets=[ast.Name(id="_result", ctx=ast.Store())], value=value)
@@ -673,6 +765,41 @@ class _Rewrite(ast.NodeTransformer):
             raise NotFlat(
                 f"{ast.unparse(node.func)} takes the object and is called inside an expression"
             )
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_f_ecall"
+            and node.args
+            and isinstance(node.args[0], ast.Attribute)
+            and isinstance(node.args[0].value, ast.Name)
+        ):
+            # ``_f_ecall(_new.calculate_mixture_fraction, ...)``: the
+            # elemental broadcast of a companion's procedure. Its kernel's
+            # implementation goes under the vectorize; a procedure the
+            # companion's port delegated is a host function no tracer can
+            # run, so the caller is not flat either.
+            callee = node.args[0]
+            owner = callee.value
+            assert isinstance(owner, ast.Name)
+            module = self.spelling.modules.get(owner.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is not None:
+                if callee.attr not in port["kernels"]:
+                    raise NotFlat(
+                        f"elemental call of {module}.{callee.attr}, which its port did not lower"
+                    )
+                if (port.get("closures") or {}).get(callee.attr):
+                    raise NotFlat(
+                        f"elemental call of {module}.{callee.attr}, which reads module state"
+                    )
+                self.companions.add(owner.id)
+                node.args[0] = ast.copy_location(
+                    ast.Attribute(
+                        value=ast.Name(id=f"{owner.id}_jax", ctx=ast.Load()),
+                        attr=f"_{callee.attr}_k_impl",
+                        ctx=ast.Load(),
+                    ),
+                    callee,
+                )
         self.generic_visit(node)
         # ``int(x)`` and ``np.float64(x)`` on a traced value: the cast the
         # anchor spells with a Python or NumPy constructor is ``jnp``'s here.
@@ -753,6 +880,55 @@ class _Rewrite(ast.NodeTransformer):
             flats.append(flat)
         return flats
 
+    def _callee_record(self, call: ast.Call) -> dict[str, Any] | None:
+        """The interface record of a kernel a call statement reaches: one of
+        this module's, or a companion port's."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            return (self.own.get("records") or {}).get(func.id)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            module = self.spelling.modules.get(func.value.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is None or func.attr not in port.get("kernels", ()):
+                return None
+            return (port.get("records") or {}).get(func.attr)
+        return None
+
+    def _bind_buffer_outputs(self, node: ast.Expr, call: ast.Call) -> ast.stmt | None:
+        """``callee(..., up3)`` as a statement: the anchor's callee wrote the
+        OUT array in place and returned it; the caller ignored the return.
+        A kernel cannot write in place -- its return *is* the output -- so
+        the statement binds what comes back to the actuals it was passed
+        (CLUBB's advance_xp3 calling skx_module's xp3_lg_2005_ansatz:
+        without this every xp3 came back as the zeros it went in as)."""
+        record = self._callee_record(call)
+        if record is None or record.get("kind") == "function":
+            return None
+        outs = [
+            (at, a)
+            for at, a in enumerate(record["args"])
+            if a["intent"] in ("OUT", "INOUT") and not a.get("optional")
+        ]
+        if not outs:
+            return None
+        by_keyword = {k.arg: k.value for k in call.keywords if k.arg}
+        targets: list[ast.expr] = []
+        for at, a in outs:
+            actual = call.args[at] if at < len(call.args) else by_keyword.get(_py(a["name"]))
+            if actual is None or not isinstance(actual, ast.Name | ast.Subscript):
+                return None
+            target = copy.deepcopy(actual)
+            target.ctx = ast.Store()
+            targets.append(target)
+        target_node: ast.expr = (
+            targets[0] if len(targets) == 1 else ast.Tuple(elts=targets, ctx=ast.Store())
+        )
+        # As an assignment, through the assignment's own path: the callee's
+        # spelling, its state closure and its written state bind there.
+        assign = ast.Assign(targets=[target_node], value=call)
+        bound: ast.stmt | None = self.visit(ast.copy_location(assign, node))
+        return bound
+
     # -- calls into companions ------------------------------------------------
 
     def _companion_call(self, node: ast.Call) -> ast.AST:
@@ -771,7 +947,17 @@ class _Rewrite(ast.NodeTransformer):
             # answers, not physics, and are left as they are.
             return node
         if func.attr not in port["kernels"]:
-            raise NotFlat(f"calls {module}.{func.attr}, which its port did not lower")
+            # The companion's port left this one on the host (CLUBB's
+            # numerical_check.parameterization_check: character arguments,
+            # writes). The call stays the host's, under whatever guard the
+            # anchor put it -- ``if clubb_at_least_debug_level_api(2)``, a
+            # stand-in's answer at trace time, false with statistics off --
+            # and is never traced while the guard holds. If the guard ever
+            # lets it through, the trace fails on it by name, which the
+            # gate reports; refusing the whole kernel for a check that
+            # never runs was the alternative.
+            self.host_calls.append(f"{module}.{func.attr}")
+            return node
         closure: list[ast.expr] = []
         for state in port["closures"].get(func.attr, []):
             flat = f"{module}__{state}"
@@ -817,6 +1003,13 @@ class _Rewrite(ast.NodeTransformer):
         if any(self.spelling.object_of(a) is not None for a in call.args) or any(
             self.spelling.object_of(k.value) is not None for k in call.keywords
         ):
+            return callee
+        optional = {a["name"].lower() for a in callee.subprogram["args"] if a.get("optional")}
+        dummies = [obj for obj in callee.objects if obj.kind == "dummy"]
+        if dummies and all(obj.name in optional for obj in dummies):
+            # Every object the callee takes is optional and this call
+            # leaves them all out (pdf_closure without its implicit
+            # coefficients): still the flat function, with them absent.
             return callee
         return None
 
@@ -895,18 +1088,20 @@ class _Rewrite(ast.NodeTransformer):
         inner.specialized = self.specialized
         body = _rewritten_body(fn, inner)
         if not body or not isinstance(body[-1], ast.Return):
-            body.append(ast.Return(value=_tuple(_outputs(plan))))
+            body.append(ast.Return(value=_tuple(_returns(plan))))
         taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+        optional, optional_defaults = _optional_signature(plan)
+        body = [*_absent_optionals(plan, [*taken, *optional]), *body]
         flat = ast.FunctionDef(
             name=plan.name,
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=n) for n in taken],
+                args=[ast.arg(arg=n) for n in [*taken, *optional]],
                 vararg=None,
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
-                defaults=[],
+                defaults=optional_defaults,
             ),
             body=body,
             decorator_list=[],
@@ -1050,6 +1245,28 @@ class _Rewrite(ast.NodeTransformer):
     def _rewrite_call(self, target: ast.expr | None, call: ast.Call) -> Any:
         callee = self._flat_callee(call)
         assert callee is not None and self.plan is not None
+        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+            module = self.spelling.modules.get(call.func.value.id)
+            port = self.ports.get(module) if module is not None else None
+            if port is not None and callee.name not in port["kernels"]:
+                # The companion's port left this flat function on the host
+                # (CLUBB's numerical_check.parameterization_check: character
+                # arguments). The anchor's statement stays as it is, under
+                # whatever guard the anchor put it -- never traced while
+                # the guard holds, failing by name if it ever does -- and
+                # the note names it; refusing the whole kernel for a check
+                # that never runs was the alternative.
+                self.host_calls.append(f"{module}.{callee.name}")
+                if isinstance(target, ast.Name):
+                    # The anchor's result buffer is the host's now; the
+                    # unpacks that follow read it, under the same guard.
+                    self.buffer_outs.pop(target.id, None)
+                kept: ast.stmt = (
+                    ast.Expr(value=call)
+                    if target is None
+                    else ast.Assign(targets=[target], value=call)
+                )
+                return ast.copy_location(kept, call)
         dummies = [a["name"] for a in callee.subprogram["args"]]
         actual_by_dummy: dict[str, ast.expr] = {}
         for at, given in enumerate(call.args):
@@ -1060,10 +1277,21 @@ class _Rewrite(ast.NodeTransformer):
                 actual_by_dummy[keyword_.arg.lower().rstrip("_")] = keyword_.value
         # Which callee object is which caller object.
         objects: dict[str, str] = {}
+        optional_dummies = {
+            a["name"].lower() for a in callee.subprogram["args"] if a.get("optional")
+        }
+        # An optional object the caller leaves out: the callee's kernel
+        # still takes its components (the flat signature has them), and
+        # its ``present(obj)`` is false at trace time. ``None`` in every
+        # slot, and whatever the kernel hands back for them is dropped.
+        absent: set[str] = set()
         for obj in callee.objects:
             if obj.kind == "dummy":
                 actual = actual_by_dummy.get(obj.name)
                 passed: str | None = self.spelling.object_of(actual) if actual is not None else None
+                if passed is None and actual is None and obj.name in optional_dummies:
+                    absent.add(obj.name)
+                    continue
                 if passed is None:
                     raise NotFlat(f"{callee.subprogram['name']}: object {obj.name} not passed")
                 objects[obj.name] = passed
@@ -1073,12 +1301,51 @@ class _Rewrite(ast.NodeTransformer):
             obj.name: {c.name: c.flat for c in obj.components} for obj in self.plan.objects
         }
         args: list[ast.expr] = []
+        missing_out: dict[int, str] = {}  # arg position -> OUT dummy the anchor did not pass
         for entry in callee.flat_args:
             name = entry["name"]
             if entry["intent"] == "OUT":
                 continue  # returned, not taken -- the emitted convention
             if name == callee.patch_count:
                 args.append(ast.Name(id=self.plan.patch_count, ctx=ast.Load()))
+            elif "__" in name and name.split("__", 1)[0] in absent:
+                args.append(ast.Constant(value=None))
+            elif name in callee.extent_args:
+                # An extent the callee's plan could not spell (an allocatable
+                # component sized by an allocating routine's dummy): the
+                # caller's own extent argument for the same axis when it
+                # has one, else that axis of the caller's component, a
+                # static shape at trace time.
+                owner, comp, axis = callee.extent_args[name]
+                passed_obj = objects.get(owner)
+                own = next(
+                    (
+                        n
+                        for n, (o, c, ax) in self.plan.extent_args.items()
+                        if o == passed_obj and c == comp and ax == axis
+                    ),
+                    None,
+                )
+                if own is not None:
+                    args.append(ast.Name(id=own, ctx=ast.Load()))
+                    continue
+                sized = caller_components.get(passed_obj or "", {}).get(comp)
+                if sized is None:
+                    raise NotFlat(
+                        f"{callee.subprogram['name']}: extent {name} of {owner}%{comp}"
+                        " not in the caller's plan"
+                    )
+                args.append(
+                    ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id=sized, ctx=ast.Load()),
+                            attr="shape",
+                            ctx=ast.Load(),
+                        ),
+                        slice=ast.Constant(value=int(axis) - 1),  # the plan's axis is 1-based
+                        ctx=ast.Load(),
+                    )
+                )
             elif "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
                 flat_name: str | None = caller_components.get(objects[owner], {}).get(comp)
@@ -1096,6 +1363,17 @@ class _Rewrite(ast.NodeTransformer):
             else:
                 actual = actual_by_dummy.get(name.lower())
                 if actual is None:
+                    original = next(
+                        (a for a in callee.subprogram["args"] if _py(a["name"]) == name), None
+                    )
+                    if original is not None and original.get("intent") == "OUT":
+                        # An OUT array the anchor does not pass (it takes
+                        # the result back instead): the flat signature's
+                        # caller-buffer is the anchor's own destination,
+                        # bound once the targets are known below.
+                        missing_out[len(args)] = name
+                        args.append(ast.Constant(value=None))
+                        continue
                     raise NotFlat(f"{callee.subprogram['name']}: no actual for {name}")
                 rewritten: Any = self.visit(copy.deepcopy(actual))
                 if str(entry["dtype"]).startswith("float") and _integer_constant_expression(
@@ -1112,8 +1390,6 @@ class _Rewrite(ast.NodeTransformer):
         elif isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
             # A companion's flat function: its port's kernel, or nothing.
             module = self.spelling.modules[call.func.value.id]
-            if callee.name not in self.ports[module]["kernels"]:
-                raise NotFlat(f"calls {module}.{callee.name}, which its port did not lower")
             self.companions.add(call.func.value.id)
             func = ast.Attribute(
                 value=ast.Name(id=f"{call.func.value.id}_jax", ctx=ast.Load()),
@@ -1122,7 +1398,12 @@ class _Rewrite(ast.NodeTransformer):
             )
         else:
             self.calls.append(callee.name)
-        new_call = ast.Call(func=func, args=args, keywords=[])
+        passed_optionals = [
+            ast.keyword(arg=name, value=self.visit(copy.deepcopy(actual_by_dummy[name])))
+            for name in _optional_params(callee)
+            if name in actual_by_dummy
+        ]
+        new_call = ast.Call(func=func, args=args, keywords=passed_optionals)
         # Outputs back onto the caller's names. The anchor's target tuple
         # lists the callee's OUT/INOUT dummies in declaration order, objects
         # included (the emitted convention); an original output lands on the
@@ -1135,10 +1416,13 @@ class _Rewrite(ast.NodeTransformer):
             anchor_targets = list(target.elts)
         elif target is not None:
             anchor_targets = [target]
+        # Every OUT/INOUT dummy, the optional ones included: the anchor's
+        # return tuple has a slot for each (an absent optional's is ``_``),
+        # and the unpacks that follow index it by position -- CLUBB's
+        # ``stats = _out[3]`` after calc_brunt_vaisala_freq_sqd, whose
+        # ``stats`` is an optional INOUT object.
         original_outs = [
-            _py(a["name"])
-            for a in callee.subprogram["args"]
-            if a["intent"] in ("OUT", "INOUT") and not a.get("optional")
+            _py(a["name"]) for a in callee.subprogram["args"] if a["intent"] in ("OUT", "INOUT")
         ]
         if callee.subprogram["kind"] == "function":
             original_outs = ["_result", *original_outs]
@@ -1166,13 +1450,41 @@ class _Rewrite(ast.NodeTransformer):
                 for name in original_outs
                 if name.lower() in actual_by_dummy
             }
+            # Positional, one entry per output the callee returns: the
+            # anchor unpacks ``_out[k]`` by that position, and an object's
+            # outputs (bound by component) leave their slot empty.
             self.buffer_outs[buffered.id] = [
-                ast.unparse(slot[name]) for name in original_outs if name in slot
+                ast.unparse(slot[name]) if name in slot else None for name in original_outs
             ]
+        for pos, name in missing_out.items():
+            where = slot.get(name)
+            if where is None:
+                raise NotFlat(f"{callee.subprogram['name']}: output {name} has no target")
+            args[pos] = self.visit(copy.deepcopy(where))  # the call holds this same list
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
-        for name in _outputs(callee):
-            if "__" in name and (owner := name.split("__", 1)[0]) in objects:
+        optional_outs = set(_optional_outputs(callee))
+        for name in _returns(callee):
+            if name in optional_outs and (
+                name.lower() not in actual_by_dummy and f"want_{name}" not in actual_by_dummy
+            ):
+                # An optional the caller left out comes back as None: dropped.
+                targets.append(ast.Name(id="_", ctx=ast.Store()))
+            elif (
+                name in optional_outs
+                and name.lower() not in actual_by_dummy
+                and isinstance(buffered, ast.Name)
+            ):
+                # An optional OUT asked for through ``want_<name>``: the
+                # anchor takes it from the buffer (``rcond = _out[k]``), so
+                # a temporary holds it and that unpack rebinds from it.
+                self.temps += 1
+                temp = f"_t{self.temps}"
+                targets.append(ast.Name(id=temp, ctx=ast.Store()))
+                self.buffer_outs[buffered.id][original_outs.index(name)] = temp
+            elif "__" in name and name.split("__", 1)[0] in absent:
+                targets.append(ast.Name(id="_", ctx=ast.Store()))
+            elif "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
                 targets.append(
                     ast.Name(id=caller_components[objects[owner]][comp], ctx=ast.Store())
@@ -1181,6 +1493,12 @@ class _Rewrite(ast.NodeTransformer):
                 targets.append(ast.Name(id=name, ctx=ast.Store()))
             else:
                 where = slot.get(name)
+                passed_as = actual_by_dummy.get(name.lower())
+                if passed_as is not None and _reshaped_name(passed_as) is not None:
+                    # The actual is a reshaped view of a name (sequence
+                    # association); the output comes back in the callee's
+                    # shape, whatever the anchor's own target spelling.
+                    where = passed_as
                 if where is None:
                     raise NotFlat(f"{callee.subprogram['name']}: output {name} has no target")
                 bound: Any = self.visit(copy.deepcopy(where))
@@ -1190,9 +1508,38 @@ class _Rewrite(ast.NodeTransformer):
                     self.temps += 1
                     temp = f"_t{self.temps}"
                     targets.append(ast.Name(id=temp, ctx=ast.Store()))
-                    follow.append(
-                        ast.Assign(targets=[bound], value=ast.Name(id=temp, ctx=ast.Load()))
-                    )
+                    reshaped = _reshaped_name(bound)
+                    if reshaped is not None:
+                        # ``np.reshape(rhs, (n, m, 1), order='F')`` as the
+                        # actual: sequence association, the anchor's view of
+                        # the array in the callee's shape. What comes back
+                        # is reshaped to the array's own shape, the same
+                        # order, and rebinds it.
+                        follow.append(
+                            ast.Assign(
+                                targets=[ast.Name(id=reshaped, ctx=ast.Store())],
+                                value=ast.Call(
+                                    func=ast.Attribute(
+                                        value=ast.Name(id="jnp", ctx=ast.Load()),
+                                        attr="reshape",
+                                        ctx=ast.Load(),
+                                    ),
+                                    args=[
+                                        ast.Name(id=temp, ctx=ast.Load()),
+                                        ast.Attribute(
+                                            value=ast.Name(id=reshaped, ctx=ast.Load()),
+                                            attr="shape",
+                                            ctx=ast.Load(),
+                                        ),
+                                    ],
+                                    keywords=[ast.keyword(arg="order", value=ast.Constant("F"))],
+                                ),
+                            )
+                        )
+                    else:
+                        follow.append(
+                            ast.Assign(targets=[bound], value=ast.Name(id=temp, ctx=ast.Load()))
+                        )
         if not targets:
             return ast.Expr(value=new_call)
         # One output comes back bare (the flat function returns a name, not
@@ -1347,14 +1694,8 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
     casts of those, or a companion scalar kernel called on them
     (``dtime_clm = get_step_size()`` reading the static ``dtstep``). A name
     also stored under a branch or loop is a carried value, not a constant."""
-    nested: set[str] = set()
-    for stmt in fn.body:
-        if isinstance(stmt, ast.Assign):
-            continue
-        for inner in ast.walk(stmt):
-            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
-                nested.add(inner.id)
     concrete: set[str] = set()
+    nested: set[str] = set()
 
     def scalar_port_call(call: ast.Call) -> bool:
         func = call.func
@@ -1377,12 +1718,42 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         )
         return closure_static and all(ok(a) for a in call.args)
 
+    banned: set[str] = set()  # found stored under a loop or a traced branch, any pass
+
+    def stand_in_call(call: ast.Call) -> bool:
+        # ``_error_code.clubb_at_least_debug_level_api(0)``: a module
+        # function of trace-time values, the backend's static test's own
+        # rule (a ported kernel's call goes through scalar_port_call and
+        # is never spelled this way in a body the rewrite has visited).
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            return False
+        module = rewrite.spelling.modules.get(func.value.id)
+        if module is not None and module in rewrite.ports:
+            return False
+        return not call.keywords and all(ok(a) for a in call.args)
+
     def ok(node: ast.expr) -> bool:
         if isinstance(node, ast.Constant):
-            return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+            return isinstance(node.value, (int, float, bool))
         if isinstance(node, ast.Name):
+            if node.id in banned:
+                return False
             return node.id.isupper() or node.id in rewrite.statics or node.id in concrete
+        if isinstance(node, ast.BoolOp):
+            return all(ok(v) for v in node.values)  # l_a .and. l_b over switches
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return ok(node.operand)
+        if isinstance(node, ast.Compare):
+            return ok(node.left) and all(ok(c) for c in node.comparators)
         if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id.startswith("_")
+                and node.attr.isupper()
+                and len(node.attr) > 1
+            ):
+                return True  # ``_mod.IIPDF_NEW``: a module constant through its alias
             flat = rewrite.spelling.of(node)
             return flat is not None and flat in rewrite.statics
         if isinstance(node, ast.BinOp) and isinstance(
@@ -1394,6 +1765,12 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "int" and len(node.args) == 1:
                 return ok(node.args[0])
+            if stand_in_call(node):
+                # ``_error_code.clubb_at_least_debug_level_api(0)``: a
+                # framework stand-in's function of trace-time values, a
+                # Python value at trace time -- the backend's static test
+                # takes it, so a count under it is a trace-time value.
+                return True
             if (
                 isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
@@ -1405,39 +1782,92 @@ def _concrete_scalars(fn: ast.FunctionDef, rewrite: _Rewrite) -> frozenset[str]:
             return scalar_port_call(node)
         return False
 
-    for stmt in fn.body:
-        if not isinstance(stmt, ast.Assign):
-            continue
-        target = stmt.targets[0]
-        names = [
-            t.id
-            for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
-            if isinstance(t, ast.Name)
-        ]
-        if (
-            len(stmt.targets) == 1
-            and isinstance(target, ast.Name)
-            and target.id not in nested
-            and ok(stmt.value)
-        ):
-            concrete.add(target.id)
-        else:
-            # A later store that is not a concrete scalar (a tuple from a
-            # kernel call, a traced expression) un-makes the name: the
-            # UB-guard ``day = 0`` alone does not a constant make.
-            for name in names:
-                concrete.discard(name)
-    return frozenset(concrete)
+    def stores(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            for inner in ast.walk(stmt):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                    nested.add(inner.id)
+
+    def return_guard(test: ast.expr) -> bool:
+        # ``if not _ret``: the rest of the function after a possible early
+        # return, not a branch on data -- a trace-time value stored there
+        # is one still (advance_xm_wpxp counts its right-hand sides after
+        # its error checks).
+        return (
+            isinstance(test, ast.UnaryOp)
+            and isinstance(test.op, ast.Not)
+            and isinstance(test.operand, ast.Name)
+            and test.operand.id == "_ret"
+        )
+
+    def scan(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, ast.If) and (return_guard(stmt.test) or ok(stmt.test)):
+                # A branch decided at trace time (CLUBB's ``nrhs`` counted
+                # under its configuration switches): its stores are as
+                # much a trace-time value as the top level's.
+                scan(stmt.body)
+                scan(stmt.orelse)
+                continue
+            if not isinstance(stmt, ast.Assign):
+                stores([stmt])
+                continue
+            target = stmt.targets[0]
+            names = [
+                t.id
+                for t in (target.elts if isinstance(target, ast.Tuple) else stmt.targets)
+                if isinstance(t, ast.Name)
+            ]
+            if (
+                len(stmt.targets) == 1
+                and isinstance(target, ast.Name)
+                and target.id not in nested
+                and target.id not in banned
+                and ok(stmt.value)
+            ):
+                concrete.add(target.id)
+            else:
+                # A later store that is not a concrete scalar (a tuple from
+                # a kernel call, a traced expression) un-makes the name: the
+                # UB-guard ``day = 0`` alone does not a constant make.
+                for name in names:
+                    concrete.discard(name)
+
+    # To a fixpoint: whether a branch is static may turn on a name the scan
+    # finds concrete, and a store under a loop found later un-makes one.
+    seen: frozenset[str] = frozenset()
+    for _ in range(8):
+        concrete.clear()
+        nested.clear()
+        scan(fn.body)
+        banned |= nested  # a name a branch's staticness leaned on may be one of them
+        concrete.difference_update(banned)
+        if frozenset(concrete) == seen:
+            break
+        seen = frozenset(concrete)
+    return seen
 
 
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.associates = _associates(fn)
     rewrite.inits = _guard_inits(fn)
-    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(fn, rewrite)
+    # Concreteness is judged on the body as the exits leave it: a store
+    # after an early return sits under the return's guard, a traced branch,
+    # and is a carried value there, whatever its expression.
+    probe = copy.deepcopy(fn)
+    try:
+        probe.body = _single_exit([copy.deepcopy(s) for s in fn.body])
+    except NotFlat:
+        pass  # the rewrite below refuses the same way; judge the body as it is
+    rewrite.statics = frozenset(rewrite.statics) | _concrete_scalars(probe, rewrite)
     lowered: list[ast.stmt] = []
+    body = [copy.deepcopy(s) for s in fn.body]
+    # Fixed-length windows with traced bounds first, so the mask rules never
+    # see them: ``x(k-w:k+w)`` is a gather at ``lo + arange(2w+1)``.
+    _window_slices(body, frozenset(rewrite.statics))
     # Single exit first, on the anchor's own returns: the flat return that
     # replaces them is one statement at the end.
-    for statement in _single_exit([copy.deepcopy(s) for s in fn.body]):
+    for statement in _single_exit(body):
         result = rewrite.visit(statement)
         if result is None:
             continue
@@ -1445,10 +1875,16 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     int_locals = frozenset(_integer_inits(fn)) | frozenset(
         n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
     )
-    lowered = _WhileLoops(_integer_inits(fn), int_locals).visit_block(lowered)
-    # The goto-region flags are synthetic locals with no UB-guard init; an
-    # enclosing loop carries them, and the initial carry tuple needs a value
-    # before the loop. Every flag starts False at the top of the function.
+    from recast.transform.jax.backend import _string_inits
+
+    lowered = _WhileLoops(_integer_inits(fn), int_locals, _string_inits(fn.body)).visit_block(
+        lowered
+    )
+    # The goto-region and while-exit flags are synthetic locals with no
+    # UB-guard init; an enclosing loop or branch carries them (a while inside
+    # an if inside a do: CLUBB's grid interpolation), and the initial carry
+    # tuple needs a value before it. Every flag starts False at the top of
+    # the function; the one beside its loop resets it on every entry.
     flags = sorted(
         {
             n.id
@@ -1456,7 +1892,7 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
             for n in ast.walk(stmt)
             if isinstance(n, ast.Name)
             and isinstance(n.ctx, ast.Store)
-            and re.fullmatch(r"_(?:skip|restart)_\d+", n.id)
+            and re.fullmatch(r"_(?:skip|restart|done)_\d+", n.id)
         }
     )
     lowered = [
@@ -1476,7 +1912,298 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
                 and rewrite._is_dynamic(node.upper)
             ):
                 raise NotFlat(f"a dynamic slice outside a store or a sum: {ast.unparse(node)}")
-    return lowered
+    # The names that hold a trace-time value ride along to the backend on a
+    # marker it strips: its static tests and its literal strengthening must
+    # know them (a shape counted under switches, ``zeros((n, nrhs))``).
+    marker = ast.Pass()
+    setattr(marker, "recast_statics", frozenset(rewrite.statics))  # noqa: B010
+    return [marker, *_rebuilt_objects(lowered, rewrite), *lowered]
+
+
+def _rebuilt_objects(lowered: list[ast.stmt], rewrite: _Rewrite) -> list[ast.stmt]:
+    """A dummy object the body still hands whole to the host -- a stand-in's
+    query on it (``var_on_stats_list(stats, name)``), a check the port left
+    on the host under its guard -- is rebuilt once, at entry, from the
+    components the kernel takes, the way the NumPy flat wrapper rebuilds
+    it before its call. A Python record at trace time; the components are
+    what flow, and nothing carries the record."""
+    if rewrite.plan is None:
+        return []
+    # An optional dummy the plan leaves out is absent (``k = None`` at the
+    # top, by _absent_optionals): the body's ``present(k)`` must stay false.
+    optional = {
+        _py(a["name"]) for a in rewrite.plan.subprogram.get("args") or () if a.get("optional")
+    }
+    whole = {
+        node.id
+        for statement in lowered
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    rebuilt: list[ast.stmt] = []
+    for obj in rewrite.plan.objects:
+        if obj.kind != "dummy" or obj.name not in whole or obj.name in optional:
+            continue
+        if not obj.components:
+            continue
+        rebuilt.append(
+            ast.fix_missing_locations(
+                ast.Assign(
+                    targets=[ast.Name(id=obj.name, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id="_host", ctx=ast.Load()),
+                            attr="_Record",
+                            ctx=ast.Load(),
+                        ),
+                        args=[],
+                        keywords=[
+                            ast.keyword(arg=c.name, value=ast.Name(id=c.flat, ctx=ast.Load()))
+                            for c in obj.components
+                        ],
+                    ),
+                )
+            )
+        )
+    return rebuilt
+
+
+Affine = tuple[dict[str, int], int]
+"""A linear form: ``{name: coefficient}`` and a constant."""
+
+
+def _reshaped_name(node: ast.expr) -> str | None:
+    """``np.reshape(x, shape, order='F')`` / ``jnp.reshape(...)`` /
+    ``x.reshape(...)`` over a bare name: that name."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "reshape"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in ("np", "jnp")
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "reshape"
+        and isinstance(func.value, ast.Name)
+    ):
+        return func.value.id
+    return None
+
+
+def _static_name(name: str, statics: frozenset[str]) -> bool:
+    return name in statics or (name.isupper() and len(name) > 1)
+
+
+def _static_atom(node: ast.expr, statics: frozenset[str]) -> bool:
+    """An expression over static names and constants only -- ``dir * n``,
+    a Python int at trace time -- taken whole as one term of a form."""
+    names = [n for n in ast.walk(node) if isinstance(n, ast.Name)]
+    return bool(names) and all(_static_name(n.id, statics) for n in names)
+
+
+def _affine(
+    node: ast.expr, env: dict[str, ast.expr | None], statics: frozenset[str], depth: int = 0
+) -> Affine | None:
+    """The linear form of an integer expression: ``{term: coefficient}``
+    and a constant, a term being a traced name or a static atom (spelled
+    ``@<text>``, over static names only). A local that was assigned an
+    affine expression in scope (``k_start = k - dir * n``) is
+    substituted; None where the expression is not linear."""
+    if depth > 8:
+        return None
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int) and not isinstance(node.value, bool):
+            return {}, int(node.value)
+        return None
+    if isinstance(node, ast.Name):
+        bound = env.get(node.id)
+        if bound is not None:
+            inner = _affine(bound, env, statics, depth + 1)
+            if inner is not None:
+                return inner
+        if _static_name(node.id, statics):
+            return {f"@{node.id}": 1}, 0
+        return {node.id: 1}, 0
+    if not isinstance(node, ast.Name | ast.Constant) and _static_atom(node, statics):
+        return {f"@{ast.unparse(node)}": 1}, 0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
+        inner = _affine(node.operand, env, statics, depth)
+        if inner is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return inner
+        return {k: -v for k, v in inner[0].items()}, -inner[1]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Sub | ast.Mult):
+        left = _affine(node.left, env, statics, depth)
+        right = _affine(node.right, env, statics, depth)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Mult):
+            if not left[0]:
+                scale, form = left[1], right
+            elif not right[0]:
+                scale, form = right[1], left
+            else:
+                return None
+            return {k: v * scale for k, v in form[0].items()}, form[1] * scale
+        sign = 1 if isinstance(node.op, ast.Add) else -1
+        coeffs = dict(left[0])
+        for k, v in right[0].items():
+            coeffs[k] = coeffs.get(k, 0) + sign * v
+        return {k: v for k, v in coeffs.items() if v}, left[1] + sign * right[1]
+    if (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and not node.keywords
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "int")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("int32", "int64")
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+            )
+        )
+    ):
+        return _affine(node.args[0], env, statics, depth)
+    return None
+
+
+def _affine_ast(form: Affine) -> ast.expr:
+    """``2 * (dir * n) + 1`` back as an expression, over static atoms only."""
+    coeffs, const = form
+    out: ast.expr = ast.Constant(value=const)
+    for key in sorted(coeffs):
+        atom: ast.expr = ast.parse(key[1:], mode="eval").body
+        term: ast.expr = ast.BinOp(left=ast.Constant(value=coeffs[key]), op=ast.Mult(), right=atom)
+        out = ast.BinOp(left=out, op=ast.Add(), right=term)
+    return out
+
+
+class _Windows(ast.NodeTransformer):
+    """``x[i - 1, k_start - 1:k_end:dir]`` where ``k_start`` and ``k_end``
+    are ``k -+ dir * n``: bounds that trace, a distance apart that does not.
+    The slice becomes the index ``lo + arange(trips) * step`` -- a gather
+    of static length at a traced offset, a scatter when stored -- with
+    the trip count the runtime's ``_f_trips(0, distance, step)`` over
+    static names, a Python int at trace time. Fortran's windows (CLUBB's
+    hole filler draws ``num_hf_draw_points`` levels either side of ``k``)
+    are this; a slice whose length depends on a traced bound is the mask
+    rules' business and is left to them."""
+
+    def __init__(self, env: dict[str, ast.expr | None], statics: frozenset[str]) -> None:
+        self.env = env
+        self.statics = statics
+
+    def _dynamic(self, node: ast.expr) -> bool:
+        return any(
+            isinstance(n, ast.Name) and not _static_name(n.id, self.statics) for n in ast.walk(node)
+        )
+
+    def _window(self, element: ast.Slice) -> ast.expr | None:
+        if element.upper is None:
+            return None
+        lower: ast.expr = element.lower if element.lower is not None else ast.Constant(0)
+        if not (self._dynamic(lower) or self._dynamic(element.upper)):
+            return None
+        if element.step is not None and self._dynamic(element.step):
+            return None
+        hi = _affine(element.upper, self.env, self.statics)
+        lo = _affine(lower, self.env, self.statics)
+        if hi is None or lo is None:
+            return None
+        coeffs = dict(hi[0])
+        for k, v in lo[0].items():
+            coeffs[k] = coeffs.get(k, 0) - v
+        coeffs = {k: v for k, v in coeffs.items() if v}
+        if any(not k.startswith("@") for k in coeffs):
+            return None  # a traced term survives: the length traces too
+        distance = _affine_ast((coeffs, hi[1] - lo[1]))
+        step: ast.expr = (
+            copy.deepcopy(element.step) if element.step is not None else ast.Constant(1)
+        )
+        trips = ast.Call(
+            func=ast.Name(id="_f_trips", ctx=ast.Load()),
+            args=[ast.Constant(0), distance, step],
+            keywords=[],
+        )
+        offsets: ast.expr = _jnp("arange", [trips])
+        if not (isinstance(step, ast.Constant) and step.value == 1):
+            offsets = ast.BinOp(left=offsets, op=ast.Mult(), right=copy.deepcopy(step))
+        return ast.BinOp(left=copy.deepcopy(lower), op=ast.Add(), right=offsets)
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        self.generic_visit(node)
+        elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        changed = False
+        out: list[ast.expr] = []
+        for element in elts:
+            window = self._window(element) if isinstance(element, ast.Slice) else None
+            if window is None:
+                out.append(element)
+            else:
+                out.append(window)
+                changed = True
+        if changed:
+            node.slice = ast.Tuple(elts=out, ctx=ast.Load()) if len(out) > 1 else out[0]
+        return node
+
+
+def _window_slices(stmts: list[ast.stmt], statics: frozenset[str]) -> None:
+    """Rewrite the windows in a block in place, an affine local's
+    definition in scope where a bound names one."""
+
+    def block(body: list[ast.stmt], env: dict[str, ast.expr | None]) -> set[str]:
+        assigned: set[str] = set()
+        for st in body:
+            if isinstance(st, ast.Assign):
+                _Windows(env, statics).visit(st)
+                for target in st.targets:
+                    if isinstance(target, ast.Name):
+                        affine = _affine(st.value, env, statics) is not None
+                        env[target.id] = st.value if affine else None
+                        assigned.add(target.id)
+            elif isinstance(st, ast.AugAssign):
+                _Windows(env, statics).visit(st)
+                if isinstance(st.target, ast.Name):
+                    env[st.target.id] = None
+                    assigned.add(st.target.id)
+            elif isinstance(st, ast.If | ast.While):
+                _Windows(env, statics).visit(st.test)
+                inner = block(st.body, dict(env)) | block(st.orelse, dict(env))
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            elif isinstance(st, ast.For):
+                _Windows(env, statics).visit(st.iter)
+                scope = dict(env)
+                if isinstance(st.target, ast.Name):
+                    scope[st.target.id] = None
+                inner = block(st.body, scope) | block(st.orelse, dict(scope))
+                if isinstance(st.target, ast.Name):
+                    inner.add(st.target.id)
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            elif isinstance(st, ast.Try):
+                inner = block(st.body, dict(env))
+                for handler in st.handlers:
+                    inner |= block(handler.body, dict(env))
+                inner |= block(st.orelse, dict(env)) | block(st.finalbody, dict(env))
+                for name in inner:
+                    env[name] = None
+                assigned |= inner
+            else:
+                _Windows(env, statics).visit(st)
+        return assigned
+
+    block(stmts, {})
 
 
 def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
@@ -1491,8 +2218,90 @@ def _dim_sources(args: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return sources
 
 
+def _inert(statement: ast.stmt) -> bool:
+    """A statement with nothing to carry: ``pass``, or a bare constant (a
+    docstring, a log line the anchor left as a string)."""
+    return isinstance(statement, ast.Pass) or (
+        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+    )
+
+
 def _has_return(stmts: list[ast.stmt]) -> bool:
     return any(isinstance(n, ast.Return) for s in stmts for n in ast.walk(s))
+
+
+def _fold_returns(stmts: list[ast.stmt], rest: list[ast.stmt]) -> list[ast.stmt] | None:
+    """``stmts`` followed by ``rest`` with every early ``return`` folded into
+    the branch structure: the continuation moves into the branches that do
+    not return, so the function's one return at the end is reached by all
+    paths with the outputs as the early return would have left them. None
+    when a return sits inside a loop, which this fold cannot express."""
+    out: list[ast.stmt] = []
+    for at, statement in enumerate(stmts):
+        if isinstance(statement, ast.Return):
+            return out  # what follows is never reached on this path
+        if isinstance(statement, ast.For | ast.While) and _has_return([statement]):
+            return None
+        if isinstance(statement, ast.If) and _has_return([statement]):
+            # The continuation, itself folded: a return further down the
+            # same block would otherwise ride into the branch unfolded.
+            tail = _fold_returns(stmts[at + 1 :], rest)
+            if tail is None:
+                return None
+            body = _fold_returns(statement.body, copy.deepcopy(tail))
+            orelse = _fold_returns(statement.orelse, copy.deepcopy(tail))
+            if body is None or orelse is None:
+                return None
+            return [
+                *out,
+                ast.copy_location(
+                    ast.If(test=statement.test, body=body or [ast.Pass()], orelse=orelse),
+                    statement,
+                ),
+            ]
+        out.append(statement)
+    return [*out, *rest]
+
+
+def _guard_after_returns(stmts: list[ast.stmt]) -> list[ast.stmt]:
+    """``return`` -> ``_ret = True``; what follows a statement that may have
+    returned, in the same block, runs under one ``if not _ret`` -- the whole
+    remainder as one block, so a call's result buffer (``_out``, never a
+    carry) and its unpacks stay together -- recursively through branches
+    and loop bodies."""
+    out: list[ast.stmt] = []
+    for at, statement in enumerate(stmts):
+        had_return = _has_return([statement])  # before the rewrite takes the returns away
+        if isinstance(statement, ast.Return):
+            # ``jnp.bool_(True)``, not the literal: a literal store is a
+            # trace-time constant to the backend, which would not carry the
+            # flag out of the loop or the branch that set it.
+            rewritten: ast.stmt = ast.copy_location(
+                ast.Assign(
+                    targets=[ast.Name(id="_ret", ctx=ast.Store())],
+                    value=_jnp("bool_", [ast.Constant(True)]),
+                ),
+                statement,
+            )
+        else:
+            rewritten = statement
+            for field in ("body", "orelse"):
+                inner = getattr(statement, field, None)
+                if isinstance(inner, list) and inner:
+                    setattr(statement, field, _guard_after_returns(inner))
+        out.append(rewritten)
+        if had_return:
+            rest = _guard_after_returns(stmts[at + 1 :])
+            if rest:
+                out.append(
+                    ast.If(
+                        test=ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load())),
+                        body=rest,
+                        orelse=[],
+                    )
+                )
+            return out
+    return out
 
 
 def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -1504,57 +2313,100 @@ def _single_exit(body: list[ast.stmt]) -> list[ast.stmt]:
     if not early or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return body
     # The merge is one ``jnp.where`` over one value: a function with several
-    # outputs returns a tuple, which ``where`` cannot select.
-    for statement in body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-                raise NotFlat(
-                    f"an early return in a function with several outputs: {ast.unparse(node)}"
-                )
-
-    class Returns(ast.NodeTransformer):
-        def visit_Return(self, node: ast.Return) -> Any:
-            value = node.value if node.value is not None else ast.Constant(None)
-            return [
-                ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
-                ast.Assign(
-                    targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
-                ),
-            ]
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-            return node  # a nested function's returns are its own
-
-    out: list[ast.stmt] = [
-        ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
-        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=ast.Constant(0.0)),
+    # outputs returns a tuple, which ``where`` cannot select. When every
+    # early return hands back the same tuple the final one does (CLUBB's
+    # advance_clubb_core: ``if ( fatal ) return`` after each solver, the
+    # outputs as they stand), the returns fold into the branch structure
+    # instead: what follows a returning branch moves into the branches that
+    # do not return, and the one return at the end is reached by all.
+    tuples = [
+        node
+        for statement in body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
     ]
-    exited = False
-    for statement in body[:-1]:
-        had_return = _has_return([statement])  # before the visit rewrites it away
-        rewritten: Any = Returns().visit(statement)
-        rewritten = rewritten if isinstance(rewritten, list) else [rewritten]
-        not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
-        if exited and len(rewritten) == 1 and isinstance(rewritten[0], ast.While):
-            # A loop is not wrapped -- its done flag is the loop's own carry
-            # and must not become an enclosing branch's -- but its condition
-            # takes the flag: a loop after a return does not run.
-            loop = rewritten[0]
-            forever = isinstance(loop.test, ast.Constant) and loop.test.value is True
-            loop.test = (
-                not_returned
-                if forever
-                else ast.BoolOp(op=ast.And(), values=[loop.test, copy.deepcopy(not_returned)])
+    if tuples:
+        final = body[-1]
+        final_value = final.value
+        same = final_value is not None and all(
+            node.value is not None and ast.dump(node.value) == ast.dump(final_value)
+            for node in tuples
+        )
+        if not same:
+            raise NotFlat(
+                f"an early return in a function with several outputs: {ast.unparse(tuples[0])}"
             )
-            out.append(loop)
-        elif exited:
-            out.append(ast.If(test=not_returned, body=rewritten, orelse=[]))
-        else:
-            out.extend(rewritten)
-        if had_return:
-            exited = True
+        folded = _fold_returns(body[:-1], [])
+        if folded is not None:
+            return [*folded, final]
+        # A return inside a loop (advance_clubb_core checks the error code
+        # per column): a flag instead. The return sets it, every later
+        # statement at every level runs under ``if not _ret``, and the
+        # loop's remaining iterations do nothing; the one return at the
+        # end hands back the outputs as the early return left them.
+        return [
+            ast.Assign(
+                targets=[ast.Name(id="_ret", ctx=ast.Store())],
+                value=_jnp("bool_", [ast.Constant(False)]),
+            ),
+            *_guard_after_returns(body[:-1]),
+            final,
+        ]
+
     final = body[-1]
     assert isinstance(final, ast.Return) and final.value is not None
+    not_returned = ast.UnaryOp(op=ast.Not(), operand=ast.Name(id="_ret", ctx=ast.Load()))
+
+    def guard(stmts: list[ast.stmt]) -> list[ast.stmt]:
+        """``return v`` -> ``_r = v; _ret = True``; what follows a statement
+        that may have returned, in the same block, runs under one ``if not
+        _ret`` -- the whole remainder as one block, so a trace-time value
+        set after the check is one still where the rest reads it --
+        recursively through branches and loop bodies."""
+        out: list[ast.stmt] = []
+        for at, statement in enumerate(stmts):
+            had_return = _has_return([statement])
+            if isinstance(statement, ast.Return):
+                value = statement.value if statement.value is not None else ast.Constant(None)
+                out.append(
+                    ast.copy_location(
+                        ast.Assign(targets=[ast.Name(id="_r", ctx=ast.Store())], value=value),
+                        statement,
+                    )
+                )
+                out.append(
+                    ast.Assign(
+                        targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(True)
+                    )
+                )
+            else:
+                if not isinstance(statement, ast.FunctionDef):
+                    for field in ("body", "orelse"):
+                        inner = getattr(statement, field, None)
+                        if isinstance(inner, list) and inner:
+                            setattr(statement, field, guard(inner))
+                out.append(statement)
+            if had_return:
+                rest = guard(stmts[at + 1 :])
+                if rest:
+                    out.append(ast.If(test=copy.deepcopy(not_returned), body=rest, orelse=[]))
+                return out
+        return out
+
+    # The flag and the value the early return hands back, placed before the
+    # first statement that may return -- after the guard inits, so the
+    # value can be shaped like what the final return hands back (an array
+    # output beside a scalar placeholder is a cond with unequal arms).
+    first = next(at for at, statement in enumerate(body[:-1]) if _has_return([statement]))
+    out: list[ast.stmt] = [
+        *body[:first],
+        ast.Assign(targets=[ast.Name(id="_ret", ctx=ast.Store())], value=ast.Constant(False)),
+        ast.Assign(
+            targets=[ast.Name(id="_r", ctx=ast.Store())],
+            value=_jnp("zeros_like", [copy.deepcopy(final.value)]),
+        ),
+        *guard(body[first:-1]),
+    ]
     merged = _jnp(
         "where",
         [ast.Name(id="_ret", ctx=ast.Load()), ast.Name(id="_r", ctx=ast.Load()), final.value],
@@ -1676,10 +2528,12 @@ class _WhileLoops(ast.NodeTransformer):
         self,
         constants: dict[str, int] | None = None,
         int_locals: frozenset[str] | None = None,
+        strings: frozenset[str] | None = None,
     ) -> None:
         self.n = 0
         self.constants = constants or {}
         self.int_locals = int_locals or frozenset()
+        self.strings = strings or frozenset()  # character locals: never a carry
 
     def visit_block(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
         out: list[ast.stmt] = []
@@ -1978,12 +2832,20 @@ class _WhileLoops(ast.NodeTransformer):
                 exited = True
         for statement in guarded:
             ast.fix_missing_locations(statement)
-        carried = [n for n in _assigned_names(guarded) if n != done]  # type: ignore[no-untyped-call]
-        state = [*carried, done]
         try:
-            lowered = KernelLowerer().lower_block(guarded, 1)  # type: ignore[no-untyped-call]
+            lowered = KernelLowerer(strings=self.strings).lower_block(guarded, 1)  # type: ignore[no-untyped-call]
         except JaxQueue as why:
             raise NotFlat(f"while loop body: {why}") from why
+        # The carries are what the *lowered* body stores: a subscript store
+        # (``idx(i) = k`` in a search loop) is a store to its base only once
+        # lowered. An inner loop's break flag and kept index are the body's
+        # own, initialized beside that loop, never a carry of this one.
+        carried = [
+            n
+            for n in _assigned_names(lowered)  # type: ignore[no-untyped-call]
+            if n != done and n not in self.strings and not re.fullmatch(r"_(?:brk|kx)_\d+", n)
+        ]
+        state = [*carried, done]
         unpack = ast.Assign(
             targets=[
                 ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Store()) for n in state], ctx=ast.Store())
@@ -2116,12 +2978,38 @@ def _static_expression(node: ast.expr, statics: frozenset[str]) -> bool:
         return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
     if isinstance(node, ast.Name):
         return node.id.isupper() or node.id in statics
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id.startswith("_")
+        and node.attr.isupper()
+        and len(node.attr) > 1
+    ):
+        return True  # ``_mod.IIPDF_ADG1``: a module constant through its alias
     if isinstance(node, ast.BinOp) and isinstance(
         node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)
     ):
         return _static_expression(node.left, statics) and _static_expression(node.right, statics)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         return _static_expression(node.operand, statics)
+    if (
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and not node.keywords
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id in ("int", "float"))
+            or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "jnp")
+                and node.func.attr in ("int32", "int64", "float32", "float64")
+            )
+        )
+    ):
+        # ``int(lower_hf_level + dir * n)``: the anchor's integer conversion
+        # of a static expression is one too (a Python int at trace time --
+        # which is why the store into a guard-typed local needs its cast).
+        return _static_expression(node.args[0], statics)
     return False
 
 
@@ -2293,8 +3181,96 @@ def _static_names(args: list[dict[str, Any]]) -> frozenset[str]:
         if not a.get("dims")
         and a["intent"] == "IN"
         and _py(a["name"]) not in TRACED_SCALARS
-        and (a["dtype"] == "int32" or (a["dtype"] in ("int64", "float64") and "__" in a["name"]))
+        and (
+            a["dtype"] in ("int32", "bool")  # a logical scalar dummy is a switch
+            or (a["dtype"] in ("int64", "float64") and "__" in a["name"])
+        )
     )
+
+
+def _optional_dummies(plan: FlatPlan) -> list[dict[str, Any]]:
+    """The optional dummies a flat kernel can take: derived-type, character
+    and procedure dummies stay out (absent, as the plan leaves them)."""
+    return [
+        a
+        for a in plan.subprogram.get("args") or ()
+        if a.get("optional")
+        and str(a["dtype"]) not in ("PROCEDURE", "str")
+        and not DERIVED.match(str(a["dtype"]))
+    ]
+
+
+def _optional_signature(plan: FlatPlan) -> tuple[list[str], list[ast.expr]]:
+    """The optional dummies the flat kernel takes as parameters, and their
+    defaults: the plan's adapter leaves every optional out (the recorder
+    calls without them), but a kernel calling another kernel passes the
+    ones the caller passed, and the callee's ``present()`` must see them.
+    An optional IN or INOUT dummy is a parameter of its own name defaulting
+    to None (saturation's ``start_index_in`` from the mixing length; the
+    clipping counter ``wpxp_cl_num`` advance_xm_wpxp hands
+    xm_wpxp_clipping_and_stats by keyword, which comes back incremented).
+    An optional OUT dummy is its ``want_<name>`` presence sentinel, the
+    anchor's convention, defaulting to False; the value itself starts
+    absent and is returned whatever the caller asked."""
+    names: list[str] = []
+    defaults: list[ast.expr] = []
+    for a in _optional_dummies(plan):
+        if a.get("intent") == "OUT":
+            names.append(f"want_{_py(a['name'])}")
+            defaults.append(ast.Constant(value=False))
+        else:
+            names.append(_py(a["name"]))
+            defaults.append(ast.Constant(value=None))
+    return names, defaults
+
+
+def _optional_params(plan: FlatPlan) -> list[str]:
+    return _optional_signature(plan)[0]
+
+
+def _optional_outputs(plan: FlatPlan) -> list[str]:
+    """The optional OUT/INOUT dummies the flat kernel returns after the
+    plan's outputs (None when absent). The wrapper the adapter calls drops
+    them (``optional_returns`` on the interface record); a kernel calling
+    the kernel binds the ones it passed."""
+    return [_py(a["name"]) for a in _optional_dummies(plan) if a.get("intent") in ("OUT", "INOUT")]
+
+
+def _returns(plan: FlatPlan) -> list[str]:
+    """What the flat kernel returns: the plan's outputs, then the optional
+    OUT/INOUT dummies."""
+    return [*_outputs(plan), *_optional_outputs(plan)]
+
+
+def _absent_optionals(plan: FlatPlan, taken: list[str]) -> list[ast.stmt]:
+    """Bindings for the optional dummies the flat signature leaves out.
+
+    The plan drops an optional dummy: the adapter calls the original with it
+    absent, so its NumPy default (``None``) stands in. The kernel inlines
+    the original's body, which still names it -- CLUBB's grid interpolators
+    test ``present(zt_min)`` -- so the absence is spelled at the top:
+    ``zt_min = None``, and ``want_zt_min = False`` for an optional OUT, the
+    anchor's presence sentinel. A trace-time ``if x is not None`` then skips
+    the branch the Fortran skipped.
+    """
+    out: list[ast.stmt] = []
+    for a in plan.subprogram.get("args") or ():
+        if not a.get("optional"):
+            continue
+        name = _py(a["name"])
+        if name in taken:
+            continue
+        out.append(
+            ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=ast.Constant(value=None))
+        )
+        if a.get("intent") == "OUT" and f"want_{name}" not in taken:
+            out.append(
+                ast.Assign(
+                    targets=[ast.Name(id=f"want_{name}", ctx=ast.Store())],
+                    value=ast.Constant(value=False),
+                )
+            )
+    return out
 
 
 def flat_function(
@@ -2323,18 +3299,20 @@ def flat_function(
         rewrite.specialized = specialized
     body = _rewritten_body(fn, rewrite)
     if not body or not isinstance(body[-1], ast.Return):
-        body.append(ast.Return(value=_tuple(_outputs(plan))))
+        body.append(ast.Return(value=_tuple(_returns(plan))))
     taken = [_py(a["name"]) for a in plan.flat_args if a["intent"] != "OUT"]
+    optional, optional_defaults = _optional_signature(plan)
+    body = [*_absent_optionals(plan, [*taken, *optional]), *body]
     flat = ast.FunctionDef(
         name=plan.name,
         args=ast.arguments(
             posonlyargs=[],
-            args=[ast.arg(arg=n) for n in taken],
+            args=[ast.arg(arg=n) for n in [*taken, *optional]],
             vararg=None,
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[],
+            defaults=optional_defaults,
         ),
         body=body,
         decorator_list=[],
@@ -2389,6 +3367,7 @@ def _entry(plan: FlatPlan, calls: list[str]) -> dict[str, Any]:
         "module_state_written": [],
         "calls": calls,
         "present_calls": [],
+        "optional_returns": len(_optional_outputs(plan)),
     }
 
 
@@ -2418,6 +3397,7 @@ def flattened_module(
     specialized: dict[str, tuple[ast.FunctionDef, FlatPlan, list[str]]] = {}
     aborts: dict[str, list[str]] = {}
     masked: dict[str, list[str]] = {}
+    host_calls: dict[str, list[str]] = {}
     static_loops: dict[str, list[str]] = {}
     companions: set[str] = set()
     planned = {p.subprogram["name"] for p in plans}
@@ -2439,6 +3419,8 @@ def flattened_module(
             aborts[plan.name] = rewrite.aborts
         if rewrite.masked:
             masked[plan.name] = rewrite.masked
+        if rewrite.host_calls:
+            host_calls[plan.name] = sorted(set(rewrite.host_calls))
         if rewrite.static_loops:
             static_loops[plan.name] = rewrite.static_loops
         companions |= rewrite.companions
@@ -2461,6 +3443,8 @@ def flattened_module(
             aborts[name] = rewrite.aborts
         if rewrite.masked:
             masked[name] = rewrite.masked
+        if rewrite.host_calls:
+            host_calls[name] = sorted(set(rewrite.host_calls))
         if rewrite.static_loops:
             static_loops[name] = rewrite.static_loops
         if rewrite.state_params:
@@ -2486,6 +3470,7 @@ def flattened_module(
         "aborts_dropped": aborts,
         "masked": masked,
         "static_loops": static_loops,
+        "host_calls": host_calls,
         "companions": sorted(companions),
     }
     return module, {**interface, "subprograms": [*interface["subprograms"], *entries]}, notes
@@ -2518,7 +3503,12 @@ class TreeToJax(KernelToJax):
         flat_tree, interface, flat_notes = flattened_module(
             tree, facts.interface, plans, ported, bundled
         )
-        pieces, jitted, delegated = build_module(interface, flat_tree, TRACED_SCALARS)
+        pieces, jitted, delegated, kept_on_host = build_module(interface, flat_tree, TRACED_SCALARS)
+        for name, kept in kept_on_host.items():
+            # This module's own subprograms the backend left on the host,
+            # beside the companions' the flat rewrite did.
+            own = flat_notes.setdefault("host_calls", {}).setdefault(name, [])
+            flat_notes["host_calls"][name] = sorted(set(own) | {f"{module}.{n}" for n in kept})
         # A flat function the backend delegated has a host to fall back on
         # only if the NumPy module carries its wrapper -- the gated ones. A
         # private subprogram's or a function's flat form has none, and a line
@@ -2586,6 +3576,7 @@ class TreeToJax(KernelToJax):
                     "aborts_dropped": dict(sorted(flat_notes["aborts_dropped"].items())),
                     "masked": dict(sorted(flat_notes["masked"].items())),
                     "static_loops": dict(sorted(flat_notes["static_loops"].items())),
+                    "host_calls": dict(sorted(flat_notes.get("host_calls", {}).items())),
                     "companions": sorted(ported),
                     "runtime": f"{runtime_stem}.py",
                     "_ports": ported,

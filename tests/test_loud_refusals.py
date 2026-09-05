@@ -44,10 +44,10 @@ contains
 
   subroutine prologue_refusals(n, out1, w)
     integer, intent(in) :: n
-    real(r8), intent(out) :: out1(max(n, 2))
+    real(r8), intent(out) :: out1(mod(n, 3) + 2)
     type(wide_t), intent(out) :: w
     integer, parameter :: grid(2, 2) = reshape((/ 1, 2, 3, 4 /), (/ 2, 2 /))
-    real(r8) :: scr(max(n, 2))
+    real(r8) :: scr(mod(n, 3) + 2)
     out1 = 0.0_r8
     scr = 0.0_r8
     w%rows = 0.0_r8
@@ -137,10 +137,10 @@ def test_every_prologue_refusal_is_recorded_and_raises(source: Path, renderer: M
     prologue = [entry for entry in deferred if entry["block"].startswith("P")]
     assert [entry["block"] for entry in prologue] == ["P001", "P002", "P003", "P004"]
     reasons = "\n".join(entry["reason"] for entry in prologue)
-    assert "out-arg out1: allocation refused (dim expr 'MAX(n, 2)')" in reasons
+    assert "out-arg out1: allocation refused (dim expr 'MOD(n, 3) + 2')" in reasons
     assert "out-arg w: INTENT(OUT) derived-type dummy not materialized" in reasons
     assert "local parameter grid" in reasons
-    assert "local array scr: extent not resolvable (dim expr 'MAX(n, 2)')" in reasons
+    assert "local array scr: extent not resolvable (dim expr 'MOD(n, 3) + 2')" in reasons
     # The old wording is gone, and every refusal raises.
     assert "allocation skipped" not in body
     assert "prologue skipped" not in body

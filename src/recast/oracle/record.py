@@ -96,6 +96,25 @@ def _record_call(
     )
 
 
+def _record_component(lines: list[str], unit: str, tag: str, obj: Any, comp: Any) -> None:
+    """One component's record, guarded when it may not be there: a component
+    the model allocates only on some configurations (CLUBB's scalar-tracer
+    coefficients under ``sclr_dim = 0``) is written as a zero-extent record,
+    and ``reshape`` is never asked for storage that does not exist."""
+    target = f"{obj.name}%{comp.name}"
+    rank = len(comp.extents)
+    if not comp.bounds:
+        _record_call(lines, unit, tag, comp.flat, target, rank, comp.dtype)
+        return
+    test = "associated" if comp.pointer else "allocated"
+    lines.append(f"       if ({test}({target})) then")
+    _record_call(lines, unit, tag, comp.flat, target, rank, comp.dtype)
+    lines.append("       else")
+    zeros = "(" + ",".join("0" for _ in range(rank)) + ")" if rank else ""
+    lines.append(f"       write ({unit}, '(a)') '# {tag}: {comp.flat}{zeros}'")
+    lines.append("       end if")
+
+
 def recorder_module(
     module: str,
     plans: list[FlatPlan],
@@ -211,7 +230,12 @@ def recorder_module(
                 spelled = FORTRAN_TYPES[str(a["dtype"])]
                 dims = "(" + ",".join(":" for _ in a["dims"]) + ")" if a.get("dims") else ""
                 lines.append(f"    {spelled}, intent(in) :: {a['name']}{dims}")
-        lines.append(f"    integer :: {patch}")
+        passes_patch = any(a["name"].lower() == patch.lower() for a in originals)
+        if not passes_patch:
+            # CLUBB passes ngrdcol as a dummy; then it is already declared and
+            # already the run's value, and a local of the same name would be
+            # a second declaration.
+            lines.append(f"    integer :: {patch}")
         lines.append("    character(len=128) :: dims")
         # The patch count from the first component allocated over it.
         first = next(
@@ -223,7 +247,9 @@ def recorder_module(
             ),
             None,
         )
-        if first is None:
+        if passes_patch:
+            pass
+        elif first is None:
             lines.append(f"    {patch} = 1")
         else:
             lines.append(f"    {patch} = size({first[0].name}%{first[1].name}, 1)")
@@ -244,6 +270,17 @@ def recorder_module(
             fmt = {"int32": "i0", "bool": "l1"}.get(str(a["dtype"]), "es25.17e3")
             lines.append(f"       write ({u}, '(a,{fmt})') '# {a['name']} = ', {a['name']}")
         lines.append(f"       write ({u}, '(a,i0)') '# {patch} = ', {patch}")
+        for extent, (owner, member, axis) in plan.extent_args.items():
+            # An extent the plan could not spell: the run's own, from size(),
+            # zero when the component was never allocated.
+            component = next(
+                c for o in plan.objects if o.name == owner for c in o.components if c.name == member
+            )
+            test = "associated" if component.pointer else "allocated"
+            lines.append(
+                f"       write ({u}, '(a,i0)') '# {extent} = ', "
+                f"merge(size({owner}%{member}, {axis}), 0, {test}({owner}%{member}))"
+            )
 
         for a in originals:
             if a.get("dims") and not DERIVED.match(str(a["dtype"])):
@@ -252,15 +289,7 @@ def recorder_module(
                 )
         for obj in plan.objects:
             for comp in obj.components:
-                _record_call(
-                    lines,
-                    u,
-                    "INPUT",
-                    comp.flat,
-                    f"{obj.name}%{comp.name}",
-                    len(comp.extents),
-                    comp.dtype,
-                )
+                _record_component(lines, u, "INPUT", obj, comp)
         for state in plan.states:
             _record_call(
                 lines,
@@ -273,23 +302,18 @@ def recorder_module(
                 _dims_text(state.extents),
             )
         lines += ["    else", f"       if (n_{sname} > max_calls) return"]
+        # The plain OUT and INOUT dummies are outputs too (CLUBB's advance_*
+        # return wp2, wp3, ... beside what they write into the objects).
+        for a in originals:
+            if DERIVED.match(str(a["dtype"])) or a["intent"] not in ("OUT", "INOUT"):
+                continue
+            _record_call(
+                lines, u, "OUTPUT", a["name"], a["name"], len(a.get("dims") or ()), str(a["dtype"])
+            )
         for obj in plan.objects:
             for comp in obj.components:
                 if comp.written:
-                    _record_call(
-                        lines,
-                        u,
-                        "OUTPUT",
-                        comp.flat,
-                        f"{obj.name}%{comp.name}",
-                        len(comp.extents),
-                        comp.dtype,
-                    )
-        for a in originals:
-            if a.get("dims") and not DERIVED.match(str(a["dtype"])) and a["intent"] != "IN":
-                _record_call(
-                    lines, u, "OUTPUT", a["name"], a["name"], len(a["dims"]), str(a["dtype"])
-                )
+                    _record_component(lines, u, "OUTPUT", obj, comp)
         for state in plan.states:
             if state.written:
                 _record_call(
@@ -327,6 +351,15 @@ def _strip_comment(line: str) -> str:
 
 def _continues(line: str) -> bool:
     return _strip_comment(line).rstrip().endswith("&")
+
+
+def _last_code(span: list[str]) -> str:
+    """The last line of ``span`` that carries code: blank and comment-only
+    lines do not end a continued statement."""
+    for line in reversed(span):
+        if _strip_comment(line).strip():
+            return line
+    return span[-1]
 
 
 def _split_actuals(text: str) -> list[str]:
@@ -374,10 +407,17 @@ def probe_tree(
         i = 0
         while i < len(lines):
             # A call may continue over several lines: gather the statement.
+            # A blank or comment-only line between continuations (what cpp
+            # leaves of an ``#ifdef`` inside CLUBB's advance_clubb_core call)
+            # is part of the statement, not its end.
             span = [lines[i]]
-            while _continues(span[-1]) and i + len(span) < len(lines):
+            while _continues(_last_code(span)) and i + len(span) < len(lines):
                 span.append(lines[i + len(span)])
-            logical = " ".join(_strip_comment(ln).rstrip("&").strip().lstrip("&") for ln in span)
+            # ``a, & ! In`` leaves a space between the ampersand and the
+            # comment it trailed: strip blanks before the ampersands.
+            logical = " ".join(
+                _strip_comment(ln).strip().rstrip("&").strip().lstrip("&").strip() for ln in span
+            )
             match = CALL.match(" " * (len(span[0]) - len(span[0].lstrip())) + logical.strip())
             called = match.group("name").lower() if match else None
             if match and called and called in targets:

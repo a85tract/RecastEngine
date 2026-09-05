@@ -359,7 +359,15 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         """
         if isinstance(actual, f03.Name):
             writes.add(str(actual).lower())
-        elif isinstance(actual, (f03.Part_Ref, f03.Data_Ref)):
+        elif isinstance(actual, f03.Data_Ref):
+            # ``pdf_params%chi_1`` as an OUT actual (CLUBB's pdf_closure):
+            # the object is written; a component's *subscripts* are read,
+            # the component's name is not a variable of this scope.
+            writes.add(str(actual.children[0]).lower())
+            for comp in actual.children[1:]:
+                if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
+                    reads.update(expr_reads(comp.children[1], scope))
+        elif isinstance(actual, f03.Part_Ref):
             writes.add(str(actual.children[0]).lower())
             for child in actual.children[1:]:
                 reads.update(expr_reads(child, scope))
@@ -404,14 +412,76 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         )
         if name in dummies:
             reads.add(name)
+        optional_dummies = (
+            {a["name"].lower() for a in scope.semantics.subprogram["args"] if a.get("optional")}
+            if (scope.semantics is not None)
+            else set()
+        )
+
+        def hands_on_presence(actual: Any) -> None:
+            """The caller's own optional passed to an optional OUT (CLUBB's
+            xm_wpxp_solve hands ``rcond = rcond`` to band_solve): the callee
+            asks whether it is present, which is a read of it on both sides
+            -- ``present(x)`` here, the ``want_x`` sentinel there."""
+            if isinstance(actual, f03.Name) and str(actual).lower() in optional_dummies:
+                reads.add(str(actual).lower())
 
         if callee is None:
             external = scope.externals.get(name)
+            if external and external.get("stub"):
+                return  # a stubbed call: the translation drops it, actuals and all
+            if external and external.get("specifics"):
+                # A sibling's generic: the specific this arity reaches, or the
+                # union when none matches exactly.
+                # An optional dummy may be left off: a specific fits when the
+                # actuals fall between its required and its total count.
+                fitting = [
+                    x
+                    for x in external["specifics"]
+                    if x.get("required", x["args"]) <= len(actuals) <= x["args"]
+                ]
+                if len(fitting) > 1:
+                    # Several fit the count (one's optional tail is the
+                    # other's required one): the ranks of the bare-name
+                    # actuals decide, where a declared rank is known.
+                    def _agrees(x: dict[str, Any]) -> bool:
+                        return all(
+                            not isinstance(a, f03.Name)
+                            or scope.ranks.get(str(a).lower()) is None
+                            or scope.ranks[str(a).lower()] == r
+                            for a, r in zip(actuals, x.get("ranks", []), strict=False)
+                        )
+
+                    fitting = [x for x in fitting if _agrees(x)] or fitting
+                if fitting:
+                    external = fitting[0]
             out_positions = set(external.get("out_positions", [])) if external else set()
+            buffers = set(external.get("buffer_positions", [])) if external else set()
+            read_positions = (
+                set(external["read_positions"])
+                if external and "read_positions" in external
+                else None
+            )
+            if external and external.get("arg_names"):
+                # Keyword actuals by name, positional ones in order, as for a
+                # callee of this module.
+                formals = [{"name": n} for n in external["arg_names"]]
+                actuals = _bind_actuals({"args": formals}, items)
+            optional_out = set(external.get("optional_out_positions", [])) if external else set()
             for j, actual in enumerate(actuals):
+                if actual is None:
+                    continue
                 if j in out_positions:
                     write_target(actual)
+                if j in optional_out:
+                    hands_on_presence(actual)
+                if read_positions is not None:
+                    is_read = j in read_positions
                 else:
+                    # A buffer OUT of a sibling is read as well as written:
+                    # the emitter passes the caller's storage in (#38).
+                    is_read = j not in out_positions or j in buffers
+                if is_read:
                     reads.update(expr_reads(actual, scope))
             return
 
@@ -427,6 +497,8 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)
+            if formal.get("optional") and formal["intent"] == "OUT":
+                hands_on_presence(actual)
 
     def visit(stmt: Any) -> None:
         if isinstance(stmt, f08.Block_Construct):

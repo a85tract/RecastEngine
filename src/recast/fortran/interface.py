@@ -1361,6 +1361,73 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 for at, argument in enumerate(sub["args"])
                 if argument["intent"] in ("OUT", "INOUT")
             ],
+            # A buffer OUT is passed in and returned (the caller's storage),
+            # so the caller reads the actual as well as writing it -- the
+            # same rule the scope applies to its own subprograms (#38).
+            "buffer_positions": [
+                at for at, argument in enumerate(sub["args"]) if argument.get("buffer")
+            ],
+            # What the caller reads: IN and INOUT actuals, and a buffer OUT.
+            # An INOUT actual is written *and* read; out_positions alone said
+            # only the first.
+            "read_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument["intent"] in ("IN", "INOUT", "UNKNOWN") or argument.get("buffer")
+            ],
+            # So a keyword actual (``rcond = rcond``, CLUBB's band_solve) lands
+            # on its own position and not on whichever comes next.
+            "arg_names": [str(argument["name"]).lower() for argument in sub["args"]],
+            # Handing the caller's own optional to one of these queries its
+            # presence -- a read of it, as ``present()`` is.
+            "optional_out_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument.get("optional") and argument["intent"] == "OUT"
+            ],
+        }
+    # The sibling's generics too: a call spells the generic (CLUBB's
+    # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
+    # not know as a procedure it counts as a read of data. The entry's
+    # writes are the union over the specifics -- which agree, in every
+    # generic seen so far, on being functions with no OUT argument.
+    for generic, specifics in (record.get("generics") or {}).items():
+        known = [(s, table[s]) for s in specifics if s in table]
+        if generic in table or not known:
+            continue
+        # Which specific a call reaches depends on its arity (and ranks the
+        # scope does not resolve): the entry carries every specific with its
+        # argument count, and the scope picks by the actuals it sees. A
+        # union over specifics of different arity marked the wrong
+        # positions -- CLUBB's tridiag_solve, zm2zt_api.
+        signatures = {s: next(x for x in record["subprograms"] if x["name"] == s) for s, _ in known}
+        arity = {s: len(sig["args"]) for s, sig in signatures.items()}
+        required = {
+            s: sum(1 for a in sig["args"] if not a.get("optional")) for s, sig in signatures.items()
+        }
+        table[generic] = {
+            "kind": known[0][1]["kind"],
+            "out_positions": sorted({at for _, entry in known for at in entry["out_positions"]}),
+            "buffer_positions": sorted(
+                {at for _, entry in known for at in entry.get("buffer_positions", [])}
+            ),
+            "specifics": [
+                {
+                    "name": s,
+                    "args": arity[s],
+                    "required": required[s],
+                    "out_positions": entry["out_positions"],
+                    "buffer_positions": entry.get("buffer_positions", []),
+                    "read_positions": entry.get("read_positions", []),
+                    "arg_names": entry.get("arg_names", []),
+                    "optional_out_positions": entry.get("optional_out_positions", []),
+                    # Two specifics of one arity (CLUBB's tridiag_solve
+                    # with and without its optional rcond) are told apart
+                    # by the ranks of their dummies.
+                    "ranks": [len(a.get("dims") or []) for a in signatures[s]["args"]],
+                }
+                for s, entry in known
+            ],
         }
     return table
 

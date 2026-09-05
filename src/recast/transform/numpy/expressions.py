@@ -59,7 +59,7 @@ EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*
 
 DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
 
-BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()+\-*/ ]")
+BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()+\-*/, ]")
 """What a declared bound is allowed to be made of. Bound texts are simple by
 construction; anything richer refuses the statement that needed the bound."""
 
@@ -532,25 +532,46 @@ class Expressions:
         if substituted != text:
             text = substituted
         rendered, position = [], 0
+        opens_intrinsic = False  # the next "(" opens a max/min call
+        calls: list[bool] = []  # per open parenthesis: a max/min call?
         for match in BOUND_TOKENS.finditer(text):
             if match.start() != position:
                 raise NoRule(f"dim expr {text!r}")
             position = match.end()
-            token = match.group(0)
-            if "%" in token:
+            piece = match.group(0)
+            if "%" in piece:
                 # ``bounds%begp`` sizing a local: the component of a dummy,
                 # which is an attribute of the same name on this side.
-                root, component = (t.strip() for t in token.split("%", 1))
+                root, component = (t.strip() for t in piece.split("%", 1))
                 rendered.append(f"{self.names.symbol(root)}.{pysafe(component.lower())}")
-            elif re.match(r"[A-Za-z_]", token):
-                rendered.append(self.names.symbol(token))
-            elif token.isdigit() and token not in ("0", "1", "2"):
-                hoisted = self.names.literals.get(token)
+            elif piece.lower() in ("max", "min") and text[match.end() :].lstrip().startswith("("):
+                # ``max(2, edsclr_dim)`` sizing a local (CLUBB's windm
+                # solver): Python spells the two intrinsics the same way,
+                # and a bound's operands are integers. The only calls a
+                # bound may carry; a comma is legal inside one of them alone.
+                rendered.append(piece.lower())
+                opens_intrinsic = True
+            elif re.match(r"[A-Za-z_]", piece):
+                rendered.append(self.names.symbol(piece))
+            elif piece.isdigit() and piece not in ("0", "1", "2"):
+                hoisted = self.names.literals.get(piece)
                 if hoisted is None:
-                    raise NoRule(f"declared dim literal {token}")
+                    raise NoRule(f"declared dim literal {piece}")
                 rendered.append(hoisted)
+            elif piece == "(":
+                calls.append(opens_intrinsic)
+                opens_intrinsic = False
+                rendered.append(piece)
+            elif piece == ")":
+                if calls:
+                    calls.pop()
+                rendered.append(piece)
+            elif piece == ",":
+                if not (calls and calls[-1]):
+                    raise NoRule(f"dim expr {text!r}")
+                rendered.append(piece)
             else:
-                rendered.append(token)
+                rendered.append(piece)
         if position != len(text):
             raise NoRule(f"dim expr {text!r}")
         return "".join(rendered)

@@ -394,7 +394,11 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import STD, digest, f03
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.effects import side_channels
-        from recast.fortran.interface import _scope_of, companion_externals, subprogram_key
+        from recast.fortran.interface import (
+            _scope_of,
+            companion_externals,
+            subprogram_key,
+        )
         from recast.fortran.rwset import block_rwsets, scope_for
 
         path = self._source_of(unit, Path(root))
@@ -475,6 +479,18 @@ class FortranFrontend(Frontend):
                     table[local] = table[remote]
             for name, entry in table.items():
                 externals.setdefault(name, entry)
+        # A procedure use-imported from a stubbed module is a call the
+        # translation answers with a stub -- ``pass`` for CLUBB's stats_update
+        # -- so on this side too its actuals are neither read nor written.
+        # Procedures only: a constant the same module exports (constants_clubb
+        # is a stub and a table of constants) is a read on both sides. The
+        # stub module's own record says which names are procedures; a stub
+        # the tree does not carry is taken at its import list.
+        stub_procedures = self._stub_procedures(record, Path(root))
+        for name in stub_procedures:
+            stubbed = {"kind": "subroutine", "out_positions": [], "buffer_positions": []}
+            externals.setdefault(name, {**stubbed, "stub": True})
+        record = {**record, "stub_procedures": sorted(stub_procedures)}
 
         callgraph: dict[str, list[str]] = {}
         effects: dict[str, Any] = {}
@@ -629,6 +645,36 @@ class FortranFrontend(Frontend):
             if self._carries_on(match, record_of):
                 pending.extend(record_of.get("use_statements", ()))
         return found
+
+    def _stub_procedures(self, record: dict[str, Any], root: Path) -> set[str]:
+        """The local names this unit imports from stubbed modules that are
+        procedures of theirs -- calls the translation stubs. A stub module the
+        tree does not carry contributes every name it is imported for."""
+        from recast.fortran import interface as interface_mod
+
+        index = self._module_index(root.resolve())
+        names: set[str] = set()
+        for statement in record.get("use_statements", ()):
+            match = USE_STATEMENT.match(statement.strip())
+            if not match or match.group("module").lower() not in self.stub_modules:
+                continue
+            module = match.group("module").lower()
+            imported = {
+                item.split("=>", 1)[0].strip().lower(): item.split("=>", 1)[-1].strip().lower()
+                for item in (match.group("only") or "").split(",")
+                if item.strip()
+            }
+            source = index.get(module)
+            procedures = None
+            if source is not None:
+                record_of = self._readable(source, interface_mod.extract, module)
+                if record_of is not None:
+                    procedures = {str(sub["name"]).lower() for sub in record_of["subprograms"]}
+                    procedures |= {g.lower() for g in record_of.get("generics") or {}}
+            for local, remote in imported.items():
+                if procedures is None or remote in procedures:
+                    names.add(local)
+        return names
 
     def _companions(
         self, record: dict[str, Any], path: Path, root: Path

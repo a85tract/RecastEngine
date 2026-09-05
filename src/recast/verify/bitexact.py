@@ -164,6 +164,16 @@ def callback_for(np: Any, name: str, interface: dict[str, Any]) -> Any:
     return callback
 
 
+def _returned(translated_out: Any) -> list[Any]:
+    """The values a candidate call handed back, as a list: a tuple's items,
+    one bare value, or none at all -- a subroutine with no OUT argument
+    returns ``None`` (CLUBB's finalize_tau_sponge_damp_api deallocates and
+    returns), and that is zero values, not one."""
+    if translated_out is None:
+        return []
+    return list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+
+
 def _extent(dim: dict[str, Any], dims: dict[str, int]) -> int:
     """An axis's extent: ``ub - lb + 1`` when a lower bound is declared
     (CLUBB's ``lhs(-2:2, ...)`` has five rows, not two), ``ub`` otherwise."""
@@ -405,6 +415,12 @@ class BitexactVerifier(Verifier):
                     return False
             return True
 
+        # One the operator declared ungated is not compared: the declaration
+        # says the reference cannot be held -- on generated inputs (CLUBB's
+        # rcm_sat_adj iterates and error-stops on them) or on a recording
+        # (its sponge initializer leaves the levels below the layer
+        # undefined on both sides). The reason is reported beside the verdict.
+        declared_ungated = set(config.get("ungated") or {})
         if recorded:
             # A recording names what it is a recording of, so the set to
             # compare is the set that was captured -- not every subprogram the
@@ -416,13 +432,20 @@ class BitexactVerifier(Verifier):
                 by_subprogram.setdefault(str(sample.get("subprogram", "")), []).append(sample)
             offered = sorted(by_subprogram)
             wanted = config.get("subprograms") or [
-                name for name in offered if name in table and judged(name)
+                name
+                for name in offered
+                if name in table and judged(name) and name not in declared_ungated
             ]
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
             wanted = config.get("subprograms") or [
-                name for name in wrappers if name in table and judged(name) and generable(name)
+                name
+                for name in wrappers
+                if name in table
+                and judged(name)
+                and generable(name)
+                and name not in declared_ungated
             ]
             skipped = sorted(set(wrappers) - set(wanted))
 
@@ -1135,6 +1158,10 @@ class BitexactVerifier(Verifier):
         if dominant_at is None:
             return None
         magnitude = np.abs(reference)
+        if magnitude.size == 0:
+            # A zero-extent output (CLUBB's scalar tracers under
+            # sclr_dim = 0): nothing to weigh, and no maximum to take.
+            return []
         if axis in ("all", None) or magnitude.ndim <= 1:
             scale = magnitude.max()
         else:
@@ -1334,7 +1361,7 @@ class BitexactVerifier(Verifier):
             # therefore by exact name on both sides. Every required output was
             # preflighted before the candidate call; keep the same check here
             # as a fail-closed local invariant for direct callers.
-            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+            mine = _returned(translated_out)
             names = (
                 [sub.get("result") or "result"]
                 if sub["kind"] == "function"
@@ -1390,7 +1417,7 @@ class BitexactVerifier(Verifier):
                 for a in outs_required
             ]
 
-        ours = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+        ours = _returned(translated_out)
         if len(ours) != len(outs_all):
             return (
                 f"candidate returned {len(ours)} value(s) for "
