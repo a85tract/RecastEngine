@@ -118,7 +118,12 @@ TRANSFORMATIONAL = frozenset(
         "size",
         "sum",
         "ubound",
-        # Reshape a whole array; the result's rank is the caller's business.
+        # Reshape a whole array rather than collapse it; the result's rank
+        # is the emitter's business (``vocabulary.ARRAY_TRANSFORM`` spells
+        # each one by its arguments). They were kept out of this set on
+        # purpose while no bit-exact gate had run over a use of one; ELM's
+        # PhotosynthesisMod (readParams reshapes its parameter tables) is
+        # that run, 93 blocks matching with them counted as intrinsics.
         "reshape",
         "spread",
         "pack",
@@ -126,6 +131,8 @@ TRANSFORMATIONAL = frozenset(
         "transpose",
         "cshift",
         "eoshift",
+        "maxloc",
+        "minloc",
         "lbound",
     }
 )
