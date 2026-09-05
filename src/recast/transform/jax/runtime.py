@@ -55,6 +55,7 @@ __all__ = [
     "_f_sqrt",
     "_f_tiny",
     "_f_trim",
+    "_f_trips",
     "_f_vceil",
     "_f_vdot",
     "_f_verf",
@@ -176,6 +177,16 @@ def _f_fori(lo, hi, body, init):
     if isinstance(lo, static) and isinstance(hi, static) and int(hi) <= int(lo):
         return init
     return lax.fori_loop(lo, hi, body, init)
+
+
+def _f_trips(lo, hi, step):
+    """How many times ``range(lo, hi, step)`` runs -- Fortran's DO trip
+    count, ``max(0, (hi - lo + step - sign(step)) // step)`` -- as a
+    Python int when every bound is, else traced."""
+    static = (int, np.integer)
+    if isinstance(lo, static) and isinstance(hi, static) and isinstance(step, static):
+        return len(range(int(lo), int(hi), int(step)))
+    return jnp.maximum(0, (hi - lo + step - jnp.sign(step)) // step)
 
 
 def _f_ecall(fn, *args, **kw):

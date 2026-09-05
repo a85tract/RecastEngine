@@ -374,6 +374,10 @@ class _Rewrite(ast.NodeTransformer):
             if at >= len(actuals):
                 raise NotFlat(f"{ast.unparse(node)}: the elided buffer has no slot {at}")
             target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == "_":
+                # ``_ = _out[4]``: an output the anchor discards (an optional
+                # OUT the caller did not ask for, absent on both sides).
+                return None
             if isinstance(target, ast.Name) and self.spelling.object_of(target) is not None:
                 return None  # an object: its components bound at the call
             actual = actuals[at]
@@ -961,6 +965,13 @@ class _Rewrite(ast.NodeTransformer):
             self.spelling.object_of(k.value) is not None for k in call.keywords
         ):
             return callee
+        optional = {a["name"].lower() for a in callee.subprogram["args"] if a.get("optional")}
+        dummies = [obj for obj in callee.objects if obj.kind == "dummy"]
+        if dummies and all(obj.name in optional for obj in dummies):
+            # Every object the callee takes is optional and this call
+            # leaves them all out (pdf_closure without its implicit
+            # coefficients): still the flat function, with them absent.
+            return callee
         return None
 
     def _specialize(self, name: str, call: ast.Call, source: dict[str, Any]) -> FlatPlan | None:
@@ -1226,10 +1237,21 @@ class _Rewrite(ast.NodeTransformer):
                 actual_by_dummy[keyword_.arg.lower().rstrip("_")] = keyword_.value
         # Which callee object is which caller object.
         objects: dict[str, str] = {}
+        optional_dummies = {
+            a["name"].lower() for a in callee.subprogram["args"] if a.get("optional")
+        }
+        # An optional object the caller leaves out: the callee's kernel
+        # still takes its components (the flat signature has them), and
+        # its ``present(obj)`` is false at trace time. ``None`` in every
+        # slot, and whatever the kernel hands back for them is dropped.
+        absent: set[str] = set()
         for obj in callee.objects:
             if obj.kind == "dummy":
                 actual = actual_by_dummy.get(obj.name)
                 passed: str | None = self.spelling.object_of(actual) if actual is not None else None
+                if passed is None and actual is None and obj.name in optional_dummies:
+                    absent.add(obj.name)
+                    continue
                 if passed is None:
                     raise NotFlat(f"{callee.subprogram['name']}: object {obj.name} not passed")
                 objects[obj.name] = passed
@@ -1245,6 +1267,44 @@ class _Rewrite(ast.NodeTransformer):
                 continue  # returned, not taken -- the emitted convention
             if name == callee.patch_count:
                 args.append(ast.Name(id=self.plan.patch_count, ctx=ast.Load()))
+            elif "__" in name and name.split("__", 1)[0] in absent:
+                args.append(ast.Constant(value=None))
+            elif name in callee.extent_args:
+                # An extent the callee's plan could not spell (an allocatable
+                # component sized by an allocating routine's dummy): the
+                # caller's own extent argument for the same axis when it
+                # has one, else that axis of the caller's component, a
+                # static shape at trace time.
+                owner, comp, axis = callee.extent_args[name]
+                passed_obj = objects.get(owner)
+                own = next(
+                    (
+                        n
+                        for n, (o, c, ax) in self.plan.extent_args.items()
+                        if o == passed_obj and c == comp and ax == axis
+                    ),
+                    None,
+                )
+                if own is not None:
+                    args.append(ast.Name(id=own, ctx=ast.Load()))
+                    continue
+                sized = caller_components.get(passed_obj or "", {}).get(comp)
+                if sized is None:
+                    raise NotFlat(
+                        f"{callee.subprogram['name']}: extent {name} of {owner}%{comp}"
+                        " not in the caller's plan"
+                    )
+                args.append(
+                    ast.Subscript(
+                        value=ast.Attribute(
+                            value=ast.Name(id=sized, ctx=ast.Load()),
+                            attr="shape",
+                            ctx=ast.Load(),
+                        ),
+                        slice=ast.Constant(value=int(axis) - 1),  # the plan's axis is 1-based
+                        ctx=ast.Load(),
+                    )
+                )
             elif "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
                 flat_name: str | None = caller_components.get(objects[owner], {}).get(comp)
@@ -1342,7 +1402,9 @@ class _Rewrite(ast.NodeTransformer):
         targets: list[ast.expr] = []
         follow: list[ast.stmt] = []
         for name in _outputs(callee):
-            if "__" in name and (owner := name.split("__", 1)[0]) in objects:
+            if "__" in name and name.split("__", 1)[0] in absent:
+                targets.append(ast.Name(id="_", ctx=ast.Store()))
+            elif "__" in name and (owner := name.split("__", 1)[0]) in objects:
                 comp = name.split("__", 1)[1]
                 targets.append(
                     ast.Name(id=caller_components[objects[owner]][comp], ctx=ast.Store())

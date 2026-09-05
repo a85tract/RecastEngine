@@ -1190,6 +1190,365 @@ def test_an_object_handed_whole_to_the_host_is_rebuilt_at_entry(tmp_path: Path) 
                 sys.modules.pop(name, None)
 
 
+EMPTY_LOOP = """\
+module emptyloop_mod
+  implicit none
+contains
+  subroutine scale( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: i
+    y = 2.0d0 * x
+    do i = 1, n
+      continue
+    end do
+  end subroutine scale
+end module emptyloop_mod
+"""
+
+
+def test_a_loop_whose_body_lowered_to_nothing_is_dropped(tmp_path: Path) -> None:
+    """CLUBB's clipping routines loop over the columns to sample statistics;
+    with the sampling calls dropped by their stand-in, the loop's body is
+    ``pass`` and there is nothing to carry. Fortran ran it for nothing."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, EMPTY_LOOP, "emptyloop_mod")
+    assert candidate.notes["jax"]["kernels"] == ["scale"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("emptyloop_mod_jax")
+        import numpy as np
+
+        got = module.scale(2, np.array([1.0, 3.0]))
+        assert np.asarray(got).tolist() == [2.0, 6.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"emptyloop_mod{suffix}", None)
+
+
+STRIDED = """\
+module strided_mod
+  implicit none
+contains
+  subroutine running( n, dir, x, y )
+    integer, intent(in) :: n, dir
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    integer :: k, lb, ub
+    real(8) :: acc
+    if ( dir > 0 ) then
+      lb = 1
+      ub = n
+    else
+      lb = n
+      ub = 1
+    end if
+    acc = 0.0d0
+    do k = lb, ub, dir
+      acc = acc + x(k)
+      y(k) = acc
+    end do
+  end subroutine running
+end module strided_mod
+"""
+
+
+def test_a_loop_with_a_named_stride_runs_in_that_direction(tmp_path: Path) -> None:
+    """``do k = gr%k_lb_zt, gr%k_ub_zt, gr%grid_dir_indx``: CLUBB's grid
+    direction is a run-time +-1, a name in the stride slot. The trip count
+    is the runtime's, the index is remapped from the trip."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, STRIDED, "strided_mod")
+    assert candidate.notes["jax"]["kernels"] == ["running"], candidate.notes["jax"]
+    assert "_f_trips(" in candidate.files[Path("strided_mod_jax.py")].decode()
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("strided_mod_jax")
+        import numpy as np
+
+        x = np.array([1.0, 2.0, 4.0])
+        up = np.asarray(module.running(3, 1, x)).tolist()
+        down = np.asarray(module.running(3, -1, x)).tolist()
+        assert up == [1.0, 3.0, 7.0]
+        assert down == [7.0, 6.0, 4.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"strided_mod{suffix}", None)
+
+
+SWITCHED_CHECK = """\
+module switched_mod
+  use silent_mod, only: complain
+  implicit none
+contains
+  subroutine step( n, l_check, x, y )
+    integer, intent(in) :: n
+    logical, intent(in) :: l_check
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    y = 2.0d0 * x
+    if ( l_check ) then
+      call complain( n, y )
+    end if
+  end subroutine step
+end module switched_mod
+"""
+
+
+def test_a_logical_scalar_dummy_is_a_static_switch(tmp_path: Path) -> None:
+    """CLUBB's configuration flags are logical dummies (the model's
+    ``clubb_config_flags`` components). Static under jit: the branch is a
+    Python if at trace time, and the check the port left on the host --
+    under a flag the run has off -- is never traced."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "silent_mod.f90").write_text(SILENT_CHECK)
+    (tmp_path / "switched_mod.f90").write_text(SWITCHED_CHECK)
+    frontend = FortranFrontend(flatten=True)
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:switched_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    emitted = candidate.files[Path("switched_mod_jax.py")].decode()
+    assert "static_argnums=(0, 1)" in emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("switched_mod_jax")
+        import numpy as np
+
+        got = module.step(2, False, np.array([1.0, -1.0]))
+        assert np.asarray(got).tolist() == [2.0, -2.0]
+    finally:
+        sys.path.remove(str(out))
+        for name in list(sys.modules):
+            if name.startswith(("switched_mod", "silent_mod")):
+                sys.modules.pop(name, None)
+
+
+OMITS_AN_OBJECT = """\
+module omit_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine scale( nzt, ngrdcol, x, y, k )
+    integer, intent(in) :: nzt, ngrdcol
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    type(knobs_type), intent(inout), optional :: k
+    if ( present( k ) ) k%gain = k%gain * 2.0d0
+    x = x * 2.0d0
+    y = x + 1.0d0
+  end subroutine scale
+  subroutine step( nzt, ngrdcol, k, x, y )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(inout) :: k
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    call scale( nzt, ngrdcol, x, y )
+    y = y + k%gain
+  end subroutine step
+end module omit_mod
+"""
+
+
+def test_an_optional_object_the_caller_leaves_out_is_absent_in_the_callee(tmp_path: Path) -> None:
+    """pdf_closure_driver_zm calls pdf_closure without its optional
+    ``pdf_implicit_coefs_terms``. The callee's kernel still takes the
+    object's components (its flat signature has them): ``None`` in each,
+    ``present()`` false at trace time, and what it hands back for them
+    dropped."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "omit_mod.f90").write_text(OMITS_AN_OBJECT)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:omit_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("omit_mod_jax")
+        import numpy as np
+
+        x = np.ones((1, 2), order="F")
+        result = module.step_flat(2, 1, x, np.zeros((1, 2), order="F"), np.float64(2.0))
+        got = [np.asarray(v).tolist() for v in result]
+        # gain is read, never written, so it is not returned; the callee's
+        # present(k) branch did not run: y is x * 2 + 1 + 2.
+        assert got == [[[2.0, 2.0]], [[5.0, 5.0]]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"omit_mod{suffix}", None)
+
+
+DISCARDS_AN_OUTPUT = """\
+module discard_mod
+  implicit none
+  type knobs_type
+    real(8) :: gain = 2.0d0
+  end type knobs_type
+contains
+  subroutine solve( nzt, ngrdcol, k, x, y, resid )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    real(8), intent(out), dimension(ngrdcol, nzt), optional :: resid
+    y = k%gain * x
+    if ( present( resid ) ) resid = y - x
+  end subroutine solve
+  subroutine step( nzt, ngrdcol, k, x, y )
+    integer, intent(in) :: nzt, ngrdcol
+    type(knobs_type), intent(in) :: k
+    real(8), intent(in), dimension(ngrdcol, nzt) :: x
+    real(8), intent(inout), dimension(ngrdcol, nzt) :: y
+    call solve( nzt, ngrdcol, k, x, y )
+    y = y + 1.0d0
+  end subroutine step
+end module discard_mod
+"""
+
+
+def test_an_output_the_anchor_discards_is_dropped_from_the_elided_buffer(tmp_path: Path) -> None:
+    """CLUBB's solvers return an optional residual the caller does not ask
+    for: the anchor's ``_ = _out[4]`` names a slot with no actual, and the
+    unpack is dropped rather than refused."""
+    import importlib
+    import sys
+
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "discard_mod.f90").write_text(DISCARDS_AN_OUTPUT)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:discard_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "_ = _out[" in candidate.files[Path("discard_mod_numpy.py")].decode()
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("discard_mod_jax")
+        import numpy as np
+
+        x = np.ones((1, 2), order="F")
+        got = module.step_flat(2, 1, x, np.zeros((1, 2), order="F"), np.float64(3.0))
+        assert np.asarray(got).tolist() == [[4.0, 4.0]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"discard_mod{suffix}", None)
+
+
+SIZED_BY_AN_ALLOCATOR = """\
+module sized_mod
+  implicit none
+  type coefs_type
+    real(8), allocatable :: coef(:, :)
+  end type coefs_type
+contains
+  subroutine init_coefs( ngrdcol, nz, p )
+    integer, intent(in) :: ngrdcol, nz
+    type(coefs_type), intent(out) :: p
+    allocate( p%coef(1:ngrdcol, 1:nz) )
+    p%coef = 0.0d0
+  end subroutine init_coefs
+  subroutine apply_coefs( ngrdcol, p, x )
+    integer, intent(in) :: ngrdcol
+    type(coefs_type), intent(in) :: p
+    real(8), intent(inout) :: x(ngrdcol)
+    integer :: i
+    do i = 1, ngrdcol
+      x(i) = x(i) + sum( p%coef(i, :) )
+    end do
+  end subroutine apply_coefs
+  subroutine step( ngrdcol, nz, p, x )
+    integer, intent(in) :: ngrdcol, nz
+    type(coefs_type), intent(inout) :: p
+    real(8), intent(inout) :: x(ngrdcol)
+    p%coef(:, 1) = p%coef(:, 1) + 1.0d0
+    call apply_coefs( ngrdcol, p, x )
+  end subroutine step
+end module sized_mod
+"""
+
+
+def test_a_callee_extent_argument_is_the_callers_axis(tmp_path: Path) -> None:
+    """A component allocated by another routine's dummy (CLUBB's
+    ``coef_wp4_implicit(1:ngrdcol, 1:nz)``) reaches a callee that has no
+    dummy of that name as an extent argument of its plan. The caller
+    passes that axis of its own component."""
+    import importlib
+    import sys
+
+    from recast.fortran.flatten import plans_from_facts
+    from recast.transform.jax.tree import TreeToJax
+    from recast.transform.numpy.tree import TreeConventions
+
+    (tmp_path / "sized_mod.f90").write_text(SIZED_BY_AN_ALLOCATOR)
+    frontend = FortranFrontend(flatten={"patch_count": "ngrdcol", "bounds_pattern": r"^ngrdcol$"})
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:sized_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    plans = {p.name: p for p in plans_from_facts(facts)}
+    assert plans["apply_coefs_flat"].extent_args, plans["apply_coefs_flat"]
+    candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
+    assert "step_flat" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("sized_mod_jax")
+        import numpy as np
+
+        coef = np.zeros((1, 2), order="F")
+        got = module.step_flat(1, 2, np.array([1.0]), coef)
+        assert [np.asarray(v).tolist() for v in got] == [[2.0], [[1.0, 0.0]]]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"sized_mod{suffix}", None)
+
+
 SILENT_CHECK = """\
 module silent_mod
   implicit none

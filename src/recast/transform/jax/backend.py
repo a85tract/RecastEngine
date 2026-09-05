@@ -659,26 +659,39 @@ class KernelLowerer:
             and not it.keywords
         ):
             raise JaxQueue("non-range for")
-        step = 1
+        step: int | None = 1
         # Annotated because the first branch would otherwise pin these to
         # Constant and the others assign general expressions to them.
         lo: ast.expr
         hi: ast.expr
+        stride: ast.expr | None = None
         if len(it.args) == 1:
             lo, hi = ast.Constant(value=0), it.args[0]
         elif len(it.args) == 2:
             lo, hi = it.args
         elif len(it.args) == 3:
-            step = _const_int(it.args[2])
             lo, hi = it.args[0], it.args[1]
+            try:
+                step = _const_int(it.args[2])
+            except JaxQueue:
+                step = None
             if step not in (1, -1):
-                raise JaxQueue("range step not +-1")
+                # ``do k = lb, ub, dir``: a stride that is a name or an
+                # expression (a grid's direction, +-1 at run time). Trips
+                # counted by the runtime, the index remapped from the
+                # trip: k = lo + t * stride.
+                step, stride = None, it.args[2]
         else:
             raise JaxQueue("malformed range")
 
         bound_before = set(self.bound)
         self.bound.add(s.target.id)
         body = self.lower_block(_cycle_to_else(s.body, []), depth + 1)
+        if not body or all(isinstance(b, ast.Pass) for b in body):
+            # A loop whose body lowered to nothing: statistics calls the
+            # stand-in dropped, a nested loop that went the same way.
+            # Fortran ran it for nothing; nothing is what it becomes.
+            return []
         settled = _trace_constant_stores(body)
         carried = [
             n
@@ -703,6 +716,45 @@ class KernelLowerer:
             fn = self._carry_fn(fname, [s.target.id, "_c"], carried, body)
             carry_call.args = [lo, hi, ast.Name(id=fname, ctx=ast.Load()), init]
             return [fn, result]
+
+        if stride is not None:
+            lo_name, st_name, cnt_name = f"_lo_{self.n}", f"_st_{self.n}", f"_cnt_{self.n}"
+            pre = [
+                ast.Assign(targets=[ast.Name(id=lo_name, ctx=ast.Store())], value=lo),
+                ast.Assign(targets=[ast.Name(id=st_name, ctx=ast.Store())], value=stride),
+                ast.Assign(
+                    targets=[ast.Name(id=cnt_name, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Name(id="_f_trips", ctx=ast.Load()),
+                        args=[
+                            ast.Name(id=lo_name, ctx=ast.Load()),
+                            hi,
+                            ast.Name(id=st_name, ctx=ast.Load()),
+                        ],
+                        keywords=[],
+                    ),
+                ),
+            ]
+            remap = ast.Assign(
+                targets=[ast.Name(id=s.target.id, ctx=ast.Store())],
+                value=ast.BinOp(
+                    left=ast.Name(id=lo_name, ctx=ast.Load()),
+                    op=ast.Add(),
+                    right=ast.BinOp(
+                        left=ast.Name(id="_r", ctx=ast.Load()),
+                        op=ast.Mult(),
+                        right=ast.Name(id=st_name, ctx=ast.Load()),
+                    ),
+                ),
+            )
+            fn = self._carry_fn(fname, ["_r", "_c"], carried, [remap, *body])
+            carry_call.args = [
+                ast.Constant(value=0),
+                ast.Name(id=cnt_name, ctx=ast.Load()),
+                ast.Name(id=fname, ctx=ast.Load()),
+                init,
+            ]
+            return [*pre, fn, result]
 
         # step -1: Fortran DO k=hi,lo,-1 arrived as range(hi, stop, -1)
         # iterating hi..stop+1. Remap: t in [0, hi-stop), k = hi - t.
@@ -991,7 +1043,12 @@ def static_spec(fn_src, sub, traced_scalars=frozenset()):
             # when it is module state (the ``__`` spelling: dtime_ml, dtstep
             # -- namelist configuration): an ordinary real dummy (xa, xb,
             # tol) must stay traced, or jvp/grad against it breaks.
-            if r["dtype"] in ("int32", "str") or (
+            # A logical scalar dummy is a switch (a model's configuration
+            # flags): static, so its branches are Python ifs at trace time
+            # and a path the run never takes is never traced. When another
+            # kernel passes it a tracer, the runtime's ``_f_concrete``
+            # takes the lax.cond form instead.
+            if r["dtype"] in ("int32", "str", "bool") or (
                 r["dtype"] in ("int64", "float64") and "__" in r["name"]
             ):
                 nums.append(pos)
