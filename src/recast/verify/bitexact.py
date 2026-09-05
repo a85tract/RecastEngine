@@ -38,6 +38,7 @@ import importlib.util
 import operator
 import re
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -1526,12 +1527,19 @@ class BitexactVerifier(Verifier):
         path = Path(root) / INPUT_PROFILE
         if not path.is_file():
             return None
-        spec = importlib.util.spec_from_file_location("recast_inputs", path)
-        if spec is None or spec.loader is None:
-            raise InputProfileError(f"{INPUT_PROFILE} could not be loaded as a module")
-        module = importlib.util.module_from_spec(spec)
+        # Compiled and run by hand rather than through the import machinery:
+        # a SourceFileLoader would drop ``__pycache__/`` into the project
+        # root, and the root is a checkout whose cleanliness is checked.
+        module = types.ModuleType("recast_inputs")
+        module.__file__ = str(path)
         try:
-            spec.loader.exec_module(module)
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise InputProfileError(
+                f"{INPUT_PROFILE} could not be read: {type(error).__name__}: {error}"
+            ) from error
+        try:
+            exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
         except (Exception, SystemExit) as error:
             raise InputProfileError(
                 f"{INPUT_PROFILE} does not import: {type(error).__name__}: {error}"
