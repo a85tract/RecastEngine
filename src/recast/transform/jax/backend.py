@@ -267,6 +267,7 @@ class CallRewrite(ast.NodeTransformer):
     def __init__(self, call_map, known_subs):
         self.map = call_map
         self.subs = known_subs
+        self.host_calls: list[str] = []
 
     def visit_Call(self, node):
         self.generic_visit(node)
@@ -300,7 +301,20 @@ class CallRewrite(ast.NodeTransformer):
                 node.func = ast.Name(id=f"_{f.id}_k_impl", ctx=ast.Load())
                 node.args = pos + [ast.Name(id=c, ctx=ast.Load()) for c in info["closure"]]
             elif f.id in self.subs:
-                raise JaxQueue(f"calls non-emitted subprogram {f.id}")
+                # A subprogram of this module the port could not emit,
+                # called from one it can: the call stays the host's
+                # (``_host.<name>``, the NumPy anchor's), under whatever
+                # guard the anchor put it -- a configuration switch, static
+                # at trace time, is the usual one -- and is never traced
+                # while the guard holds. If the guard ever lets it
+                # through, the trace fails on it by name, which the gate
+                # reports. Delegating the caller, and its callers up to
+                # the driver, for a path the run never takes was the
+                # alternative. The note names it.
+                self.host_calls.append(f.id)
+                node.func = ast.Attribute(
+                    value=ast.Name(id="_host", ctx=ast.Load()), attr=f.id, ctx=ast.Load()
+                )
         return node
 
 
@@ -343,6 +357,109 @@ def _cycle_to_else(stmts, rest):
     return [*out, *rest]
 
 
+def _not_flag(flag: str) -> ast.expr:
+    """``jnp.logical_not(flag)``: a traced test. Python's ``not`` on a
+    tracer is the boolean conversion JAX refuses, and the expression
+    mapping that would spell it ran before the loop was lowered."""
+    return ast.Call(
+        func=ast.Attribute(
+            value=ast.Name(id="jnp", ctx=ast.Load()), attr="logical_not", ctx=ast.Load()
+        ),
+        args=[ast.Name(id=flag, ctx=ast.Load())],
+        keywords=[],
+    )
+
+
+def _jnp_bool(value: bool) -> ast.expr:
+    """``jnp.bool_(value)``: a traced store, not a literal the backend
+    would treat as a trace-time constant and fail to carry."""
+    return ast.Call(
+        func=ast.Attribute(value=ast.Name(id="jnp", ctx=ast.Load()), attr="bool_", ctx=ast.Load()),
+        args=[ast.Constant(value=value)],
+        keywords=[],
+    )
+
+
+def _breaks_at_level(stmts) -> bool:
+    """A ``break`` that belongs to this loop: not one inside a nested loop."""
+    for st in stmts:
+        if isinstance(st, ast.Break):
+            return True
+        if isinstance(st, ast.For | ast.While):
+            continue
+        for field in ("body", "orelse"):
+            inner = getattr(st, field, None)
+            if isinstance(inner, list) and _breaks_at_level(inner):
+                return True
+    return False
+
+
+def _guard_after_breaks(stmts, flag, kept, index):
+    """``break`` -> ``flag = True; kept = index``; what follows a statement
+    that may have broken, in the same block, runs under ``if not flag`` --
+    recursively through branches, never into a nested loop (its breaks are
+    its own)."""
+    out: list[ast.stmt] = []
+    for at, st in enumerate(stmts):
+        had_break = _breaks_at_level([st])
+        if isinstance(st, ast.Break):
+            out.append(
+                ast.copy_location(
+                    ast.Assign(targets=[ast.Name(id=flag, ctx=ast.Store())], value=_jnp_bool(True)),
+                    st,
+                )
+            )
+            rewritten: ast.stmt = ast.copy_location(
+                ast.Assign(
+                    targets=[ast.Name(id=kept, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Call(
+                                func=ast.Attribute(
+                                    value=ast.Name(id="jnp", ctx=ast.Load()),
+                                    attr="asarray",
+                                    ctx=ast.Load(),
+                                ),
+                                args=[ast.Name(id=index, ctx=ast.Load())],
+                                keywords=[],
+                            ),
+                            attr="astype",
+                            ctx=ast.Load(),
+                        ),
+                        args=[
+                            ast.Attribute(
+                                value=ast.Name(id=kept, ctx=ast.Load()),
+                                attr="dtype",
+                                ctx=ast.Load(),
+                            )
+                        ],
+                        keywords=[],
+                    ),
+                ),
+                st,
+            )
+        else:
+            rewritten = st
+            if not isinstance(st, ast.For | ast.While):
+                for field in ("body", "orelse"):
+                    inner = getattr(st, field, None)
+                    if isinstance(inner, list) and inner:
+                        setattr(st, field, _guard_after_breaks(inner, flag, kept, index))
+        out.append(rewritten)
+        if had_break:
+            rest = _guard_after_breaks(stmts[at + 1 :], flag, kept, index)
+            if rest:
+                out.append(
+                    ast.If(
+                        test=_not_flag(flag),
+                        body=rest,
+                        orelse=[],
+                    )
+                )
+            return out
+    return out
+
+
 def _assigned_names(stmts):
     """Names stored by Assign statements, first-assignment order
     (nested fori_loop/cond results arrive as Tuple targets; static
@@ -364,7 +481,9 @@ def _assigned_names(stmts):
                 # ``_out`` is the anchor's call-result tuple, assigned and
                 # unpacked on consecutive lines of one block: the block's own,
                 # never a carry (its shape changes from call to call).
-                if isinstance(t, ast.Name) and not re.fullmatch(r"_(?:hi_|cnt_|t)\d+|_out", t.id):
+                if isinstance(t, ast.Name) and not re.fullmatch(
+                    r"_(?:hi_|cnt_|lo_|st_|t)\d+|_out", t.id
+                ):
                     add(t.id)
                 elif isinstance(t, ast.Tuple):
                     for e in t.elts:
@@ -647,8 +766,6 @@ class KernelLowerer:
         raise JaxQueue(f"unsupported assign target {type(t).__name__}")
 
     def lower_for(self, s, depth):
-        if s.orelse:
-            raise JaxQueue("for-else")
         if not isinstance(s.target, ast.Name):
             raise JaxQueue("tuple loop target")
         it = s.iter
@@ -684,9 +801,103 @@ class KernelLowerer:
         else:
             raise JaxQueue("malformed range")
 
+        body_stmts = _cycle_to_else(s.body, [])
+        flag: str | None = None
+        pre_flag: list[ast.stmt] = []
+        if _breaks_at_level(body_stmts):
+            # EXIT: a flag the loop carries. Set where the break was, it
+            # guards the rest of that trip and the whole of every later
+            # one -- the loop runs its trips and does nothing after the
+            # exit, which is what the exit left it doing. A for-else
+            # (the DO ran to completion) runs after the loop under the
+            # same flag, inverted.
+            self.n += 1
+            flag = f"_brk_{self.n}"
+            # The index at the exit is what the DO variable holds after the
+            # loop (CLUBB's window search reads it): captured with the
+            # flag, in the index's own dtype, and rebound after the loop.
+            kept = f"_kx_{self.n}"
+            body_stmts = [
+                ast.If(
+                    test=_not_flag(flag),
+                    body=_guard_after_breaks(body_stmts, flag, kept, s.target.id),
+                    orelse=[],
+                )
+            ]
+            pre_flag = [
+                ast.Assign(targets=[ast.Name(id=flag, ctx=ast.Store())], value=_jnp_bool(False)),
+                ast.Assign(
+                    targets=[ast.Name(id=kept, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id="jnp", ctx=ast.Load()), attr="asarray", ctx=ast.Load()
+                        ),
+                        args=[copy.deepcopy(lo)],
+                        keywords=[
+                            ast.keyword(
+                                arg="dtype",
+                                value=ast.Attribute(
+                                    value=ast.Name(id="jnp", ctx=ast.Load()),
+                                    attr="int32",
+                                    ctx=ast.Load(),
+                                ),
+                            )
+                        ],
+                    ),
+                ),
+            ]
+            self.bound.add(flag)
+            self.bound.add(kept)
+        elif s.orelse:
+            raise JaxQueue("for-else without a break")
         bound_before = set(self.bound)
         self.bound.add(s.target.id)
-        body = self.lower_block(_cycle_to_else(s.body, []), depth + 1)
+        body = self.lower_block(body_stmts, depth + 1)
+        after: list[ast.stmt] = []
+        if flag is not None:
+            after = [
+                ast.Assign(
+                    targets=[ast.Name(id=s.target.id, ctx=ast.Store())],
+                    value=ast.Name(id=kept, ctx=ast.Load()),
+                )
+            ]
+        if s.orelse and flag is not None:
+            # The for-else stores the DO variable's completion value, a
+            # Python int when the bounds are static; the carry it joins
+            # is the int32 index kept at the exit.
+            completion: list[ast.stmt] = []
+            for st in s.orelse:
+                if (
+                    isinstance(st, ast.Assign)
+                    and len(st.targets) == 1
+                    and isinstance(st.targets[0], ast.Name)
+                    and st.targets[0].id == s.target.id
+                ):
+                    st = ast.Assign(
+                        targets=st.targets,
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id="jnp", ctx=ast.Load()),
+                                attr="asarray",
+                                ctx=ast.Load(),
+                            ),
+                            args=[st.value],
+                            keywords=[
+                                ast.keyword(
+                                    arg="dtype",
+                                    value=ast.Attribute(
+                                        value=ast.Name(id="jnp", ctx=ast.Load()),
+                                        attr="int32",
+                                        ctx=ast.Load(),
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                completion.append(st)
+            after += self.lower_block(
+                [ast.If(test=_not_flag(flag), body=completion, orelse=[])], depth
+            )
         if not body or all(isinstance(b, ast.Pass) for b in body):
             # A loop whose body lowered to nothing: statistics calls the
             # stand-in dropped, a nested loop that went the same way.
@@ -715,7 +926,7 @@ class KernelLowerer:
         if step == 1:
             fn = self._carry_fn(fname, [s.target.id, "_c"], carried, body)
             carry_call.args = [lo, hi, ast.Name(id=fname, ctx=ast.Load()), init]
-            return [fn, result]
+            return [*pre_flag, fn, result, *after]
 
         if stride is not None:
             lo_name, st_name, cnt_name = f"_lo_{self.n}", f"_st_{self.n}", f"_cnt_{self.n}"
@@ -754,7 +965,7 @@ class KernelLowerer:
                 ast.Name(id=fname, ctx=ast.Load()),
                 init,
             ]
-            return [*pre, fn, result]
+            return [*pre_flag, *pre, fn, result, *after]
 
         # step -1: Fortran DO k=hi,lo,-1 arrived as range(hi, stop, -1)
         # iterating hi..stop+1. Remap: t in [0, hi-stop), k = hi - t.
@@ -782,7 +993,7 @@ class KernelLowerer:
             ast.Name(id=fname, ctx=ast.Load()),
             init,
         ]
-        return [*pre, fn, result]
+        return [*pre_flag, *pre, fn, result, *after]
 
     def lower_if(self, s, depth):
         """if/elif/else -> lax.cond with the union of both branches'
@@ -907,7 +1118,14 @@ def split_params(fn_src):
 
 
 def emit_kernel(
-    fn_src, sub, closure, call_map=None, known_subs=None, writes=(), traced_scalars=frozenset()
+    fn_src,
+    sub,
+    closure,
+    call_map=None,
+    known_subs=None,
+    writes=(),
+    traced_scalars=frozenset(),
+    hosted=None,
 ):
     """Original numpy FunctionDef -> unparsed _<name>_k_impl source.
 
@@ -959,7 +1177,10 @@ def emit_kernel(
             fn.body[at] = Extend().visit(stmt)
     _bind_writer_calls(fn, call_map or {})
     ExprMap().visit(fn)
-    CallRewrite(call_map or {}, known_subs or set()).visit(fn)
+    calls = CallRewrite(call_map or {}, known_subs or set())
+    calls.visit(fn)
+    if hosted is not None:
+        hosted.extend(calls.host_calls)
     nums, _ = static_spec(fn_src, sub, traced_scalars)
     required, _, _ = split_params(fn_src)
     statics = {required[pos] for pos in nums}
@@ -1058,16 +1279,17 @@ def static_spec(fn_src, sub, traced_scalars=frozenset()):
 
 def build_module(
     interface: dict[str, Any], tree: ast.Module, traced_scalars: frozenset[str] = frozenset()
-) -> tuple[list[str], list[str], dict[str, str]]:
+) -> tuple[list[str], list[str], dict[str, str], dict[str, list[str]]]:
     """Emit all kernels of one module to a fixpoint.
 
-    Returns (pieces, jitted, delegated) where pieces are source chunks
+    Returns (pieces, jitted, delegated, hosted) where pieces are source chunks
     (kernels + jit lines + wrappers + delegations + _JAX_KERNELS) and
     delegated maps name -> reason."""
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     subs = {s["name"]: s for s in interface["subprograms"]}
 
     delegated = {}
+    hosted: dict[str, list[str]] = {}
     kernels = set()
     for name, rec in subs.items():
         if name not in fns:
@@ -1103,6 +1325,7 @@ def build_module(
             }
         for name in sorted(emit_set):
             call_map = {k: v for k, v in call_map_all.items() if k != name}
+            calls_kept: list[str] = []
             try:
                 srcs[name] = emit_kernel(
                     fns[name],
@@ -1112,9 +1335,15 @@ def build_module(
                     set(subs),
                     wclosures[name],
                     traced_scalars,
+                    calls_kept,
                 )
             except JaxQueue as e:
                 failed[name] = f"[emit] {e}"
+                continue
+            if calls_kept:
+                hosted[name] = sorted(set(calls_kept))
+            else:
+                hosted.pop(name, None)
         if not failed:
             break
         for n, r in failed.items():
@@ -1188,7 +1417,7 @@ def build_module(
         if rec["name"] in delegated and rec["name"] in fns:
             pieces.append(f"{rec['name']} = _host.{rec['name']}")
     pieces.append(f"_JAX_KERNELS = {sorted(jitted)!r}")
-    return pieces, jitted, delegated
+    return pieces, jitted, delegated, hosted
 
 
 HEADER = '''"""Machine-generated by recast.transform.jax -- JAX backend (EXPERIMENTAL).

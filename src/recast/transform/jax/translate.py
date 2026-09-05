@@ -63,7 +63,7 @@ class KernelToJax(Transform):
 
         source = anchor.files[Path(f"{module}_numpy.py")].decode()
         tree = ast.parse(source)
-        pieces, jitted, delegated = build_module(facts.interface, tree)
+        pieces, jitted, delegated, hosted = build_module(facts.interface, tree)
         emitted = (
             HEADER.format(module=module, constants=constants_stem, runtime=runtime_stem)
             + _signatures_of(tree)
@@ -88,6 +88,9 @@ class KernelToJax(Transform):
                     "anchor": f"{module}_numpy.py",
                     "kernels": sorted(jitted),
                     "delegated": dict(sorted(delegated.items())),
+                    "host_calls": {
+                        k: [f"{module}.{n}" for n in v] for k, v in sorted(hosted.items())
+                    },
                     "runtime": f"{runtime_stem}.py",
                 },
             },

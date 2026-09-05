@@ -2950,7 +2950,12 @@ class TreeToJax(KernelToJax):
         flat_tree, interface, flat_notes = flattened_module(
             tree, facts.interface, plans, ported, bundled
         )
-        pieces, jitted, delegated = build_module(interface, flat_tree, TRACED_SCALARS)
+        pieces, jitted, delegated, kept_on_host = build_module(interface, flat_tree, TRACED_SCALARS)
+        for name, kept in kept_on_host.items():
+            # This module's own subprograms the backend left on the host,
+            # beside the companions' the flat rewrite did.
+            own = flat_notes.setdefault("host_calls", {}).setdefault(name, [])
+            flat_notes["host_calls"][name] = sorted(set(own) | {f"{module}.{n}" for n in kept})
         # A flat function the backend delegated has a host to fall back on
         # only if the NumPy module carries its wrapper -- the gated ones. A
         # private subprogram's or a function's flat form has none, and a line

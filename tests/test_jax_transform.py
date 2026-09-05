@@ -206,7 +206,7 @@ def test_a_module_state_write_threads_through_the_closure() -> None:
             },
         ]
     }
-    pieces, jitted, _delegated = build_module(interface, tree)
+    pieces, jitted, _delegated, _hosted = build_module(interface, tree)
     assert sorted(jitted) == ["tick", "use_tick"]
     text = "\n\n".join(pieces)
     assert "_host.cache = _res[0]" in text  # tick's wrapper stores the write back
@@ -276,24 +276,38 @@ contains
       end if
     end do
   end subroutine first_above
+  subroutine exit_index(n, zlo, z, kfound)
+    integer,  intent(in)  :: n
+    real(r8), intent(in)  :: zlo
+    real(r8), intent(in)  :: z(n)
+    integer,  intent(out) :: kfound
+    integer :: k
+    do k = 1, n
+      if ( z(k) > zlo ) exit
+    end do
+    kfound = k
+  end subroutine exit_index
 end module cycle_demo
 """
 
 
-def test_a_cycle_folds_into_the_branch_and_an_exit_is_delegated(tmp_path: Path) -> None:
+def test_a_cycle_folds_into_the_branch_and_an_exit_is_a_carried_flag(tmp_path: Path) -> None:
     """CLUBB's interpolators: ``if ( ... ) then ... cycle end if`` in a DO
     loop. The lowering passed the ``continue`` through into a ``lax.cond``
     branch -- a SyntaxError that took the whole emitted module down. Folded
-    into the branch structure it is a kernel; an EXIT has no fori_loop
-    shape and is delegated to the host, not emitted."""
+    into the branch structure it is a kernel. An EXIT is a flag the loop
+    carries: the trips after it do nothing, and the DO variable's value at
+    the exit is what the code after the loop reads (CLUBB's window search
+    and its sponge damping)."""
     import importlib
     import sys
 
     candidate = port(tmp_path, CYCLES, "cycle_demo")
-    assert candidate.notes["jax"]["kernels"] == ["clip_below"]
-    assert "first_above" in candidate.notes["jax"]["delegated"]
+    assert candidate.notes["jax"]["kernels"] == ["clip_below", "exit_index", "first_above"]
+    assert candidate.notes["jax"]["delegated"] == {}
     emitted = candidate.files[Path("cycle_demo_jax.py")].decode()
     assert "continue" not in emitted.replace("continuation", "")
+    assert "break" not in emitted
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():
@@ -308,6 +322,9 @@ def test_a_cycle_folds_into_the_branch_and_an_exit_is_delegated(tmp_path: Path) 
         w = np.asarray(module.clip_below(4, 2.5, z, v))
         assert w.tolist() == [0.0, 0.0, 2.0, 2.0]
         assert int(module.first_above(4, 2.5, z)) == 3
+        assert int(module.first_above(4, 9.0, z)) == 0
+        assert int(module.exit_index(4, 2.5, z)) == 3
+        assert int(module.exit_index(4, 9.0, z)) == 5  # ran to completion: n + 1
     finally:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
@@ -1547,6 +1564,67 @@ def test_a_callee_extent_argument_is_the_callers_axis(tmp_path: Path) -> None:
         sys.path.remove(str(out))
         for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
             sys.modules.pop(f"sized_mod{suffix}", None)
+
+
+OWN_CHECK_UNDER_A_SWITCH = """\
+module ownswitch_mod
+  implicit none
+contains
+  subroutine complain( n, x, msg )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    character(len=*), intent(out) :: msg
+    msg = "fine"
+    if ( any( x < 0.0d0 ) ) msg = "negative"
+  end subroutine complain
+  subroutine step( n, l_check, x, y )
+    integer, intent(in) :: n
+    logical, intent(in) :: l_check
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    character(len=16) :: msg
+    y = 2.0d0 * x
+    if ( l_check ) then
+      call complain( n, y, msg )
+    end if
+  end subroutine step
+end module ownswitch_mod
+"""
+
+
+def test_a_subprogram_of_the_module_the_port_could_not_emit_stays_on_the_host(
+    tmp_path: Path,
+) -> None:
+    """pdf_closure_driver calls its zm variant under a switch the run has
+    off; fill_holes_vertical_api dispatches on a type. A same-module
+    callee the port could not emit no longer delegates its caller and the
+    callers above it: the call stays the host's (``_host.<name>``) under
+    the anchor's guard, named in the notes, never traced while the guard
+    holds."""
+    import importlib
+    import sys
+
+    candidate = port(tmp_path, OWN_CHECK_UNDER_A_SWITCH, "ownswitch_mod")
+    assert candidate.notes["jax"]["kernels"] == ["step"], candidate.notes["jax"]
+    assert "complain" in candidate.notes["jax"]["delegated"]
+    assert candidate.notes["jax"]["host_calls"] == {"step": ["ownswitch_mod.complain"]}
+    emitted = candidate.files[Path("ownswitch_mod_jax.py")].decode()
+    assert "_host.complain(" in emitted
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("ownswitch_mod_jax")
+        import numpy as np
+
+        got = module.step(2, False, np.array([1.0, -1.0]))
+        assert np.asarray(got).tolist() == [2.0, -2.0]
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_jax", "_numpy", "_jax_runtime", "_constants"):
+            sys.modules.pop(f"ownswitch_mod{suffix}", None)
 
 
 SILENT_CHECK = """\

@@ -174,8 +174,22 @@ def _f_fori(lo, hi, body, init):
     trace time. A dynamic bound is left to ``fori_loop``.
     """
     static = (int, np.integer)
-    if isinstance(lo, static) and isinstance(hi, static) and int(hi) <= int(lo):
-        return init
+    if isinstance(lo, static) and isinstance(hi, static):
+        if int(hi) <= int(lo):
+            return init
+        # A static trip count: a scan over the indices (reverse-
+        # differentiable, as fori_loop's own scan form is), spelled int32
+        # -- Fortran's default integer, the dtype every integer local and
+        # dummy carries, so a store of the index into one keeps its dtype
+        # across a lax.cond. fori_loop's scan form would count in the
+        # default int, int64 under x64.
+        indices = jnp.arange(int(lo), int(hi), dtype=jnp.int32)
+
+        def step(carry, i):
+            return body(i, carry), None
+
+        carry, _ = lax.scan(step, init, indices)
+        return carry
     return lax.fori_loop(lo, hi, body, init)
 
 
