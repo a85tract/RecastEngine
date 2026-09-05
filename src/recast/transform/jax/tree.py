@@ -199,6 +199,7 @@ class _Rewrite(ast.NodeTransformer):
 
     # -- what is static under jit ---------------------------------------------
         self.seeded: list[str] = []
+        self.written_back: list[str] = []
 
     def _is_dynamic(self, expr: ast.expr) -> bool:
         """A bound that is not a literal, a constant, a static argument or an
@@ -1497,6 +1498,120 @@ def _seed_pointer_locals(body: list[ast.stmt]) -> list[str]:
     return seeded
 
 
+def _pointer_targets(body: list[ast.stmt], names: set[str]) -> dict[str, list[tuple[ast.expr, str]]]:
+    """``alias -> [(condition, target), ...]``: every pointing of a seeded
+    pointer local, with the branch condition it happens under (a chain's
+    later arms carry the negation of the earlier tests). A top-level
+    pointing has the condition ``True``."""
+    found: dict[str, list[tuple[ast.expr, str]]] = {}
+
+    def note(statement: ast.stmt, condition: ast.expr) -> None:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id in names
+            and isinstance(statement.value, ast.Name)
+        ):
+            found.setdefault(statement.targets[0].id, []).append(
+                (copy.deepcopy(condition), statement.value.id)
+            )
+
+    def walk_block(block: list[ast.stmt], condition: ast.expr) -> None:
+        for statement in block:
+            if isinstance(statement, ast.If):
+                own = ast.BoolOp(op=ast.And(), values=[copy.deepcopy(condition), statement.test])
+                walk_block(statement.body, own)
+                negated = ast.BoolOp(
+                    op=ast.And(),
+                    values=[
+                        copy.deepcopy(condition),
+                        ast.UnaryOp(op=ast.Not(), operand=copy.deepcopy(statement.test)),
+                    ],
+                )
+                walk_block(statement.orelse, negated)
+            else:
+                note(statement, condition)
+
+    walk_block(body, ast.Constant(True))
+    return found
+
+
+def _stored(body: list[ast.stmt], name: str, pointings: set[str]) -> bool:
+    """Whether the body writes through ``name``: a subscript store, or a
+    whole-array assignment that is not one of its pointings."""
+    for statement in body:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.ctx, ast.Store)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == name
+            ):
+                return True
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == name
+                and not (isinstance(node.value, ast.Name) and node.value.id in pointings)
+            ):
+                return True
+    return False
+
+
+def _write_back_pointer_locals(lowered: list[ast.stmt], seeded: list[str]) -> list[str]:
+    """A write through a pointer local (``psn_z(p,iv) = ...`` after ``psn_z
+    => photosyns_vars%psnsun_z_patch`` under sun, the shade array under
+    shade) is, in the anchor, a write into the component's own storage;
+    in a kernel it rebinds the local, and the flat output it aliased is
+    returned as it came. Before the kernel's return, every target the
+    local may have pointed at takes the local's value under the condition
+    of that pointing. Returns the aliases written back."""
+    if not lowered or not isinstance(lowered[-1], ast.Return):
+        return []
+    targets = _pointer_targets(lowered, set(seeded))
+    written_back: list[str] = []
+    stores: list[ast.stmt] = []
+    for alias, pointings in targets.items():
+        # The seed at the top of the body points too, unconditionally;
+        # it is the first arm's target and not a selection of its own.
+        arms = [(c, t) for c, t in pointings if not (isinstance(c, ast.Constant) and c.value is True)]
+        if not arms or not _stored(lowered, alias, {t for _, t in pointings}):
+            continue
+        for condition, target in arms:
+            stores.append(
+                ast.Assign(
+                    targets=[ast.Name(id=target, ctx=ast.Store())],
+                    value=_jnp(
+                        "where",
+                        [
+                            _fold_bools(condition),
+                            ast.Name(id=alias, ctx=ast.Load()),
+                            ast.Name(id=target, ctx=ast.Load()),
+                        ],
+                    ),
+                )
+            )
+        written_back.append(alias)
+    if stores:
+        lowered[-1:-1] = [ast.fix_missing_locations(s) for s in stores]
+    return written_back
+
+
+def _fold_bools(node: ast.expr) -> ast.expr:
+    """``True and x`` is ``x``; keeps the write-back conditions readable."""
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        values = [_fold_bools(v) for v in node.values]
+        values = [v for v in values if not (isinstance(v, ast.Constant) and v.value is True)]
+        if not values:
+            return ast.Constant(True)
+        if len(values) == 1:
+            return values[0]
+        return ast.BoolOp(op=ast.And(), values=values)
+    return node
+
+
 def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
     rewrite.seeded = _seed_pointer_locals(fn.body)
     rewrite.associates = _associates(fn)
@@ -1510,6 +1625,7 @@ def _rewritten_body(fn: ast.FunctionDef, rewrite: _Rewrite) -> list[ast.stmt]:
         if result is None:
             continue
         lowered.extend(result if isinstance(result, list) else [result])
+    rewrite.written_back = _write_back_pointer_locals(lowered, rewrite.seeded)
     int_locals = frozenset(_integer_inits(fn)) | frozenset(
         n for n, kind in (rewrite.inits or {}).items() if kind == "int32"
     )

@@ -407,3 +407,35 @@ def test_a_while_true_capped_by_a_counter_break_is_a_fixed_count_for() -> None:
     text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in lowered)
     assert "while" not in text and "for _w1 in range(0, 41):" in text
     assert "if not _done_1 and (not _ret):" in text
+
+
+def test_a_write_through_a_branch_pointed_local_reaches_its_targets() -> None:
+    """``psn_z => psnsun_z_patch`` under sun, the shade array under shade,
+    then ``psn_z(p,iv) = ...``: in the anchor a write into the component,
+    in a kernel a rebinding of the local. Before the return every target
+    takes the local under the condition of its pointing."""
+    from recast.transform.jax.tree import _seed_pointer_locals, _write_back_pointer_locals
+
+    fn = ast.parse(
+        "def f(phase, sun, sha, x):\n"
+        "    psn_z = None\n"
+        "    if phase == 'sun':\n"
+        "        psn_z = sun\n"
+        "    elif phase == 'sha':\n"
+        "        psn_z = sha\n"
+        "    psn_z[0] = x\n"
+        "    return (sun, sha)\n"
+    ).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    seeded = _seed_pointer_locals(fn.body)
+    assert _write_back_pointer_locals(fn.body, seeded) == ["psn_z"]
+    text = "\n".join(ast.unparse(ast.fix_missing_locations(s)) for s in fn.body)
+    assert "sun = jnp.where(phase == 'sun', psn_z, sun)" in text
+    assert "sha = jnp.where(not phase == 'sun' and phase == 'sha', psn_z, sha)" in text
+    assert text.rstrip().endswith("return (sun, sha)")
+    # a pointed local never written is left alone
+    again = ast.parse(
+        "def g(phase, sun, sha):\n    par_z = None\n    if phase == 'sun':\n"
+        "        par_z = sun\n    else:\n        par_z = sha\n    y = par_z[0]\n    return y\n"
+    ).body[0]
+    assert _write_back_pointer_locals(again.body, _seed_pointer_locals(again.body)) == []
