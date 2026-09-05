@@ -913,32 +913,29 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "2 subprogram(s) could not be compared: dogleg: 10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 ",
+       "detail": "3 subprogram(s) could not be compared: chkder: 19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the c",
        "metrics": {
-        "bit_exact": 17270,
+        "bit_exact": 17110,
+        "declined": {
+         "NaN on both sides": 7
+        },
         "integer_mismatch": 0,
         "integer_points": 760,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 17270,
+        "points": 17110,
+        "redrawn": 7,
         "subprograms": {
          "chkder": {
-          "bit_exact": 160,
-          "integer_mismatch": 0,
-          "integer_points": 0,
-          "max_rel": 0.0,
-          "max_ulp": 0,
-          "nan_mismatch": 0,
-          "points": 160,
-          "redrawn": 19,
-          "reshaped": 0
+          "error": "19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dogleg": {
           "error": "10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "enorm": {
           "bit_exact": 10,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -950,6 +947,7 @@
          },
          "fdjac1": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -961,6 +959,7 @@
          },
          "fdjac2": {
           "bit_exact": 810,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -972,6 +971,7 @@
          },
          "hybrd": {
           "bit_exact": 1380,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 20,
           "max_rel": 0.0,
@@ -983,6 +983,7 @@
          },
          "hybrd1": {
           "bit_exact": 250,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -994,6 +995,7 @@
          },
          "hybrj": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 30,
           "max_rel": 0.0,
@@ -1005,6 +1007,7 @@
          },
          "hybrj1": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -1016,6 +1019,7 @@
          },
          "lmder": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 110,
           "max_rel": 0.0,
@@ -1027,6 +1031,7 @@
          },
          "lmder1": {
           "bit_exact": 970,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1038,6 +1043,7 @@
          },
          "lmdif": {
           "bit_exact": 1380,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 100,
           "max_rel": 0.0,
@@ -1049,6 +1055,7 @@
          },
          "lmdif1": {
           "bit_exact": 330,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1060,6 +1067,9 @@
          },
          "lmpar": {
           "bit_exact": 970,
+          "declined": {
+           "NaN on both sides": 7
+          },
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1071,6 +1081,7 @@
          },
          "lmstr": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 110,
           "max_rel": 0.0,
@@ -1082,6 +1093,7 @@
          },
          "lmstr1": {
           "bit_exact": 970,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1093,6 +1105,7 @@
          },
          "qform": {
           "bit_exact": 720,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1104,6 +1117,7 @@
          },
          "qrfac": {
           "bit_exact": 960,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 80,
           "max_rel": 0.0,
@@ -1115,6 +1129,7 @@
          },
          "qrsolv": {
           "bit_exact": 880,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1126,6 +1141,7 @@
          },
          "r1mpyq": {
           "bit_exact": 640,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1140,6 +1156,7 @@
          },
          "rwupdt": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1318,15 +1335,18 @@
        "detail": "1 translated subprogram(s) were never compared: print_msg -- defer them or drop them from the unit; silence is not a pass",
        "metrics": {
         "bit_exact": 10,
+        "declined": {},
         "integer_mismatch": 0,
         "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 10,
+        "redrawn": 0,
         "subprograms": {
          "is_inf": {
           "bit_exact": 10,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -1914,15 +1934,18 @@
        "detail": "80 points across 1 subprogram(s), all bit-exact",
        "metrics": {
         "bit_exact": 80,
+        "declined": {},
         "integer_mismatch": 0,
         "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 80,
+        "redrawn": 0,
         "subprograms": {
          "sort": {
           "bit_exact": 80,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -2061,12 +2084,14 @@
        "detail": "11 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
        "metrics": {
         "bit_exact": 0,
+        "declined": {},
         "integer_mismatch": 0,
         "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 0,
+        "redrawn": 0,
         "subprograms": {
          "dchfdv": {
           "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
