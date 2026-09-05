@@ -1850,8 +1850,9 @@ def test_a_dispatch_on_a_module_constant_through_its_alias_is_static(tmp_path: P
     candidate = TreeToJax(TreeConventions()).apply(unit, facts, {"root": str(tmp_path)})
     assert "pick" in candidate.notes["jax"]["kernels"], candidate.notes["jax"]
     emitted = candidate.files[Path("dispatch_mod_jax.py")].decode()
-    anchor_src = candidate.files[Path("dispatch_mod_numpy.py")].decode()
-    assert "lax.cond(kind ==" not in emitted, emitted
+    # The dual form: a Python if when the kind is concrete (through the jit
+    # wrapper it is), the lax.cond only for a traced caller.
+    assert "if _f_concrete(kind == _kinds_mod.I_TWICE):" in emitted, emitted
     out = tmp_path / "emitted"
     out.mkdir()
     for path, content in candidate.files.items():
@@ -1864,9 +1865,6 @@ def test_a_dispatch_on_a_module_constant_through_its_alias_is_static(tmp_path: P
         x = np.array([1.0, 3.0])
         assert np.asarray(module.pick(2, 2, x)).tolist() == [2.0, 6.0]
         assert np.asarray(module.pick(2, 1, x)).tolist() == [1.0, 3.0]
-        print(
-            "ANCHOR_SPELLING", [line for line in anchor_src.splitlines() if "I_TWICE" in line][:2]
-        )
     finally:
         sys.path.remove(str(out))
         for name in list(sys.modules):
