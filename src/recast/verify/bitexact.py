@@ -53,6 +53,25 @@ __all__ = ["BitexactVerifier", "factory"]
 
 DEFAULT_RANGE = (-1000.0, 1000.0)
 DEFAULT_INTEGER_RANGE = (1, 8)
+
+
+def _declined_summary(declined_by: dict[str, int]) -> str:
+    """``"3 error stop, 1 NaN on both sides"``: the declined draws by kind."""
+    return (
+        ", ".join(f"{count} {why}" for why, count in sorted(declined_by.items()))
+        or "no reason recorded"
+    )
+
+
+def _redrawn_note(totals: dict[str, Any]) -> str:
+    """What a passing verdict says about the draws it did not compare on."""
+    redrawn = int(totals.get("redrawn") or 0)
+    if not redrawn:
+        return ""
+    reasons = _declined_summary(totals.get("declined") or {})
+    return f"; {redrawn} draw(s) declined and drawn again ({reasons})"
+
+
 DEFAULT_DIMENSION = 8
 SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
 PROCEDURE_DTYPE = "PROCEDURE"
@@ -280,8 +299,13 @@ class BitexactVerifier(Verifier):
 
     Bounded, and the bound is the point: a subprogram whose every draw is
     refused is reported as one that could not be compared, which is what
-    ``uncovered`` and the coverage gate above are for. The number of redraws
-    is recorded per subprogram so the count is never silent.
+    ``uncovered`` and the coverage gate above are for. And a subprogram whose
+    declined draws outnumber the trials it was compared on fails by name:
+    the trials that survived are a minority of what the configured draw
+    produces, and a translation that stops or overruns on inputs the source
+    accepts would pass on the handful it did not, one survivor at a time.
+    The number of redraws, and the reason for each, is recorded per
+    subprogram and repeated on the verdict, so the count is never silent.
 
     Two things a redraw is not for. A NaN on one side only is a mismatch
     between the sides, not a domain draw, and is counted as one; only a trial
@@ -499,13 +523,15 @@ class BitexactVerifier(Verifier):
         per_subprogram: dict[str, dict[str, Any]] = {}
         failures: list[str] = []
         worst_rel = 0.0
-        totals = {
+        totals: dict[str, Any] = {
             "points": 0,
             "bit_exact": 0,
             "max_ulp": 0,
             "nan_mismatch": 0,
             "integer_points": 0,
             "integer_mismatch": 0,
+            "redrawn": 0,
+            "declined": {},
         }
         for name in wanted:
             sub = table[name]
@@ -544,6 +570,9 @@ class BitexactVerifier(Verifier):
             totals["nan_mismatch"] += outcome["nan_mismatch"]
             totals["integer_points"] += outcome["integer_points"]
             totals["integer_mismatch"] += outcome["integer_mismatch"]
+            totals["redrawn"] += outcome.get("redrawn", 0)
+            for why, count in (outcome.get("declined") or {}).items():
+                totals["declined"][why] = totals["declined"].get(why, 0) + count
             worst_rel = max(worst_rel, outcome["max_rel"])
             if "max_ulp_dominant" in outcome:
                 totals["max_ulp_dominant"] = max(
@@ -679,7 +708,7 @@ class BitexactVerifier(Verifier):
                 Confidence.BIT_EXACT,
                 metrics,
                 f"{totals['points']} points across {len(per_subprogram)} "
-                f"subprogram(s), all bit-exact",
+                f"subprogram(s), all bit-exact" + _redrawn_note(totals),
             )
         if rtol is not None and worst_rel <= float(rtol):
             return self._verdict(
@@ -817,6 +846,8 @@ class BitexactVerifier(Verifier):
         dominant_points = 0
         max_rel = 0.0
         redrawn = 0
+        # Why each declined draw was declined, by kind, so the verdict can say.
+        declined_by: dict[str, int] = {}
         # Trials that were compared only after a shape refusal moved the free
         # extents off the configured ones.
         reshaped = 0
@@ -1006,6 +1037,9 @@ class BitexactVerifier(Verifier):
                         # on this draw; draw again.
                         declined = f"candidate raised: {type(error).__name__}: {error}"
                         reshape = reshape or isinstance(error, IndexError)
+                        overrun = isinstance(error, IndexError)
+                        why = "subscript past extent" if overrun else "error stop"
+                        declined_by[why] = declined_by.get(why, 0) + 1
                         redrawn += 1
                         continue
                     except Exception as error:
@@ -1141,6 +1175,7 @@ class BitexactVerifier(Verifier):
                     staged.append(measured)
                 if reason:
                     declined = reason
+                    declined_by["NaN on both sides"] = declined_by.get("NaN on both sides", 0) + 1
                     redrawn += 1
                     continue
                 if reshape:
@@ -1188,6 +1223,18 @@ class BitexactVerifier(Verifier):
                 f"values; the {points} point(s) that fit are not evidence at those extents. "
                 "Pin `dims` to extents the subprogram takes"
             }
+        if samples is None and redrawn > len(rounds):
+            # More draws were declined than trials compared: the survivors
+            # are a minority of what the configured draw produces, and a
+            # candidate that stops or overruns where the source does not
+            # would pass on exactly that minority. Unverified at the
+            # configured draw, and says so by name rather than passing on it.
+            return {
+                "error": f"{redrawn} draw(s) were declined ({_declined_summary(declined_by)}) "
+                f"to compare {len(rounds)} trial(s); the trials compared are a minority of "
+                "what the configured draw produces and are not evidence about the rest. "
+                "Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+            }
         outcome: dict[str, Any] = {
             "points": points,
             "bit_exact": bit_exact,
@@ -1197,6 +1244,7 @@ class BitexactVerifier(Verifier):
             "integer_points": integer_points,
             "integer_mismatch": integer_mismatch,
             "redrawn": redrawn,
+            "declined": declined_by,
             "reshaped": reshaped,
             "shaped": shaped_trials,
         }

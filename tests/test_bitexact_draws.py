@@ -82,8 +82,9 @@ def probe(mode, x):
 
 
 def test_a_draw_the_source_stops_on_is_drawn_again(tmp_path: Path) -> None:
-    """``mode`` is sampled from the harness's default integer range and only
-    two of those values are ones the subprogram takes."""
+    """``mode`` is drawn from 1 to 3 and only two of those values are ones the
+    subprogram takes: the third is declined and drawn again, and the verdict
+    says how many times."""
 
     def w_probe(mode: Any, x: Any) -> Any:
         # An ERROR STOP on the reference side ends the process; the harness
@@ -92,9 +93,29 @@ def test_a_draw_the_source_stops_on_is_drawn_again(tmp_path: Path) -> None:
         assert int(mode) in (1, 2), "the reference was called on a refused draw"
         return x * 2.0
 
-    verdict = judge(tmp_path, MODE, SimpleNamespace(w_probe=w_probe))
+    verdict = judge(tmp_path, MODE, SimpleNamespace(w_probe=w_probe), ranges={"mode": (1, 3)})
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
-    assert verdict.metrics["subprograms"]["probe"]["redrawn"] > 0
+    redrawn = verdict.metrics["subprograms"]["probe"]["redrawn"]
+    assert redrawn > 0
+    assert verdict.metrics["subprograms"]["probe"]["declined"] == {"error stop": redrawn}
+    assert f"{redrawn} draw(s) declined and drawn again ({redrawn} error stop)" in verdict.detail
+
+
+def test_a_subprogram_whose_draws_are_mostly_declined_fails_by_name(tmp_path: Path) -> None:
+    """``mode`` from the default integer range, 1 to 8, and the subprogram
+    takes two of them: three draws in four are declined. The survivors are a
+    minority of the configured draw, and a candidate that stopped on inputs
+    the source accepts would pass on that minority one survivor at a time --
+    so it fails by name, with the count, the reason and the remedy."""
+    verdict = judge(tmp_path, MODE, SimpleNamespace(w_probe=lambda mode, x: x * 2.0))
+    assert verdict.confidence is Confidence.FAILED
+    detail = verdict.detail or ""
+    assert "probe: " in detail and "draw(s) were declined (" in detail
+    assert "error stop) to compare 10 trial(s)" in detail
+    assert "Narrow the draw with `ranges`" in detail
+    assert verdict.metrics["subprograms"]["probe"] == {
+        "error": verdict.metrics["subprograms"]["probe"]["error"]
+    }
 
 
 def test_every_draw_refused_is_a_subprogram_that_could_not_be_compared(tmp_path: Path) -> None:
@@ -181,7 +202,7 @@ _SIGNATURES = {
 
 def probe(x):
     with np.errstate(invalid="ignore"):
-        return np.sqrt(x)
+        return np.sqrt(x + 500.0)
 """
 
 
@@ -193,12 +214,34 @@ def test_a_draw_both_sides_take_to_nan_is_drawn_again(tmp_path: Path) -> None:
 
     def w_probe(x: Any) -> Any:
         with np.errstate(invalid="ignore"):
-            return np.sqrt(x)
+            return np.sqrt(x + 500.0)
 
     verdict = judge(tmp_path, NAN, SimpleNamespace(w_probe=w_probe))
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
-    assert verdict.metrics["subprograms"]["probe"]["redrawn"] > 0
+    redrawn = verdict.metrics["subprograms"]["probe"]["redrawn"]
+    assert redrawn > 0
+    assert verdict.metrics["subprograms"]["probe"]["declined"] == {"NaN on both sides": redrawn}
     assert verdict.metrics["nan_mismatch"] == 0
+    assert "NaN on both sides" in verdict.detail
+
+
+def test_a_subprogram_that_mostly_goes_to_nan_on_both_sides_fails_by_name(tmp_path: Path) -> None:
+    """Both sides agree on the NaN, on three draws in four. A NaN agreeing with
+    a NaN is not evidence, and the draws that did compare are a minority of
+    the configured range: the operator has to narrow the range, and the
+    verdict says so rather than passing on the quarter that fit."""
+
+    def w_probe(x: Any) -> Any:
+        with np.errstate(invalid="ignore"):
+            return np.sqrt(x - 500.0)
+
+    verdict = judge(
+        tmp_path, NAN.replace("x + 500.0", "x - 500.0"), SimpleNamespace(w_probe=w_probe)
+    )
+    assert verdict.confidence is Confidence.FAILED
+    detail = verdict.detail or ""
+    assert "draw(s) were declined (" in detail and "NaN on both sides) to compare" in detail
+    assert "Narrow the draw with `ranges`" in detail
 
 
 def test_a_nan_on_one_side_only_is_a_mismatch_not_a_redraw(tmp_path: Path) -> None:
@@ -208,7 +251,7 @@ def test_a_nan_on_one_side_only_is_a_mismatch_not_a_redraw(tmp_path: Path) -> No
     exactly the narrowing the bound exists to prevent."""
 
     def w_probe(x: Any) -> Any:
-        return np.sqrt(x) if x >= 0.0 else np.float64(0.0)
+        return np.sqrt(x + 500.0) if x >= -500.0 else np.float64(0.0)
 
     verdict = judge(tmp_path, NAN, SimpleNamespace(w_probe=w_probe))
     assert verdict.confidence is Confidence.FAILED
@@ -220,7 +263,7 @@ def test_a_draw_that_needs_no_redrawing_is_the_one_the_seed_names(tmp_path: Path
     """The first draw of every trial is unchanged -- same seed, same extents --
     so a run that never has to redraw compares exactly what it compared
     before."""
-    plain = NAN.replace("return np.sqrt(x)", "return x * 2.0")
+    plain = NAN.replace("return np.sqrt(x + 500.0)", "return x * 2.0")
     verdict = judge(tmp_path, plain, SimpleNamespace(w_probe=lambda x: x * 2.0))
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     assert verdict.metrics["subprograms"]["probe"]["redrawn"] == 0
