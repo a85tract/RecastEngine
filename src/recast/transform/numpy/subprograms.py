@@ -996,13 +996,17 @@ class Subprograms:
         branch that gets it wrong is by definition the one that did not know
         it was wrong.
         """
-        spelled = self._token_parameter_value(text, local_parameters)
+        spelled = self._token_parameter_value(
+            text, local_parameters, getattr(self, "companion_globals", None)
+        )
         if _is_expression(spelled) and not _token_pass_guessed(text, spelled):
             return spelled
         return self._reparsed_parameter_value(text, spelled, statements)
 
     @staticmethod
-    def _token_parameter_value(text: str, local_parameters: frozenset[str]) -> str:
+    def _token_parameter_value(
+        text: str, local_parameters: frozenset[str], companion_globals: dict[str, str] | None = None
+    ) -> str:
         """A local parameter's initializer, rendered from its source text.
 
         Text-level, not node-level: declarations were extracted as text, and
@@ -1010,8 +1014,13 @@ class Subprograms:
 
         ``local_parameters`` are the names of this subprogram's own
         parameters, which decides the casing of an expression that names one
-        -- see the token pass at the end.
+        -- see the token pass at the end. ``companion_globals`` spells a name
+        use-imported from a companion module (``_basic.SMALL``): numfor's
+        sorting sets ``Delta = Small`` in three of its specifics, and the
+        bare ``SMALL`` the pass made of it was a NameError the first time
+        the gate compared them.
         """
+        imported = companion_globals or {}
         if text.lower() in (".true.", ".false."):
             return "True" if "true" in text.lower() else "False"
         boz = BOZ_TEXT.fullmatch(text)
@@ -1042,7 +1051,11 @@ class Subprograms:
         # ``hplanck`` it meant.
         def case_of(match: re.Match[str]) -> str:
             token = match.group()
-            return pysafe(token.lower()) if token.lower() in local_parameters else token.upper()
+            if token.lower() in local_parameters:
+                return pysafe(token.lower())
+            if token.lower() in imported:
+                return imported[token.lower()]
+            return token.upper()
 
         constructed = ARRAY_CONSTRUCTOR.search(text)
         if constructed and constructed.span() == (0, len(text)):

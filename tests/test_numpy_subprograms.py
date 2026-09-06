@@ -554,3 +554,37 @@ def test_a_local_character_parameter_references_the_folded_constant(
     assert any(
         "odd = None  # AGENT_QUEUE" in line and "character expression" in line for line in lines
     )
+
+
+USE_IMPORTED_PARAMETER = """\
+module search_mod
+  use basic, only: r8, small
+  implicit none
+contains
+  function nearly(x, y) result(same)
+    real(r8), intent(in) :: x, y
+    logical :: same
+    real(r8), parameter :: delta = small
+    same = abs(x - y) < delta
+  end function nearly
+end module search_mod
+"""
+
+
+def test_a_local_parameter_from_a_use_imported_constant_is_spelled_through_its_companion(
+    tmp_path: Path,
+) -> None:
+    """numfor's sorting sets ``Delta = Small`` in three of its searchsorted
+    specifics, ``Small`` being basic's parameter. The token pass made it the
+    bare module constant ``SMALL``, which the module never defines: a
+    NameError the first time the gate compared those specifics."""
+    path = tmp_path / "search_mod.f90"
+    path.write_text(USE_IMPORTED_PARAMETER)
+    assembler = Subprograms(
+        record=interface.extract(path, kind_assumptions=KINDS),
+        constants=constants.extract(path),
+        profile=PROFILES["ifx"],
+        companion_globals={"small": "_basic.SMALL"},
+    )
+    lines, _ = assembler.render(node_of(path, "nearly"), "nearly")
+    assert "    delta = _basic.SMALL" in lines
