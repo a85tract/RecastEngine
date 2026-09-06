@@ -322,6 +322,26 @@ def _fold(line: str) -> list[str]:
     return folded
 
 
+def _logical_through_integer(argument: dict[str, Any]) -> bool:
+    """A scalar LOGICAL INOUT dummy: the wrapper carries it as an integer."""
+    return bool(
+        argument.get("dtype") == "bool"
+        and argument.get("intent") == "INOUT"
+        and not argument.get("dims")
+    )
+
+
+def _passed_buffer(argument: dict[str, Any]) -> bool:
+    """An OUT array that is the caller's buffer and has an axis of no
+    declared extent: passed in and written in place, never allocated by
+    the wrapper."""
+    return bool(
+        argument.get("intent") == "OUT"
+        and argument.get("buffer")
+        and any(not d.get("ub") for d in argument.get("dims") or ())
+    )
+
+
 def _extent(dim: dict[str, Any]) -> str:
     """The axis as the wrapper declares it: ``lb:ub`` when the lower bound is
     not one (CLUBB's ``lhs(-2:2, ngrdcol, ndim)``), so the callee sees the
@@ -389,6 +409,7 @@ def wrappers_for(
         argument_names = [a["name"] for a in arguments]
         declarations = []
         hidden: list[str] = []
+        converted: list[str] = []  # scalar LOGICAL INOUTs, through an integer
         for argument in arguments:
             if argument["dtype"] == "PROCEDURE":
                 try:
@@ -406,6 +427,22 @@ def wrappers_for(
                     "wrap it by hand or drop the subprogram from the gate"
                 )
             intent = INTENT_SPELLING[argument["intent"]]
+            if _logical_through_integer(argument):
+                # A scalar LOGICAL INOUT has no portable Python buffer ABI
+                # (the compiler's raw true is its own). The wrapper takes an
+                # integer, 0 or 1, and converts on the way in and out; the
+                # callee sees the logical it declared (PCHIP's ``skip``).
+                declarations.append(f"  integer, intent(inout) :: {argument['name']}")
+                declarations.append(f"  logical :: {argument['name']}_l")
+                converted.append(argument["name"])
+                continue
+            if _passed_buffer(argument):
+                # A caller-buffer OUT array of no declared extent (``fe(*)``,
+                # PCHIP's evaluators): f2py cannot allocate what it cannot
+                # size, so the caller's storage goes in and is written in
+                # place, on both sides -- the gate hands the same buffer to
+                # the candidate and reads this one back after the call.
+                intent = "inout"
             dims = ""
             override = (dims_override or {}).get(argument["name"])
             if override and argument.get("dims"):
@@ -443,6 +480,11 @@ def wrappers_for(
         ]
         wrapper = f"w_{name}"
         names.append(wrapper)
+        # A scalar LOGICAL INOUT: the integer in, the logical to the callee,
+        # the integer out again.
+        actuals = [f"{a}_l" if a in converted else a for a in argument_names]
+        before = [f"  {a}_l = ({a} /= 0)" for a in converted]
+        after = [f"  {a} = merge(1, 0, {a}_l)" for a in converted]
         use_line = [f"  use {module}, only: {call_name}"] if is_module else []
         external_line = [] if is_module else [f"  external {call_name}"]
         result_dims = sub.get("result_dims") or [] if sub["kind"] == "function" else []
@@ -470,7 +512,9 @@ def wrappers_for(
                 *declarations,
                 f"  {result}, intent(out) :: res({', '.join(extents)})",
                 *([f"  {result}, external :: {call_name}"] if not is_module else []),
-                f"  res = {call_name}({', '.join(argument_names)})",
+                *before,
+                f"  res = {call_name}({', '.join(actuals)})",
+                *after,
                 f"end subroutine {wrapper}",
                 "",
             ]
@@ -485,7 +529,9 @@ def wrappers_for(
                 *declarations,
                 f"  {result} :: res",
                 *([f"  {result}, external :: {call_name}"] if not is_module else []),
-                f"  res = {call_name}({', '.join(argument_names)})",
+                *before,
+                f"  res = {call_name}({', '.join(actuals)})",
+                *after,
                 f"end function {wrapper}",
                 "",
             ]
@@ -499,7 +545,9 @@ def wrappers_for(
                 *external_line,
                 *declarations,
                 *defined,
-                f"  call {call_name}({', '.join(argument_names)})",
+                *before,
+                f"  call {call_name}({', '.join(actuals)})",
+                *after,
                 f"end subroutine {wrapper}",
                 "",
             ]

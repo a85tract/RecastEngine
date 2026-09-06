@@ -39,7 +39,7 @@ import operator
 import re
 import sys
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,31 @@ __all__ = ["BitexactVerifier", "factory"]
 
 DEFAULT_RANGE = (-1000.0, 1000.0)
 DEFAULT_INTEGER_RANGE = (1, 8)
+
+
+def _f2py_name(name: str) -> str:
+    """How f2py spells a dummy on the Python side: lower-cased, and a C
+    keyword or a name f2py reserves (``switch``, ``int``, ``len``) with the
+    ``_bn`` it appends -- PCHIP's ``dpchic(ic, vc, switch, ...)`` is
+    ``w_dpchic(ic, vc, switch_bn, ...)``. f2py's own table where it is
+    installed; the keywords alone where it is not."""
+    lowered = name.lower()
+    try:
+        from numpy.f2py import crackfortran
+    except Exception:  # numpy without f2py, or no numpy: the reference is not f2py's
+        return lowered
+    return str(dict(crackfortran.badnames).get(lowered, lowered))
+
+
+def _passed_buffer(argument: dict[str, Any]) -> bool:
+    """An OUT array that is the caller's buffer with an axis of no declared
+    extent: the reference takes it in and writes it in place (the f2py
+    wrapper spells it ``inout``), so it is read back from what was passed."""
+    return bool(
+        argument.get("intent") == "OUT"
+        and argument.get("buffer")
+        and any(not d.get("ub") for d in argument.get("dims") or ())
+    )
 
 
 def _declined_summary(declined_by: dict[str, int]) -> str:
@@ -431,7 +456,10 @@ class BitexactVerifier(Verifier):
 
         try:
             translated = self._load_candidate(
-                candidate, workspace, config.get("module_suffix", "_numpy.py")
+                candidate,
+                workspace,
+                config.get("module_suffix", "_numpy.py"),
+                companions=config.get("companion_paths") or (),
             )
         except (Exception, SystemExit) as error:  # fail closed, whatever broke
             return self._verdict(
@@ -464,24 +492,29 @@ class BitexactVerifier(Verifier):
                 return False
             return not (name.endswith("_flat") and name[: -len("_flat")] in deferred_subprograms)
 
-        def generable(name: str) -> bool:
-            """Whether this harness can produce every required input.
+        def not_generable(name: str) -> str | None:
+            """Why this harness cannot produce every required input, or None.
 
             Character arguments have no sampling story yet; a default that
             tried would fail the whole gate on an init routine's errstring.
-            Explicit config still wins -- and then fails loudly.
+            Explicit config still wins -- and then fails loudly. The reason
+            goes on the verdict by name (numfor's ``print_msg``, a message
+            to stderr): not compared, and not silent about it.
             """
             for a in table[name]["args"]:
                 if a["intent"] == "OUT" or a.get("optional"):
                     continue
                 if a["dtype"] == "str":
-                    return False
+                    return f"character argument {a['name']}: no generated draw for one"
                 if a["dtype"] == PROCEDURE_DTYPE and not isinstance(a.get("interface"), dict):
                     # A procedure argument the frontend could not resolve an
                     # interface for: nothing here can say what calling it
                     # means, so nothing here can supply one.
-                    return False
-            return True
+                    return f"procedure argument {a['name']} of unresolved interface"
+            return None
+
+        def generable(name: str) -> bool:
+            return not_generable(name) is None
 
         # One the operator declared ungated is not compared: the declaration
         # says the reference cannot be held -- on generated inputs (CLUBB's
@@ -489,6 +522,7 @@ class BitexactVerifier(Verifier):
         # (its sponge initializer leaves the levels below the layer
         # undefined on both sides). The reason is reported beside the verdict.
         declared_ungated = set(config.get("ungated") or {})
+        harness_ungated: dict[str, str] = {}
         if recorded:
             # A recording names what it is a recording of, so the set to
             # compare is the set that was captured -- not every subprogram the
@@ -516,6 +550,13 @@ class BitexactVerifier(Verifier):
                 and name not in declared_ungated
             ]
             skipped = sorted(set(wrappers) - set(wanted))
+            # A translated subprogram the harness has no draw for is named
+            # with its reason, beside the ones the oracle and the operator
+            # declared: what the verdict does not cover, said aloud.
+            for name in table:
+                why = not_generable(name)
+                if why is not None and name not in declared_ungated and judged(name):
+                    harness_ungated[name] = why
 
         trials = int(config.get("trials", 10))
         # The transform may have read the tree for the value of every name
@@ -633,7 +674,12 @@ class BitexactVerifier(Verifier):
         # the verdict with the oracle's, and a name not in this unit's table
         # is not this unit's to report.
         declared = {
-            name: str(why) for name, why in (config.get("ungated") or {}).items() if name in table
+            **harness_ungated,
+            **{
+                name: str(why)
+                for name, why in (config.get("ungated") or {}).items()
+                if name in table
+            },
         }
         compared = set(wanted)
         ungated = set(handle.get("ungated") or {}) | set(declared)
@@ -770,7 +816,7 @@ class BitexactVerifier(Verifier):
     ) -> None:
         from recast.transform.numpy.vocabulary import pysafe
 
-        spell = pysafe if arg_naming == "pysafe" else str.lower
+        spell = pysafe if arg_naming == "pysafe" else _f2py_name
         for call in setup:
             name = call["subprogram"]
             inputs = call.get("inputs", {})
@@ -855,12 +901,17 @@ class BitexactVerifier(Verifier):
                 "error": f"function {name!r} declares OUT/INOUT dummy argument(s) "
                 f"{names}; this verifier cannot pair both its result and side effects"
             }
+        # A scalar LOGICAL INOUT goes through the wrapper as an integer, 0
+        # or 1, converted on both sides of the call; an array of them has no
+        # such path and no portable buffer ABI, and is refused as before.
         logical_inouts = [
-            a["name"] for a in outs_all if a["intent"] == "INOUT" and a.get("dtype") == "bool"
+            a["name"]
+            for a in outs_all
+            if a["intent"] == "INOUT" and a.get("dtype") == "bool" and a.get("dims")
         ]
         if convention == "f2py" and logical_inouts:
             return {
-                "error": "f2py LOGICAL INOUT dummy argument(s) "
+                "error": "f2py LOGICAL INOUT array dummy argument(s) "
                 f"{', '.join(logical_inouts)} have no portable Python buffer ABI; "
                 "refusing to guess the compiler's raw true representation"
             }
@@ -1019,12 +1070,12 @@ class BitexactVerifier(Verifier):
                 # anchor emitted by this engine's own backend spells names the
                 # emitted way instead, because both sides of that comparison came
                 # out of the same emitter.
-                spell = pysafe if arg_naming == "pysafe" else str.lower
+                spell = pysafe if arg_naming == "pysafe" else _f2py_name
                 try:
                     truth_kwargs = {
                         spell(a["name"]): self._truth_input(np, a, inputs[a["name"]], convention)
                         for a in required
-                        if a["intent"] != "OUT"
+                        if a["intent"] != "OUT" or _passed_buffer(a)
                     }
                 except Exception as error:
                     if shaped:
@@ -1036,7 +1087,9 @@ class BitexactVerifier(Verifier):
                         "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
                     }
                 truth_args = [
-                    truth_kwargs[spell(a["name"])] for a in required if a["intent"] != "OUT"
+                    truth_kwargs[spell(a["name"])]
+                    for a in required
+                    if a["intent"] != "OUT" or _passed_buffer(a)
                 ]
                 if shaped:
                     # The profile asserts the reference takes this draw, so the
@@ -1447,6 +1500,10 @@ class BitexactVerifier(Verifier):
             # comparison a comparison is that both sides call the same thing.
             return value
         if convention == "f2py" and argument["intent"] == "INOUT" and not argument.get("dims"):
+            if argument.get("dtype") == "bool":
+                # The wrapper carries a scalar LOGICAL INOUT as an integer,
+                # 0 or 1 (no portable buffer ABI for the logical itself).
+                return np.asarray(np.int32(1 if value else 0)).copy()
             buffered = np.asarray(value).copy()
             if buffered.ndim != 0:
                 raise ValueError(f"scalar INOUT {argument['name']!r} became rank {buffered.ndim}")
@@ -1608,17 +1665,24 @@ class BitexactVerifier(Verifier):
             if isinstance(truth_out, tuple)
             else ([truth_out] if truth_out is not None else [])
         )
-        pure_out = [a for a in outs_required if a["intent"] == "OUT"]
+        # A caller-buffer OUT array of no declared extent went in and was
+        # written in place (the wrapper spells it ``inout``): read back
+        # from what was passed, like an INOUT, not from the return.
+        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not _passed_buffer(a)]
         if len(theirs_out) != len(pure_out):
             return (
                 f"oracle returned {len(theirs_out)} value(s) for "
                 f"{len(pure_out)} intent(out) argument(s)"
             )
         theirs = dict(zip([a["name"] for a in pure_out], theirs_out, strict=True))
-        passed_in = [a["name"] for a in required if a["intent"] != "OUT"]
+        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or _passed_buffer(a)]
         for argument in outs_required:
-            if argument["intent"] == "INOUT":
+            if argument["intent"] == "INOUT" or _passed_buffer(argument):
                 theirs[argument["name"]] = truth_args[passed_in.index(argument["name"])]
+                if argument["intent"] == "INOUT" and argument.get("dtype") == "bool":
+                    if not argument.get("dims") and convention == "f2py":
+                        # Back from the wrapper's integer to the logical.
+                        theirs[argument["name"]] = bool(int(theirs[argument["name"]]) != 0)
 
         return [(a["name"], by_name[a["name"]], theirs[a["name"]]) for a in outs_required]
 
@@ -1647,7 +1711,11 @@ class BitexactVerifier(Verifier):
                 return dtype(rng.uniform(low, high))
             return np.asfortranarray(rng.uniform(low, high, size=shape).astype(dtype))
         if dtype in (np.int32, np.int64):
-            low, high = ranges.get(name, DEFAULT_INTEGER_RANGE)
+            # The source's own domain for the dummy (``select case (mode)``
+            # with a stopping default) bounds the draw; the operator's
+            # ``ranges`` still win where they speak.
+            fallback = tuple(argument.get("domain") or DEFAULT_INTEGER_RANGE)
+            low, high = ranges.get(name, fallback)
             if shape is None:
                 return dtype(rng.integers(int(low), int(high) + 1))
             return np.asfortranarray(
@@ -1755,13 +1823,20 @@ class BitexactVerifier(Verifier):
         return shaped, True
 
     @staticmethod
-    def _load_candidate(candidate: Candidate, workspace: Path, suffix: str = "_numpy.py") -> Any:
+    def _load_candidate(
+        candidate: Candidate,
+        workspace: Path,
+        suffix: str = "_numpy.py",
+        companions: Sequence[str | Path] = (),
+    ) -> Any:
         """Write the candidate's files and import its generated module.
 
         The candidate is self-contained by design -- module, constants,
         use-constants -- so importing it needs nothing but its own files on
-        the path. Companion modules, when a scheme has them, must already be
-        importable; supplying them is the run's business, not this gate's.
+        the path. Companion modules, when a scheme has them, are the run's
+        business: it names the directories of the candidates it emitted
+        before this one (``config["companion_paths"]``), and they go on the
+        path behind the candidate's own for the import.
 
         ``suffix`` picks which of those files is the one under judgement. A
         port carries more than one: the JAX module, and the NumPy module it
@@ -1782,7 +1857,9 @@ class BitexactVerifier(Verifier):
         if module_path is None:
             raise FileNotFoundError(f"candidate carries no *{suffix} module")
 
-        sys.path.insert(0, str(staged))
+        entries = [str(staged), *(str(p) for p in companions if str(p) != str(staged))]
+        for entry in reversed(entries):
+            sys.path.insert(0, entry)
         try:
             for name in list(sys.modules):
                 if name == module_path.stem or name.endswith("_constants"):
@@ -1793,7 +1870,8 @@ class BitexactVerifier(Verifier):
             sys.modules[module_path.stem] = module
             spec.loader.exec_module(module)
         finally:
-            sys.path.remove(str(staged))
+            for entry in entries:
+                sys.path.remove(entry)
         return module
 
     def _verdict(

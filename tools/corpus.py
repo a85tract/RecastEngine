@@ -106,6 +106,12 @@ def stage(name: str) -> Path:
     (out / "recast.json").write_text(
         json.dumps({"output": str(case_output(name))}, indent=2) + "\n"
     )
+    if case.get("inputs"):
+        # The case's input profile, at the root the run is given: what the
+        # source's domain is where a uniform draw is not in it (MINPACK's
+        # packed workspaces). An operator's statement about the source, not
+        # a domain extension; the gate reads it as ``recast_inputs.py``.
+        shutil.copy2(CORPUS / case["inputs"], out / "recast_inputs.py")
     return out
 
 

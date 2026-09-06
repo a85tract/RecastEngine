@@ -459,3 +459,44 @@ def test_a_root_without_a_profile_is_the_generated_path(tmp_path: Path) -> None:
     )
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     assert verdict.metrics["input_profile"] is None
+
+
+SHOUT = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [{"name": "x", "intent": "IN", "dtype": "float64"}],
+    },
+    "shout": {
+        "kind": "subroutine",
+        "result": None,
+        "result_dtype": None,
+        "args": [{"name": "msg", "intent": "IN", "dtype": "str"}],
+    },
+}
+
+
+def probe(x):
+    return x * 2.0
+
+
+def shout(msg):
+    print(msg)
+"""
+
+
+def test_a_subprogram_the_harness_has_no_draw_for_is_ungated_by_name(tmp_path: Path) -> None:
+    """numfor's ``print_msg`` takes a message and writes it to stderr. The
+    harness generates no character argument, so it was never compared -- and
+    the coverage gate, judging against what was translated, failed the unit
+    for the silence. Not compared is right; silent is not: it is ungated by
+    name, with the reason, beside what the oracle and the operator declare."""
+    verdict = judge(tmp_path, SHOUT, SimpleNamespace(w_probe=lambda x: x * 2.0))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["uncovered"] == []
+    assert verdict.metrics["ungated"] == {
+        "shout": "character argument msg: no generated draw for one"
+    }
+    assert "shout (character argument msg" in (verdict.detail or "")

@@ -1821,3 +1821,30 @@ def test_what_a_failed_scanner_gate_found_is_still_stored(tmp_path: Path) -> Non
     stages[2] = Stage("scanner", "fake.scan", gate=True)
     run = run_recipe(FakeRecipe(stages), tmp_path, registry=_gate_registry())
     assert len(MemoryFindingStore.written) == 2 * len(run.units)
+
+
+def test_a_unit_is_walked_after_the_siblings_it_uses() -> None:
+    """bspline's blas module ``use``s its kinds module and imports its
+    translation; walked first, by name, the import found nothing. The
+    frontend says what a unit uses and the run walks it after; a use of a
+    unit outside the selection, or a cycle, changes nothing."""
+    from recast.model import Unit
+    from recast.run import _dependencies_first
+
+    def unit(uid: str, *uses: str) -> tuple[Unit, str]:
+        return Unit(uid=uid, kind="module", attrs={"uses": list(uses)}), "fortran"
+
+    selected = [
+        unit("fortran:blas", "fortran:kinds"),
+        unit("fortran:defc", "fortran:blas", "fortran:kinds"),
+        unit("fortran:kinds", "fortran:iso_fortran_env"),
+        unit("fortran:sub", "fortran:kinds"),
+    ]
+    assert [u.uid for u, _ in _dependencies_first(selected)] == [
+        "fortran:kinds",
+        "fortran:blas",
+        "fortran:defc",
+        "fortran:sub",
+    ]
+    cycle = [unit("fortran:a", "fortran:b"), unit("fortran:b", "fortran:a")]
+    assert [u.uid for u, _ in _dependencies_first(cycle)] == ["fortran:b", "fortran:a"]

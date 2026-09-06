@@ -24,8 +24,14 @@ splines, FFTs, an optimizer, a cloud-microphysics kernel.
 | numfor | numericfor/numfor | integration, FITPACK-style goto code, random numbers |
 | cloudsc | ecmwf-ifs/dwarf-p-cloudsc | the IFS CLOUDSC kernel -- the closest thing here to CAM physics |
 
-`cases.json` says which files of each submodule make one case and what has
-to happen to them first (cpp, for the `.F90` ones). Nothing is vendored: the
+`cases.json` says which files of each submodule make one case, what has
+to happen to them first (cpp, for the `.F90` ones), and, for a case whose
+routines take inputs no uniform draw lands on, an input profile under
+`profiles/` -- MINPACK's packed triangular workspaces, `lr = n(n+1)/2` --
+that `stage` puts beside the sources as `recast_inputs.py` for the
+bit-exact gate to shape its draws by. That is an operator's statement about
+the source's domain, the kind the engine cannot read off the source without
+lying about it, and not a domain extension. Nothing is vendored: the
 sources stay in their own repositories under their own licences, at the
 commits the submodules pin.
 

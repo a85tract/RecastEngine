@@ -107,7 +107,10 @@ def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
     caller's storage on both sides: the gate generates it and hands the same
     values to the reference and the candidate. Zeroing it in the wrapper would
     fail every cell the callee never writes, and ``dy = 0`` is not even legal
-    for an assumed-size dummy (SLSQP's ``dcopy`` stopped the oracle build)."""
+    for an assumed-size dummy (SLSQP's ``dcopy`` stopped the oracle build).
+    And f2py cannot allocate an ``intent(out)`` it cannot size (PCHIP's
+    evaluators: ``failed to create intent(cache|hide) array``): the buffer
+    is spelled ``inout``, goes in, and is written in place."""
     record = {
         "module": "blas_mod",
         "subprograms": [
@@ -137,7 +140,7 @@ def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
     }
     text, _ = wrappers_for(record, ["dcopy"])
     body = text[text.index("subroutine w_dcopy") : text.index("end subroutine w_dcopy")]
-    assert "real(8), intent(out) :: dy(*)" in body
+    assert "real(8), intent(inout) :: dy(*)" in body
     assert "  dy = 0" not in body
 
 
@@ -428,7 +431,10 @@ def test_non_f2py_conventions_keep_scalar_inout_as_a_scalar(convention: str) -> 
 
 
 def test_f2py_logical_inout_fails_closed_before_execution(tmp_path: Path) -> None:
-    """No Python buffer spelling is a portable Fortran LOGICAL INOUT ABI."""
+    """No Python buffer spelling is a portable Fortran LOGICAL INOUT ABI. A
+    scalar goes through the wrapper as an integer, 0 or 1 (PCHIP's ``skip``);
+    an array of them has no such path and is refused by name, before either
+    side runs."""
     emitted = b"""\
 import numpy as np
 
@@ -477,7 +483,7 @@ def flip(x, a):
 
     assert verdict.confidence is Confidence.FAILED
     assert "no portable Python buffer ABI" in verdict.detail
-    assert "x, a" in verdict.detail
+    assert "array dummy argument(s) a " in verdict.detail
 
 
 def test_f2py_logical_pure_out_is_normalized(tmp_path: Path) -> None:
@@ -2066,3 +2072,39 @@ def test_a_reference_f2py_cannot_parse_is_still_compiled(tmp_path: Path) -> None
 
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     assert verdict.metrics["bit_exact"] == verdict.metrics["points"] > 0
+
+
+def test_a_scalar_logical_inout_goes_through_the_wrapper_as_an_integer() -> None:
+    """PCHIP's ``dpchfe(..., skip, ...)`` takes a LOGICAL it may set. The
+    wrapper carries it as an integer -- 0 or 1 in, the logical to the
+    callee, the integer out -- so the Python side needs no guess at the
+    compiler's true; a function with such a dummy converts the same way."""
+    record = {
+        "module": "pc",
+        "subprograms": [
+            {
+                "name": "fe",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {"name": "skip", "dtype": "bool", "intent": "INOUT", "optional": False},
+                ],
+            },
+            {
+                "name": "ia",
+                "kind": "function",
+                "result_dtype": "float64",
+                "args": [
+                    {"name": "skip", "dtype": "bool", "intent": "INOUT", "optional": False},
+                ],
+            },
+        ],
+    }
+    text, _ = wrappers_for(record, ["fe", "ia"])
+    body = text[text.index("subroutine w_fe") : text.index("end subroutine w_fe")]
+    assert "integer, intent(inout) :: skip" in body and "logical :: skip_l" in body
+    assert "skip_l = (skip /= 0)" in body
+    assert "call fe(n, skip_l)" in body
+    assert "skip = merge(1, 0, skip_l)" in body
+    fn = text[text.index("function w_ia") : text.index("end function w_ia")]
+    assert "res = ia(skip_l)" in fn and "skip = merge(1, 0, skip_l)" in fn

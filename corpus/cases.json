@@ -1,5 +1,5 @@
 {
-  "_comment": "Public translation corpus: what the engine alone -- no domain extension installed -- is held to. Each case names the files of one submodule that make up the translation unit, what has to happen to them first (cpp), and which module units are the subject. Run: python tools/corpus.py run [case...]; the record is corpus/baseline.json.",
+  "_comment": "Public translation corpus: what the engine alone -- no domain extension installed -- is held to. Each case names the files of one submodule that make up the translation unit, what has to happen to them first (cpp), which module units are the subject, and an input profile (``inputs``, a recast_inputs.py under corpus/profiles/) where a uniform draw is not an input the source takes. Run: python tools/corpus.py run [case...]; the record is corpus/baseline.json.",
   "cases": {
     "minpack": {
       "submodule": "minpack",
@@ -8,7 +8,8 @@
       "about": "Nonlinear least squares (modern MINPACK), one module",
       "files": [
         "src/minpack.f90"
-      ]
+      ],
+      "inputs": "profiles/minpack.py"
     },
     "quadpack": {
       "submodule": "quadpack",

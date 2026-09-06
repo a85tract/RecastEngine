@@ -2409,3 +2409,42 @@ def test_an_access_attribute_on_a_declaration_counts(tmp_path: Path) -> None:
     assert "carbon_only" in record["public"] and "table" in record["public"]
     assert "knob_type" in record["public"] and "set_flags" in record["public"]
     assert "hidden" not in record["public"]
+
+
+SELECTS_ON_A_DUMMY = """\
+module modes_mod
+  implicit none
+contains
+  subroutine step( mode, k, x )
+    integer, intent(in) :: mode, k
+    real(8), intent(inout) :: x
+    select case ( mode )
+    case ( 2 )
+      x = x * 2.0d0
+    case ( 1 )
+      x = x + 1.0d0
+    case default
+      error stop 'invalid mode in step'
+    end select
+    select case ( k )
+    case ( 1:3, 7 )
+      x = -x
+    case default
+      error stop 'invalid k'
+    end select
+  end subroutine step
+end module modes_mod
+"""
+
+
+def test_a_select_case_with_a_stopping_default_is_the_dummys_domain(tmp_path: Path) -> None:
+    """MINPACK's chkder takes ``mode`` 1 or 2 and error-stops on anything
+    else; drawn from the default integer range, six draws in eight were
+    declined. The source says the domain, so the record carries it -- for a
+    contiguous span only; ``k``'s holes are left to the operator."""
+    record = interface.extract(_write(tmp_path, "modes.f90", SELECTS_ON_A_DUMMY))
+    (step,) = record["subprograms"]
+    by_name = {a["name"]: a for a in step["args"]}
+    assert by_name["mode"]["domain"] == [1, 2]
+    assert "domain" not in by_name["k"]
+    assert "domain" not in by_name["x"]

@@ -477,6 +477,11 @@ class Modules:
                     "intent": argument["intent"],
                     "optional": argument.get("optional", False),
                 }
+                if argument.get("domain"):
+                    # The values the source lets this integer take (a
+                    # ``select case`` whose default stops): the harness
+                    # draws within them unless the operator's ranges say.
+                    entry["domain"] = list(argument["domain"])
                 if argument.get("dims"):
                     entry["dims"] = [
                         {"lb": d.get("lb", "1"), "ub": d.get("ub")} for d in argument["dims"]

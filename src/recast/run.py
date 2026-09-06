@@ -522,6 +522,7 @@ def _run_recipe(
     workspace = Path(config.get("workspace") or output / recipe.name)
     workspace.mkdir(parents=True, exist_ok=True)
     run = RecipeRun(recipe=recipe.name, root=root, workspace=workspace)
+    emitted: list[Path] = []  # each walked unit's candidate directory, in walk order
 
     def stage_config(stage: Stage) -> dict[str, Any]:
         """The operator's per-stage table over the recipe's own."""
@@ -691,6 +692,7 @@ def _run_recipe(
                 waived,
                 events,
                 stage_index,
+                emitted,
             )
         except BaseException as error:
             events.emit(
@@ -833,15 +835,18 @@ def _run_recipe(
     ]
 
     frontend_positions = {name: index for name, (index, _stage) in frontend_stage_by_name.items()}
-    for unit, owner in _selected_units(
-        frontends,
-        root,
-        recipe,
-        config,
-        events=events,
-        frontend_positions=frontend_positions,
-        discovered_units=run.discovered_units,
-    ):
+    selected = list(
+        _selected_units(
+            frontends,
+            root,
+            recipe,
+            config,
+            events=events,
+            frontend_positions=frontend_positions,
+            discovered_units=run.discovered_units,
+        )
+    )
+    for unit, owner in _dependencies_first(selected):
         unit_run = UnitRun(unit=unit)
         run.units.append(unit_run)
         events.emit(
@@ -943,10 +948,12 @@ def _walk_stage(
     waived: frozenset[str] = frozenset(),
     events: _RunEventEmitter | None = None,
     stage_index: int | None = None,
+    emitted: list[Path] | None = None,
 ) -> StageOutcome:
     # ``_walk_stage`` is private but its defaults keep direct diagnostic use
     # lightweight.  Production calls always pass the run's one emitter.
     events = events or _RunEventEmitter(recipe.name, None)
+    emitted = emitted if emitted is not None else []
     if stage.optional and stage.plugin not in registry.names(stage.kind):
         return StageOutcome(stage.kind, stage.plugin, "skipped", "optional plugin not installed")
     factory = registry.get(stage.kind, stage.plugin)
@@ -1032,6 +1039,10 @@ def _walk_stage(
             )
             raise
         deferred = len(unit_run.candidate.deferred)
+        # On disk beside the run's other candidates, so a later unit whose
+        # translation imports this one finds it (``companion_paths``).
+        _write_candidate(unit_run.candidate, workspace / "candidate")
+        emitted.append(workspace / "candidate")
         events.emit(
             RunEventEntity.CANDIDATE,
             RunEventAction.FINISHED,
@@ -1072,6 +1083,12 @@ def _walk_stage(
                 stage.kind, stage.plugin, "failed", "no candidate to verify; transform never ran"
             )
         verifier = factory()
+        # The candidates emitted before this unit, on disk: a translation that
+        # imports a sibling's (``import bspline_kinds_module_numpy``) is
+        # importable only beside it, and supplying that is the run's business.
+        earlier = [str(p) for p in emitted if p != workspace / "candidate"]
+        if earlier:
+            config = {**config, "companion_paths": earlier}
         if not verifier.applicable(unit, facts):
             if stage.gate:
                 return _incomplete(stage, "not applicable to this unit", waived)
@@ -1270,6 +1287,44 @@ def _walk_stage(
     return StageOutcome(
         stage.kind, stage.plugin, "failed", f"the runner does not walk {stage.kind!r} stages"
     )
+
+
+def _write_candidate(candidate: Candidate, into: Path) -> None:
+    """The candidate's files, as the differential gate stages them."""
+    for path, content in candidate.files.items():
+        target = into / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists() or target.read_bytes() != content:
+            target.write_bytes(content)
+
+
+def _dependencies_first(selected: list[tuple[Unit, str]]) -> list[tuple[Unit, str]]:
+    """The selected units, each after the selected units its frontend says it
+    depends on (``attrs["uses"]``, uids), and otherwise in the order given.
+
+    A translation that imports a sibling's translation is importable only
+    once the sibling's exists: the kinds module before the module that
+    ``use``s it. A dependency outside the selection, or a cycle, changes
+    nothing -- the order given is kept where nothing says otherwise.
+    """
+    by_uid = {unit.uid: (unit, owner) for unit, owner in selected}
+    ordered: list[tuple[Unit, str]] = []
+    placed: set[str] = set()
+    visiting: set[str] = set()
+
+    def place(uid: str) -> None:
+        if uid in placed or uid in visiting or uid not in by_uid:
+            return
+        visiting.add(uid)
+        for needed in by_uid[uid][0].attrs.get("uses") or ():
+            place(str(needed))
+        visiting.discard(uid)
+        placed.add(uid)
+        ordered.append(by_uid[uid])
+
+    for unit, _owner in selected:
+        place(unit.uid)
+    return ordered
 
 
 def _selected_units(
