@@ -502,17 +502,78 @@ def test_a_missing_constant_fails_rather_than_vanishing(tmp_path: Path) -> None:
 
 
 def test_an_initializer_too_rich_to_model_refuses(tmp_path: Path) -> None:
-    """These are sums, products and powers over literals. A function call is
-    not approximated, it is declined."""
+    """These are sums, products and powers over literals, and the intrinsics
+    both sides fold to the same bits. A transcendental is not approximated,
+    it is declined: gfortran folds ``exp`` with MPFR and libm need not agree
+    in the last bit."""
     src = """\
 module rich_mod
   implicit none
-  real, parameter :: weird = sqrt(2.0)
+  real, parameter :: weird = exp(2.0)
 end module rich_mod
 """
     _write(tmp_path, "rich.f90", src)
     with pytest.raises(expr.UnsupportedExpression):
         use.resolve(["weird"], [tmp_path / "rich.f90"])
+
+
+CONSTS_INTRINSIC = """\
+module tol_mod
+  implicit none
+  integer, parameter :: r8 = 8
+  real(r8), parameter :: pi = 3.14159265358979_r8
+  real(r8), parameter :: eps = max( 1.0e-10_r8, epsilon(pi) )
+  real(r8), parameter :: tol = max( 1.e-10_r8, epsilon(tol) )
+  real(r8), parameter :: three = real( 3, kind = r8 )
+  real(r8), parameter :: root = sqrt( 2.0_r8 )
+  integer, parameter :: half = int( 7.9_r8 ) / 2
+end module tol_mod
+"""
+
+
+def test_intrinsic_calls_in_initializers_fold_the_same_on_both_sides(tmp_path: Path) -> None:
+    """CLUBB's ``eps = max( 1.0e-10, epsilon(pi) )`` (constants_clubb) and
+    ``bicgstab_tol = max( 1.e-10, epsilon(bicgstab_tol) )``: a whitelist of
+    intrinsics the compiler and NumPy fold to the same value, including the
+    one legal self-reference, a kind inquiry on the constant being declared."""
+    import numpy as np
+
+    from recast.transform.numpy.constants import use_constants_module
+
+    _write(tmp_path, "tol.f90", CONSTS_INTRINSIC)
+    resolved = use.resolve(["eps", "tol", "three", "root", "half"], [tmp_path / "tol.f90"])
+    got = {r["name"]: r["expr"] for r in resolved}
+    assert got["eps"].kind == "call" and got["eps"].text == "max"
+    # The self-reference is gone from the tree, so it is not a dependency.
+    assert "tol" not in expr.names_used(got["tol"])
+    scope: dict[str, object] = {}
+    exec(use_constants_module(resolved, "tol_mod"), scope)  # generated text under test
+    assert scope["EPS"] == np.float64(1.0e-10)
+    assert scope["TOL"] == np.float64(1.0e-10)
+    assert scope["THREE"] == np.float64(3.0) and type(scope["THREE"]) is np.float64
+    assert scope["ROOT"] == np.sqrt(np.float64(2.0))
+    assert scope["HALF"] == 3
+
+
+def test_a_renderer_without_a_call_spelling_refuses_a_call(tmp_path: Path) -> None:
+    _write(tmp_path, "tol.f90", CONSTS_INTRINSIC)
+    resolved = use.resolve(["eps"], [tmp_path / "tol.f90"])
+    tree = {r["name"]: r["expr"] for r in resolved}["eps"]
+    with pytest.raises(expr.UnsupportedExpression):
+        expr.render(tree, real=str, integer=str, name=str)
+
+
+def test_a_conversion_to_a_kind_the_fold_cannot_honour_refuses(tmp_path: Path) -> None:
+    src = """\
+module sp_mod
+  implicit none
+  integer, parameter :: sp = 4
+  real(sp), parameter :: x = real( 3, kind = sp )
+end module sp_mod
+"""
+    _write(tmp_path, "sp.f90", src)
+    with pytest.raises(expr.UnsupportedExpression):
+        use.resolve(["x"], [tmp_path / "sp.f90"])
 
 
 # --- block boundaries as shared vocabulary -----------------------------------
@@ -1714,6 +1775,29 @@ def test_character_parameters_fold_and_fit_or_stay_a_skip() -> None:
     assert (char_length("CHARACTER(LEN = 4)"), char_length("CHARACTER(LEN = *)")) == (4, "*")
     assert (char_length("CHARACTER"), char_length("CHARACTER(LEN = n)")) == (1, None)
     assert char_length("CHARACTER", "c*6") == 6
+
+
+def test_a_kind_inquiry_on_the_constant_itself_is_kept(tmp_path: Path) -> None:
+    """``tol = max( 1.e-10_core_rknd, epsilon(tol) )`` (CLUBB's
+    penta_bicgstab_solver): the only legal self-reference, asking the
+    constant's own kind. It cannot be a ``ref`` to a name not yet defined, and
+    the target renders the kind's epsilon with no argument."""
+    src = """\
+module self_mod
+  implicit none
+  integer, parameter :: core_rknd = 8
+  real( kind = core_rknd ), parameter :: tol = max( 1.e-10_core_rknd, epsilon(tol) )
+end module self_mod
+"""
+    _write(tmp_path, "self.f90", src)
+    payload = _param(constants.extract(tmp_path / "self.f90"), "tol")["payload"]
+    assert payload == [
+        {
+            "t": "call",
+            "v": "max",
+            "args": [[{"t": "real", "v": "1.e-10"}], [{"t": "call", "v": "epsilon", "args": []}]],
+        }
+    ]
 
 
 CALLBACK = """\

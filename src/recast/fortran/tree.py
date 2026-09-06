@@ -11,7 +11,9 @@ caller's to say; a domain extension says it from its conventions.
 
 from __future__ import annotations
 
+import math
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +157,10 @@ def _evaluate(
 ) -> Any:
     """The value of one named constant, or ``None`` where the tree does not
     initialize it with something a parameter can be folded from."""
+    # Lazy, like ``render`` above: ``expr`` parses, and this module is imported
+    # by paths that must stay importable without the ``fortran`` extra.
+    from recast.fortran.expr import python_call, with_integer_division
+
     try:
         records = resolve([name], files)
     except unresolved:
@@ -162,16 +168,17 @@ def _evaluate(
     env: dict[str, Any] = {}
     try:
         for entry in records:
+            # Integer arithmetic where Fortran's ``/`` truncates.
             text = render(
-                entry["expr"],
+                with_integer_division(entry["expr"]),
                 real=lambda t: f"float('{t}')",
                 integer=lambda t: t,
                 name=lambda t: t.upper(),
+                call=lambda f, a: python_call(f, a, real64="float"),
             )
-            if "float(" not in text:
-                # Integer arithmetic throughout: Fortran's ``/`` truncates.
-                text = text.replace("/", "//")
-            env[entry["name"].upper()] = eval(text, {"__builtins__": {}}, dict(env))  # noqa: S307
+            scope = {"__builtins__": {}, "max": max, "min": min, "abs": abs, "int": int}
+            scope.update({"float": float, "math": math, "sys": sys})
+            env[entry["name"].upper()] = eval(text, scope, dict(env))  # noqa: S307
     except Exception:  # an initializer shape the renderer has no rule for
         return None
     return env.get(name.upper())
