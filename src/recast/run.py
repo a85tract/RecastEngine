@@ -1564,7 +1564,7 @@ def output_root(root: Path, config: dict[str, Any]) -> Path:
     offers to translate the last run's scaffolding.
 
     The project segment is the tree's own directory name, so
-    ``examples/toy_physics`` and ``corpus/.build/numfor`` land in
+    ``corpus/toy_physics`` and ``corpus/.build/numfor`` land in
     ``output/toy_physics`` and ``output/numfor`` -- readable, and the thing a
     person asking "where did it go" already knows. Two trees whose basenames
     collide share a directory; keying by a path hash instead would be correct

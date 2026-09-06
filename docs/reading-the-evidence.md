@@ -314,4 +314,4 @@ than one array size if the code branches on it. The cost is only run time.
 | [`getting-started.md`](getting-started.md) | the page before this one |
 | [`cli.md`](cli.md) | every flag on `run`, including `--report-only` for when you want the report without the exit code |
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | a manifest read carefully on a real library, where the passing run reaches less far than its summary line |
-| [`../examples/README.md`](../examples/README.md) | the long form of why the summary omits what it omits, and why CI diffs it |
+| [`../corpus/README.md`](../corpus/README.md#the-two-trees-shipped-in-tree) | the long form of why the summary omits what it omits, and why CI diffs it |

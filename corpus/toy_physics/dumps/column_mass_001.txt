@@ -1,0 +1,22 @@
+# SYNTHETIC probe capture, written by hand for the conformance suite and
+# the port example. NOT a production recording: no CESM run produced it,
+# and it carries no build identity because the format has nowhere to put
+# one. The values are toy_physics.column_mass evaluated in float64 over
+# the same columns settle_00N.txt records, so a correct candidate
+# reproduces them to the bit. The function result is a scalar, recorded
+# as an OUTPUT section holding exactly one value, which is the only way
+# the probe format has to write one.
+# PROBE toy_physics.column_mass: call=       1
+# n =       4
+# INPUT: rho(n)
+1.2
+1.1
+0.9
+0.7
+# INPUT: dz(n)
+100.0
+120.0
+150.0
+200.0
+# OUTPUT: m
+527.0

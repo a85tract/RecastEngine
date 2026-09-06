@@ -356,12 +356,12 @@ def _bitexact_oracle(workspace: Path, executor: Executor) -> OracleRef:
 # The one case in this set that reaches outside the package. It needs Fortran
 # source, and inventing an interface dictionary by hand would be inventing the
 # frontend's output too -- so it runs the real frontend over the repository's
-# own example. That makes the case honest and makes it conditional: from a
-# wheel there is no ``examples/`` and the case skips by name, which is the
+# own shipped tree. That makes the case honest and makes it conditional: from a
+# wheel there is no ``corpus/`` and the case skips by name, which is the
 # answer that says "not checked here" rather than "nothing found".
 
-TOY_PHYSICS = Path(__file__).resolve().parents[3] / "examples" / "toy_physics"
-"""``src/recast/conformance/builtin.py`` -> the repository root -> the example."""
+TOY_PHYSICS = Path(__file__).resolve().parents[3] / "corpus" / "toy_physics"
+"""``src/recast/conformance/builtin.py`` -> the repository root -> the shipped tree."""
 
 F2PY_UNIT = "fortran:toy_physics"
 
@@ -631,7 +631,7 @@ def _plant_c_workspace_artifact(workspace: Path) -> None:
     (workspace / "main.cpp").write_text("int main() { return 0; }\n")
 
 
-PROBE_KERNEL = Path(__file__).resolve().parents[3] / "examples" / "probe_kernel"
+PROBE_KERNEL = Path(__file__).resolve().parents[3] / "corpus" / "probe_kernel"
 """The repository's own pair of probe-printing scripts, the reference and a
 candidate that agrees with it; see its README."""
 

@@ -90,12 +90,12 @@ the command runs and reports plugins. If it does, you are installed.
 
 ## 3. Run the shipped example
 
-The engine ships a tiny Fortran module, `examples/toy_physics/toy_physics.f90`,
+The engine ships a tiny Fortran module, `corpus/toy_physics/toy_physics.f90`,
 that integrates pressure down a column. Open it if you like; it is thirty
 lines and looks like any Fortran you have written. Run the engine over it:
 
 ```console
-$ recast run translate examples/toy_physics --config examples/toy_physics/recast.json
+$ recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json
 fortran:toy_physics
   [ok ] frontend   fortran
   [ok ] transform  translate.numpy
@@ -112,7 +112,7 @@ fortran:toy_physics
 ```
 
 The first time takes longer, because the compiler runs. The command has
-three parts: `run translate` says what to do, `examples/toy_physics` is the
+three parts: `run translate` says what to do, `corpus/toy_physics` is the
 folder holding the Fortran, and `--config ...` points at a small settings
 file we will come back to.
 
@@ -214,7 +214,7 @@ end module <name>
 
 Put your file in a folder of its own. The folder's name becomes the name of
 the run's output. Here is a real one; make a folder called `satvap` next to
-`examples` and save this as `satvap/satvap.f90`:
+`corpus` and save this as `satvap/satvap.f90`:
 
 ```fortran
 ! Saturation vapor pressure over water (Bolton 1980) and the mixing ratio
@@ -308,7 +308,7 @@ $ recast run translate satvap --config satvap/recast.json
 ```
 
 340 points: 20 calls of `esat`, and 20 calls of `mixing_ratio` with 16
-elements each. The `examples/toy_physics/recast.json` you passed in section
+elements each. The `corpus/toy_physics/recast.json` you passed in section
 3 is the same file for that module.
 
 ## 5. When it is not all green

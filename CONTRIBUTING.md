@@ -37,7 +37,7 @@ Two of them need a tool this repository does not install for you, and report
 | `sbom` | `syft` | proves the SBOM scanner runs |
 
 `port-spine` needs no compiler, which is a property of its oracle rather than a
-convenience — see `examples/README.md`.
+convenience — see the shipped-trees section of `corpus/README.md`.
 
 The short version, when you only want the fast ones:
 

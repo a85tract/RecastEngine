@@ -1419,7 +1419,7 @@ def test_a_unit_that_takes_a_procedure_ends_bit_exact(tmp_path: Path) -> None:
     reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
 )
 def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
-    """The roadmap's P2 claim, literally: `recast run translate examples/...`
+    """The roadmap's P2 claim, literally: `recast run translate corpus/...`
     walks every stage and leaves evidence manifests behind."""
     import json
     import shutil as _shutil
@@ -1427,7 +1427,7 @@ def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
     from recast.cli import main
     from recast.run import output_root
 
-    example = Path(__file__).resolve().parent.parent / "examples" / "toy_physics"
+    example = Path(__file__).resolve().parent.parent / "corpus" / "toy_physics"
     staged = tmp_path / "toy_physics"
     _shutil.copytree(example, staged, ignore=_shutil.ignore_patterns(".recast", "output"))
 
