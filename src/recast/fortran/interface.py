@@ -1262,6 +1262,25 @@ def extract(
                 private_names.extend(names)
             else:
                 default_private = True
+        # The attribute form: ``logical, public :: carbon_only`` (ELM's
+        # elm_varctl, a bare ``private`` up top and every flag exported on
+        # its own declaration), ``type, public :: t``. Under a default
+        # private these are as public as a ``public ::`` line, and a state
+        # variable counted private here is one no adapter sets.
+        for declaration in walk(mod_spec, f03.Type_Declaration_Stmt):
+            specs = {str(a).upper() for a in walk(declaration, f03.Access_Spec)}
+            names = [str(e.children[0]).lower() for e in walk(declaration, f03.Entity_Decl)]
+            if "PUBLIC" in specs:
+                public_names.extend(names)
+            elif "PRIVATE" in specs:
+                private_names.extend(names)
+        for derived in walk(mod_spec, f03.Derived_Type_Def):
+            head = derived.children[0]
+            specs = {str(a).upper() for a in walk(head, f03.Access_Spec)}
+            if "PUBLIC" in specs:
+                public_names.append(str(head.children[1]).lower())
+            elif "PRIVATE" in specs:
+                private_names.append(str(head.children[1]).lower())
 
     def is_public(name: str) -> bool:
         if default_private:

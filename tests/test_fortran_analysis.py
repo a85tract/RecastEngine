@@ -2376,3 +2376,36 @@ def test_a_transformational_intrinsic_is_not_a_read(tmp_path: Path) -> None:
     reads = {name for b in blocks.values() for name in b["reads"]}
     assert "reshape" not in reads and "spread" not in reads and "sum" not in reads
     assert {"y", "n", "x"} <= reads
+
+
+ATTRIBUTE_PUBLIC = """\
+module flags_mod
+  implicit none
+  private
+  save
+  logical, public :: carbon_only
+  integer, private :: hidden = 0
+  real(8), public, dimension(3) :: table
+  type, public :: knob_type
+    integer :: a
+  end type knob_type
+  public :: set_flags
+contains
+  subroutine set_flags( on )
+    logical, intent(in) :: on
+    carbon_only = on
+  end subroutine set_flags
+end module flags_mod
+"""
+
+
+def test_an_access_attribute_on_a_declaration_counts(tmp_path: Path) -> None:
+    """ELM's elm_varctl: a bare ``private`` up top and every namelist flag
+    exported on its own declaration (``logical, public :: carbon_only``).
+    Only ``public ::`` lines were read, so the flags counted private, the
+    plan left them to the module, and the kernel read None for a flag the
+    run had set."""
+    record = interface.extract(_write(tmp_path, "flags.f90", ATTRIBUTE_PUBLIC))
+    assert "carbon_only" in record["public"] and "table" in record["public"]
+    assert "knob_type" in record["public"] and "set_flags" in record["public"]
+    assert "hidden" not in record["public"]
