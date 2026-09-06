@@ -760,15 +760,16 @@ end module derived_mod
 """
 
 
-def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) -> None:
+def test_a_component_name_is_not_a_read_on_the_out_argument_path(tmp_path: Path) -> None:
     """``b % q`` writes ``b``. On an assignment, ``q`` is an attribute and not
     a symbol; passed to an intent(out) dummy, the pipeline this came from
-    counts it as a read as well.
+    counted it as a read as well.
 
-    The two disagree, and the disagreement is preserved. Resolving it would be
-    a change to answers a bit-exact gate has been run against, and the two
-    sites in CAM where it shows are both in modules with no translation to
-    check the tidier answer against.
+    The disagreement was preserved until a translation showed the tidier
+    answer: CLUBB's pdf_closure passes ``pdf_params%chi_1`` and six more
+    components as OUT actuals, the candidate spells attributes and reads no
+    variable of those names, and the gate scored six blocks as disagreeing
+    over reads of variables the scope does not have.
     """
     from recast.fortran import rwset
 
@@ -781,10 +782,8 @@ def test_a_component_name_is_read_on_the_out_argument_path_only(tmp_path: Path) 
     )
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
     # ``slot(:)`` is a caller-buffer OUT (#36), so ``b`` is read as well as
-    # written on the call (#38); ``q`` is the pipeline's component read.
-    assert blocks["B001"] == {"id": "B001", "reads": ["b", "n", "q"], "writes": ["b"]}, (
-        "out-argument"
-    )
+    # written on the call (#38); ``q`` is an attribute on both paths.
+    assert blocks["B001"] == {"id": "B001", "reads": ["b", "n"], "writes": ["b"]}, "out-argument"
     assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
 
 
@@ -1012,7 +1011,8 @@ end module sib_mod
 """
     record = interface.extract(_write(tmp_path, "sib.f90", sibling), kind_assumptions=KINDS)
     table = interface.companion_externals(record)
-    assert table["qsat_water"] == {"kind": "subroutine", "out_positions": [2, 3]}
+    assert table["qsat_water"]["kind"] == "subroutine"
+    assert table["qsat_water"]["out_positions"] == [2, 3]
 
 
 def _sub_node(tmp_path: Path, name: str):
@@ -1879,6 +1879,316 @@ def test_the_specifics_of_a_public_generic_are_public_through_it(tmp_path: Path)
     assert by_name["solve_many"]["public"] and by_name["solve_many"]["public_via"] == "solve"
     assert not by_name["helper"]["public"] and "public_via" not in by_name["helper"]
     assert record["generics"] == {"solve": ["solve_one", "solve_many"]}
+
+
+def test_a_siblings_generic_is_a_procedure_to_the_read_write_scope(tmp_path: Path) -> None:
+    """A call into a companion spells the generic (CLUBB's ``zt2zm_api``);
+    without an entry for it the scope counted the name as a read of data."""
+    record = interface.extract(_write(tmp_path, "solve.f90", PUBLIC_GENERIC))
+    table = interface.companion_externals(record)
+    assert table["solve"]["kind"] == "subroutine"
+    assert table["solve"]["out_positions"] == [1, 2]  # the union, for a call of no known arity
+    # ... and each specific with its arity, for the scope to pick by the actuals.
+    assert [(x["name"], x["args"], x["out_positions"]) for x in table["solve"]["specifics"]] == [
+        ("solve_one", 2, [1]),
+        ("solve_many", 3, [2]),
+    ]
+    assert table["solve_one"]["out_positions"] == [1]
+
+
+def test_a_quotient_of_real_parameters_is_a_real_quotient(tmp_path: Path) -> None:
+    """CLUBB's ``ep = Rd / Rv``: no literal in sight, two real parameters.
+    The old rule -- no real literal means integer arithmetic throughout --
+    folded it to zero. The declared types decide."""
+    import numpy as np
+
+    from recast.transform.numpy.constants import use_constants_module
+
+    src = """\
+module gas_mod
+  implicit none
+  integer, parameter :: core_rknd = 8
+  real( kind = core_rknd ), parameter :: rd = 287.04_core_rknd, rv = 461.5_core_rknd
+  real( kind = core_rknd ), parameter :: ep = rd / rv
+  real( kind = core_rknd ), parameter :: ep2 = 1.0_core_rknd / ep
+  integer, parameter :: runge_kutta_type = 45
+  integer, parameter :: nrk = runge_kutta_type / 10
+end module gas_mod
+"""
+    _write(tmp_path, "gas.f90", src)
+    resolved = use.resolve(["ep2", "nrk"], [tmp_path / "gas.f90"])
+    assert {r["name"]: r["dtype"] for r in resolved}["ep"] == "real"
+    scope: dict[str, object] = {}
+    exec(use_constants_module(resolved, "gas_mod"), scope)  # generated text under test
+    assert scope["EP"] == np.float64(287.04) / np.float64(461.5)
+    assert scope["EP2"] == np.float64(1.0) / scope["EP"]
+    assert scope["NRK"] == 4
+
+
+STUBBED_CALLER = """\
+module budget_mod
+  use stats_mod, only: stats_type, stats_update
+  implicit none
+  private
+  public :: tend
+contains
+  subroutine tend( n, x, stats )
+    integer, intent(in) :: n
+    real, dimension(n), intent(inout) :: x
+    type(stats_type), intent(inout) :: stats
+    real, dimension(n) :: stats_tmp
+    x = 2.0 * x
+    if ( stats%l_sample ) then
+      stats_tmp = x / 2.0
+      call stats_update( "x_budget", stats_tmp, stats )
+    end if
+  end subroutine tend
+end module budget_mod
+"""
+
+
+def test_a_call_into_a_stubbed_module_reads_and_writes_nothing(tmp_path: Path) -> None:
+    """CLUBB brackets its budgets with calls into stats_netcdf, a stub: the
+    translation emits ``pass`` for them, so the source side must not count
+    their actuals either -- ``stats_tmp`` was a read only the source saw."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "budget.f90", STUBBED_CALLER)
+    frontend = FortranFrontend(stub_modules=["stats_mod"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:budget_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface  # analysed without the stub module in the tree
+    blocks = facts.effects["fortran:budget_mod/tend"]["blocks"]
+    reads = {name for block in blocks for name in block.get("reads", [])}
+    assert "stats_tmp" not in reads and "x_budget" not in reads
+
+
+KEYWORD_CALLER = """\
+module caller_mod
+  use solve_mod, only: solve
+  implicit none
+  private
+  public :: run
+contains
+  subroutine run( n, m, x, rc )
+    integer, intent(in) :: n, m
+    real, intent(inout) :: x(n, m)
+    real, intent(out) :: rc
+    call solve( n, m, x, rcond = rc )
+  end subroutine run
+end module caller_mod
+"""
+
+SOLVER_WITH_OPTIONAL = """\
+module solve_mod
+  implicit none
+  private
+  public :: solve
+  interface solve
+    module procedure solve_one, solve_many
+  end interface
+contains
+  subroutine solve_one( n, x, rcond )
+    integer, intent(in) :: n
+    real, intent(inout) :: x(n)
+    real, intent(out), optional :: rcond
+    x = 2.0 * x
+    if ( present( rcond ) ) rcond = 1.0
+  end subroutine solve_one
+  subroutine solve_many( n, m, x, rcond )
+    integer, intent(in) :: n, m
+    real, intent(inout) :: x(n, m)
+    real, intent(out), optional :: rcond
+    x = 2.0 * x
+    if ( present( rcond ) ) rcond = 1.0
+  end subroutine solve_many
+end module solve_mod
+"""
+
+
+def test_a_keyword_actual_into_a_siblings_generic_lands_on_its_own_position(tmp_path: Path) -> None:
+    """``call band_solve( ..., solut, rcond = rcond )`` (CLUBB): the keyword
+    names an optional OUT dummy at the end. Bound by position it fell on the
+    dummy before it and was read; bound by name it is written, not read --
+    and the specific is picked with the optional counted."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", SOLVER_WITH_OPTIONAL)
+    _write(tmp_path, "caller.f90", KEYWORD_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:caller_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:caller_mod/run"]["blocks"]
+    assert "rc" in block["writes"] and "rc" not in block["reads"]
+    assert "x" in block["writes"] and "x" in block["reads"]  # INOUT: both
+
+
+RANK_OVERLOADED_SOLVER = """
+module solve_mod
+  implicit none
+  private
+  public :: solve
+  interface solve
+    module procedure solve_one, solve_many
+  end interface solve
+contains
+  subroutine solve_one( n, flag, a, x, rc )
+    integer, intent(in) :: n
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 1.0
+  end subroutine solve_one
+  subroutine solve_many( n, m, flag, a, x )
+    integer, intent(in) :: n, m
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n, m)
+    real, intent(out) :: x(n, m)
+    x = a
+  end subroutine solve_many
+end module solve_mod
+"""
+
+RANK_CALLER = """
+module caller_mod
+  use solve_mod, only: solve
+  implicit none
+contains
+  subroutine run( n, m, flag, a, x )
+    integer, intent(in) :: n, m
+    logical, intent(in) :: flag
+    real, intent(inout) :: a(n, m)
+    real, intent(out) :: x(n, m)
+    call solve( n, m, flag, a, x )
+  end subroutine run
+end module caller_mod
+"""
+
+
+def test_specifics_of_one_arity_are_told_apart_by_rank(tmp_path: Path) -> None:
+    """CLUBB's ``tridiag_solve``: the single-rhs specific with its optional
+    ``rcond`` takes as many actuals as the multiple-rhs one without. Picked
+    by count alone the first won, and ``l_implemented`` -- an IN logical on
+    the position where the other specific's ``rhs`` sits -- was scored
+    written. The ranks of the actuals pick the specific whose dummies match."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", RANK_OVERLOADED_SOLVER)
+    _write(tmp_path, "caller.f90", RANK_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:caller_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:caller_mod/run"]["blocks"]
+    assert "flag" not in block["writes"] and "flag" in block["reads"]
+    assert "x" in block["writes"] and "x" not in block["reads"]
+    assert "a" in block["writes"] and "a" in block["reads"]
+
+
+COMPONENT_OUT_CALLER = """
+module pdf_mod
+  implicit none
+  type pdf_type
+    real, allocatable :: chi(:), eta(:)
+  end type pdf_type
+contains
+  subroutine fill( n, chi, eta )
+    integer, intent(in) :: n
+    real, intent(in) :: chi(n)
+    real, intent(out) :: eta(n)
+    eta = chi
+  end subroutine fill
+  subroutine run( n, p )
+    integer, intent(in) :: n
+    type(pdf_type), intent(inout) :: p
+    call fill( n, p%chi, p%eta )
+  end subroutine run
+end module pdf_mod
+"""
+
+
+def test_a_component_out_actual_reads_no_variable_of_the_components_name(tmp_path: Path) -> None:
+    """``call fill( n, p%chi, p%eta )`` (CLUBB's pdf_closure passes
+    ``pdf_params%chi_1`` and friends as OUT actuals): the object is written.
+    The component's bare name was counted as a read of a variable ``eta``
+    that the scope does not have; the translation, spelling the attribute,
+    read no such thing, and the block disagreed."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "pdf.f90", COMPONENT_OUT_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:pdf_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:pdf_mod/run"]["blocks"]
+    assert "p" in block["writes"] and "p" in block["reads"]
+    assert "eta" not in block["reads"] and "chi" not in block["reads"]
+
+
+HANDS_ON_SOLVER = """
+module solve_mod
+  implicit none
+contains
+  subroutine solve( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 1.0
+  end subroutine solve
+end module solve_mod
+"""
+
+HANDS_ON_CALLER = """
+module relay_mod
+  use solve_mod, only: solve
+  implicit none
+contains
+  subroutine outer( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    call solve( n, a, x, rc = rc )
+  end subroutine outer
+  subroutine own( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    call inner( n, a, x, rc )
+  end subroutine own
+  subroutine inner( n, a, x, rc )
+    integer, intent(in) :: n
+    real, intent(in) :: a(n)
+    real, intent(out) :: x(n)
+    real, intent(out), optional :: rc
+    x = a
+    if ( present(rc) ) rc = 2.0
+  end subroutine inner
+end module relay_mod
+"""
+
+
+def test_an_optional_handed_on_to_an_optional_out_is_read_for_its_presence(tmp_path: Path) -> None:
+    """``call solve( ..., rc = rc )`` with the caller's own optional ``rc``:
+    the callee asks ``present(rc)``, which the translation spells as the
+    caller's ``want_rc`` sentinel -- a read of ``rc`` on the target side.
+    The source side scored only the write, and CLUBB's xm_wpxp_solve
+    disagreed on the one block that hands ``rcond`` to band_solve. Both a
+    sibling's procedure and one of this module count it."""
+    from recast.fortran.frontend import FortranFrontend
+
+    _write(tmp_path, "solve.f90", HANDS_ON_SOLVER)
+    _write(tmp_path, "relay.f90", HANDS_ON_CALLER)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:relay_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    (block,) = facts.effects["fortran:relay_mod/outer"]["blocks"]
+    assert "rc" in block["reads"] and "rc" in block["writes"]
+    (block,) = facts.effects["fortran:relay_mod/own"]["blocks"]
+    assert "rc" in block["reads"] and "rc" in block["writes"]
 
 
 CALLBACK = """\

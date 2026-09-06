@@ -1170,12 +1170,12 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 896,
-   "deferred": 57,
+   "blocks": 897,
+   "deferred": 56,
    "refusals": [
     [
      "generic 'X': no match",
-     12
+     11
     ],
     [
      "call to external subroutine 'X'",
@@ -1354,7 +1354,7 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 14,
+     "deferred": 13,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1367,11 +1367,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/66 blocks disagree: cspl_interp/B002, cspleps/B003, csplint/B006, csplint/B012, csplint/B016 (+2 more)",
+       "detail": "5/67 blocks disagree: csplint/B006, csplint/B012, csplint/B016, csplint_square/B011, csplint_square/B015",
        "metrics": {
-        "blocks_checked": 66,
-        "blocks_deferred": 14,
-        "blocks_matched": 59,
+        "blocks_checked": 67,
+        "blocks_deferred": 13,
+        "blocks_matched": 62,
         "blocks_waived": 0
        },
        "passed": false
@@ -1418,11 +1418,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "18/124 blocks disagree: splrep_msg/B002, splprep/B014, splprep/B016, splprep/B019, splprep/B020 (+13 more)",
+       "detail": "1/124 blocks disagree: splrep_msg/B002",
        "metrics": {
         "blocks_checked": 124,
         "blocks_deferred": 8,
-        "blocks_matched": 106,
+        "blocks_matched": 123,
         "blocks_waived": 0
        },
        "passed": false
@@ -1650,11 +1650,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_load_state/B003, genrand_load_state/B004 (+2 more)",
+       "detail": "3/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002",
        "metrics": {
         "blocks_checked": 187,
         "blocks_deferred": 3,
-        "blocks_matched": 180,
+        "blocks_matched": 184,
         "blocks_waived": 0
        },
        "passed": false
@@ -1904,23 +1904,42 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "ok",
-      "verifier/static.rwset": "ok",
-      "verifier/symbolic.notary": "ok"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": null,
+     "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "80 points across 1 subprogram(s), all bit-exact",
+       "detail": "3 subprogram(s) could not be compared: searchsorted_dp: candidate raised: NameError: name 'SMALL' is not defined; searchsorted_idp: candidate raised: NameError:",
        "metrics": {
-        "bit_exact": 80,
+        "bit_exact": 90,
         "integer_mismatch": 0,
-        "integer_points": 0,
+        "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 80,
+        "points": 90,
         "subprograms": {
+         "searchsorted_dp": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
+         "searchsorted_dpi": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
+         "searchsorted_i": {
+          "bit_exact": 10,
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0
+         },
+         "searchsorted_idp": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
          "sort": {
           "bit_exact": 80,
           "integer_mismatch": 0,
@@ -1935,7 +1954,7 @@
         },
         "trials": 10
        },
-       "passed": true
+       "passed": false
       },
       "static.rwset": {
        "detail": "62 blocks match",
@@ -1944,13 +1963,6 @@
         "blocks_deferred": 0,
         "blocks_matched": 62,
         "blocks_waived": 0
-       },
-       "passed": true
-      },
-      "symbolic.notary": {
-       "detail": "no rewrites to notarize; the translation is print-order faithful",
-       "metrics": {
-        "rewrites": 0
        },
        "passed": true
       }
@@ -2360,11 +2372,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "15/106 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+10 more)",
+       "detail": "7/106 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+2 more)",
        "metrics": {
         "blocks_checked": 106,
         "blocks_deferred": 8,
-        "blocks_matched": 91,
+        "blocks_matched": 99,
         "blocks_waived": 0
        },
        "passed": false

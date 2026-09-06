@@ -156,7 +156,9 @@ def substitute(expr: Expr, name: str, replacement: Expr) -> Expr:
     For the one legal self-reference in an initializer, a kind inquiry on the
     constant being declared (``tol = max( 1.e-10_r8, epsilon(tol) )``): the
     reference carries the constant's kind and nothing else, and the fold
-    renders reals as 64-bit, so a 64-bit literal stands in for it.
+    renders reals as 64-bit, so a 64-bit literal stands in for it. Every
+    occurrence is replaced: a parameter cannot name itself anywhere else in
+    its own initializer, so there is no other occurrence to preserve.
     """
     if expr.kind == "name" and expr.text == name:
         return replacement
@@ -205,27 +207,28 @@ def render(
 REAL_CALLS = frozenset({"real", "dble", "sqrt"} | KIND_INQUIRIES)
 
 
-def typed(expr: Expr) -> str | None:
+def typed(expr: Expr, env: dict[str, str | None] | None = None) -> str | None:
     """``"real"``, ``"int"``, or ``None`` when a bare name leaves it open.
 
     Type inference the fold needs for exactly one decision: whether a ``/``
     is Fortran's integer division. A real literal or a real-valued call
     anywhere in an operand makes the quotient real; ``int(...)`` and integer
-    literals make it integer; a name is whatever its initializer was, which
-    this tree does not carry.
+    literals make it integer; a name is what ``env`` says its declaration
+    was -- CLUBB's ``ep = Rd / Rv`` over two real parameters is a real
+    quotient, and a fold that guessed integer made it zero.
     """
     if expr.kind == "real":
         return "real"
     if expr.kind == "int":
         return "int"
     if expr.kind == "name":
-        return None
+        return (env or {}).get(expr.text)
     if expr.kind == "call":
         if expr.text == "int":
             return "int"
         if expr.text in REAL_CALLS:
             return "real"
-    kinds = {typed(a) for a in expr.args}
+    kinds = {typed(a, env) for a in expr.args}
     if "real" in kinds:
         return "real"
     if kinds == {"int"}:
@@ -233,24 +236,27 @@ def typed(expr: Expr) -> str | None:
     return None
 
 
-def with_integer_division(expr: Expr, *, default_integer: bool | None = None) -> Expr:
+def with_integer_division(
+    expr: Expr, *, default_integer: bool | None = None, env: dict[str, str | None] | None = None
+) -> Expr:
     """The tree with every integer ``/`` spelled ``//``.
 
     Fortran divides two integers to an integer: ``nrk = runge_kutta_type / 10``
     is 4, not 4.1. A quotient whose operands are both known integers is
-    marked; one with a name in it falls back to ``default_integer``, which
-    the caller sets from the whole initializer -- an expression with no real
-    literal and no real-valued call in it is integer arithmetic throughout,
-    because a name in it is an integer parameter or it would have had one.
+    marked; one with a name in it is typed by ``env`` (the declared types
+    of the constants resolved so far) and otherwise falls back to
+    ``default_integer``, which the caller sets from the whole initializer.
     """
     if default_integer is None:
-        default_integer = typed(expr) != "real"
+        default_integer = typed(expr, env) != "real"
     if not expr.args:
         return expr
-    args = tuple(with_integer_division(a, default_integer=default_integer) for a in expr.args)
+    args = tuple(
+        with_integer_division(a, default_integer=default_integer, env=env) for a in expr.args
+    )
     text = expr.text
     if expr.kind == "binary" and expr.text == "/":
-        kinds = {typed(a) for a in args}
+        kinds = {typed(a, env) for a in args}
         if kinds == {"int"} or ("real" not in kinds and default_integer):
             text = "//"
     return Expr(expr.kind, text, args)

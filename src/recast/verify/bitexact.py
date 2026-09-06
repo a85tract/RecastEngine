@@ -164,6 +164,16 @@ def callback_for(np: Any, name: str, interface: dict[str, Any]) -> Any:
     return callback
 
 
+def _returned(translated_out: Any) -> list[Any]:
+    """The values a candidate call handed back, as a list: a tuple's items,
+    one bare value, or none at all -- a subroutine with no OUT argument
+    returns ``None`` (CLUBB's finalize_tau_sponge_damp_api deallocates and
+    returns), and that is zero values, not one."""
+    if translated_out is None:
+        return []
+    return list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+
+
 def _extent(dim: dict[str, Any], dims: dict[str, int]) -> int:
     """An axis's extent: ``ub - lb + 1`` when a lower bound is declared
     (CLUBB's ``lhs(-2:2, ...)`` has five rows, not two), ``ub`` otherwise."""
@@ -405,6 +415,12 @@ class BitexactVerifier(Verifier):
                     return False
             return True
 
+        # One the operator declared ungated is not compared: the declaration
+        # says the reference cannot be held -- on generated inputs (CLUBB's
+        # rcm_sat_adj iterates and error-stops on them) or on a recording
+        # (its sponge initializer leaves the levels below the layer
+        # undefined on both sides). The reason is reported beside the verdict.
+        declared_ungated = set(config.get("ungated") or {})
         if recorded:
             # A recording names what it is a recording of, so the set to
             # compare is the set that was captured -- not every subprogram the
@@ -416,13 +432,20 @@ class BitexactVerifier(Verifier):
                 by_subprogram.setdefault(str(sample.get("subprogram", "")), []).append(sample)
             offered = sorted(by_subprogram)
             wanted = config.get("subprograms") or [
-                name for name in offered if name in table and judged(name)
+                name
+                for name in offered
+                if name in table and judged(name) and name not in declared_ungated
             ]
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
             wanted = config.get("subprograms") or [
-                name for name in wrappers if name in table and judged(name) and generable(name)
+                name
+                for name in wrappers
+                if name in table
+                and judged(name)
+                and generable(name)
+                and name not in declared_ungated
             ]
             skipped = sorted(set(wrappers) - set(wanted))
 
@@ -587,7 +610,21 @@ class BitexactVerifier(Verifier):
                 f"{totals['nan_mismatch']} point(s) where one side produced NaN "
                 "and the other a number",
             )
-        return self._award(candidate, totals, per_subprogram, metrics, config)
+        # What a gate needs to come back to the comparison: the loaded
+        # candidate, the table, the recorded samples, the staged files.
+        context = {
+            "np": np,
+            "translated": translated,
+            "table": table,
+            "recorded": recorded,
+            "by_subprogram": by_subprogram,
+            "workspace": workspace,
+            "handle": handle,
+            "trials": trials,
+            "dims": dims,
+            "ranges": ranges,
+        }
+        return self._award(candidate, totals, per_subprogram, metrics, config, context=context)
 
     def _award(
         self,
@@ -596,6 +633,7 @@ class BitexactVerifier(Verifier):
         per_subprogram: dict[str, Any],
         metrics: dict[str, Any],
         config: dict[str, Any],
+        context: dict[str, Any] | None = None,
     ) -> Verdict:
         """Which confidence the numbers earn.
 
@@ -766,6 +804,7 @@ class BitexactVerifier(Verifier):
         # truncating it to a count chosen here would silently narrow the
         # evidence.
         rounds: list[Any] = list(samples) if samples is not None else list(range(trials))
+        per_sample: list[dict[str, Any]] = []
         for round_index, round_item in enumerate(rounds):
             declined = ""
             reshape = False
@@ -1045,6 +1084,18 @@ class BitexactVerifier(Verifier):
                     continue
                 if reshape:
                     reshaped += 1
+                if samples is not None:
+                    # What each recorded sample measured, for a gate that
+                    # comes back to the worst ones (the conditioning check).
+                    per_sample.append(
+                        {
+                            "sample": round_index,
+                            "max_ulp": max((m.get("max_ulp", 0) for m in staged), default=0),
+                            "max_ulp_dominant": max(
+                                (m.get("max_ulp_dominant", 0) for m in staged), default=0
+                            ),
+                        }
+                    )
                 for measured in staged:
                     points += measured["points"]
                     bit_exact += measured["bit_exact"]
@@ -1076,7 +1127,7 @@ class BitexactVerifier(Verifier):
                 f"values; the {points} point(s) that fit are not evidence at those extents. "
                 "Pin `dims` to extents the subprogram takes"
             }
-        outcome = {
+        outcome: dict[str, Any] = {
             "points": points,
             "bit_exact": bit_exact,
             "max_ulp": max_ulp,
@@ -1090,6 +1141,8 @@ class BitexactVerifier(Verifier):
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
             outcome["dominant_points"] = dominant_points
+        if samples is not None:
+            outcome["per_sample"] = per_sample
         return outcome
 
     @staticmethod
@@ -1135,6 +1188,10 @@ class BitexactVerifier(Verifier):
         if dominant_at is None:
             return None
         magnitude = np.abs(reference)
+        if magnitude.size == 0:
+            # A zero-extent output (CLUBB's scalar tracers under
+            # sclr_dim = 0): nothing to weigh, and no maximum to take.
+            return []
         if axis in ("all", None) or magnitude.ndim <= 1:
             scale = magnitude.max()
         else:
@@ -1334,7 +1391,7 @@ class BitexactVerifier(Verifier):
             # therefore by exact name on both sides. Every required output was
             # preflighted before the candidate call; keep the same check here
             # as a fail-closed local invariant for direct callers.
-            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+            mine = _returned(translated_out)
             names = (
                 [sub.get("result") or "result"]
                 if sub["kind"] == "function"
@@ -1390,7 +1447,7 @@ class BitexactVerifier(Verifier):
                 for a in outs_required
             ]
 
-        ours = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
+        ours = _returned(translated_out)
         if len(ours) != len(outs_all):
             return (
                 f"candidate returned {len(ours)} value(s) for "

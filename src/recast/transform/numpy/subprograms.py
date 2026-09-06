@@ -84,15 +84,15 @@ def _token_pass_guessed(text: str, spelled: str) -> bool:
     ``_is_expression`` only asks whether Python can *parse* it. Three shapes
     parse and are still wrong: a call or array reference of an uppercased
     name; a ``//`` concatenation, which Python reads as floor division; and an
-    array constructor that was only part of the text (``reshape((/.../),
-    ...)``), where the search silently dropped everything around it.
+    array constructor the rendering dropped.
     """
     if UPPERCASED_CALL.search(spelled):
         return True
     if "//" in text:
         return True
-    constructed = ARRAY_CONSTRUCTOR.search(text)
-    return constructed is not None and constructed.span() != (0, len(text))
+    # A constructor inside a larger text is rendered where it stands now;
+    # the guess is a rendering that lost it.
+    return ARRAY_CONSTRUCTOR.search(text) is not None and "np.array(" not in spelled
 
 
 def _is_expression(text: str) -> str | bool:
@@ -149,6 +149,9 @@ class Subprograms:
     companion_globals: dict[str, str] = field(default_factory=dict)
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     remotes: dict[str, Remote] = field(default_factory=dict)
+    stub_procedures: frozenset[str] = frozenset()
+    """Procedures use-imported from a stubbed module; a call to one that no
+    statement stub answers is a raise, not a deferral of its block."""
     function_stubs: dict[str, str] = field(default_factory=dict)
     statement_stubs: dict[str, str] = field(default_factory=dict)
     intrinsics: dict[str, Any] = field(default_factory=dict)
@@ -333,6 +336,7 @@ class Subprograms:
             names,
             expressions,
             externals=self.externals,
+            stub_procedures=self.stub_procedures,
             stubs=dict(self.statement_stubs),
             call_transforms=dict(self.call_transforms),
             poison_undefined=self.poison_undefined,
@@ -1007,8 +1011,8 @@ class Subprograms:
             # rather than anything this file would notice.
             exponent = text.replace(" ", "").split("_")[0]
             return "np.float64('" + exponent.replace("d", "e").replace("D", "e") + "')"
-        constructed = ARRAY_CONSTRUCTOR.search(text)
-        if constructed:
+
+        def array_of(constructed: re.Match[str]) -> str:
             items = [strip_kind(item.strip()) for item in constructed.group(1).split(",")]
             if all(re.fullmatch(r"'[^']*'", item) for item in items):
                 return f"np.array([{', '.join(items)}])"
@@ -1025,6 +1029,25 @@ class Subprograms:
         def case_of(match: re.Match[str]) -> str:
             token = match.group()
             return pysafe(token.lower()) if token.lower() in local_parameters else token.upper()
+
+        constructed = ARRAY_CONSTRUCTOR.search(text)
+        if constructed and constructed.span() == (0, len(text)):
+            return array_of(constructed)
+        if constructed:
+            # A constant expression over a constructor (CLUBB's saturation
+            # and pdf_closure: ``100._core_rknd * (/ 6.09868993_core_rknd,
+            # ... /)``): each constructor as an array where it stands, the
+            # rest through the token pass; NumPy is elementwise as Fortran
+            # is. A call around one (``reshape((/.../), ...)``) still goes
+            # to the parse, by the uppercased-call rule.
+            pieces: list[str] = []
+            position = 0
+            for found in ARRAY_CONSTRUCTOR.finditer(text):
+                pieces.append(IDENTIFIER.sub(case_of, strip_kind(text[position : found.start()])))
+                pieces.append(array_of(found))
+                position = found.end()
+            pieces.append(IDENTIFIER.sub(case_of, strip_kind(text[position:])))
+            return "".join(pieces)
 
         return IDENTIFIER.sub(case_of, strip_kind(text))
 

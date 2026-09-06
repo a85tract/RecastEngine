@@ -139,6 +139,51 @@ FORMAT_SUPPORTED = re.compile(
 write using anything else is refused rather than silently list-directed."""
 
 
+def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
+    """The DO constructs whose loop variable a later statement reads before
+    anything redefines it -- where Fortran's completion value (one step past
+    the end) and Python's (the last value) differ and are observed.
+
+    A later DO over the same variable, or an assignment to it, redefines it
+    first and closes the question; ``i`` and ``k`` are reused by most loops
+    of a module, and an ``else`` on every one of them would be noise. The
+    search loops that read their index (CLUBB's ``lscale_width_vert_avg``)
+    are what this finds."""
+    from recast.fortran.interface import names_in, node_span
+
+    def index_of(statement: Any) -> str | None:
+        control = walk(statement, f03.Loop_Control)
+        if control and control[0].children[1] is not None:
+            return str(control[0].children[1][0]).lower()
+        return None
+
+    marked: set[int] = set()
+    for loop in walk(subprogram, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
+        do_statement = walk(loop, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))
+        variable = index_of(do_statement[0]) if do_statement else None
+        _, end_line = node_span(loop)
+        if variable is None or end_line is None:
+            continue
+        for statement in walk(subprogram):
+            item = getattr(statement, "item", None)
+            span = getattr(item, "span", None) if item is not None else None
+            if not span or span[0] <= end_line:
+                continue
+            if isinstance(statement, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt)):
+                if index_of(statement) == variable:
+                    break  # redefined by the next loop over it
+                # Another loop's header may still read it in its bounds
+                # (``do k_avg = k_avg_lower, k_avg_upper``): checked below.
+            if isinstance(statement, f03.Assignment_Stmt):
+                target = statement.children[0]
+                if isinstance(target, f03.Name) and str(target).lower() == variable:
+                    break  # redefined by assignment
+            if variable in names_in(statement):
+                marked.add(id(loop))
+                break
+    return marked
+
+
 @dataclass
 class Statements:
     """Render Fortran statements for one subprogram.
@@ -155,6 +200,9 @@ class Statements:
 
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Procedures with an audited shim in the externals module."""
+
+    stub_procedures: frozenset[str] = frozenset()
+    """Use-imported from a stubbed module (the frontend's list)."""
 
     call_transforms: dict[str, Any] = field(default_factory=dict)
     """Callee -> a domain package's answer for it; see ``calls.CallSite``."""
@@ -184,6 +232,13 @@ class Statements:
 
     called_names: set[str] = field(default_factory=set)
     """Names this subprogram's body calls or subscripts. Filled by ``scan``."""
+
+    index_read_after: set[int] = field(default_factory=set)
+    """DO constructs (by node id) whose index a later statement reads.
+    Filled by ``scan``. Fortran leaves a completed loop's index one step past
+    the end; Python's ``for`` leaves the last value, so these loops get an
+    ``else`` that sets the completion value (an EXIT, a ``break``, skips it,
+    as Fortran keeps the exit value)."""
 
     exit_labels: dict[int, str] = field(default_factory=dict)
     """``id(do-construct)`` -> the label that means ``exit`` inside it."""
@@ -225,6 +280,7 @@ class Statements:
         """
         self.exit_labels = {}
         self.consumed_labels = set()
+        self.index_read_after = _loops_whose_index_is_read_after(subprogram)
         self.assigned_names = {
             str(a.children[0]).lower()
             for a in walk(subprogram, f03.Assignment_Stmt)
@@ -1400,7 +1456,18 @@ class Statements:
                     f"{pad}for {name} in range({low}, "
                     f"({high}) + (1 if ({step}) > 0 else -1), {step}):"
                 )
-        return [head, *self._loop_body(node, indent, cycle_name)]
+        lines = [head, *self._loop_body(node, indent, cycle_name)]
+        if id(node) in self.index_read_after:
+            # CLUBB's lscale_width_vert_avg searches with ``do k_avg_upper =
+            # k, ...; if (...) exit; end do`` and then integrates up to
+            # k_avg_upper: on completion Fortran's index is the first value
+            # past the end, m1 + n * m3, and ``for``'s is the last one.
+            # ``else`` runs exactly when no ``break`` did.
+            increment = step if step is not None else "1"
+            trips = f"max(0, (({high}) - ({low}) + ({increment})) // ({increment}))"
+            lines.append(f"{pad}else:")
+            lines.append(f"{pad}    {name} = ({low}) + {trips} * ({increment})")
+        return lines
 
     def _caught_cycle(self, body: list[str], indent: int, cycle_name: str | None) -> list[str]:
         """A loop body, wrapped so a CYCLE naming *this* loop reaches its header."""
@@ -1682,6 +1749,15 @@ class Statements:
                 # list says "the engine does not know this intrinsic" rather
                 # than "this tree is missing a library".
                 raise NoRule(f"intrinsic subroutine {name!r} has no rule")
+            if name in self.stub_procedures:
+                # A procedure of a stubbed module that no statement stub
+                # answers (CLUBB's lapack_band_solvex: the LAPACK path the
+                # run does not take). A raise on the statement keeps the
+                # branch around it -- deferring the block dropped the
+                # ``if ( method == lapack )`` with it, and the candidate
+                # raised on the path the run *does* take.
+                reason = f"{name}: procedure of a stubbed module, not ported"
+                return [f"{pad}raise NotImplementedError({reason!r})"]
             raise NoRule(f"call to external subroutine {name!r}")
 
         # Bind actuals to formals BY NAME for keyword arguments: Fortran
@@ -1723,7 +1799,7 @@ class Statements:
                     outputs.append("_")  # the return tuple has fixed length
                 continue
             if self.is_optional_output(formal):
-                inputs.append(f"want_{formal['name']}=True")
+                inputs.append(f"want_{formal['name']}={self._presence(actual)}")
             passes = formal["intent"] in ("IN", "INOUT", "UNKNOWN") or bool(
                 formal.get("buffer") and self.buffer_out_arrays
             )
@@ -1871,6 +1947,21 @@ class Statements:
         if outputs:
             return [f"{pad}{', '.join(outputs)} = {call}"]
         return [f"{pad}{call}"]
+
+    def _presence(self, actual: Any) -> str:
+        """``present()`` of what is passed to an optional OUT: true for a
+        value of the caller's own; the caller's own presence when the
+        actual is one of its optional dummies handed on (CLUBB's
+        xm_wpxp_solve passes ``rcond = rcond`` to band_solve, and takes the
+        LAPACK diagnostic path only when *its* caller asked for rcond)."""
+        if isinstance(actual, f03.Name):
+            name = str(actual).lower()
+            for declared in self.semantics.subprogram["args"]:
+                if declared["name"].lower() == name and declared["optional"]:
+                    if self.is_optional_output(declared):
+                        return f"want_{name}"
+                    return f"({self.names.symbol(name)} is not None)"
+        return "True"
 
     @staticmethod
     def is_optional_output(formal: dict[str, Any]) -> bool:

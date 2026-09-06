@@ -291,6 +291,260 @@ def test_logical_operators_on_arrays_are_elementwise(tmp_path: Path) -> None:
     assert "not l_ok" not in module
 
 
+SEARCH_LOOP = """\
+module search_mod
+  implicit none
+  private
+  public :: first_above
+contains
+  subroutine first_above( n, z, zmax, k_found, k_scan )
+    integer, intent(in) :: n
+    real, dimension(n), intent(in) :: z
+    real, intent(in) :: zmax
+    integer, intent(out) :: k_found, k_scan
+    integer :: k, kk
+    do k = 1, n
+      if ( z(k) > zmax ) exit
+    end do
+    k_found = k
+    do kk = 1, n, 2
+      k_scan = kk
+    end do
+    ! The bounds of a loop over another variable read kk: still a read.
+    do k = 1, kk
+      k_scan = k_scan + 0
+    end do
+    k_scan = kk
+  end subroutine first_above
+end module search_mod
+"""
+
+
+def test_a_loop_index_read_after_the_loop_has_the_completion_value(tmp_path: Path) -> None:
+    """CLUBB's lscale_width_vert_avg searches with ``do k = ...; if (...)
+    exit; end do`` and integrates up to ``k`` afterwards. On completion
+    Fortran leaves the index one step past the end -- ``n + 1`` for a unit
+    step, the first odd value past ``n`` for a step of two -- and after an
+    EXIT it keeps the exit value. Python's ``for`` leaves the last value."""
+    import importlib
+    import sys
+
+    (tmp_path / "search_mod.f90").write_text(SEARCH_LOOP)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:search_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "search_mod_numpy.py").read_text()
+    # The first two loops' indices are read after them (one in a later
+    # loop's bounds); the last loop's index k is not.
+    assert text.count("max(0, ") == 2
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("search_mod_numpy")
+        import numpy as np
+
+        z = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+        k_found, k_scan = module.first_above(5, z, np.float32(3.5))
+        assert (k_found, k_scan) == (4, 7)  # exit at z(4); 1,3,5 then one step past
+        k_found, k_scan = module.first_above(5, z, np.float32(9.0))
+        assert (k_found, k_scan) == (6, 7)  # completed: one past n
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("search_mod_numpy", None)
+
+
+STUBBED_PATH = """
+module lapack_wrap
+  implicit none
+contains
+  subroutine band_solvex( n, a, x )
+    integer, intent(in) :: n
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    x = a
+  end subroutine band_solvex
+end module lapack_wrap
+"""
+
+CHOOSES_A_SOLVER = """
+module solver_mod
+  use lapack_wrap, only: band_solvex
+  implicit none
+contains
+  subroutine solve( method, n, m, a, x )
+    integer, intent(in) :: method, n, m
+    real, intent(inout) :: a(n)
+    real, intent(out) :: x(n)
+    real :: work(n, max(2, m))
+    work = 0.0
+    if ( method == 1 ) then
+      call band_solvex( n, a, x )
+    else
+      x = a + work(:, 1)
+    end if
+  end subroutine solve
+end module solver_mod
+"""
+
+
+def test_a_call_into_a_stubbed_module_raises_on_its_own_line(tmp_path: Path) -> None:
+    """CLUBB's matrix_solver_wrapper chooses LAPACK or its own LU solver by
+    a run-time flag; ``lapack_wrap`` is stubbed. With no rule for the call
+    the whole IF was deferred -- condition and LU branch included -- and the
+    candidate raised on the path the run takes. The raise belongs to the
+    statement; the branch around it stays. And ``work(n, max(2, m))``
+    (windm's ``rhs``) is a bound Python can spell."""
+    import importlib
+    import sys
+
+    (tmp_path / "lapack_wrap.f90").write_text(STUBBED_PATH)
+    (tmp_path / "solver_mod.f90").write_text(CHOOSES_A_SOLVER)
+    frontend = FortranFrontend(stub_modules=["lapack_wrap"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solver_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface["stub_procedures"] == ["band_solvex"]
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "solver_mod_numpy.py").read_text()
+    assert "max(2, m)" in text
+    raised = "raise NotImplementedError('band_solvex: procedure of a stubbed module, not ported')"
+    assert raised in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("solver_mod_numpy")
+        import numpy as np
+
+        a = np.array([1.0, 2.0], dtype=np.float32)
+        _a, x = module.solve(2, 2, 1, a)  # INOUT a and OUT x come back
+        assert x.tolist() == [1.0, 2.0]
+        with pytest.raises(NotImplementedError):
+            module.solve(1, 2, 1, a)
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("solver_mod_numpy", None)
+
+
+HANDS_ON_AN_OPTIONAL = """
+module relay_mod
+  implicit none
+contains
+  subroutine inner( x, y, rc )
+    real, intent(in) :: x
+    real, intent(out) :: y
+    real, intent(out), optional :: rc
+    y = 2.0 * x
+    if ( present(rc) ) rc = 1.0 / x
+  end subroutine inner
+  subroutine outer( x, y, rc, scale )
+    real, intent(in) :: x
+    real, intent(out) :: y
+    real, intent(out), optional :: rc
+    real, intent(in), optional :: scale
+    call inner( x, y, rc = rc )
+    if ( present(scale) ) y = y * scale
+  end subroutine outer
+end module relay_mod
+"""
+
+
+def test_an_optional_handed_on_carries_its_own_presence(tmp_path: Path) -> None:
+    """``call inner( x, y, rc = rc )`` where ``rc`` is the caller's own
+    optional OUT: present in the callee exactly when present in the caller.
+    Rendered ``want_rc=True`` it was always present, and CLUBB's
+    xm_wpxp_solve took the LAPACK diagnostic path on every call."""
+    import importlib
+    import sys
+
+    (tmp_path / "relay_mod.f90").write_text(HANDS_ON_AN_OPTIONAL)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:relay_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "relay_mod_numpy.py").read_text()
+    assert "want_rc=want_rc" in text
+    assert "want_rc=True" not in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("relay_mod_numpy")
+        import numpy as np
+
+        y, rc = module.outer(np.float32(4.0))
+        assert y == 8.0 and rc != 0.25  # not asked for, not computed
+        y, rc = module.outer(np.float32(4.0), want_rc=True)
+        assert y == 8.0 and rc == 0.25
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("relay_mod_numpy", None)
+
+
+SCALED_CONSTRUCTOR = """
+module fit_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(15)
+contains
+  subroutine polynomial( n, x, y )
+    integer, intent(in) :: n
+    real(r8), intent(in) :: x(n)
+    real(r8), intent(out) :: y(n)
+    real(r8), dimension(3), parameter :: &
+      a = 100._r8 * (/ 6.09868993_r8, 0.499320233_r8, 0.184672631E-01_r8 /)
+    real(r8), dimension(3), parameter :: b = (/ 1._r8, 2._r8, 3._r8 /) / 2._r8
+    integer :: i
+    do i = 1, n
+      y(i) = a(1) + a(2) * x(i) + a(3) * x(i)**2 + b(3)
+    end do
+  end subroutine polynomial
+end module fit_mod
+"""
+
+
+def test_a_constant_expression_over_an_array_constructor_is_a_value(tmp_path: Path) -> None:
+    """CLUBB's saturation and pdf_closure (#26): ``100._core_rknd * (/ ... /)``
+    as a local parameter. The token pass rendered a bare constructor and
+    handed anything around one to the parser, whose literals were never
+    hoisted; the whole subprogram was a NotImplementedError."""
+    import importlib
+    import sys
+
+    (tmp_path / "fit_mod.f90").write_text(SCALED_CONSTRUCTOR)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:fit_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "fit_mod_numpy.py").read_text()
+    assert "a = 100. * np.array([6.09868993, 0.499320233, 0.184672631E-01])" in text
+    assert "b = np.array([1., 2., 3.]) / 2." in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("fit_mod_numpy")
+        import numpy as np
+
+        y = module.polynomial(2, np.array([0.0, 1.0]))
+        a = 100.0 * np.array([6.09868993, 0.499320233, 0.184672631e-01])
+        # To rounding: the point is the constructor, not the summation order.
+        assert np.allclose(y, [a[0] + 1.5, a[0] + a[1] + a[2] + 1.5], rtol=0, atol=1e-9)
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("fit_mod_numpy", None)
+
+
 CALLBACK = """\
 module callback_mod
   implicit none
@@ -363,3 +617,91 @@ def test_the_callback_translation_passes_the_dataflow_gate(callback_candidate) -
     verdict = ReadWriteSetVerifier().check(unit, candidate, Path("."), LocalExecutor(), {})
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
     assert verdict.metrics["blocks_matched"] == verdict.metrics["blocks_checked"] > 0
+
+
+NESTED_GENERICS = """
+module sat_mod
+  implicit none
+  private
+  public :: t_api, rsat_api
+  interface t_api
+    module procedure t_k, t_2d
+  end interface t_api
+  interface rsat_api
+    module procedure rsat_k, rsat_2d
+  end interface rsat_api
+contains
+  function t_k( thl ) result( t )
+    real, intent(in) :: thl
+    real :: t
+    t = thl + 1.0
+  end function t_k
+  function t_2d( n, thl ) result( t )
+    integer, intent(in) :: n
+    real, intent(in) :: thl(n, 2)
+    real :: t(n, 2)
+    t = thl + 1.0
+  end function t_2d
+  function rsat_k( p, t ) result( r )
+    real, intent(in) :: p, t
+    real :: r
+    r = t / p
+  end function rsat_k
+  function rsat_2d( n, p, t ) result( r )
+    integer, intent(in) :: n
+    real, intent(in) :: p(n, 2), t(n, 2)
+    real :: r(n, 2)
+    r = t / p
+  end function rsat_2d
+end module sat_mod
+"""
+
+CALLS_NESTED_GENERICS = """
+module core_mod
+  use sat_mod, only: t_api, rsat_api
+  implicit none
+contains
+  subroutine step( n, p, thl, rsat )
+    integer, intent(in) :: n
+    real, intent(in) :: p(n, 2), thl(n, 2)
+    real, intent(out) :: rsat(n, 2)
+    rsat = rsat_api( n, p, t_api( n, thl ) )
+  end subroutine step
+end module core_mod
+"""
+
+
+def test_a_generic_whose_actual_is_another_generics_result_is_dispatched(tmp_path: Path) -> None:
+    """CLUBB's advance_clubb_core: ``sat_mixrat_liq_api( ..., thlm2T_in_K_api(
+    ... ), ... )``. The inner generic's result was ranked scalar without
+    looking, so the outer one matched no specific and its block was deferred
+    -- and a deferred block takes the whole subprogram out of the gate."""
+    import importlib
+    import sys
+
+    (tmp_path / "sat_mod.f90").write_text(NESTED_GENERICS)
+    (tmp_path / "core_mod.f90").write_text(CALLS_NESTED_GENERICS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:core_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    from recast.transform.numpy.tree import TreeTranslation
+
+    candidate = TreeTranslation().apply(unit, facts, {"root": str(tmp_path)})
+    assert not candidate.deferred, candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    text = (out / "core_mod_numpy.py").read_text()
+    assert "rsat_2d(" in text and "t_2d(" in text
+    sys.path.insert(0, str(out))
+    try:
+        module = importlib.import_module("core_mod_numpy")
+        import numpy as np
+
+        p = np.full((2, 2), 2.0, dtype=np.float32, order="F")
+        thl = np.ones((2, 2), dtype=np.float32, order="F")
+        assert module.step(2, p, thl).tolist() == [[1.0, 1.0], [1.0, 1.0]]
+    finally:
+        sys.path.remove(str(out))
+        sys.modules.pop("core_mod_numpy", None)

@@ -23,7 +23,7 @@ import re
 from pathlib import PurePath, PurePosixPath
 from typing import Any
 
-from recast.fortran.expr import Expr, python_call, render, with_integer_division
+from recast.fortran.expr import Expr, python_call, render, typed, with_integer_division
 
 __all__ = [
     "constants_module",
@@ -291,18 +291,21 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
         "import numpy as np",
         "",
     ]
+    env: dict[str, str | None] = {}
     for entry in resolved:
-        value = _python(entry["expr"])
+        value = _python(entry["expr"], env)
+        env[entry["name"]] = entry.get("dtype") or typed(entry["expr"], env)
         where = f"{PurePath(entry['source']).name}:{entry['line']}"
         lines.append(f"{entry['name'].upper()} = {value}  # {where}")
     return "\n".join(lines) + "\n"
 
 
-def _python(expr: Expr) -> str:
+def _python(expr: Expr, env: dict[str, str | None] | None = None) -> str:
     # Fortran divides two integers to an integer; ``with_integer_division``
-    # spells those quotients ``//`` from the tree's own types.
+    # spells those quotients ``//`` from the tree's own types and the
+    # declared types of the constants before it.
     return render(
-        with_integer_division(expr),
+        with_integer_division(expr, env=env),
         real=lambda text: f"np.float64('{text}')",
         integer=lambda text: text,
         name=lambda text: text.upper(),

@@ -916,6 +916,179 @@ def two_outputs():
     assert "partial output evidence is not a pass" in verdict.detail
 
 
+def test_a_recorded_subroutine_with_no_output_returns_nothing(tmp_path: Path) -> None:
+    """CLUBB's finalize_tau_sponge_damp_api deallocates a component and
+    returns: no OUT argument, so its adapter returns ``None``. The gate
+    counted that as one value against zero out-intent arguments."""
+    emitted = b"""\
+_SIGNATURES = {
+    "release": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def release(n):
+    return None
+"""
+    candidate = Candidate(
+        unit="fortran:no_output",
+        transform="translate.numpy",
+        files={Path("no_output_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "release",
+                    "source": "release.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {},
+    )
+    # Nothing to compare is still not a pass -- but for the right reason.
+    assert "returned 1 value(s)" not in verdict.detail
+    assert "zero numerical points" in verdict.detail
+
+
+def test_a_declared_ungated_subprogram_is_not_compared_on_a_recording(tmp_path: Path) -> None:
+    """CLUBB's sponge initializer leaves the levels below the layer undefined
+    on both sides; the operator's declaration says so, with the reason, and
+    the replay reported it -- then compared the heap against np.empty anyway."""
+    emitted = b"""\
+_SIGNATURES = {
+    "fill": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "int32", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def fill(n):
+    return 2
+"""
+    candidate = Candidate(
+        unit="fortran:undefined_tail",
+        transform="translate.numpy",
+        files={Path("undefined_tail_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "fill",
+                    "source": "fill.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {"y": 1},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"ungated": {"fill": "the tail is undefined on both sides"}},
+    )
+    assert "differ" not in verdict.detail
+    assert "fill (the tail is undefined on both sides)" in verdict.detail
+
+
+def test_a_zero_extent_output_has_no_dominant_value_to_weigh(tmp_path: Path) -> None:
+    """CLUBB's scalar tracers under ``sclr_dim = 0``: an output of shape
+    ``(1, 88, 0)`` on the recording. The tolerance gate's dominant-value
+    mask took the maximum of an empty array and the whole unit's verdict
+    was a plugin exception."""
+    import numpy as np
+
+    from recast.verify.tolerance import ToleranceVerifier
+
+    emitted = b"""\
+import numpy as np
+_SIGNATURES = {
+    "tracers": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False,
+             "dims": [{"lb": "1", "ub": "n"}, {"lb": "1", "ub": "0"}]},
+            {"name": "z", "dtype": "float64", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def tracers(n):
+    return np.zeros((n, 0)), 2.0
+"""
+    candidate = Candidate(
+        unit="fortran:tracers",
+        transform="translate.numpy",
+        files={Path("tracers_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "tracers",
+                    "source": "tracers.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {"y": np.zeros((3, 0)), "z": 2.0},
+                }
+            ],
+        },
+    )
+    verdict = ToleranceVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"module_suffix": "_numpy.py", "dominant_axis": "all", "rel_scale": "array"},
+    )
+    assert "exception" not in verdict.detail and "zero-size" not in verdict.detail
+    assert verdict.confidence is not Confidence.FAILED, verdict.detail
+
+
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
