@@ -398,7 +398,9 @@ def test_a_profile_that_returns_none_leaves_the_draw_to_the_generated_rules(
         assert int(mode) in (1, 2), "the reference was called on a refused draw"
         return x * 2.0
 
-    verdict = judge(tmp_path, MODE, SimpleNamespace(w_probe=w_probe), root=str(root))
+    verdict = judge(
+        tmp_path, MODE, SimpleNamespace(w_probe=w_probe), root=str(root), ranges={"mode": (1, 3)}
+    )
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
     probe = verdict.metrics["subprograms"]["probe"]
     assert probe["redrawn"] > 0 and probe["shaped"] == 0
@@ -451,7 +453,7 @@ def test_a_root_without_a_profile_is_the_generated_path(tmp_path: Path) -> None:
     root.mkdir()
     verdict = judge(
         tmp_path,
-        NAN.replace("return np.sqrt(x)", "return x * 2.0"),
+        NAN.replace("return np.sqrt(x + 500.0)", "return x * 2.0"),
         SimpleNamespace(w_probe=lambda x: x * 2.0),
         root=str(root),
     )
