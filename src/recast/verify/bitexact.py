@@ -610,7 +610,21 @@ class BitexactVerifier(Verifier):
                 f"{totals['nan_mismatch']} point(s) where one side produced NaN "
                 "and the other a number",
             )
-        return self._award(candidate, totals, per_subprogram, metrics, config)
+        # What a gate needs to come back to the comparison: the loaded
+        # candidate, the table, the recorded samples, the staged files.
+        context = {
+            "np": np,
+            "translated": translated,
+            "table": table,
+            "recorded": recorded,
+            "by_subprogram": by_subprogram,
+            "workspace": workspace,
+            "handle": handle,
+            "trials": trials,
+            "dims": dims,
+            "ranges": ranges,
+        }
+        return self._award(candidate, totals, per_subprogram, metrics, config, context=context)
 
     def _award(
         self,
@@ -619,6 +633,7 @@ class BitexactVerifier(Verifier):
         per_subprogram: dict[str, Any],
         metrics: dict[str, Any],
         config: dict[str, Any],
+        context: dict[str, Any] | None = None,
     ) -> Verdict:
         """Which confidence the numbers earn.
 
@@ -789,6 +804,7 @@ class BitexactVerifier(Verifier):
         # truncating it to a count chosen here would silently narrow the
         # evidence.
         rounds: list[Any] = list(samples) if samples is not None else list(range(trials))
+        per_sample: list[dict[str, Any]] = []
         for round_index, round_item in enumerate(rounds):
             declined = ""
             reshape = False
@@ -1068,6 +1084,18 @@ class BitexactVerifier(Verifier):
                     continue
                 if reshape:
                     reshaped += 1
+                if samples is not None:
+                    # What each recorded sample measured, for a gate that
+                    # comes back to the worst ones (the conditioning check).
+                    per_sample.append(
+                        {
+                            "sample": round_index,
+                            "max_ulp": max((m.get("max_ulp", 0) for m in staged), default=0),
+                            "max_ulp_dominant": max(
+                                (m.get("max_ulp_dominant", 0) for m in staged), default=0
+                            ),
+                        }
+                    )
                 for measured in staged:
                     points += measured["points"]
                     bit_exact += measured["bit_exact"]
@@ -1099,7 +1127,7 @@ class BitexactVerifier(Verifier):
                 f"values; the {points} point(s) that fit are not evidence at those extents. "
                 "Pin `dims` to extents the subprogram takes"
             }
-        outcome = {
+        outcome: dict[str, Any] = {
             "points": points,
             "bit_exact": bit_exact,
             "max_ulp": max_ulp,
@@ -1113,6 +1141,8 @@ class BitexactVerifier(Verifier):
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
             outcome["dominant_points"] = dominant_points
+        if samples is not None:
+            outcome["per_sample"] = per_sample
         return outcome
 
     @staticmethod
