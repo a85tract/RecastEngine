@@ -726,6 +726,62 @@ def test_required_subprogram_needs_an_explicit_well_formed_coverage_ledger(
     assert "subprogram.required_coverage" in report.reason_codes
 
 
+class UngatedVerifier(PhaseVerifier):
+    """A passing gate that could not compare one subprogram and says so."""
+
+    def verify(self, unit, candidate, oracle, workspace, executor, config) -> Verdict:
+        verdict = super().verify(unit, candidate, oracle, workspace, executor, config)
+        return Verdict(
+            unit=verdict.unit,
+            candidate=verdict.candidate,
+            verifier=verdict.verifier,
+            confidence=verdict.confidence,
+            metrics={**verdict.metrics, "ungated": {"step": "reaches dgesv, no source defines it"}},
+            detail=verdict.detail + "; 1 subprogram(s) ungated, no reference: step",
+        )
+
+
+def test_required_subprogram_a_passing_gate_left_ungated_is_not_verified(
+    tmp_path: Path,
+) -> None:
+    bundle, registry = _bundle(tmp_path)
+    registry.register("verifier", "phase.gate", UngatedVerifier, replace=True)
+
+    report = verify_recipe_candidates(
+        PhaseRecipe(),
+        tmp_path,
+        bundle,
+        expected_source_artifact_digest=_SOURCE,
+        expected_engine=bundle.engine,
+        required_subprograms=("step",),
+        registry=registry,
+    )
+
+    # The unit's gate passed on what it compared ...
+    assert report.gates[0].accepted
+    assert report.gates[0].passed_units == ("phase:alpha",)
+    # ... but the required subprogram was never judged, so the report says so
+    # instead of calling it verified.
+    subprogram = next(item for item in report.subprograms if item.selector == "step")
+    assert subprogram.observed and subprogram.owner_units == ("phase:alpha",)
+    assert not subprogram.gates_passed
+    assert not subprogram.accepted
+    assert not report.accepted
+    assert report.reason_codes == ("subprogram.required_coverage",)
+
+    # A subprogram nobody required stays a disclaimed, non-blocking account.
+    unrequired = verify_recipe_candidates(
+        PhaseRecipe(),
+        tmp_path,
+        bundle,
+        expected_source_artifact_digest=_SOURCE,
+        expected_engine=bundle.engine,
+        registry=registry,
+    )
+    assert unrequired.accepted
+    assert not next(item for item in unrequired.subprograms if item.selector == "step").accepted
+
+
 def test_phase_config_separates_machine_paths_from_semantic_identity(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="dedicated keyword"):
         transform_recipe(

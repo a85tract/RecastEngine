@@ -204,16 +204,19 @@ def _f_vdot(a: Any, b: Any) -> Any:
 
 
 def _f_vsum(a: Any, axis: Any = None) -> Any:
-    """Fortran SUM accumulates in array element order; np.sum is pairwise
-    (eight partial sums past eight elements) and rounds differently. The
-    whole-array sum folds left over the elements in Fortran order; a DIM
-    reduction keeps NumPy's, which the ULP gate judges."""
-    if axis is None and _LIBM_STRICT:
-        flat = np.ravel(a, order="F")
-        s = flat.dtype.type(0) if flat.dtype.kind in "fc" else 0
-        for x in flat:
-            s = s + x
-        return s
+    """Fortran SUM accumulates in element order; np.sum pairs terms and
+    rounds differently (CLUBB's vertical_integral: 12 ULP)."""
+    if _LIBM_STRICT:
+        arr = np.asarray(a)
+        if axis is None:
+            s = arr.dtype.type(0) if arr.dtype.kind in "fc" else 0
+            for x in np.ravel(arr, order="F"):
+                s = s + x
+            return s
+        out = np.zeros(arr.shape[:axis] + arr.shape[axis + 1 :], dtype=arr.dtype)
+        for i in range(arr.shape[axis]):
+            out = out + np.take(arr, i, axis=axis)
+        return out
     return np.sum(a, axis=axis)
 
 

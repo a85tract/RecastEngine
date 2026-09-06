@@ -163,7 +163,7 @@ def _bind_borrowed_bounds(
     """
     import re
 
-    from recast.transform.numpy.expressions import CONFLICTING_BOUNDS
+    from recast.fortran.interface import CONFLICTING_BOUNDS
     from recast.transform.numpy.names import USE_STATEMENT
     from recast.transform.numpy.vocabulary import pysafe
 
@@ -172,9 +172,7 @@ def _bind_borrowed_bounds(
             s["name"] == name for s in record["module_state"]
         )
 
-    by_module = {
-        _module_of(c): (c.get("alias") or aliases[id(c)], c["record"]) for c in companions
-    }
+    by_module = {_module_of(c): (c.get("alias") or aliases[id(c)], c["record"]) for c in companions}
     for companion in companions:
         record = companion["record"]
         alias = companion.get("alias") or aliases[id(companion)]
@@ -182,7 +180,9 @@ def _bind_borrowed_bounds(
         # A derived-type component's ALLOCATE too (``allocate(this%dz(begc:endc,
         # -nlevsno+1:nlevgrnd))`` in the type's own init routine).
         for components in (record.get("types") or {}).values():
-            borrowed += [c["allocated_dims"] for c in components.values() if c.get("allocated_dims")]
+            borrowed += [
+                c["allocated_dims"] for c in components.values() if c.get("allocated_dims")
+            ]
         for bounds in borrowed:
             if bounds == CONFLICTING_BOUNDS:
                 continue
@@ -371,6 +371,7 @@ class NumpyTranslation(Transform):
             use_parameters=use_parameters,
             companion_globals=companion_globals,
             externals=facts.provenance.get("externals", {}),
+            stub_procedures=frozenset(facts.interface.get("stub_procedures") or ()),
             remotes=remotes,
             function_stubs=config.get("function_stubs", {}),
             statement_stubs=config.get("statement_stubs", {}),
@@ -517,6 +518,9 @@ class NumpyTranslation(Transform):
                 # The siblings' procedures too: `_wv.wv_sat_svp_water(t)` is a
                 # call, and without these the alias rule would read it as data.
                 | {remote.name for remote in assembler.remotes.values()}
+                # ... and the stubbed modules' (the frontend's list): a call to
+                # a stand-in function is a call, not a read of its name.
+                | {pysafe(name) for name in facts.interface.get("stub_procedures") or ()}
             ),
             "aliases": sorted(
                 {remote.alias for remote in assembler.remotes.values()}

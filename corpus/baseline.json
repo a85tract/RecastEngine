@@ -913,32 +913,30 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "2 subprogram(s) could not be compared: dogleg: 10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 ",
+       "detail": "3 subprogram(s) could not be compared: chkder: 19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the c",
        "metrics": {
-        "bit_exact": 17270,
+        "bit_exact": 17110,
+        "declined": {
+         "NaN on both sides": 7
+        },
+        "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 760,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 17270,
+        "points": 17110,
+        "redrawn": 7,
         "subprograms": {
          "chkder": {
-          "bit_exact": 160,
-          "integer_mismatch": 0,
-          "integer_points": 0,
-          "max_rel": 0.0,
-          "max_ulp": 0,
-          "nan_mismatch": 0,
-          "points": 160,
-          "redrawn": 19,
-          "reshaped": 0
+          "error": "19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dogleg": {
           "error": "10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "enorm": {
           "bit_exact": 10,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -946,10 +944,12 @@
           "nan_mismatch": 0,
           "points": 10,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "fdjac1": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -957,10 +957,12 @@
           "nan_mismatch": 0,
           "points": 890,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "fdjac2": {
           "bit_exact": 810,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -968,10 +970,12 @@
           "nan_mismatch": 0,
           "points": 810,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "hybrd": {
           "bit_exact": 1380,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 20,
           "max_rel": 0.0,
@@ -979,10 +983,12 @@
           "nan_mismatch": 0,
           "points": 1380,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "hybrd1": {
           "bit_exact": 250,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -990,10 +996,12 @@
           "nan_mismatch": 0,
           "points": 250,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "hybrj": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 30,
           "max_rel": 0.0,
@@ -1001,10 +1009,12 @@
           "nan_mismatch": 0,
           "points": 1390,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "hybrj1": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -1012,10 +1022,12 @@
           "nan_mismatch": 0,
           "points": 890,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmder": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 110,
           "max_rel": 0.0,
@@ -1023,10 +1035,12 @@
           "nan_mismatch": 0,
           "points": 1390,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmder1": {
           "bit_exact": 970,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1034,10 +1048,12 @@
           "nan_mismatch": 0,
           "points": 970,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmdif": {
           "bit_exact": 1380,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 100,
           "max_rel": 0.0,
@@ -1045,10 +1061,12 @@
           "nan_mismatch": 0,
           "points": 1380,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmdif1": {
           "bit_exact": 330,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1056,10 +1074,14 @@
           "nan_mismatch": 0,
           "points": 330,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmpar": {
           "bit_exact": 970,
+          "declined": {
+           "NaN on both sides": 7
+          },
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1067,10 +1089,12 @@
           "nan_mismatch": 0,
           "points": 970,
           "redrawn": 7,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmstr": {
           "bit_exact": 1390,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 110,
           "max_rel": 0.0,
@@ -1078,10 +1102,12 @@
           "nan_mismatch": 0,
           "points": 1390,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "lmstr1": {
           "bit_exact": 970,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 90,
           "max_rel": 0.0,
@@ -1089,10 +1115,12 @@
           "nan_mismatch": 0,
           "points": 970,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "qform": {
           "bit_exact": 720,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1100,10 +1128,12 @@
           "nan_mismatch": 0,
           "points": 720,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "qrfac": {
           "bit_exact": 960,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 80,
           "max_rel": 0.0,
@@ -1111,10 +1141,12 @@
           "nan_mismatch": 0,
           "points": 960,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "qrsolv": {
           "bit_exact": 880,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1122,10 +1154,12 @@
           "nan_mismatch": 0,
           "points": 880,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "r1mpyq": {
           "bit_exact": 640,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1133,13 +1167,15 @@
           "nan_mismatch": 0,
           "points": 640,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          },
          "r1updt": {
           "error": "10 of 10 trial(s) were compared only after the free extent(s) ls, m, n were moved off the configured values; the 122 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "rwupdt": {
           "bit_exact": 890,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1147,7 +1183,8 @@
           "nan_mismatch": 0,
           "points": 890,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          }
         },
         "trials": 10
@@ -1170,12 +1207,12 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 896,
-   "deferred": 57,
+   "blocks": 897,
+   "deferred": 56,
    "refusals": [
     [
      "generic 'X': no match",
-     12
+     11
     ],
     [
      "call to external subroutine 'X'",
@@ -1318,15 +1355,19 @@
        "detail": "1 translated subprogram(s) were never compared: print_msg -- defer them or drop them from the unit; silence is not a pass",
        "metrics": {
         "bit_exact": 10,
+        "declined": {},
+        "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 10,
+        "redrawn": 0,
         "subprograms": {
          "is_inf": {
           "bit_exact": 10,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 10,
           "max_rel": 0.0,
@@ -1334,7 +1375,8 @@
           "nan_mismatch": 0,
           "points": 10,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          }
         },
         "trials": 10
@@ -1354,7 +1396,7 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 14,
+     "deferred": 13,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1367,11 +1409,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/66 blocks disagree: cspl_interp/B002, cspleps/B003, csplint/B006, csplint/B012, csplint/B016 (+2 more)",
+       "detail": "5/67 blocks disagree: csplint/B006, csplint/B012, csplint/B016, csplint_square/B011, csplint_square/B015",
        "metrics": {
-        "blocks_checked": 66,
-        "blocks_deferred": 14,
-        "blocks_matched": 59,
+        "blocks_checked": 67,
+        "blocks_deferred": 13,
+        "blocks_matched": 62,
         "blocks_waived": 0
        },
        "passed": false
@@ -1418,11 +1460,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "18/124 blocks disagree: splrep_msg/B002, splprep/B014, splprep/B016, splprep/B019, splprep/B020 (+13 more)",
+       "detail": "1/124 blocks disagree: splrep_msg/B002",
        "metrics": {
         "blocks_checked": 124,
         "blocks_deferred": 8,
-        "blocks_matched": 106,
+        "blocks_matched": 123,
         "blocks_waived": 0
        },
        "passed": false
@@ -1650,11 +1692,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "7/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002, genrand_load_state/B003, genrand_load_state/B004 (+2 more)",
+       "detail": "3/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002",
        "metrics": {
         "blocks_checked": 187,
         "blocks_deferred": 3,
-        "blocks_matched": 180,
+        "blocks_matched": 184,
         "blocks_waived": 0
        },
        "passed": false
@@ -1904,25 +1946,50 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "ok",
-      "verifier/static.rwset": "ok",
-      "verifier/symbolic.notary": "ok"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": null,
+     "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "80 points across 1 subprogram(s), all bit-exact",
+       "detail": "3 subprogram(s) could not be compared: searchsorted_dp: candidate raised: NameError: name 'SMALL' is not defined; searchsorted_idp: candidate raised: NameError:",
        "metrics": {
-        "bit_exact": 80,
+        "bit_exact": 90,
+        "declined": {},
+        "input_profile": null,
         "integer_mismatch": 0,
-        "integer_points": 0,
+        "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 80,
+        "points": 90,
+        "redrawn": 0,
         "subprograms": {
+         "searchsorted_dp": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
+         "searchsorted_dpi": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
+         "searchsorted_i": {
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "searchsorted_idp": {
+          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+         },
          "sort": {
           "bit_exact": 80,
+          "declined": {},
           "integer_mismatch": 0,
           "integer_points": 0,
           "max_rel": 0.0,
@@ -1930,12 +1997,13 @@
           "nan_mismatch": 0,
           "points": 80,
           "redrawn": 0,
-          "reshaped": 0
+          "reshaped": 0,
+          "shaped": 0
          }
         },
         "trials": 10
        },
-       "passed": true
+       "passed": false
       },
       "static.rwset": {
        "detail": "62 blocks match",
@@ -1944,13 +2012,6 @@
         "blocks_deferred": 0,
         "blocks_matched": 62,
         "blocks_waived": 0
-       },
-       "passed": true
-      },
-      "symbolic.notary": {
-       "detail": "no rewrites to notarize; the translation is print-order faithful",
-       "metrics": {
-        "rewrites": 0
        },
        "passed": true
       }
@@ -2061,12 +2122,15 @@
        "detail": "11 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
        "metrics": {
         "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 0,
+        "redrawn": 0,
         "subprograms": {
          "dchfdv": {
           "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
@@ -2360,11 +2424,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "15/106 blocks disagree: slsqp/B019, slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002 (+10 more)",
+       "detail": "7/106 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+2 more)",
        "metrics": {
         "blocks_checked": 106,
         "blocks_deferred": 8,
-        "blocks_matched": 91,
+        "blocks_matched": 99,
         "blocks_waived": 0
        },
        "passed": false

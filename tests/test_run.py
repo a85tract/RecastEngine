@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 import pytest
 
 from recast import WORKSPACE_DIRNAME
-from recast.errors import ConfigError, ScannerUnavailable
+from recast.errors import ConfigError, InputProfileError, ScannerUnavailable
 from recast.model import (
     Access,
     Candidate,
@@ -140,6 +140,13 @@ class ExplodingVerifier(PassVerifier):
         raise RuntimeError("unexpected verifier bug")
 
 
+class ProfileRefusedVerifier(PassVerifier):
+    name = "fake.verify-profile-refused"
+
+    def verify(self, unit, candidate, oracle, workspace, executor, config) -> Verdict:
+        raise InputProfileError("recast_inputs.py: reference refused alpha[x]")
+
+
 class NeverOracle(FakeOracle):
     name = "fake-oracle.never"
 
@@ -202,6 +209,7 @@ def _registry() -> Registry:
     registry.register("verifier", "fake.pass", PassVerifier)
     registry.register("verifier", "fake.fail", FailVerifier)
     registry.register("verifier", "fake.verify-explode", ExplodingVerifier)
+    registry.register("verifier", "fake.verify-profile-refused", ProfileRefusedVerifier)
     registry.register("store", "fake-store", MemoryStore)
     # Entry-point discovery would add the real plugins; a fake registry must
     # not, so mark every kind as already discovered.
@@ -522,6 +530,31 @@ def test_a_verifier_bug_fails_closed_and_the_walk_goes_on(tmp_path: Path) -> Non
         if event.action is RunEventAction.FINISHED
     ]
     assert (RunEventEntity.VERDICT, "failed", "verification_exception") in finished
+
+
+def test_a_refused_input_profile_ends_the_run_instead_of_failing_the_unit(
+    tmp_path: Path,
+) -> None:
+    """recast_inputs.py shaping a draw the reference refuses is the profile's
+    fault, not the unit's: recorded as a unit failure it would read as a
+    translation defect and send a repair agent after the engine."""
+    observer = RecordingObserver()
+    with pytest.raises(InputProfileError, match="reference refused"):
+        run_recipe(
+            FakeRecipe(_stages(Stage("verifier", "fake.verify-profile-refused", gate=True))),
+            tmp_path,
+            {"units": ["fake:alpha"]},
+            registry=_registry(),
+            observer=observer,
+        )
+    finished = [
+        (event.entity, event.status, event.reason_code)
+        for event in observer.events
+        if event.action is RunEventAction.FINISHED
+    ]
+    assert (RunEventEntity.VERDICT, "failed", "verification_exception") not in finished
+    assert (RunEventEntity.UNIT, "aborted", "unit_exception") in finished
+    assert finished[-1] == (RunEventEntity.RUN, "aborted", "run_exception")
 
 
 def test_an_oracle_that_does_not_apply_leaves_the_unit_incomplete(tmp_path: Path) -> None:

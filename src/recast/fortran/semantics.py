@@ -442,8 +442,17 @@ class Semantics:
             return 0
         if name in self.procedures:
             return self._call_rank(self.procedures[name], items)
-        if name in self.companion_generics:
-            return 0  # the overload decides, and dispatch is a separate question
+        if name in self.companion_generics or name in self.generics:
+            # The overload decides: CLUBB's ``sat_mixrat_liq_api( ...,
+            # thlm2T_in_K_api( nzt, ngrdcol, thlm, exner, rcm ), ... )`` is
+            # an actual whose rank is the inner generic's 2-D specific's
+            # result rank, and the outer generic's dispatch needs it.
+            try:
+                specific = self.dispatch(name, items)
+            except AmbiguousDispatch:
+                return 0
+            record = self.procedures.get(specific)
+            return self._call_rank(record, items) if record is not None else 0
         if name in TRANSFORMATIONAL or name in STATE_QUERY - {"merge"}:
             return 0
         if name in ELEMENTAL or name == "merge":
@@ -455,10 +464,11 @@ class Semantics:
         return sum(1 for s in items if isinstance(s, f03.Subscript_Triplet))
 
     def _call_rank(self, record: dict[str, Any], items: list[Any]) -> int:
-        """An ELEMENTAL function broadcasts; anything else returns its result."""
+        """An ELEMENTAL function broadcasts; anything else returns its result
+        -- an array where the result is declared with dimensions."""
         if any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or [])):
             return self._broadcast_rank(items)
-        return 0
+        return len(record.get("result_dims") or [])
 
     def _broadcast_rank(self, items: list[Any]) -> int:
         return max(

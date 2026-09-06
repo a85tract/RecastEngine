@@ -417,12 +417,29 @@ def test_a_read_a_stub_dropped_is_excused_only_where_the_target_lacks_it(verify)
     dropped, and the gate excuses exactly those the target does not read."""
     blocks = [
         _block("B001", [], ["acc"]),
-        {**_block("B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"]),
-         "dropped_reads": ["errcode", "errmsg", "flag"]},
+        {
+            **_block(
+                "B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"]
+            ),
+            "dropped_reads": ["errcode", "errmsg", "flag"],
+        },
         _block("B003", ["acc", "cpair", "gam"], ["gam"]),
     ]
     verdict = verify(_candidate(blocks))
     assert verdict.confidence is Confidence.SAMPLED, verdict.detail
     assert verdict.metrics["reads_excused_by_stubs"] == 2  # flag is read by the target
-    blocks[1] = _block("B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"])
+    blocks[1] = _block(
+        "B002", ["acc", "errcode", "errmsg", "flag", "i", "n", "pool"], ["acc", "i", "out"]
+    )
     assert verify(_candidate(blocks)).confidence is Confidence.FAILED
+
+
+def test_the_where_constructs_masks_are_scaffolding() -> None:
+    """``_wm``, ``_wn`` and ``_we<depth>_<n>`` are the emitter's masks for a
+    where / masked elsewhere / elsewhere; a real name never looks like one."""
+    from recast.verify.rwset import DISCARD
+
+    for name in ("_wm", "_wm2", "_wn", "_wn2", "_we0_1", "_we1_3", "_", "_g"):
+        assert DISCARD.fullmatch(name), name
+    for name in ("_wet", "_we", "_wn_x", "wn", "_f_copy_out", "x_we0_1"):
+        assert not DISCARD.fullmatch(name), name

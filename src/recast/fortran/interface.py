@@ -556,6 +556,54 @@ def apply_intent_override(arg: dict[str, Any], sub_name: str, override: str | No
     arg["intent_override"] = True
 
 
+_INT_LITERAL = re.compile(r"^[+-]?\d+(?:_\w+)?$")
+
+
+def _fold_local_parameter_bounds(
+    args: list[dict[str, Any]],
+    result_dims: list[dict[str, Any]] | None,
+    local_parameters: list[dict[str, Any]],
+) -> dict[str, str]:
+    """A dummy's bound that names a *local* integer parameter of the
+    subprogram, folded to the parameter's literal value.
+
+    CLUBB's ``w_term_ma_zt_lhs`` declares ``integer, parameter :: t_above =
+    1, t_below = 2`` and then ``weights_zt2zm(ngrdcol, nzm, t_above:t_below)``.
+    The name is the subprogram's own and reaches no consumer of the record:
+    an f2py wrapper that spells it does not compile, and a sampler that
+    reads it has no table for it. The value does reach every consumer, and
+    it is the same array. Only a bare name with a literal integer
+    initializer folds; an expression stays as written and is the wrapper's
+    to refuse. Returns ``{"arg.bound": "name -> value"}`` for the record.
+    """
+    values: dict[str, str] = {}
+    for parameter in local_parameters:
+        init = str(parameter.get("init_expr") or "").strip()
+        if parameter.get("dims") or not _INT_LITERAL.match(init):
+            continue
+        if str(parameter.get("dtype", "")).startswith("int"):
+            values[str(parameter["name"]).lower()] = init.split("_")[0]
+    folded: dict[str, str] = {}
+    if not values:
+        return folded
+    targets: list[tuple[str, list[dict[str, Any]]]] = [
+        (a["name"], a.get("dims") or []) for a in args
+    ]
+    if result_dims:
+        targets.append(("<result>", result_dims))
+    for owner, dims in targets:
+        for axis, dim in enumerate(dims):
+            for key in ("lb", "ub"):
+                bound = dim.get(key)
+                if bound is None:
+                    continue
+                name = str(bound).strip().lower()
+                if name in values:
+                    dim[key] = values[name]
+                    folded[f"{owner}[{axis}].{key}"] = f"{name} -> {values[name]}"
+    return folded
+
+
 def extract_subprogram(
     sub: Any,
     kind_map: dict[str, str],
@@ -868,6 +916,8 @@ def _record_of(
         # reads in non-assignment contexts (if conditions, call arguments)
         state_read |= (used & module_state_names) - state_written
 
+    folded = _fold_local_parameter_bounds(args, result_dims, local_parameters)
+
     return {
         "name": name,
         "kind": kind,
@@ -877,6 +927,7 @@ def _record_of(
         "result_dims": result_dims,
         "line_span": list(node_span(sub)),
         "args": args,
+        "folded_bounds": folded,
         "local_parameters": local_parameters,
         "locals": locals_,
         "present_calls": sorted(set(present_args)),
@@ -1226,7 +1277,7 @@ def extract(
         for s in subs
     ]
     _infer_write_only_intents(subs, subprograms)
-    _infer_read_only_intents(subs, subprograms, sub_names)
+    _infer_read_only_intents(subs, subprograms, sub_names, set(state_names))
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
     _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
@@ -1242,8 +1293,22 @@ def extract(
         subprograms.insert(
             0, extract_program(sub_scope, mod_name, kind_map, state_names, sub_names)
         )
+    generics = _generics(mod_spec)
+    # A specific of a public generic is reachable through the generic even
+    # when the module keeps the specific itself private (CLUBB's banded
+    # solvers: ``public :: tridiag_lu_solve`` over three private specifics).
+    # It is gate-visible, and ``public_via`` says what to call it through.
+    via = {
+        specific: generic
+        for generic, specifics in generics.items()
+        if is_public(generic)
+        for specific in specifics
+    }
     for record in subprograms:
         record["public"] = is_public(record["name"])
+        if not record["public"] and record["name"] in via:
+            record["public"] = True
+            record["public_via"] = via[record["name"]]
 
     parent = submodule_parent(sub_scope) if isinstance(sub_scope, f08.Submodule) else None
     use_statements = [str(u) for u in walk(sub_scope, f03.Use_Stmt)]
@@ -1270,7 +1335,7 @@ def extract(
         "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible | imported),
-        "generics": _generics(mod_spec),
+        "generics": generics,
         "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
         "buffer_convention": buffer_convention,
         "subprograms": subprograms,
@@ -1295,6 +1360,73 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 at
                 for at, argument in enumerate(sub["args"])
                 if argument["intent"] in ("OUT", "INOUT")
+            ],
+            # A buffer OUT is passed in and returned (the caller's storage),
+            # so the caller reads the actual as well as writing it -- the
+            # same rule the scope applies to its own subprograms (#38).
+            "buffer_positions": [
+                at for at, argument in enumerate(sub["args"]) if argument.get("buffer")
+            ],
+            # What the caller reads: IN and INOUT actuals, and a buffer OUT.
+            # An INOUT actual is written *and* read; out_positions alone said
+            # only the first.
+            "read_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument["intent"] in ("IN", "INOUT", "UNKNOWN") or argument.get("buffer")
+            ],
+            # So a keyword actual (``rcond = rcond``, CLUBB's band_solve) lands
+            # on its own position and not on whichever comes next.
+            "arg_names": [str(argument["name"]).lower() for argument in sub["args"]],
+            # Handing the caller's own optional to one of these queries its
+            # presence -- a read of it, as ``present()`` is.
+            "optional_out_positions": [
+                at
+                for at, argument in enumerate(sub["args"])
+                if argument.get("optional") and argument["intent"] == "OUT"
+            ],
+        }
+    # The sibling's generics too: a call spells the generic (CLUBB's
+    # ``zt2zm_api`` over grid_class's specifics), and a name the scope does
+    # not know as a procedure it counts as a read of data. The entry's
+    # writes are the union over the specifics -- which agree, in every
+    # generic seen so far, on being functions with no OUT argument.
+    for generic, specifics in (record.get("generics") or {}).items():
+        known = [(s, table[s]) for s in specifics if s in table]
+        if generic in table or not known:
+            continue
+        # Which specific a call reaches depends on its arity (and ranks the
+        # scope does not resolve): the entry carries every specific with its
+        # argument count, and the scope picks by the actuals it sees. A
+        # union over specifics of different arity marked the wrong
+        # positions -- CLUBB's tridiag_solve, zm2zt_api.
+        signatures = {s: next(x for x in record["subprograms"] if x["name"] == s) for s, _ in known}
+        arity = {s: len(sig["args"]) for s, sig in signatures.items()}
+        required = {
+            s: sum(1 for a in sig["args"] if not a.get("optional")) for s, sig in signatures.items()
+        }
+        table[generic] = {
+            "kind": known[0][1]["kind"],
+            "out_positions": sorted({at for _, entry in known for at in entry["out_positions"]}),
+            "buffer_positions": sorted(
+                {at for _, entry in known for at in entry.get("buffer_positions", [])}
+            ),
+            "specifics": [
+                {
+                    "name": s,
+                    "args": arity[s],
+                    "required": required[s],
+                    "out_positions": entry["out_positions"],
+                    "buffer_positions": entry.get("buffer_positions", []),
+                    "read_positions": entry.get("read_positions", []),
+                    "arg_names": entry.get("arg_names", []),
+                    "optional_out_positions": entry.get("optional_out_positions", []),
+                    # Two specifics of one arity (CLUBB's tridiag_solve
+                    # with and without its optional rcond) are told apart
+                    # by the ranks of their dummies.
+                    "ranks": [len(a.get("dims") or []) for a in signatures[s]["args"]],
+                }
+                for s, entry in known
             ],
         }
     return table
@@ -1449,15 +1581,22 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) 
                 argument["buffer"] = True
 
 
-def _written_or_escaping(exec_part: Any, sub_names: set[str]) -> set[str]:
+def _written_or_escaping(
+    exec_part: Any, sub_names: set[str], variables: set[str] | None = None
+) -> set[str]:
     """Names this execution part could change, read conservatively.
 
     A name is here if it is assigned to, if it controls a DO, if a READ fills
-    it, if an ALLOCATE/DEALLOCATE/NULLIFY names it -- or if it is handed to
-    something that might write it. An intrinsic never writes its argument and
-    a subscript is not a call, so neither of those escapes; a reference to one
-    of this file's own subprograms, and anything fparser could not resolve to
-    either, does.
+    it or a WRITE takes it as the internal unit, if an ALLOCATE, DEALLOCATE,
+    NULLIFY or INQUIRE names it, if an ASSOCIATE takes it as a selector -- or
+    if it is handed to something that might write it: a CALL, a function
+    reference, or a parenthesised reference whose base is not a variable this
+    scope declares. An intrinsic never writes its argument and a subscript of
+    a declared array is not a call, so neither of those escapes. A reference
+    to a use-associated or external procedure parses exactly like a subscript,
+    so a base that ``variables`` does not name is taken for a call and its
+    variable actuals escape; with no ``variables`` given, only this file's
+    own subprograms are calls, as before.
     """
     escaping: set[str] = set()
 
@@ -1469,6 +1608,25 @@ def _written_or_escaping(exec_part: Any, sub_names: set[str]) -> set[str]:
             node = children[0]
         return str(node).lower() if isinstance(node, f03.Name) else None
 
+    def actuals(arguments: Any) -> list[Any]:
+        if arguments is None:
+            return []
+        if type(arguments).__name__.endswith("_List"):
+            return list(arguments.children)
+        return [arguments]
+
+    def variable_actual(item: Any) -> str | None:
+        """The variable an actual argument names, if the callee could write
+        it: a bare name, a keyword form of one, an element or component of
+        one. An expression is a temporary and nobody's to write."""
+        if isinstance(item, f03.Actual_Arg_Spec):
+            return variable_actual(item.children[1])
+        if isinstance(item, f03.Name):
+            return str(item).lower()
+        if isinstance(item, (f03.Part_Ref, f03.Data_Ref)):
+            return leftmost(item)
+        return None
+
     for assignment in walk(exec_part, (f03.Assignment_Stmt, f03.Pointer_Assignment_Stmt)):
         name = leftmost(assignment.children[0])
         if name:
@@ -1479,27 +1637,62 @@ def _written_or_escaping(exec_part: Any, sub_names: set[str]) -> set[str]:
             break
     for statement in walk(
         exec_part,
-        (f03.Read_Stmt, f03.Allocate_Stmt, f03.Deallocate_Stmt, f03.Nullify_Stmt),
+        (
+            f03.Read_Stmt,
+            f03.Allocate_Stmt,
+            f03.Deallocate_Stmt,
+            f03.Nullify_Stmt,
+            f03.Inquire_Stmt,
+        ),
     ):
         for name in walk(statement, f03.Name):
             escaping.add(str(name).lower())
+    for statement in walk(exec_part, f03.Write_Stmt):
+        # ``write(buf, fmt) ...``: a character variable as the unit is the
+        # thing written.
+        for spec in walk(statement.children[0], f03.Io_Control_Spec):
+            key, value = spec.children
+            if key in (None, "UNIT") and isinstance(value, f03.Name):
+                escaping.add(str(value).lower())
+    for association in walk(exec_part, f03.Association):
+        name = leftmost(association.children[2])
+        if name:
+            escaping.add(name)
     for call in walk(exec_part, f03.Call_Stmt):
         arguments = call.children[1]
         for name in walk(arguments, f03.Name) if arguments is not None else []:
             escaping.add(str(name).lower())
+    for function in walk(exec_part, f03.Function_Reference):
+        for item in actuals(function.children[1]):
+            name = variable_actual(item)
+            if name:
+                escaping.add(name)
     for reference in walk(exec_part, (f03.Part_Ref, f03.Structure_Constructor)):
         base = reference.children[0]
         if not isinstance(base, f03.Name):
             continue
-        if isinstance(reference, f03.Part_Ref) and str(base).lower() not in sub_names:
-            continue  # a subscript, or a reference to something with no body here
+        base_name = str(base).lower()
+        if isinstance(reference, f03.Part_Ref) and base_name not in sub_names:
+            if variables is None or base_name in variables:
+                continue  # a subscript
+            # Not a variable this scope declares and not a subprogram of this
+            # file: a use-associated or external procedure, parsed as a
+            # subscript. Its variable actuals are the callee's to write.
+            for item in actuals(reference.children[1]):
+                name = variable_actual(item)
+                if name:
+                    escaping.add(name)
+            continue
         for name in walk(reference.children[1], f03.Name):
             escaping.add(str(name).lower())
     return escaping
 
 
 def _infer_read_only_intents(
-    subs: list[Any], records: list[dict[str, Any]], sub_names: set[str]
+    subs: list[Any],
+    records: list[dict[str, Any]],
+    sub_names: set[str],
+    state_names: set[str] | None = None,
 ) -> None:
     """Give a dummy the body never changes the intent its use says it has.
 
@@ -1509,6 +1702,11 @@ def _infer_read_only_intents(
     for anything downstream that has to know whether the value after the call
     is an output -- the differential gate refuses the whole subprogram over
     it, so one undeclared argument costs the routine its evidence.
+
+    Read-only has to be proved, not assumed: a dummy handed to a function, to
+    a procedure this file does not define, to an internal WRITE or an
+    ASSOCIATE stays UNKNOWN, and the gate keeps refusing the routine by name
+    rather than comparing it with an output missing on both sides.
     """
     by_name = {sub_name_of(s): s for s in subs}
     for record in records:
@@ -1525,7 +1723,13 @@ def _infer_read_only_intents(
         exec_part = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
         if exec_part is None:
             continue
-        escaping = _written_or_escaping(exec_part, sub_names)
+        variables = (
+            {a["name"] for a in record["args"]}
+            | {local["name"] for local in record.get("locals") or []}
+            | {p["name"] for p in record.get("local_parameters") or []}
+            | set(state_names or ())
+        )
+        escaping = _written_or_escaping(exec_part, sub_names, variables)
         for argument in candidates:
             if argument["name"] not in escaping:
                 argument["intent"] = "IN"

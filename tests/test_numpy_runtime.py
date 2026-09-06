@@ -374,3 +374,24 @@ def test_sum_folds_left_in_element_order() -> None:
     two_d = np.arange(6.0).reshape(2, 3)
     assert runtime._f_vsum(two_d) == 15.0
     assert np.array_equal(runtime._f_vsum(two_d, axis=0), np.array([3.0, 5.0, 7.0]))
+
+
+def test_sum_accumulates_in_fortran_element_order() -> None:
+    """gfortran's inlined SUM is a loop in element order; np.sum pairs its
+    terms and rounds differently -- CLUBB's vertical_integral drifted 12 ULP.
+    The sequential helper matches the loop exactly, whole or along an axis."""
+    import numpy as np
+
+    from recast.transform.numpy import runtime
+
+    rng = np.random.default_rng(7)
+    a = np.asfortranarray(rng.uniform(-1e6, 1e6, size=(37, 23)))
+    loop = np.float64(0)
+    for x in np.ravel(a, order="F"):
+        loop = loop + x
+    assert runtime._f_vsum(a) == loop
+    along = np.zeros(23)
+    for i in range(37):
+        along = along + a[i, :]
+    assert np.array_equal(runtime._f_vsum(a, axis=0), along)
+    assert runtime._f_vsum(np.array([1, 2, 3], dtype=np.int32)) == 6

@@ -916,6 +916,179 @@ def two_outputs():
     assert "partial output evidence is not a pass" in verdict.detail
 
 
+def test_a_recorded_subroutine_with_no_output_returns_nothing(tmp_path: Path) -> None:
+    """CLUBB's finalize_tau_sponge_damp_api deallocates a component and
+    returns: no OUT argument, so its adapter returns ``None``. The gate
+    counted that as one value against zero out-intent arguments."""
+    emitted = b"""\
+_SIGNATURES = {
+    "release": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def release(n):
+    return None
+"""
+    candidate = Candidate(
+        unit="fortran:no_output",
+        transform="translate.numpy",
+        files={Path("no_output_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "release",
+                    "source": "release.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {},
+    )
+    # Nothing to compare is still not a pass -- but for the right reason.
+    assert "returned 1 value(s)" not in verdict.detail
+    assert "zero numerical points" in verdict.detail
+
+
+def test_a_declared_ungated_subprogram_is_not_compared_on_a_recording(tmp_path: Path) -> None:
+    """CLUBB's sponge initializer leaves the levels below the layer undefined
+    on both sides; the operator's declaration says so, with the reason, and
+    the replay reported it -- then compared the heap against np.empty anyway."""
+    emitted = b"""\
+_SIGNATURES = {
+    "fill": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "int32", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def fill(n):
+    return 2
+"""
+    candidate = Candidate(
+        unit="fortran:undefined_tail",
+        transform="translate.numpy",
+        files={Path("undefined_tail_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "fill",
+                    "source": "fill.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {"y": 1},
+                }
+            ],
+        },
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"ungated": {"fill": "the tail is undefined on both sides"}},
+    )
+    assert "differ" not in verdict.detail
+    assert "fill (the tail is undefined on both sides)" in verdict.detail
+
+
+def test_a_zero_extent_output_has_no_dominant_value_to_weigh(tmp_path: Path) -> None:
+    """CLUBB's scalar tracers under ``sclr_dim = 0``: an output of shape
+    ``(1, 88, 0)`` on the recording. The tolerance gate's dominant-value
+    mask took the maximum of an empty array and the whole unit's verdict
+    was a plugin exception."""
+    import numpy as np
+
+    from recast.verify.tolerance import ToleranceVerifier
+
+    emitted = b"""\
+import numpy as np
+_SIGNATURES = {
+    "tracers": {
+        "kind": "subroutine",
+        "args": [
+            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+            {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False,
+             "dims": [{"lb": "1", "ub": "n"}, {"lb": "1", "ub": "0"}]},
+            {"name": "z", "dtype": "float64", "intent": "OUT", "optional": False},
+        ],
+        "result": None,
+        "result_dtype": None,
+    }
+}
+
+def tracers(n):
+    return np.zeros((n, 0)), 2.0
+"""
+    candidate = Candidate(
+        unit="fortran:tracers",
+        transform="translate.numpy",
+        files={Path("tracers_numpy.py"): emitted},
+    )
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="dump-replay",
+        key="k",
+        handle={
+            "module": None,
+            "input_source": "recorded",
+            "return_convention": "recorded",
+            "samples": [
+                {
+                    "subprogram": "tracers",
+                    "source": "tracers.txt",
+                    "inputs": {"n": 3},
+                    "outputs": {"y": np.zeros((3, 0)), "z": 2.0},
+                }
+            ],
+        },
+    )
+    verdict = ToleranceVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"module_suffix": "_numpy.py", "dominant_axis": "all", "rel_scale": "array"},
+    )
+    assert "exception" not in verdict.detail and "zero-size" not in verdict.detail
+    assert verdict.confidence is not Confidence.FAILED, verdict.detail
+
+
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
@@ -1321,12 +1494,13 @@ def test_wrappers_serve_a_file_of_bare_subprograms() -> None:
     assert "real(8), intent(inout) :: t(pcols, pver)" in text
 
 
-def test_the_gate_lets_a_candidate_shape_its_own_inputs(tmp_path: Path) -> None:
+def test_the_project_profile_shapes_the_generated_inputs(tmp_path: Path) -> None:
     """Per-name ranges cannot express structure -- a monotone pressure
-    column, a consistent thickness field. A candidate may carry
-    ``_PREPARE_INPUTS`` the way it carries ``_SIGNATURES``; both sides then
-    receive the same shaped arrays, so it chooses the sampled region without
-    touching the verdict."""
+    column, a consistent thickness field. The project carries a
+    ``recast_inputs.py`` at its root, and its ``prepare`` shapes every
+    generated draw before both sides receive it, so it chooses the sampled
+    region without touching the verdict -- and the candidate, which is the
+    thing under judgement, has no say in it."""
     import numpy as np
 
     module = tmp_path / "candidate"
@@ -1350,14 +1524,20 @@ _SIGNATURES = {
 SEEN = []
 
 
-def _PREPARE_INPUTS(name, inputs, rng):
-    inputs["x"][:] = 2.0        # every trial sees the same shaped input
-
-
 def step(x):
     SEEN.append(float(x[0]))
     return np.asarray(x) * 3.0
 """
+    )
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "recast_inputs.py").write_text(
+        "import numpy as np\n"
+        "\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    assert unit == 'fortran:shaped' and subprogram == 'step'\n"
+        "    inputs['x'] = np.full_like(inputs['x'], 2.0)  # every trial sees the same input\n"
+        "    return inputs\n"
     )
 
     class Truth:
@@ -1382,15 +1562,18 @@ def step(x):
         ref,
         tmp_path / "ws",
         LocalExecutor(),
-        {"trials": 3, "dims": {"n": 4}, "ranges": {"x": (100.0, 200.0)}},
+        {"root": str(root), "trials": 3, "dims": {"n": 4}, "ranges": {"x": (100.0, 200.0)}},
     )
     assert verdict.confidence is Confidence.BIT_EXACT
+    assert verdict.metrics["input_profile"] == "recast_inputs.py"
+    assert verdict.metrics["shaped"] == ["step"]
+    assert verdict.metrics["subprograms"]["step"]["shaped"] == 3
     staged = tmp_path / "ws" / "candidate"
     sys.path.insert(0, str(staged))
     try:
         import shaped_numpy
 
-        # The hook ran: every trial saw 2.0, not a value from the range.
+        # The profile ran: every trial saw 2.0, not a value from the range.
         assert shaped_numpy.SEEN and all(v == 2.0 for v in shaped_numpy.SEEN)
     finally:
         sys.path.remove(str(staged))
@@ -1818,6 +2001,17 @@ def test_the_reference_builds_across_two_files(tmp_path: Path) -> None:
         unit, facts, workspace, LocalExecutor(), {"root": project, "fc": GFORTRAN}
     )
     assert ref.handle["wrappers"]["scale_all"] == "w_scale_all"
+
+
+def test_a_lower_bound_is_spelled_in_the_wrapper() -> None:
+    """``lhs(-2:2, ngrdcol, ndim)`` (CLUBB's pentadiagonal solvers) has five
+    rows; a wrapper declaring ``lhs(2, ...)`` would hand the callee two."""
+    from recast.oracle.f2py import _extent
+
+    assert _extent({"lb": "-2", "ub": "2"}) == "-2:2"
+    assert _extent({"lb": "1", "ub": "n"}) == "n"
+    assert _extent({"lb": None, "ub": "n"}) == "n"
+    assert _extent({"lb": "0", "ub": "nlev"}) == "0:nlev"
 
 
 BLOCK_SOURCE = """\
