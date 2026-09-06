@@ -66,9 +66,12 @@ class UnsupportedExpression(RecastError):
 class Expr:
     """One node of a constant initializer.
 
-    ``kind`` is ``real``, ``int``, ``name``, ``paren``, ``unary``, ``binary``
-    or ``call``. ``text`` carries the literal text, the identifier, the
-    operator, or the intrinsic's lower-case name.
+    ``kind`` is ``real``, ``int``, ``str``, ``name``, ``paren``, ``unary``,
+    ``binary`` or ``call``. ``text`` carries the literal text, the identifier,
+    the operator, or the intrinsic's lower-case name. A ``str`` node's text is
+    the character constant's *value*, the Fortran quoting undone (``'it''s'``
+    -> ``it's``), so a renderer quotes it for its own language and never
+    re-parses Fortran's.
     """
 
     kind: str
@@ -85,12 +88,27 @@ def _normalize_real(text: str) -> str:
     return text.split("_")[0].lower().replace("d", "e")
 
 
+def _character_value(text: str) -> str:
+    """The value of a character constant: the quotes off, a doubled quote
+    inside them folded to one. A kind prefix (``k_'text'``) is dropped."""
+    text = text.strip()
+    if "_" in text and text[0] not in ("'", '"'):
+        text = text.split("_", 1)[1]
+    quote = text[0]
+    return text[1:-1].replace(quote * 2, quote)
+
+
 def build(node: Any) -> Expr:
     """Turn an fparser2 initializer node into an ``Expr``."""
     if isinstance(node, f03.Real_Literal_Constant):
         return Expr("real", _normalize_real(str(node)))
     if isinstance(node, f03.Int_Literal_Constant):
         return Expr("int", str(node).split("_")[0])
+    if isinstance(node, f03.Char_Literal_Constant):
+        # A character parameter is a value too: ``namep = 'pft'`` names a
+        # level to an abort message, and a tree that use-imports it is
+        # resolvable, not refused.
+        return Expr("str", _character_value(str(node)))
     if isinstance(node, f03.Name):
         return Expr("name", str(node).lower())
     if isinstance(node, f03.Parenthesis):
@@ -173,10 +191,14 @@ def render(
     real: Callable[[str], str],
     integer: Callable[[str], str],
     name: Callable[[str], str],
+    string: Callable[[str], str] = repr,
     call: Callable[[str, list[str]], str] | None = None,
 ) -> str:
-    """Fold an ``Expr`` to text, given how to spell its three kinds of atom
+    """Fold an ``Expr`` to text, given how to spell its four kinds of atom
     and, optionally, an intrinsic call over already-rendered arguments.
+
+    ``string`` spells a character value; Python's ``repr`` is the default,
+    a quoting that never re-parses the Fortran one.
 
     Grouping and spacing are fixed here so that every target language brackets
     the arithmetic identically. That is the whole point: two renderings of one
@@ -190,7 +212,12 @@ def render(
         return integer(expr.text)
     if expr.kind == "name":
         return name(expr.text)
-    sub = [render(a, real=real, integer=integer, name=name, call=call) for a in expr.args]
+    if expr.kind == "str":
+        return string(expr.text)
+    sub = [
+        render(a, real=real, integer=integer, name=name, string=string, call=call)
+        for a in expr.args
+    ]
     if expr.kind == "call":
         if call is None:
             raise UnsupportedExpression(f"no rendering for intrinsic {expr.text!r} in this target")

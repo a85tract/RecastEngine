@@ -360,6 +360,22 @@ def test_copy_out_writes_the_overlap_and_leaves_the_rest() -> None:
     runtime._f_copy_out(None, np.ones(2))  # nothing to write into, no error
 
 
+def test_sum_folds_left_in_element_order() -> None:
+    """Fortran SUM is a left fold; np.sum is pairwise past eight elements and
+    rounds differently. ELM's hydraulic-stress kernel sums ten soil layers,
+    and the pairwise sum put 925 of 267,264 recorded points up to 75 ULP off;
+    the left fold put every one of them on the recording."""
+    a = np.array([1e16, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1e16])
+    left = 0.0
+    for x in a:
+        left += x
+    assert runtime._f_vsum(a) == left
+    assert np.sum(a) != left  # the case that told the two apart
+    two_d = np.arange(6.0).reshape(2, 3)
+    assert runtime._f_vsum(two_d) == 15.0
+    assert np.array_equal(runtime._f_vsum(two_d, axis=0), np.array([3.0, 5.0, 7.0]))
+
+
 def test_sum_accumulates_in_fortran_element_order() -> None:
     """gfortran's inlined SUM is a loop in element order; np.sum pairs its
     terms and rounds differently -- CLUBB's vertical_integral drifted 12 ULP.

@@ -359,7 +359,12 @@ def span_rwset(
     return visitor.reads, visitor.writes
 
 
-STUB_LINE = re.compile(r"^\s*(?:pass\s*#.*\(infra stub\)|#.*)$")
+STUB_LINE = re.compile(r"^\s*(?:[^#]*#.*\(infra stub\)|#.*)$")
+"""A line the transform emitted for a framework stub, whatever the stub's
+statement is: a ``pass`` for a call that does nothing here, a ``raise`` for
+an abort (``endrun``). Only ``pass`` used to count, so a block that was
+nothing but an abort -- whose message reads the source counts and the raise
+drops -- failed instead of being waived by name."""
 
 
 CONTROL_LINE = re.compile(r"^\s*(?:(?:if|elif|for|while)\b[^#]*:|else\s*:|pass)\s*(?:#.*)?$")
@@ -457,6 +462,7 @@ class ReadWriteSetVerifier(StaticVerifier):
         deferred = set(candidate.deferred)
 
         checked = 0
+        excused_reads = 0
         waived: list[str] = []
         failures: list[dict[str, Any]] = []
         for block in protocol.blocks:
@@ -472,6 +478,13 @@ class ReadWriteSetVerifier(StaticVerifier):
             )
             checked += 1
             want_reads, want_writes = set(block["reads"]), set(block["writes"])
+            # A read the source makes only as the argument of a call a
+            # framework stub replaced is not a read the target can make:
+            # the transform names those, and they are excused only where
+            # the target indeed does not read them.
+            dropped = set(block.get("dropped_reads") or []) - reads
+            excused_reads += len(dropped)
+            want_reads -= dropped
             if reads != want_reads or writes != want_writes:
                 failures.append(
                     {
@@ -488,6 +501,7 @@ class ReadWriteSetVerifier(StaticVerifier):
             "blocks_matched": checked - len(failures),
             "blocks_deferred": len(deferred),
             "blocks_waived": len(waived),
+            "reads_excused_by_stubs": excused_reads,
             "failures": failures,
         }
         if failures:

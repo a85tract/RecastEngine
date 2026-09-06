@@ -70,7 +70,8 @@
         "blocks_checked": 44,
         "blocks_deferred": 0,
         "blocks_matched": 44,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -95,7 +96,8 @@
         "blocks_checked": 290,
         "blocks_deferred": 38,
         "blocks_matched": 289,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -121,7 +123,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -146,7 +149,8 @@
         "blocks_checked": 313,
         "blocks_deferred": 5,
         "blocks_matched": 310,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -186,7 +190,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -211,7 +216,8 @@
         "blocks_checked": 1,
         "blocks_deferred": 124,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -236,7 +242,8 @@
         "blocks_checked": 1,
         "blocks_deferred": 16,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -261,7 +268,8 @@
         "blocks_checked": 21,
         "blocks_deferred": 19,
         "blocks_matched": 20,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -286,7 +294,8 @@
         "blocks_checked": 11,
         "blocks_deferred": 9,
         "blocks_matched": 10,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -312,7 +321,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -352,7 +362,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -377,7 +388,8 @@
         "blocks_checked": 2,
         "blocks_deferred": 4,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -402,7 +414,8 @@
         "blocks_checked": 3,
         "blocks_deferred": 2,
         "blocks_matched": 2,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -415,21 +428,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/2 blocks disagree: fftshift_crk/B001, fftshift_rrk/B001",
+       "detail": "2 blocks match",
        "metrics": {
         "blocks_checked": 2,
         "blocks_deferred": 0,
-        "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_matched": 2,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -452,7 +467,8 @@
         "blocks_checked": 3,
         "blocks_deferred": 2,
         "blocks_matched": 2,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -465,21 +481,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/2 blocks disagree: ifftshift_crk/B001, ifftshift_rrk/B001",
+       "detail": "2 blocks match",
        "metrics": {
         "blocks_checked": 2,
         "blocks_deferred": 0,
-        "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_matched": 2,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -502,7 +520,8 @@
         "blocks_checked": 3,
         "blocks_deferred": 2,
         "blocks_matched": 2,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -527,7 +546,8 @@
         "blocks_checked": 3,
         "blocks_deferred": 2,
         "blocks_matched": 2,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -553,7 +573,8 @@
         "blocks_checked": 6,
         "blocks_deferred": 0,
         "blocks_matched": 6,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -653,7 +674,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -679,7 +701,8 @@
         "blocks_checked": 229,
         "blocks_deferred": 66,
         "blocks_matched": 216,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -692,21 +715,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/10 blocks disagree: meshgrid/B001, meshgrid/B002",
+       "detail": "10 blocks match",
        "metrics": {
         "blocks_checked": 10,
         "blocks_deferred": 0,
-        "blocks_matched": 8,
-        "blocks_waived": 0
+        "blocks_matched": 10,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -730,7 +755,8 @@
         "blocks_checked": 16,
         "blocks_deferred": 0,
         "blocks_matched": 16,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -755,7 +781,8 @@
         "blocks_checked": 14,
         "blocks_deferred": 7,
         "blocks_matched": 8,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -768,21 +795,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/39 blocks disagree: iargsort/B004, rargsort/B004",
+       "detail": "39 blocks match",
        "metrics": {
         "blocks_checked": 39,
         "blocks_deferred": 1,
-        "blocks_matched": 37,
-        "blocks_waived": 0
+        "blocks_matched": 39,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -805,7 +834,8 @@
         "blocks_checked": 95,
         "blocks_deferred": 16,
         "blocks_matched": 93,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -831,7 +861,8 @@
         "blocks_checked": 51,
         "blocks_deferred": 10,
         "blocks_matched": 51,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -857,7 +888,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -882,7 +914,8 @@
         "blocks_checked": 43,
         "blocks_deferred": 5,
         "blocks_matched": 36,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1197,7 +1230,8 @@
         "blocks_checked": 104,
         "blocks_deferred": 0,
         "blocks_matched": 104,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1299,12 +1333,13 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/69 blocks disagree: save_array1d/B005, save_array1d/B021, save_array2d/B016",
+       "detail": "2/69 blocks disagree: save_array1d/B021, save_array2d/B016",
        "metrics": {
         "blocks_checked": 69,
         "blocks_deferred": 2,
-        "blocks_matched": 66,
-        "blocks_waived": 0
+        "blocks_matched": 67,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1330,7 +1365,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1389,7 +1425,8 @@
         "blocks_checked": 57,
         "blocks_deferred": 3,
         "blocks_matched": 57,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1414,7 +1451,8 @@
         "blocks_checked": 67,
         "blocks_deferred": 13,
         "blocks_matched": 62,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1440,7 +1478,8 @@
         "blocks_checked": 6,
         "blocks_deferred": 1,
         "blocks_matched": 6,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1465,7 +1504,8 @@
         "blocks_checked": 124,
         "blocks_deferred": 8,
         "blocks_matched": 123,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1491,7 +1531,8 @@
         "blocks_checked": 28,
         "blocks_deferred": 3,
         "blocks_matched": 28,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1517,7 +1558,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1543,7 +1585,8 @@
         "blocks_checked": 14,
         "blocks_deferred": 2,
         "blocks_matched": 14,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1569,7 +1612,8 @@
         "blocks_checked": 41,
         "blocks_deferred": 2,
         "blocks_matched": 41,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1594,7 +1638,8 @@
         "blocks_checked": 34,
         "blocks_deferred": 1,
         "blocks_matched": 32,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1620,7 +1665,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1646,7 +1692,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1672,7 +1719,8 @@
         "blocks_checked": 23,
         "blocks_deferred": 1,
         "blocks_matched": 23,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1697,7 +1745,8 @@
         "blocks_checked": 187,
         "blocks_deferred": 3,
         "blocks_matched": 184,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1722,7 +1771,8 @@
         "blocks_checked": 32,
         "blocks_deferred": 4,
         "blocks_matched": 31,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -1748,7 +1798,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1774,7 +1825,8 @@
         "blocks_checked": 30,
         "blocks_deferred": 0,
         "blocks_matched": 30,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1800,7 +1852,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1826,7 +1879,8 @@
         "blocks_checked": 2,
         "blocks_deferred": 0,
         "blocks_matched": 2,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1852,7 +1906,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1878,7 +1933,8 @@
         "blocks_checked": 9,
         "blocks_deferred": 0,
         "blocks_matched": 9,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1904,7 +1960,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -1930,7 +1987,8 @@
         "blocks_checked": 12,
         "blocks_deferred": 4,
         "blocks_matched": 12,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2011,7 +2069,8 @@
         "blocks_checked": 62,
         "blocks_deferred": 0,
         "blocks_matched": 62,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2036,7 +2095,8 @@
         "blocks_checked": 100,
         "blocks_deferred": 9,
         "blocks_matched": 95,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2062,7 +2122,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2088,7 +2149,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2176,7 +2238,8 @@
         "blocks_checked": 158,
         "blocks_deferred": 0,
         "blocks_matched": 158,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2243,7 +2306,8 @@
         "blocks_checked": 436,
         "blocks_deferred": 9,
         "blocks_matched": 399,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2302,7 +2366,8 @@
         "blocks_checked": 628,
         "blocks_deferred": 6,
         "blocks_matched": 621,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2353,7 +2418,8 @@
         "blocks_checked": 234,
         "blocks_deferred": 4,
         "blocks_matched": 233,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2404,7 +2470,8 @@
         "blocks_checked": 68,
         "blocks_deferred": 0,
         "blocks_matched": 56,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2429,7 +2496,8 @@
         "blocks_checked": 106,
         "blocks_deferred": 8,
         "blocks_matched": 99,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }
@@ -2455,7 +2523,8 @@
         "blocks_checked": 0,
         "blocks_deferred": 0,
         "blocks_matched": 0,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2487,7 +2556,8 @@
         "blocks_checked": 12,
         "blocks_deferred": 0,
         "blocks_matched": 12,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": true
       }
@@ -2530,7 +2600,8 @@
         "blocks_checked": 1588,
         "blocks_deferred": 21,
         "blocks_matched": 1561,
-        "blocks_waived": 0
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
        },
        "passed": false
       }

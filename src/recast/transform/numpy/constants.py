@@ -301,6 +301,8 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
 
 
 def _python(expr: Expr, env: dict[str, str | None] | None = None) -> str:
+    if expr.kind == "str":
+        return repr(expr.text)  # no arithmetic to fold; a slash in it is text
     # Fortran divides two integers to an integer; ``with_integer_division``
     # spells those quotients ``//`` from the tree's own types and the
     # declared types of the constants before it.

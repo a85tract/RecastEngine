@@ -1455,3 +1455,15 @@ def test_a_dummy_procedure_with_no_interface_still_refuses(
     statements, nodes = build(sources["callback_mod"], "untyped")
     with pytest.raises(REFUSED, match="call to external subroutine 'fcn'"):
         statements.render(pick(nodes, f03.Call_Stmt), 1)
+
+
+def test_a_stubbed_call_names_the_reads_it_dropped(sources: dict[str, Path]) -> None:
+    """The stub is a ``pass``; the names the call's arguments read are gone
+    from the target and are handed to the read/write protocol so the gate
+    does not count the source's reads of them against it."""
+    statements, nodes = build(sources["emit_mod"], "calls", stubs={"outfld": "pass"})
+    statements.dropped_reads.clear()
+    statements.render(pick(nodes, f03.Call_Stmt, 5), 1)
+    dropped = statements.dropped_reads
+    assert dropped and all(n == n.lower() for n in dropped)
+    assert "outfld" not in dropped
