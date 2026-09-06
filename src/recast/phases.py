@@ -1711,6 +1711,25 @@ def _validate_verdict(
         )
 
 
+def _ungated_subprograms(unit_run: UnitRun, gates: Iterable[str]) -> frozenset[str]:
+    """Subprograms a required gate's verdict says it did not compare.
+
+    A differential gate whose oracle holds no reference for a subprogram
+    carries that name, and why, as ``metrics["ungated"]`` (``{name: why}``)
+    and passes the unit on the subprograms it could compare. Names are the
+    verifier's bare, lower-case ones.
+    """
+    names: set[str] = set()
+    wanted = set(gates)
+    for verdict in unit_run.verdicts:
+        if verdict.verifier not in wanted:
+            continue
+        ungated = verdict.metrics.get("ungated")
+        if isinstance(ungated, dict):
+            names.update(str(name).lower() for name in ungated)
+    return frozenset(names)
+
+
 def _gate_result(
     gate: str,
     unit_run: UnitRun,
@@ -1832,6 +1851,7 @@ def verify_recipe_candidates(
     )
     unit_reports: list[UnitVerification] = []
     by_unit_gate: dict[str, dict[str, GateResult]] = {}
+    ungated_by_unit: dict[str, frozenset[str]] = {}
     all_transformed = bool(verification_bundle.units)
     all_evidence = bool(verification_bundle.units)
     verification_passed = bool(verification_bundle.units)
@@ -1849,6 +1869,7 @@ def verify_recipe_candidates(
             _gate_result(gate, unit_run, evidence_complete) for gate in required_gates
         )
         by_unit_gate[item.unit.uid] = {gate.gate: gate for gate in gate_results}
+        ungated_by_unit[item.unit.uid] = _ungated_subprograms(unit_run, required_gates)
         candidate_digest = (
             f"sha256:{candidate_digests[item.unit.uid]}" if item.candidate is not None else None
         )
@@ -1966,6 +1987,12 @@ def verify_recipe_candidates(
     for selector in coverage_ids:
         owners = tuple(sorted(coverage_owners.get(selector, set())))
         observed = bool(owners)
+        # A unit's gate passing says nothing about a subprogram that gate
+        # never compared: an oracle with no reference for it lists it as
+        # ungated, and the unit passes on the rest. The unit's verdict is
+        # honest about that in its detail; this coverage must be too, or a
+        # required subprogram is reported verified when nothing judged it.
+        name = selector.rsplit("/", 1)[-1].lower()
         gates_passed = bool(owners) and all(
             all(
                 by_unit_gate.get(owner, {})
@@ -1974,6 +2001,7 @@ def verify_recipe_candidates(
                 == "passed"
                 for gate in required_gates
             )
+            and name not in ungated_by_unit.get(owner, frozenset())
             for owner in owners
         )
         required = selector in required_subprogram_set
