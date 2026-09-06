@@ -135,7 +135,7 @@ one, trimmed:
 The digest is over the generated files, so the manifest names the artifact it
 judged rather than the path it sat at. The oracle key folds the compiler's
 version — which is why a manifest is a record of one run and is never
-diffed against another's ([`examples/README.md`](../examples/) has the
+diffed against another's ([`corpus/README.md`](../corpus/README.md#the-two-trees-shipped-in-tree) has the
 long form of that argument).
 
 ## A failed run

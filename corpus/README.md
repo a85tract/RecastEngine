@@ -1,7 +1,9 @@
 # corpus/
 
 Twelve open-source Fortran libraries, as pinned git submodules, that the
-engine **alone** -- no domain extension installed -- is held to translating.
+engine **alone** -- no domain extension installed -- is held to translating,
+and two small trees shipped in-tree (`toy_physics`, `probe_kernel`; the last
+section).
 They are the public form of the question the roadmap's P4 asks ("does the
 engine pass with the CESM extension uninstalled?"), asked of code nobody here
 wrote: nonlinear least squares, quadrature, special functions, root finding,
@@ -48,8 +50,8 @@ everything a case produces:
 | `output/<case>/evidence/` | one manifest per verdict |
 
 All four are the same thing -- generated, disposable, one place to delete --
-and none of them is inside `corpus/`, whose only other contents are
-submodules this tool must never write to.
+and none of them is inside `corpus/`, whose other contents are submodules
+this tool must never write to and the two shipped trees below.
 
 The record per unit is how many blocks the rules refused and why
 (normalised, so one missing rule counts once however often it fires),
@@ -131,3 +133,79 @@ A refusal is a block the rules would not guess at; it is not a wrong
 translation. The numbers that would say a translation is *right* -- the
 bit-exact gate against an f2py build of the same source -- come after the
 static check passes, and for most cases it does not yet.
+
+## The two trees shipped in-tree
+
+Beside the submodules, two source trees live here directly, small enough
+to read in one sitting and needing nothing checked out: `toy_physics/`, a
+Fortran module the shipped recipes run over end to end with the operator
+config beside it, and `probe_kernel/`, two scripts standing in for an
+instrumented C kernel (its own README says how). They are the public form
+of the check the roadmap names: the recipe has to work *here*, on sources
+anyone can read, not only on the private corpus it was migrated against.
+
+    recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
+        --summary corpus/toy_physics/verification.json
+
+`toy_physics` needs a Fortran compiler and the f2py build backend
+(`pip install 'recast-engine[fortran,translate,verify]'` and a `gfortran` on
+PATH). The run translates the module, cross-checks its dataflow, compiles
+the untouched Fortran as the reference, compares every output bit for bit,
+and writes the evidence manifests under `output/toy_physics/evidence/`.
+
+Two records come out of that, and they are for different readers.
+
+`output/toy_physics/evidence/` holds the **manifests**: one immutable, content-addressed
+CC-Test document per verdict per run, append-only, carrying the full metrics
+and the environment. That is the audit trail, and it accumulates a file per
+attempt -- including the attempts that failed, which is the point of an audit
+trail and the reason it is not committed.
+
+`verification.json` is the **current state**: one entry per unit and verifier,
+regenerated rather than appended. It carries the confidence, the artifact
+digest, the oracle's *name*, and the countable metrics, and deliberately omits
+wall-clock time and paths -- so two runs over the same revisions produce the
+same bytes. That is what makes it worth committing: it diffs like a lockfile,
+and a change in it is a change in what has been verified.
+
+The oracle's **cache key** is deliberately not among those, and the reason is
+what makes the file diffable at all. The key folds the compiler's version, so
+recording it would make the summary a fact about the machine: this example's
+committed bytes come from gfortran 16 and CI's come from whatever the runner's
+distribution ships, and the byte comparison would fail there while nothing was
+wrong. The key belongs in the evidence manifest, which is a record of one run
+and is not compared to anything. What survives into the summary is only what
+two correct runs agree on.
+[`toy_physics/verification.json`](toy_physics/verification.json) is the one
+this example produces, checked in so that a reader can see the claim without
+owning a Fortran compiler.
+
+## The same module, ported
+
+`toy_physics` also runs the `port` recipe, over the same sources and the same
+sampling config:
+
+    recast run port corpus/toy_physics --config corpus/toy_physics/port.json \
+        --summary corpus/toy_physics/port-verification.json
+
+This one needs `jax` (`pip install 'recast-engine[fortran,translate,jax]'`) and
+**no Fortran compiler** — which is the anchoring decision showing through rather
+than a convenience. The reference is `numpy-anchor`: the NumPy translation of
+the same unit, re-derived from the same Facts, so nothing in this run builds
+Fortran. That makes the port's claim a chain — NumPy bit-exact against the
+Fortran above, JAX ULP-bounded against the NumPy here — and the honest part is
+that this run cannot check the first link. The run above is what checks it.
+
+The verdict is `ulp_bounded` rather than `bit_exact`, and that is the ceiling
+rather than a shortfall: XLA's transcendentals are not libm's. On this module —
+which has none — 76 of 85 points land bit-exact and the remaining nine within
+1 ULP, against a gate of 32.
+
+[`toy_physics/port-verification.json`](toy_physics/port-verification.json) is
+checked in for the same reason as its bit-exact sibling, with one difference in
+how much it is allowed to prove. A ULP count is not device-independent — XLA's
+CPU backend does not promise the same last bit on x86 as on arm64, and the
+summary records `candidate_device` and `reference_device` so a reader can see
+which machine produced it. So CI runs this example and gates on the verdict, but
+does not diff the file the way it diffs `verification.json`. Treat a changed ULP
+count here as a question, not an alarm.

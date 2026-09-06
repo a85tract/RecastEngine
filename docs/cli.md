@@ -70,7 +70,7 @@ target's evidence actually reaches is in [`roadmap.md`](roadmap.md).
 
 `plan --config` takes a JSON object on the command line. `run --config` takes
 a path to a `.json` or `.toml` file. Same object either way, and
-`examples/toy_physics/recast.json` uses all three kinds of key:
+`corpus/toy_physics/recast.json` uses all three kinds of key:
 
 
 ```json
@@ -135,7 +135,7 @@ different and its digest says so.
 
 **`output`** names where the run writes. The default is
 `output/<project>/` under the working directory, where `<project>` is the
-source tree's own directory name — `examples/toy_physics` gives
+source tree's own directory name — `corpus/toy_physics` gives
 `output/toy_physics/`, holding `translate/<unit>/candidate/` and
 `evidence/<unit>/` for each unit the run walks. `<unit>` is that unit's id
 with `:` and `/` made path-safe, so the one unit of the shipped example,

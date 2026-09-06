@@ -62,8 +62,7 @@ mean: [`docs/cli.md`](docs/cli.md).
 | | |
 |---|---|
 | [`docs/`](docs/) | the CLI, the architecture, writing a plugin, the roadmap |
-| [`examples/`](examples/) | source trees the shipped recipes run over end to end |
-| [`corpus/`](corpus/) | twelve third-party Fortran libraries the engine alone is held to, and the record of how far it gets |
+| [`corpus/`](corpus/) | twelve third-party Fortran libraries the engine alone is held to, the record of how far it gets, and the two small trees the shipped recipes run over end to end |
 | [`conformance/`](conformance/) | what a plugin must satisfy, as a suite that runs |
 
 ## Contact

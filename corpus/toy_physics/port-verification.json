@@ -1,0 +1,38 @@
+{
+  "recipe": "port",
+  "schema": 1,
+  "units": [
+    {
+      "candidate": "1940d84ca605e8be68ddef9a4582bed8d89b6aefd2b17b86ec1df03f477fa7e1",
+      "deferred": 0,
+      "oracle": "numpy-anchor",
+      "stopped_by": null,
+      "transform": "recast.port.kernel-to-jax",
+      "unit": "fortran:toy_physics",
+      "verdicts": [
+        {
+          "confidence": "ulp_bounded",
+          "detail": "every one of 85 points within 1 ULP (gate 32)",
+          "metrics": {
+            "bit_exact": 72,
+            "candidate_device": "cpu:0",
+            "dominant_points": 85,
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 2.2027434888435707e-16,
+            "max_ulp": 1,
+            "max_ulp_dominant": 1,
+            "nan_mismatch": 0,
+            "points": 85,
+            "reference_device": "cpu",
+            "rel_gate": 1e-12,
+            "trials": 5,
+            "ulp_gate": 32
+          },
+          "passed": true,
+          "verifier": "differential.tolerance"
+        }
+      ]
+    }
+  ]
+}

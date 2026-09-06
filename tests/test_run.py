@@ -2,7 +2,7 @@
 
 Fake plugins throughout: the runner's job is order, fail-fast, optionality,
 caching and record-keeping, and none of that needs a real parser or
-compiler to prove. The real chain is exercised by the examples run in the
+compiler to prove. The real chain is exercised by the toy_physics run in the
 compiler-gated suite.
 """
 
