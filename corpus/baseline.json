@@ -60,8 +60,52 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "candidate does not import: No module named 'bspline_kinds_module_numpy'",
-       "metrics": {},
+       "detail": "10 subprogram(s) could not be compared: daxpy: argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs; dcopy: ",
+       "metrics": {
+        "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 0,
+        "redrawn": 0,
+        "subprograms": {
+         "dasum": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "daxpy": {
+          "error": "argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "dcopy": {
+          "error": "argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "ddot": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "dnrm2": {
+          "error": "candidate raised: NameError: name 'radix' is not defined"
+         },
+         "drotm": {
+          "error": "argument(s) dx, dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "drotmg": {
+          "error": "argument(s) dparam have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "dscal": {
+          "error": "argument(s) dx have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "dswap": {
+          "error": "argument(s) dx, dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "idamax": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         }
+        },
+        "trials": 10
+       },
        "passed": false
       },
       "static.rwset": {
@@ -604,6 +648,14 @@
      3
     ],
     [
+     "inquire writes OPENED=",
+     1
+    ],
+    [
+     "formatted internal write with a non-literal format",
+     1
+    ],
+    [
      "qr_fact/P001: local array tau: extent not resolvable (dim expr 'X')",
      1
     ],
@@ -641,14 +693,6 @@
     ],
     [
      "spline3pars/P005: local array bmat: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "inquire writes OPENED=",
-     1
-    ],
-    [
-     "formatted internal write with a non-literal format",
      1
     ]
    ],
@@ -928,7 +972,7 @@
    "blocks": 104,
    "deferred": 0,
    "refusals": [],
-   "status": "failed",
+   "status": "passed",
    "units": {
     "fortran:minpack_module": {
      "deferred": 0,
@@ -940,32 +984,53 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "failed",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "differential.bitexact",
+     "stopped_by": null,
      "verdicts": {
       "differential.bitexact": {
-       "detail": "3 subprogram(s) could not be compared: chkder: 19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the c",
+       "detail": "18040 points across 22 subprogram(s), all bit-exact; 7 draw(s) declined and drawn again (7 NaN on both sides)",
        "metrics": {
-        "bit_exact": 17110,
+        "bit_exact": 18040,
         "declined": {
          "NaN on both sides": 7
         },
-        "input_profile": null,
+        "input_profile": "recast_inputs.py",
         "integer_mismatch": 0,
         "integer_points": 760,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 17110,
+        "points": 18040,
         "redrawn": 7,
         "subprograms": {
          "chkder": {
-          "error": "19 draw(s) were declined (19 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+          "bit_exact": 160,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 160,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dogleg": {
-          "error": "10 of 10 trial(s) were compared only after the free extent(s) lr, n were moved off the configured values; the 45 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "bit_exact": 240,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 240,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 10
          },
          "enorm": {
           "bit_exact": 10,
@@ -1204,7 +1269,17 @@
           "shaped": 0
          },
          "r1updt": {
-          "error": "10 of 10 trial(s) were compared only after the free extent(s) ls, m, n were moved off the configured values; the 122 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "bit_exact": 530,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 530,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 10
          },
          "rwupdt": {
           "bit_exact": 890,
@@ -1222,7 +1297,7 @@
         },
         "trials": 10
        },
-       "passed": false
+       "passed": true
       },
       "static.rwset": {
        "detail": "104 blocks match",
@@ -1232,6 +1307,13 @@
         "blocks_matched": 104,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
@@ -1261,11 +1343,11 @@
      7
     ],
     [
-     "do with a loop control that is neither a count nor a condition",
+     "READ writes its item list; an I/O stub would drop the writes",
      4
     ],
     [
-     "READ writes its item list; an I/O stub would drop the writes",
+     "do with a loop control that is neither a count nor a condition",
      4
     ],
     [
@@ -1273,7 +1355,19 @@
      2
     ],
     [
+     "a keyword argument is not a subscript",
+     1
+    ],
+    [
      "merge_sorted/P001: local array xo: extent not resolvable (dim expr 'X')",
+     1
+    ],
+    [
+     "no statement rule for Select_Type_Construct",
+     1
+    ],
+    [
+     "write with IOSTAT= control",
      1
     ],
     [
@@ -1293,14 +1387,6 @@
      1
     ],
     [
-     "no statement rule for Select_Type_Construct",
-     1
-    ],
-    [
-     "write with IOSTAT= control",
-     1
-    ],
-    [
      "mti/S001: module-state initializer not renderable: 'X'",
      1
     ],
@@ -1310,10 +1396,6 @@
     ],
     [
      "rng_init_by_array/P001: out-arg state: INTENT(OUT) derived-type dummy not materialized at ",
-     1
-    ],
-    [
-     "a keyword argument is not a subscript",
      1
     ]
    ],
@@ -1382,13 +1464,14 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "failed",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "differential.bitexact",
+     "stopped_by": null,
      "verdicts": {
       "differential.bitexact": {
-       "detail": "1 translated subprogram(s) were never compared: print_msg -- defer them or drop them from the unit; silence is not a pass",
+       "detail": "10 points across 1 subprogram(s), all bit-exact; 1 subprogram(s) ungated, no reference: print_msg (character argument msg: no generated draw for one)",
        "metrics": {
         "bit_exact": 10,
         "declined": {},
@@ -1415,9 +1498,12 @@
           "shaped": 0
          }
         },
-        "trials": 10
+        "trials": 10,
+        "ungated": {
+         "print_msg": "character argument msg: no generated draw for one"
+        }
        },
-       "passed": false
+       "passed": true
       },
       "static.rwset": {
        "detail": "57 blocks match",
@@ -1427,6 +1513,13 @@
         "blocks_matched": 57,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
@@ -2219,54 +2312,151 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "11 subprogram(s) could not be compared: dchfdv: oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but",
+       "detail": "2 subprogram(s) could not be compared: dpchia: function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and ",
        "metrics": {
-        "bit_exact": 0,
-        "declined": {},
+        "bit_exact": 3067,
+        "declined": {
+         "subscript past extent": 5
+        },
         "input_profile": null,
         "integer_mismatch": 0,
-        "integer_points": 0,
-        "max_rel": 0.0,
-        "max_ulp": 0,
+        "integer_points": 240,
+        "max_rel": 0.5928989261656535,
+        "max_ulp": 2739760636019512,
         "nan_mismatch": 0,
-        "points": 0,
-        "redrawn": 0,
+        "points": 3070,
+        "redrawn": 5,
         "subprograms": {
          "dchfdv": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
+          "bit_exact": 190,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 30,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 190,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dchfev": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
+          "bit_exact": 110,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 30,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 110,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchbs": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (-1,)"
+          "bit_exact": 197,
+          "declined": {
+           "subscript past extent": 5
+          },
+          "integer_mismatch": 0,
+          "integer_points": 40,
+          "max_rel": 0.5928989261656535,
+          "max_ulp": 2739760636019512,
+          "nan_mismatch": 0,
+          "points": 200,
+          "redrawn": 5,
+          "reshaped": 5,
+          "shaped": 0
          },
          "dpchcm": {
-          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
+          "bit_exact": 100,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 90,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 100,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchfd": {
-          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
+          "bit_exact": 180,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 180,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchfe": {
-          "error": "f2py LOGICAL INOUT dummy argument(s) skip have no portable Python buffer ABI; refusing to guess the compiler's raw true representation"
+          "bit_exact": 100,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 100,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchia": {
           "error": "function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
          },
          "dpchic": {
-          "error": "oracle raised: TypeError: ref_pchip_module.w_dpchic() missing required argument 'switch_bn' (pos 3)"
+          "bit_exact": 730,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 730,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchid": {
           "error": "function 'dpchid' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
          },
          "dpchim": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (8,-1,)"
+          "bit_exact": 650,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 650,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dpchsp": {
-          "error": "oracle raised: ValueError: failed to create intent(cache|hide)|optional array-- must have defined dimensions but got (8,-1,)"
+          "bit_exact": 810,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 810,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          }
         },
-        "trials": 10
+        "trials": 10,
+        "ungated": {
+         "xermsg": "character argument librar: no generated draw for one"
+        }
        },
        "passed": false
       },
@@ -2584,8 +2774,51 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "candidate does not import: No module named 'slsqp_kinds_numpy'",
-       "metrics": {},
+       "detail": "4 subprogram(s) could not be compared: daxpy: 7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s",
+       "metrics": {
+        "bit_exact": 80,
+        "declined": {
+         "subscript past extent": 9
+        },
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 80,
+        "redrawn": 9,
+        "subprograms": {
+         "daxpy": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "dcopy": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "ddot": {
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "dnrm2": {
+          "error": "8 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+         },
+         "dscal": {
+          "bit_exact": 80,
+          "declined": {
+           "subscript past extent": 9
+          },
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 9,
+          "reshaped": 4,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
        "passed": false
       },
       "static.rwset": {

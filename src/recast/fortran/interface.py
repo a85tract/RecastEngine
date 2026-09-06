@@ -1297,6 +1297,7 @@ def extract(
     ]
     _infer_write_only_intents(subs, subprograms)
     _infer_read_only_intents(subs, subprograms, sub_names, set(state_names))
+    _infer_domains(subs, subprograms)
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
     _mark_buffer_out_arrays(subprograms, every=buffer_out_arrays == "all")
@@ -1481,6 +1482,78 @@ def _intent_inferable(dtype: Any) -> bool:
     return dtype in ("float64", "float32", "int32", "int64", "bool") or str(dtype).startswith(
         "UNKNOWN_REAL_KIND("
     )
+
+
+def _infer_domains(subs: list[Any], records: list[dict[str, Any]]) -> None:
+    """The values an integer IN scalar may take, where the source says so.
+
+    ``select case (mode)`` over a dummy, listing integer selectors, with a
+    ``case default`` that is an ERROR STOP (or a STOP) and nothing else:
+    every value outside the selectors ends the program, so the selectors
+    are the dummy's domain, and a draw outside them is not an input the
+    subprogram takes (MINPACK's ``chkder``, ``mode`` 1 or 2, was declined
+    on six draws in eight from the default integer range). Recorded as
+    ``domain: [lo, hi]`` when the selectors are one contiguous span; a
+    set with holes is left to the operator's ``ranges``.
+    """
+    by_name = {sub_name_of(s): s for s in subs}
+    for record in records:
+        node = by_name.get(record["name"])
+        if node is None:
+            continue
+        integer_ins = {
+            argument["name"].lower(): argument
+            for argument in record["args"]
+            if argument.get("intent") == "IN"
+            and not argument.get("dims")
+            and str(argument.get("dtype", "")).startswith("int")
+        }
+        if not integer_ins:
+            continue
+        for construct in walk(node, f03.Case_Construct):
+            select = construct.children[0]
+            subject = select.children[0] if isinstance(select, f03.Select_Case_Stmt) else None
+            if not isinstance(subject, f03.Name) or str(subject).lower() not in integer_ins:
+                continue
+            values: set[int] = set()
+            stops_by_default = False
+            arm: Any = None
+            arm_body: list[Any] = []
+            arms: list[tuple[Any, list[Any]]] = []
+            for child in construct.children[1:]:
+                if isinstance(child, f03.Case_Stmt):
+                    if arm is not None:
+                        arms.append((arm, arm_body))
+                    arm, arm_body = child, []
+                elif isinstance(child, f03.End_Select_Stmt):
+                    if arm is not None:
+                        arms.append((arm, arm_body))
+                elif arm is not None:
+                    arm_body.append(child)
+            usable = True
+            for case_stmt, body in arms:
+                selector = case_stmt.children[0].children[0]
+                if selector is None:  # case default
+                    stops_by_default = len(body) == 1 and isinstance(
+                        body[0], (f08.Error_Stop_Stmt, f03.Stop_Stmt)
+                    )
+                    continue
+                for item in selector.children:
+                    if isinstance(item, f03.Int_Literal_Constant):
+                        values.add(int(str(item.children[0])))
+                    elif isinstance(item, f03.Case_Value_Range) and all(
+                        isinstance(bound, f03.Int_Literal_Constant) for bound in item.children
+                    ):
+                        low, high = (int(str(bound.children[0])) for bound in item.children)
+                        values.update(range(low, high + 1))
+                    else:
+                        usable = False
+            if not usable or not stops_by_default or not values:
+                continue
+            low, high = min(values), max(values)
+            if high - low + 1 != len(values):
+                continue
+            integer_ins[str(subject).lower()]["domain"] = [low, high]
 
 
 def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) -> None:

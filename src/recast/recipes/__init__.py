@@ -31,12 +31,13 @@ class TranslateRecipe(Recipe):
 
     ``target: tree`` is the NumPy translation for a unit that ``use``s its
     siblings. ``translate.numpy`` emits the import of a sibling's translation
-    and carries only its own files, so the differential gate -- which stages
-    a candidate's own files and nothing else -- cannot import it and fails
-    the unit before comparing a number. ``translate.tree`` bundles the
-    siblings' translations into the candidate and needs no extension tables
-    for a tree of plain modules; the tables are for constants modules and
-    framework stubs, which such a tree does not have.
+    and carries only its own files; the run walks the sibling first and
+    names its candidate's directory to the gate (``companion_paths``), so
+    the import resolves when the sibling is a unit of the same run.
+    ``translate.tree`` bundles the siblings' translations into the candidate
+    instead, and needs no extension tables for a tree of plain modules; the
+    tables are for constants modules and framework stubs, which such a tree
+    does not have.
     """
 
     name = "translate"

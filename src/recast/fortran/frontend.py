@@ -349,7 +349,7 @@ class FortranFrontend(Frontend):
             yield from self._units_in(path, relative)
 
     def _units_in(self, path: Path, rel: Path) -> Iterator[Unit]:
-        from recast.fortran._parse import STD, digest
+        from recast.fortran._parse import STD, digest, f03, walk
         from recast.fortran._parse import parse as parse_file
         from recast.fortran.interface import node_span, scopes_in
 
@@ -374,7 +374,23 @@ class FortranFrontend(Frontend):
         for mod_name, scope_kind, scope in scopes_in(ast, path):
             kind = "module" if scope_kind in ("module", "submodule") else scope_kind
             module_uid = f"{UID_PREFIX}:{mod_name}"
-            yield Unit(uid=module_uid, kind=kind, sources=(rel,), attrs={"digest": sha, "std": STD})
+            # What this scope ``use``s, as uids: the run walks a unit after
+            # the siblings it imports, so a translation that imports a
+            # sibling's (``import bspline_kinds_module_numpy``) finds it.
+            uses = sorted(
+                {
+                    f"{UID_PREFIX}:{str(u.children[2]).lower()}"
+                    for u in walk(scope, f03.Use_Stmt)
+                    if u.children[2] is not None
+                }
+                - {module_uid}
+            )
+            yield Unit(
+                uid=module_uid,
+                kind=kind,
+                sources=(rel,),
+                attrs={"digest": sha, "std": STD, "uses": uses},
+            )
 
             for sub_name, sub in _subprograms_of(scope):
                 yield Unit(
