@@ -2004,30 +2004,51 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "failed",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "differential.bitexact",
+     "stopped_by": null,
      "verdicts": {
       "differential.bitexact": {
-       "detail": "3 subprogram(s) could not be compared: searchsorted_dp: candidate raised: NameError: name 'SMALL' is not defined; searchsorted_idp: candidate raised: NameError:",
+       "detail": "120 points across 5 subprogram(s), all bit-exact",
        "metrics": {
-        "bit_exact": 90,
+        "bit_exact": 120,
         "declined": {},
         "input_profile": null,
         "integer_mismatch": 0,
-        "integer_points": 10,
+        "integer_points": 40,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 90,
+        "points": 120,
         "redrawn": 0,
         "subprograms": {
          "searchsorted_dp": {
-          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "searchsorted_dpi": {
-          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "searchsorted_i": {
           "bit_exact": 10,
@@ -2043,7 +2064,17 @@
           "shaped": 0
          },
          "searchsorted_idp": {
-          "error": "candidate raised: NameError: name 'SMALL' is not defined"
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "sort": {
           "bit_exact": 80,
@@ -2061,7 +2092,7 @@
         },
         "trials": 10
        },
-       "passed": false
+       "passed": true
       },
       "static.rwset": {
        "detail": "62 blocks match",
@@ -2071,6 +2102,13 @@
         "blocks_matched": 62,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
