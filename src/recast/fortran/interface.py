@@ -556,6 +556,54 @@ def apply_intent_override(arg: dict[str, Any], sub_name: str, override: str | No
     arg["intent_override"] = True
 
 
+_INT_LITERAL = re.compile(r"^[+-]?\d+(?:_\w+)?$")
+
+
+def _fold_local_parameter_bounds(
+    args: list[dict[str, Any]],
+    result_dims: list[dict[str, Any]] | None,
+    local_parameters: list[dict[str, Any]],
+) -> dict[str, str]:
+    """A dummy's bound that names a *local* integer parameter of the
+    subprogram, folded to the parameter's literal value.
+
+    CLUBB's ``w_term_ma_zt_lhs`` declares ``integer, parameter :: t_above =
+    1, t_below = 2`` and then ``weights_zt2zm(ngrdcol, nzm, t_above:t_below)``.
+    The name is the subprogram's own and reaches no consumer of the record:
+    an f2py wrapper that spells it does not compile, and a sampler that
+    reads it has no table for it. The value does reach every consumer, and
+    it is the same array. Only a bare name with a literal integer
+    initializer folds; an expression stays as written and is the wrapper's
+    to refuse. Returns ``{"arg.bound": "name -> value"}`` for the record.
+    """
+    values: dict[str, str] = {}
+    for parameter in local_parameters:
+        init = str(parameter.get("init_expr") or "").strip()
+        if parameter.get("dims") or not _INT_LITERAL.match(init):
+            continue
+        if str(parameter.get("dtype", "")).startswith("int"):
+            values[str(parameter["name"]).lower()] = init.split("_")[0]
+    folded: dict[str, str] = {}
+    if not values:
+        return folded
+    targets: list[tuple[str, list[dict[str, Any]]]] = [
+        (a["name"], a.get("dims") or []) for a in args
+    ]
+    if result_dims:
+        targets.append(("<result>", result_dims))
+    for owner, dims in targets:
+        for axis, dim in enumerate(dims):
+            for key in ("lb", "ub"):
+                bound = dim.get(key)
+                if bound is None:
+                    continue
+                name = str(bound).strip().lower()
+                if name in values:
+                    dim[key] = values[name]
+                    folded[f"{owner}[{axis}].{key}"] = f"{name} -> {values[name]}"
+    return folded
+
+
 def extract_subprogram(
     sub: Any,
     kind_map: dict[str, str],
@@ -868,6 +916,8 @@ def _record_of(
         # reads in non-assignment contexts (if conditions, call arguments)
         state_read |= (used & module_state_names) - state_written
 
+    folded = _fold_local_parameter_bounds(args, result_dims, local_parameters)
+
     return {
         "name": name,
         "kind": kind,
@@ -877,6 +927,7 @@ def _record_of(
         "result_dims": result_dims,
         "line_span": list(node_span(sub)),
         "args": args,
+        "folded_bounds": folded,
         "local_parameters": local_parameters,
         "locals": locals_,
         "present_calls": sorted(set(present_args)),
@@ -1242,8 +1293,22 @@ def extract(
         subprograms.insert(
             0, extract_program(sub_scope, mod_name, kind_map, state_names, sub_names)
         )
+    generics = _generics(mod_spec)
+    # A specific of a public generic is reachable through the generic even
+    # when the module keeps the specific itself private (CLUBB's banded
+    # solvers: ``public :: tridiag_lu_solve`` over three private specifics).
+    # It is gate-visible, and ``public_via`` says what to call it through.
+    via = {
+        specific: generic
+        for generic, specifics in generics.items()
+        if is_public(generic)
+        for specific in specifics
+    }
     for record in subprograms:
         record["public"] = is_public(record["name"])
+        if not record["public"] and record["name"] in via:
+            record["public"] = True
+            record["public_via"] = via[record["name"]]
 
     parent = submodule_parent(sub_scope) if isinstance(sub_scope, f08.Submodule) else None
     use_statements = [str(u) for u in walk(sub_scope, f03.Use_Stmt)]
@@ -1270,7 +1335,7 @@ def extract(
         "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible | imported),
-        "generics": _generics(mod_spec),
+        "generics": generics,
         "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
         "buffer_convention": buffer_convention,
         "subprograms": subprograms,

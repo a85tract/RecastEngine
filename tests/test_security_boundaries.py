@@ -107,3 +107,12 @@ def test_a_character_initializer_is_a_python_literal_not_python_source() -> None
     tree = ast.parse(emitted, mode="eval")
     assert isinstance(tree.body, ast.Constant)
     assert tree.body.value == "x'; import os; os.system('id'); x='y"
+
+
+def test_an_extent_counts_from_the_lower_bound() -> None:
+    from recast.verify.bitexact import _extent
+
+    assert _extent({"lb": "-2", "ub": "2"}, {}) == 5
+    assert _extent({"lb": "1", "ub": "n"}, {"n": 4}) == 4
+    assert _extent({"lb": "0", "ub": "nlev"}, {"nlev": 3}) == 4
+    assert _extent({"lb": None, "ub": "n*2"}, {"n": 4}) == 8

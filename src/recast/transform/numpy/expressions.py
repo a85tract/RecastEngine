@@ -352,7 +352,9 @@ class Expressions:
             return self._comparison(spelling, left, right, rendered_left, rendered_right)
 
         if spelling in LOGICAL_OPS:
-            if self.vector_boolean and spelling in (".AND.", ".OR."):
+            if spelling in (".AND.", ".OR.") and (
+                self.vector_boolean or self._array_valued(left) or self._array_valued(right)
+            ):
                 return f"({rendered_left} {'&' if spelling == '.AND.' else '|'} {rendered_right})"
             return f"({rendered_left} {LOGICAL_OPS[spelling]} {rendered_right})"
 
@@ -409,9 +411,20 @@ class Expressions:
         operator, operand = node.children
         if str(operator).upper() != ".NOT.":
             raise NoRule(f"unary logical operator {operator}")
-        if self.vector_boolean:
+        if self.vector_boolean or self._array_valued(operand):
             return f"(~({self.render(operand)}))"
         return f"(not {self.render(operand)})"
+
+    def _array_valued(self, node: Any) -> bool:
+        """Whether a logical operand is an array, so ``.NOT.`` / ``.AND.`` /
+        ``.OR.`` have to be elementwise -- ``any( .not. l_valid )`` over
+        ``logical, dimension(nz) :: l_valid`` (CLUBB's new_pdf), outside any
+        WHERE. Python's ``not`` on an array raises; ``~`` is the operator.
+        Unsettled ranks fall back to the scalar spelling, as before."""
+        try:
+            return self.semantics.rank(node) > 0
+        except Exception:  # rank refuses what it cannot settle
+            return False
 
     # -- references -----------------------------------------------------------
 
