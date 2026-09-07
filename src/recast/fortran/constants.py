@@ -483,7 +483,7 @@ def fold_char_expr(expr: str, char_values: Mapping[str, str]) -> str | None:
     an integer literal, ``new_line``, ``repeat`` by an integer literal,
     ``trim``, ``adjustl``, ``adjustr``. Anything else is None: a skip, never
     a rendered expression, because the token route has no rule for ``//``
-    and would emit ``A / / B``. CESM-language-translator PR #48's rule.
+    and would emit ``A / / B``. the translator's PR #48 rule.
     """
     tokens: list[re.Match[str]] = []
     pos = 0
@@ -804,7 +804,7 @@ def classify_init(
     # the token route, which has no rule for ``//`` and would render
     # ``A / / B``, a SyntaxError in a constants module every unit of the tree
     # imports (numfor's ``strings.f90:11`` took 20 units down before the
-    # guard). CESM-language-translator PR #48's rule.
+    # guard). the translator's PR #48 rule.
     m = _CHAR_LITERAL.fullmatch(e)
     if m:
         return "str", fit_char(_unquote(m.group(0)), char_len)
