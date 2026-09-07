@@ -822,7 +822,9 @@ def test_zero_numerical_points_cannot_be_a_bit_exact_pass(
             "args": [
                 {
                     "name": "z",
-                    "dtype": "complex128",
+                    # A kind the frontend could not resolve: complex itself
+                    # is a dtype the gate draws and compares now (#20).
+                    "dtype": "UNKNOWN_COMPLEX_KIND(qp)",
                     "intent": "IN",
                     "optional": False,
                 }
