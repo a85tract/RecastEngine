@@ -120,6 +120,11 @@ MAX_EXPANDED_POWER = 16
 and starts being a place for a transcription error. Refused instead."""
 
 
+_LEADING_NAME = re.compile(r"^[\s(+-]*([A-Za-z_]\w*)")
+"""The first identifier of a rendered argument: the name a subscript or a
+sign is applied to, which is what a declaration can be looked up for."""
+
+
 def _without_kind(name: str, arguments: list[str]) -> list[str]:
     """A conversion's arguments, with the KIND dropped.
 
@@ -177,6 +182,10 @@ class Expressions:
 
     remotes: dict[str, Remote] = field(default_factory=dict)
     """Local name -> where it actually lives, for companion modules."""
+
+    kind_map: dict[str, str] = field(default_factory=dict)
+    """Kind parameter name (lower case) -> the real dtype it names, from the
+    unit's interface record; what spells ``cmplx(x, kind = core_rknd)``."""
 
     type_bound: frozenset[str] = frozenset()
     """Component names that are type-bound procedures: ``obj%method(args)``
@@ -1205,6 +1214,9 @@ class Expressions:
             for argument in arguments[1:]:
                 folded = f"{self.array_table[name]}({folded}, {argument})"
             return folded
+        complex_spelled = self._complex_conversion(name, arguments)
+        if complex_spelled is not None:
+            return complex_spelled
         if name in ELEMENTAL_ARRAY:
             arguments = _without_kind(name, arguments)
             return f"{self.array_table[name]}({', '.join(arguments)})"
@@ -1220,6 +1232,57 @@ class Expressions:
             return f"{self.scalar_table[name]}({', '.join(arguments)})"
         raise UnknownReference(name)
 
+    def _complex_conversion(self, name: str, arguments: list[str]) -> str | None:
+        """``cmplx`` and the real part of a complex, spelled at their kind.
+
+        ``cmplx(x, kind = k)`` is ``np.complex128(x)`` (``np.complex64`` for
+        a single kind): NumPy's scalar constructors take arrays too, where
+        Python's ``complex`` -- the table's old spelling -- takes neither an
+        array nor a kind. The kind is read through the unit's kind map; a
+        ``cmplx`` without one is the default complex, single precision like
+        the default real, which no source in the corpus means, so it is
+        refused rather than guessed, as is a kind the map does not know and
+        the two-part form ``cmplx(x, y)``.
+
+        ``real(z)`` / ``dble(z)`` of a name declared complex is its real
+        part, ``np.real``, and nothing more: the part already has the
+        complex's real kind, and ``np.float64`` of a complex array discards
+        the imaginary part behind a warning, of a complex scalar is a
+        TypeError, and of a traced value cannot lower. A conversion of
+        anything not declared complex is untouched here.
+        """
+        if name == "cmplx":
+            values = [a for a in arguments if "kind=" not in a.lower()]
+            kinds = [a for a in arguments if "kind=" in a.lower()]
+            if not kinds and len(values) == 3:
+                values, kinds = values[:2], values[2:]
+            if len(values) != 1:
+                raise NoRule("cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is")
+            if not kinds:
+                raise NoRule("cmplx without a kind is the default (single) complex; say the kind")
+            dtype = self._kind_dtype(kinds[0])
+            if dtype is None:
+                raise NoRule(f"cmplx: kind {kinds[0]!r} names no real kind this unit knows")
+            return f"np.{ {'float64': 'complex128', 'float32': 'complex64'}[dtype] }({values[0]})"
+        if name in ("real", "dble", "float") and arguments:
+            leading = _LEADING_NAME.match(arguments[0])
+            declared = self.semantics.declaration(leading.group(1)) if leading else None
+            if declared is None or not str(declared.get("dtype", "")).startswith("complex"):
+                return None
+            return f"np.real({arguments[0]})"
+        return None
+
+    def _kind_dtype(self, text: str) -> str | None:
+        """``kind=core_rknd`` / ``core_rknd`` / ``8`` -> ``float64``, or None."""
+        token = text.split("=", 1)[1] if "=" in text else text
+        token = token.strip().strip("()").split(".")[-1].strip().lower()
+        if token.startswith("i_") and token[2:].isdigit():
+            # An integer literal as this backend spells it (``I_8``).
+            token = token[2:]
+        if token.isdigit():
+            return {"8": "float64", "4": "float32"}.get(token)
+        return self.kind_map.get(token)
+
     def _over_scalars(self, name: str, arguments: list[str]) -> str:
         if name == "merge":
             if len(arguments) != 3:
@@ -1227,6 +1290,9 @@ class Expressions:
             # Fortran evaluates both branches. Safe as a conditional only
             # because expressions that reach here are pure.
             return f"(({arguments[0]}) if ({arguments[2]}) else ({arguments[1]}))"
+        complex_spelled = self._complex_conversion(name, arguments)
+        if complex_spelled is not None:
+            return complex_spelled
         if name in ELEMENTAL_SCALAR:
             arguments = _without_kind(name, arguments)
             if self.elemental and name in ("exp", "log", "log10"):

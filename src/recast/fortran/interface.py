@@ -305,6 +305,17 @@ def dtype_of(base_type: str | None, kind: str | None, kind_map: dict[str, str]) 
         return "bool"
     if bt == "CHARACTER":
         return "str"
+    if bt == "DOUBLE COMPLEX":
+        return "complex128"
+    if bt == "COMPLEX":
+        # A complex is two reals of one kind, and its dtype follows that
+        # kind: ``complex(kind = core_rknd)`` is two float64s. No kind is
+        # the default complex, which is single like the default real.
+        if kind_map.get(k, "") == "float64" or k == "8":
+            return "complex128"
+        if kind_map.get(k, "") == "float32" or k in ("4", ""):
+            return "complex64"
+        return f"UNKNOWN_COMPLEX_KIND({k})"
     if bt.startswith("DOUBLE"):
         return "float64"
     return f"UNKNOWN({bt})"

@@ -45,10 +45,6 @@ from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
 
-DATA_DTYPES = {"float64": "np.float64", "int32": "np.int32", "bool": "np.bool_"}
-"""What a DATA fill is built as. Narrower than the allocate map, as the
-pipeline has it here."""
-
 DERIVED_TYPE = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 
 __all__ = ["REFUSED", "Statements"]
@@ -107,7 +103,39 @@ ALLOCATED_DTYPES = {
     "int64": "np.int64",
     "bool": "np.bool_",
     "str": "object",
+    "complex128": "np.complex128",
+    "complex64": "np.complex64",
 }
+
+SCALAR_ZEROS = {
+    "float64": "0.0",
+    "float32": "0.0",
+    "int32": "0",
+    "int64": "0",
+    "bool": "False",
+    "str": "''",
+    "complex128": "0j",
+    "complex64": "np.complex64(0)",
+}
+"""The determinizing prologue's value for an unassigned scalar, by dtype."""
+
+
+def allocated_dtype(dtype: Any) -> str:
+    """The NumPy dtype an array declared ``dtype`` is built as.
+
+    A declared type this table cannot spell -- a kind the frontend could not
+    resolve, a base type it marked UNKNOWN -- is refused, not built as
+    float64. An array of the wrong type is a translation that runs and
+    answers wrong: a ``complex(kind = core_rknd)`` function result came out
+    ``np.zeros(..., dtype=np.float64)`` and the gate, unable to compare a
+    complex, never said so (#20).
+    """
+    spelled = ALLOCATED_DTYPES.get(str(dtype))
+    if spelled is None:
+        raise NoRule(f"array of declared type {dtype!r}: no NumPy dtype spells it")
+    return spelled
+
+
 """Declared dtype -> the dtype an ``allocate`` requests. Anything else gets
 ``np.float64``, which is what the declaration meant if it said nothing --
 except a derived type, which is not a dtype at all; see ``derived_array``."""
@@ -952,11 +980,10 @@ class Statements:
             if filled is not None:
                 lines.append(f"{pad}{rendered} = {filled}")
                 continue
-            dtype = (
-                ALLOCATED_DTYPES.get(declaration["dtype"], "np.float64")
-                if declaration
-                else "np.float64"
-            )
+            # A component (``obj%arr``) has no declaration here and keeps the
+            # float64 the pipeline gave it; a declared name is built as it
+            # was declared or refused.
+            dtype = allocated_dtype(declaration["dtype"]) if declaration else "np.float64"
             lines.append(f"{pad}{rendered} = {undefined_array(self, shape_text, dtype)}")
         if not lines:
             # `allocate(x)` with no shape: a scalar allocatable, which for a
@@ -1269,9 +1296,8 @@ class Statements:
                 lines.append(f"{pad}{spelled}[{where}] = {values[at]}")
             else:
                 where = (leading + ", " if leading else "") + f"{start}:{start + (end - at)}"
-                dtype = DATA_DTYPES.get(
-                    (self.semantics.declaration(name) or {}).get("dtype", ""), "np.float64"
-                )
+                declared = self.semantics.declaration(name)
+                dtype = allocated_dtype(declared["dtype"]) if declared else "np.float64"
                 lines.append(
                     f"{pad}{spelled}[{where}] = "
                     f"np.array([{', '.join(values[at:end])}], dtype={dtype})"

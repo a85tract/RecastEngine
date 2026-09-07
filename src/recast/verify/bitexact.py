@@ -88,6 +88,12 @@ def _bounds_violation(runtime_error: str | None) -> bool:
     return "bound" in (runtime_error or "").lower()
 
 
+def _complex_parts(np: Any, value: Any) -> Any:
+    """A complex value as float64 parts: shape ``(..., 2)``, real then imaginary."""
+    widened = np.ascontiguousarray(np.asarray(value, dtype=np.complex128))
+    return widened.view(np.float64).reshape(*widened.shape, 2)
+
+
 def _declined_summary(declined_by: dict[str, int]) -> str:
     """``"3 error stop, 1 NaN on both sides"``: the declined draws by kind."""
     return (
@@ -106,7 +112,13 @@ def _redrawn_note(totals: dict[str, Any]) -> str:
 
 
 DEFAULT_DIMENSION = 8
-SUPPORTED_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool"})
+SUPPORTED_DTYPES = frozenset(
+    {"float32", "float64", "int32", "int64", "bool", "complex64", "complex128"}
+)
+COMPLEX_DTYPES = frozenset({"complex64", "complex128"})
+"""A complex is compared as its two parts, each a point: bit-exact means
+both parts are, and an ULP distance is a part's. Draws give both parts the
+argument's range."""
 PROCEDURE_DTYPE = "PROCEDURE"
 INPUT_PROFILE = "recast_inputs.py"
 """The project's input profile, looked for at the root the run was given.
@@ -1233,6 +1245,11 @@ class BitexactVerifier(Verifier):
                         # representation.
                         shaped_ours = np.asarray(np.asarray(ours) != 0, dtype=np.float64)
                         shaped_theirs = np.asarray(np.asarray(theirs) != 0, dtype=np.float64)
+                    elif declared_dtype in COMPLEX_DTYPES:
+                        # Both parts, interleaved along a last axis of 2: a
+                        # complex64 is widened first, which loses nothing.
+                        shaped_ours = _complex_parts(np, ours)
+                        shaped_theirs = _complex_parts(np, theirs)
                     else:
                         shaped_ours = np.asarray(ours, dtype=np.float64)
                         shaped_theirs = np.asarray(theirs, dtype=np.float64)
@@ -1451,6 +1468,8 @@ class BitexactVerifier(Verifier):
             "bool": np.bool_,
             "float32": np.float32,
             "float64": np.float64,
+            "complex64": np.complex64,
+            "complex128": np.complex128,
         }
         cast = 0
         for sample in samples:
@@ -1733,16 +1752,31 @@ class BitexactVerifier(Verifier):
         rng: Any,
     ) -> Any:
         name = argument["name"].lower()
-        dtype = {
+        kinds = {
             "float64": np.float64,
             "float32": np.float32,
             "int32": np.int32,
             "int64": np.int64,
             "bool": np.bool_,
-        }.get(argument["dtype"], np.float64)
+            "complex128": np.complex128,
+            "complex64": np.complex64,
+        }
+        if argument["dtype"] not in kinds:
+            # Unsupported dtypes are refused before any draw; this is the
+            # invariant, not a default.
+            raise ValueError(f"{name}: no draw for declared dtype {argument['dtype']!r}")
+        dtype = kinds[argument["dtype"]]
         shape = None
         if argument.get("dims"):
             shape = tuple(_extent(d, dims) for d in argument["dims"])
+        if dtype in (np.complex128, np.complex64):
+            low, high = ranges.get(name, DEFAULT_RANGE)
+            part = np.float32 if dtype is np.complex64 else np.float64
+            if shape is None:
+                return dtype(complex(part(rng.uniform(low, high)), part(rng.uniform(low, high))))
+            re_part = rng.uniform(low, high, size=shape).astype(part)
+            im_part = rng.uniform(low, high, size=shape).astype(part)
+            return np.asfortranarray((re_part + 1j * im_part).astype(dtype))
         if dtype in (np.float64, np.float32):
             low, high = ranges.get(name, DEFAULT_RANGE)
             if shape is None:
