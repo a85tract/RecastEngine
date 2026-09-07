@@ -65,7 +65,10 @@ def _module_file(module: str, root: Path) -> Path | None:
     return None
 
 
-def _resolved_entities(path: Path, files: list[Path]) -> tuple[list[dict[str, Any]], list[str]]:
+def _resolved_entities(
+    path: Path, files: list[Path], kind_assumptions: dict[str, str] | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    from recast.fortran.expr import UnsupportedExpression, fold_check
     from recast.fortran.use import UnresolvedConstant, harvest, resolve
 
     resolved: list[dict[str, Any]] = []
@@ -73,9 +76,16 @@ def _resolved_entities(path: Path, files: list[Path]) -> tuple[list[dict[str, An
     skipped: list[str] = []
     for name in harvest(path):
         try:
-            records = resolve([name], files)
+            records = resolve([name], files, kind_assumptions)
+            # A constant the fold cannot store exactly is left out of the
+            # stand-in and named in the report, not folded at another width.
+            for entry in records:
+                fold_check(entry["expr"], entry.get("kind_dtype"))
         except UnresolvedConstant:
             skipped.append(name)
+            continue
+        except UnsupportedExpression as error:
+            skipped.append(f"{name} ({error})")
             continue
         except Exception as error:  # an initializer shape build() has no rule for
             skipped.append(f"{name} ({type(error).__name__})")
@@ -139,7 +149,7 @@ def stand_ins(
         if path is not None:
             entry["source"] = path.name
             deps = [path, *[s for s in search if s != path]]
-            resolved, skipped = _resolved_entities(path, deps)
+            resolved, skipped = _resolved_entities(path, deps, kinds)
             entry["resolved"] = [e["name"] for e in resolved]
             entry["skipped"] = skipped
             if resolved:

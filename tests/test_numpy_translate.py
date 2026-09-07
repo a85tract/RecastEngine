@@ -74,7 +74,9 @@ def analyzed(root: Path) -> tuple[Unit, Facts]:
 
 
 def config_for(root: Path) -> dict[str, object]:
-    resolved = resolve(["cpair"], [root / "physconst.f90"])
+    # ``r8 => wp_r8`` names a kind no file of this tree defines; the run
+    # supplies it through ``kind_assumptions``, and so does this.
+    resolved = resolve(["cpair"], [root / "physconst.f90"], {"r8": "float64"})
     return {
         "root": root,
         "use_constants": {"module_name": "physconst", "resolved": resolved},
