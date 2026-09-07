@@ -1,4 +1,4 @@
-"""The four shipped recipes.
+"""The shipped recipes.
 
 Each one names the real project it was abstracted from. They are stage
 declarations only -- the plugins they name arrive from ``recast-fortran``
@@ -125,66 +125,6 @@ class RefactorRecipe(Recipe):
         return problems
 
 
-class PortRecipe(Recipe):
-    """CPU to accelerator porting, gated on captured dumps.
-
-    Abstracted from a kernel port: rewrite a physics kernel for JAX or
-    Numba, and gate it where bit-exactness is not available -- XLA's
-    transcendentals are not libm's, so the honest ceiling is a ULP bound.
-
-    The reference is the validated NumPy translation of the same unit by
-    default, which makes the port's claim a chain: NumPy bit-exact against the
-    Fortran, JAX ULP-bounded against the NumPy. ``config["oracle"]`` selects
-    ``dump-replay`` instead for a unit with no such translation to anchor on --
-    validated against inputs and outputs captured from a real Fortran run,
-    because the regimes that break a port are the ones the model visits.
-    """
-
-    name = "port"
-    summary = "Retarget a kernel to an accelerator; gate on captured production dumps."
-
-    def stages(self, config: dict[str, Any]) -> list[Stage]:
-        backend = config.get("backend", "jax")
-        return [
-            Stage("executor", config.get("executor", "local")),
-            Stage("frontend", config.get("frontend", "fortran")),
-            Stage("transform", f"port.{backend}"),
-            # Two references are possible and they answer different questions.
-            # ``numpy-anchor`` is the validated NumPy translation of the same
-            # unit, which the translate recipe has already held bit-exact
-            # against the Fortran -- so a port gated on it inherits a chain
-            # rather than a looser claim. ``dump-replay`` is for a unit that
-            # has no such translation to anchor on.
-            Stage("oracle", config.get("oracle", "numpy-anchor")),
-            # The Candidate carries the ported module *and* the anchor it
-            # host-delegates to, so the gate has to be told which one is under
-            # judgement. Without this it would import the anchor and compare it
-            # against itself.
-            Stage(
-                "verifier",
-                "differential.tolerance",
-                gate=True,
-                config={"module_suffix": f"_{backend}.py"},
-            ),
-            # A measurement, opted into: it needs a build spec in the unit's
-            # attrs (``recast.c.build``), which a Fortran port has none of.
-            *([Stage("verifier", "performance.benchmark")] if config.get("benchmark") else []),
-            Stage("store", "fs-evidence"),
-        ]
-
-    def validate(self, config: dict[str, Any]) -> list[str]:
-        problems = []
-        backend = config.get("backend", "jax")
-        if backend not in {"jax", "numba", "cuda"}:
-            problems.append(f"unknown backend {backend!r}")
-        # Only the replay oracle needs captured dumps. The NumPy anchor derives
-        # its reference from the same source the port was made from, so
-        # demanding dumps for it would be asking for a file nothing reads.
-        if config.get("oracle", "numpy-anchor") == "dump-replay" and not config.get("dumps"):
-            problems.append("the dump-replay oracle requires 'dumps': captured inputs/outputs")
-        return problems
-
-
 class AuditRecipe(Recipe):
     """The cyber half of CC-Test, in CC-Test's shape. Findings, not Candidates.
 
@@ -224,54 +164,22 @@ class AuditRecipe(Recipe):
         ]
 
 
-class _PythonAcceleratorRecipe(Recipe):
-    """Shared fixed topology; concrete subclasses pin every semantic slot."""
-
-    target: str
-
-    def stages(self, config: dict[str, Any]) -> list[Stage]:
-        return [
-            Stage("executor", config.get("executor", "local")),
-            Stage("frontend", config.get("frontend", "python-numpy")),
-            Stage("transform", f"translate.python-{self.target}"),
-            Stage("verifier", "static.complete", gate=True),
-            Stage("oracle", "python-source"),
-            Stage("verifier", f"differential.python-{self.target}", gate=True),
-            Stage("store", "fs-evidence"),
-        ]
-
-    def validate(self, config: dict[str, Any]) -> list[str]:
-        problems: list[str] = []
-        if config.get("target", self.target) != self.target:
-            problems.append(f"{self.name} requires target={self.target!r}")
-        if config.get("frontend", "python-numpy") != "python-numpy":
-            problems.append(f"{self.name} requires the python-numpy frontend")
-        return problems
-
-
-class PythonToNumbaRecipe(_PythonAcceleratorRecipe):
-    """Compile a Python/NumPy numerical module with conservative Numba njit."""
-
-    name = "python-to-numba"
-    summary = "Compile Python/NumPy functions with Numba and verify against the source."
-    engine_id = "recast.python-numpy.numba"
-    target = "numba"
-
-
-class PythonToJaxRecipe(_PythonAcceleratorRecipe):
-    """Lower a pure Python/NumPy numerical subset to JAX jit."""
-
-    name = "python-to-jax"
-    summary = "Lower Python/NumPy functions to JAX and verify against the source."
-    engine_id = "recast.python-numpy.jax"
-    target = "jax"
-
-
 BUILTIN: dict[str, type[Recipe]] = {
     "translate": TranslateRecipe,
     "refactor-todo": RefactorRecipe,
-    "port": PortRecipe,
     "audit": AuditRecipe,
-    "python-to-numba": PythonToNumbaRecipe,
-    "python-to-jax": PythonToJaxRecipe,
 }
+
+# The recipes of the commercial tier -- the accelerator port and the two
+# Python-accelerator recipes -- are declared beside these and absent from
+# the public edition, which is the same tree with that module left out.
+try:
+    from recast.recipes.pro import BUILTIN as _PRO
+    from recast.recipes.pro import (  # noqa: F401 -- re-exported for their tests
+        PortRecipe,
+        PythonToJaxRecipe,
+        PythonToNumbaRecipe,
+    )
+except ImportError:  # the public edition
+    _PRO = {}
+BUILTIN.update(_PRO)
