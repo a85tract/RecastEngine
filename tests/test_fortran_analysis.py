@@ -319,6 +319,19 @@ def test_a_real_does_not_take_its_kind_from_an_integer_kind_parameter(tmp_path: 
     assert interface.dtype_of("REAL", "big", record["kind_map"]) == "UNKNOWN_REAL_KIND(big)"
 
 
+def test_a_complex_takes_its_dtype_from_its_real_kind() -> None:
+    """``complex(kind = core_rknd)`` is two float64s and reads as complex128;
+    the default complex is single like the default real; a kind nothing
+    resolves is an UNKNOWN marker, not a float64 by default (#20)."""
+    kinds = {"core_rknd": "float64", "sp": "float32"}
+    assert interface.dtype_of("COMPLEX", "core_rknd", kinds) == "complex128"
+    assert interface.dtype_of("COMPLEX", "8", {}) == "complex128"
+    assert interface.dtype_of("COMPLEX", "sp", kinds) == "complex64"
+    assert interface.dtype_of("COMPLEX", "", {}) == "complex64"
+    assert interface.dtype_of("DOUBLE COMPLEX", None, {}) == "complex128"
+    assert interface.dtype_of("COMPLEX", "big", kinds) == "UNKNOWN_COMPLEX_KIND(big)"
+
+
 def test_an_assumed_size_dummy_has_the_rank_it_was_declared_with(tmp_path: Path) -> None:
     """``dx(*)`` is one dimension. fparser hangs two ``None`` children off the
     node, and a walk that descends into them reports rank 2 -- which the

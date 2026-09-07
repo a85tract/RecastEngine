@@ -53,6 +53,8 @@ FORTRAN_TYPES = {
     "int32": "integer",
     "int64": "integer(8)",
     "bool": "logical",
+    "complex128": "complex(8)",
+    "complex64": "complex(4)",
     # Fixed width because f2py cannot size len=* dummies; 128 covers every
     # message and name in the corpus, and Fortran comparison semantics pad
     # the shorter operand with blanks anyway.

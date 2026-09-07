@@ -42,9 +42,10 @@ from recast.transform.numpy.expressions import Expressions, Remote
 from recast.transform.numpy.names import bind_use_statements
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import (
-    ALLOCATED_DTYPES,
     REFUSED,
+    SCALAR_ZEROS,
     Statements,
+    allocated_dtype,
     derived_array,
     undefined_array,
 )
@@ -346,6 +347,7 @@ class Subprograms:
             intrinsics={k: v for k, v in self.intrinsics.items() if isinstance(v, dict)},
             elemental=_is_elemental(semantics.subprogram),
             allocated_bounds=allocated,
+            kind_map={k.lower(): v for k, v in (self.record.get("kind_map") or {}).items()},
         )
         return self.statements_class(
             semantics,
@@ -663,9 +665,19 @@ class Subprograms:
             shape = ", ".join(
                 statements.bound(d["ub"]) if d.get("ub") else "1" for d in subprogram["result_dims"]
             )
-            lines.append(f"    {result} = np.zeros(({shape},), dtype=np.float64)")
+            try:
+                dtype = allocated_dtype(subprogram["result_dtype"])
+            except REFUSED as refusal:
+                reason = f"result {subprogram['result']}: allocation refused ({refusal})"
+                return [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
+            lines.append(f"    {result} = np.zeros(({shape},), dtype={dtype})")
         elif subprogram["result_dtype"] in ("float64", "float32"):
             lines.append(f"    {result} = 0.0")
+        elif subprogram["result_dtype"] in ("complex128", "complex64"):
+            lines.append(f"    {result} = {SCALAR_ZEROS[subprogram['result_dtype']]}")
         if subprogram["result_dtype"] in ("int32", "int64"):
             lines.append(f"    {result} = 0")
         if subprogram["result_dtype"] == "bool":
@@ -837,6 +849,8 @@ class Subprograms:
                 value = "0.0"
             elif argument["dtype"] in ("int32", "int64"):
                 value = "0"
+            elif argument["dtype"] in ("complex128", "complex64"):
+                value = SCALAR_ZEROS[argument["dtype"]]
             else:
                 value = "None"
             return [f"    {name} = {value}  # optional OUT: may not be assigned"]
@@ -859,7 +873,15 @@ class Subprograms:
                 # An allocatable OUT with no donor: None, so that translated
                 # allocated() -> `is not None` checks keep working.
                 return [f"    {name} = None  # out-arg: assumed shape, no donor"]
-            dtype = ALLOCATED_DTYPES.get(argument["dtype"], "np.float64")
+            try:
+                dtype = allocated_dtype(argument["dtype"])
+            except REFUSED as refusal:
+                reason = f"out-arg {argument['name']}: allocation refused ({refusal})"
+                refusals.append(reason)
+                return [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
             shape = f"np.shape({pysafe(donor)})"
             return [f"    {name} = {undefined_array(self, shape, dtype)}"]
         if dims and all(d["ub"] is not None for d in dims):
@@ -872,12 +894,22 @@ class Subprograms:
                     f"    # AGENT_QUEUE: {reason}",
                     f"    raise NotImplementedError({reason!r})",
                 ]
-            dtype = ALLOCATED_DTYPES.get(argument["dtype"], "np.float64")
+            try:
+                dtype = allocated_dtype(argument["dtype"])
+            except REFUSED as refusal:
+                reason = f"out-arg {argument['name']}: allocation refused ({refusal})"
+                refusals.append(reason)
+                return [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
             return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if not dims and argument["dtype"] in ("float64", "float32"):
             return [f"    {name} = 0.0"]
         if not dims and argument["dtype"] in ("int32", "int64"):
             return [f"    {name} = 0"]
+        if not dims and argument["dtype"] in ("complex128", "complex64"):
+            return [f"    {name} = {SCALAR_ZEROS[argument['dtype']]}"]
         if not dims and argument["dtype"] == "bool":
             return [f"    {name} = False"]
         derived = DERIVED.match(str(argument["dtype"]))
@@ -956,7 +988,15 @@ class Subprograms:
                 )
                 if filled is not None:
                     return [f"    {name} = {filled}"]
-            dtype = ALLOCATED_DTYPES.get(local["dtype"], "np.float64")
+            try:
+                dtype = allocated_dtype(local["dtype"])
+            except REFUSED as refusal:
+                reason = f"local array {local['name']}: allocation refused ({refusal})"
+                refusals.append(reason)
+                return [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ]
             return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if local.get("array_spec"):
             return []
@@ -989,6 +1029,8 @@ class Subprograms:
             return [f"    {name} = 0.0{note}"]
         if local["dtype"] in ("int32", "int64"):
             return [f"    {name} = 0{note}"]
+        if local["dtype"] in ("complex128", "complex64"):
+            return [f"    {name} = {SCALAR_ZEROS[local['dtype']]}{note}"]
         if local["dtype"] == "bool":
             return [f"    {name} = False{note}"]
         if local["dtype"] == "str":

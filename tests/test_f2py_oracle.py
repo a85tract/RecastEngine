@@ -2114,6 +2114,66 @@ def test_a_scalar_logical_inout_goes_through_the_wrapper_as_an_integer() -> None
     assert "res = ia(skip_l)" in fn and "skip = merge(1, 0, skip_l)" in fn
 
 
+COMPLEX_VALUED = """\
+module cplx_mod
+  implicit none
+contains
+  function quadratic_solve( n, a, b, c ) result( roots )
+    integer, intent(in) :: n
+    real(8), dimension(n), intent(in) :: a, b, c
+    complex(8), dimension(n,2) :: roots
+    complex(8), dimension(n) :: sqrt_det
+    sqrt_det = sqrt( cmplx( b**2 - 4.0d0 * a * c, kind = 8 ) )
+    roots(:,1) = ( -cmplx( b, kind = 8 ) + sqrt_det ) / cmplx( 2.0d0 * a, kind = 8 )
+    roots(:,2) = ( -cmplx( b, kind = 8 ) - sqrt_det ) / cmplx( 2.0d0 * a, kind = 8 )
+  end function quadratic_solve
+  subroutine conj_scale( n, z, s, w, re )
+    integer, intent(in) :: n
+    complex(8), dimension(n), intent(in) :: z
+    real(8), intent(in) :: s
+    complex(8), dimension(n), intent(out) :: w
+    real(8), dimension(n), intent(out) :: re
+    w = conjg( z ) * s
+    re = real( w, kind = 8 ) + aimag( z )
+  end subroutine conj_scale
+end module cplx_mod
+"""
+
+
+@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+def test_a_complex_valued_subprogram_is_compared_on_both_parts(tmp_path: Path) -> None:
+    """A complex result or argument was ``unsupported declared dtype(s)`` and
+    left uncompared, while the emitter built it as float64 (#20). Complex
+    inputs are drawn on both parts, the wrapper spells ``complex(8)``, and
+    the comparison is bit-exact on both parts of every element."""
+    (tmp_path / "cplx_mod.f90").write_text(COMPLEX_VALUED)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred, candidate.deferred
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 3, "dims": {"n": 4}}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    per = verdict.metrics["subprograms"]
+    # 3 trials x n=4 x 2 roots x 2 parts; w's two parts and re's one, per element.
+    assert per["quadratic_solve"]["points"] == 3 * 4 * 2 * 2
+    assert per["conj_scale"]["points"] == 3 * 4 * 3
+    # Conjugation and a real scale are componentwise on both sides: exact.
+    assert per["conj_scale"]["bit_exact"] == per["conj_scale"]["points"]
+    # Complex division is an algorithm, not an IEEE operation: gfortran's
+    # rounds differently from NumPy's by one ULP on some elements, and the
+    # gate now says so where it used to say nothing.
+    assert per["quadratic_solve"]["max_ulp"] <= 1, per["quadratic_solve"]
+    assert per["quadratic_solve"]["bit_exact"] >= per["quadratic_solve"]["points"] // 2
+    assert verdict.confidence in (Confidence.BIT_EXACT, Confidence.FAILED), verdict.detail
+    if verdict.confidence is Confidence.FAILED:
+        assert "points differ (max 1 ULP" in (verdict.detail or ""), verdict.detail
+
+
 READS_BELOW_THE_ARRAY = """\
 module below_mod
   implicit none

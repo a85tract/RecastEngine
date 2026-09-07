@@ -293,6 +293,67 @@ def test_logical_operators_on_arrays_are_elementwise(tmp_path: Path) -> None:
     assert "not l_ok" not in module
 
 
+COMPLEX_ROOTS = """\
+module roots_mod
+  implicit none
+  integer, parameter :: rk = selected_real_kind(15)
+  private
+  public :: quadratic_solve, real_parts, no_kind
+contains
+  function quadratic_solve( nz, a_coef, b_coef, c_coef ) result( roots )
+    integer, intent(in) :: nz
+    real( kind = rk ), dimension(nz), intent(in) :: a_coef, b_coef, c_coef
+    complex( kind = rk ), dimension(nz,2) :: roots
+    real( kind = rk ), dimension(nz) :: determinant
+    complex( kind = rk ), dimension(nz) :: sqrt_det
+    determinant = b_coef**2 - 4.0_rk * a_coef * c_coef
+    sqrt_det = sqrt( cmplx( determinant, kind = rk ) )
+    roots(:,1) = ( -cmplx( b_coef, kind = rk ) + sqrt_det ) / cmplx( 2.0_rk * a_coef, kind = rk )
+    roots(:,2) = ( -cmplx( b_coef, kind = rk ) - sqrt_det ) / cmplx( 2.0_rk * a_coef, kind = rk )
+  end function quadratic_solve
+  subroutine real_parts( nz, a_coef, b_coef, c_coef, re1, im2 )
+    integer, intent(in) :: nz
+    real( kind = rk ), dimension(nz), intent(in) :: a_coef, b_coef, c_coef
+    real( kind = rk ), dimension(nz), intent(out) :: re1, im2
+    complex( kind = rk ), dimension(nz,2) :: roots
+    roots = quadratic_solve( nz, a_coef, b_coef, c_coef )
+    re1 = real( roots(:,1), kind = rk )
+    im2 = aimag( roots(:,2) )
+  end subroutine real_parts
+  subroutine no_kind( x, z )
+    real( kind = rk ), intent(in) :: x
+    complex( kind = rk ), intent(out) :: z
+    z = cmplx( x )
+  end subroutine no_kind
+end module roots_mod
+"""
+
+
+def test_a_complex_is_spelled_at_its_kind_not_as_float64(tmp_path: Path) -> None:
+    """CLUBB's calc_roots: a ``complex(kind = core_rknd)`` result came out
+    ``np.zeros(..., dtype=np.float64)`` -- the allocate table's silent
+    default for any dtype it did not know -- and ``cmplx(x, kind = k)`` came
+    out Python's ``complex(x)``, which takes no array (#20). The dtype is
+    complex128, the conversion is ``np.complex128``, the real part of a
+    complex is ``np.real``, and a ``cmplx`` without a kind is refused."""
+    (tmp_path / "roots_mod.f90").write_text(COMPLEX_ROOTS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:roots_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    module = candidate.files[Path("roots_mod_numpy.py")].decode()
+    assert "roots = np.zeros((nz, 2,), dtype=np.complex128)" in module
+    assert "sqrt_det = np.zeros((nz,), dtype=np.complex128)" in module
+    assert "np.sqrt(np.complex128(determinant))" in module
+    assert "-np.complex128(b_coef)" in module
+    assert "complex(" not in module.replace("np.complex128(", "")
+    assert "re1[...] = np.real(roots[:, 0])" in module
+    assert "im2[...] = np.imag(roots[:, 1])" in module
+    assert "    z = 0j" in module
+    assert len(candidate.deferred) == 1 and "no_kind" in candidate.deferred[0]
+    assert "cmplx without a kind" in candidate.deferred[0]
+
+
 SEARCH_LOOP = """\
 module search_mod
   implicit none
