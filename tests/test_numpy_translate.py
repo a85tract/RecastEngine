@@ -882,3 +882,65 @@ def test_a_loop_index_read_in_a_sibling_arm_or_by_the_caller_completes(tmp_path:
         sys.path.remove(str(out))
         for suffix in ("_numpy", "_constants", "_use_constants"):
             sys.modules.pop(f"idx_mod{suffix}", None)
+
+
+OPTIONAL_INOUT = """\
+module optinout_mod
+  implicit none
+contains
+  subroutine bump(n, x, y, count)
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(inout) :: y(n)
+    integer, intent(inout), optional :: count
+    y = y + x
+    if (present(count)) count = count + 1
+  end subroutine bump
+  subroutine twice(n, x, y, z, hits)
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(inout) :: y(n, 2)
+    real(8), intent(out) :: z(n)
+    integer, intent(inout) :: hits
+    call bump(n, x, y(:, 1), count = hits)
+    call bump(n, x, y(:, 2))
+    z = y(:, 1) + y(:, 2)
+  end subroutine twice
+end module optinout_mod
+"""
+
+
+def test_an_absent_optional_inout_leaves_its_slot_in_the_return(tmp_path: Path) -> None:
+    """The callee returns every OUT and INOUT dummy, optional ones included.
+    A caller that leaves an optional INOUT out (CLUBB's passive-scalar call
+    of xm_wpxp_clipping_and_stats, ``wpxp_cl_num`` absent) unpacked one
+    value too few -- and only the direct unpacking form, taken when an
+    actual is an array section, was short. The slot is skipped with ``_``,
+    as an absent optional OUT's already was."""
+    import importlib
+    import sys
+
+    (tmp_path / "optinout_mod.f90").write_text(OPTIONAL_INOUT)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:optinout_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert not candidate.deferred, candidate.deferred
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        import numpy as np
+
+        module = importlib.import_module("optinout_mod_numpy")
+        y = np.zeros((3, 2), order="F")
+        y_after, z, hits = module.twice(3, np.array([1.0, 2.0, 3.0]), y, 5)
+        assert np.asarray(y_after).tolist() == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+        assert np.asarray(z).tolist() == [2.0, 4.0, 6.0]
+        assert int(hits) == 6
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_numpy", "_constants", "_use_constants"):
+            sys.modules.pop(f"optinout_mod{suffix}", None)

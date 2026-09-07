@@ -1903,8 +1903,12 @@ class Statements:
             if actual is None:  # an unsupplied optional
                 if not formal["optional"]:
                     raise NoRule(f"missing required actual {formal['name']}")
-                if self.is_optional_output(formal):
-                    outputs.append("_")  # the return tuple has fixed length
+                if self.is_optional_output(formal) or formal["intent"] == "INOUT":
+                    # The return tuple has fixed length: the callee returns
+                    # every OUT and INOUT dummy, optional ones included, so
+                    # an absent optional INOUT (CLUBB's ``wpxp_cl_num`` on
+                    # the passive-scalar call) has a slot to skip too.
+                    outputs.append("_")
                 continue
             if self.is_optional_output(formal):
                 inputs.append(f"want_{formal['name']}={self._presence(actual)}")
