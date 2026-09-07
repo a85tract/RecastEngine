@@ -1892,8 +1892,18 @@ def _profile_site(unit_uid: str, name: str, trial: int) -> str:
 
 
 def _copy_input(value: Any) -> Any:
+    """A copy of one drawn input for the profile to shape, in the layout the
+    draw has: ``ndarray.copy()`` alone is C order, and a two-dimensional
+    Fortran-ordered INOUT the profile returned untouched reached f2py as a
+    copy that was "not fortran contiguous" (CLUBB's advance_helper_module,
+    whose profile shapes the grid and leaves the rest)."""
     copy = getattr(value, "copy", None)
-    return copy() if callable(copy) else value
+    if not callable(copy):
+        return value
+    try:
+        return copy(order="K")
+    except TypeError:
+        return copy()
 
 
 def _same_input(np: Any, offered: Any, drawn: Any) -> bool:

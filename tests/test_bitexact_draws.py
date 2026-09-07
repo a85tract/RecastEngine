@@ -315,6 +315,59 @@ def test_a_shaped_draw_is_compared_as_shaped_and_never_redrawn(tmp_path: Path) -
     assert sorted(entry.name for entry in root.iterdir()) == ["recast_inputs.py"]
 
 
+LAYOUT = """\
+import numpy as np
+
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [
+            {"name": "k", "intent": "IN", "dtype": "int32"},
+            {
+                "name": "a",
+                "intent": "IN",
+                "dtype": "float64",
+                "dims": [{"lb": "1", "ub": "3"}, {"lb": "1", "ub": "4"}],
+            },
+        ],
+    }
+}
+
+
+def probe(k, a):
+    return float(a[1, 2]) * float(k)
+"""
+
+LAYOUT_PROFILE = """\
+import numpy as np
+
+
+def prepare(unit, subprogram, inputs, rng):
+    inputs["k"] = np.int32(2)  # shaped: the rest of the draw is returned as offered
+    return inputs
+"""
+
+
+def test_a_shaped_draw_keeps_the_layout_of_what_the_profile_left_alone(tmp_path: Path) -> None:
+    """The profile sees a copy of the draw. A copy in C order of a
+    Fortran-ordered array is still a copy, but not one f2py takes for an
+    array dummy: CLUBB's advance_helper_module, whose profile shapes the
+    grid and returns the rest untouched, was refused by the reference with
+    "input not fortran contiguous". The copy keeps the draw's layout."""
+    seen: list[bool] = []
+
+    def w_probe(k, a):
+        seen.append(bool(a.flags.f_contiguous))
+        return float(a[1, 2]) * float(k)
+
+    root = profile(tmp_path, LAYOUT_PROFILE)
+    verdict = judge(tmp_path, LAYOUT, SimpleNamespace(w_probe=w_probe), root=str(root))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert seen and all(seen), "the reference saw the draw's Fortran layout"
+
+
 def test_a_candidate_that_refuses_a_shaped_draw_has_failed(tmp_path: Path) -> None:
     """Under the generated rules a translated ERROR STOP is a draw to make
     again. Under a profile that fixed ``mode`` to a value the source takes,
