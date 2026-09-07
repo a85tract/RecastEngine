@@ -732,12 +732,7 @@ class FortranFrontend(Frontend):
             if not match:
                 continue
             module = match.group("module").lower()
-            if module in found or module == own:
-                continue
-            if module in INTRINSIC_MODULES or module in self.stub_modules:
-                continue
-            source = index.get(module)
-            if source is None:
+            if module == own:
                 continue
             renames = {
                 local.strip().lower(): remote.strip().lower()
@@ -747,6 +742,29 @@ class FortranFrontend(Frontend):
                     if "=>" in item
                 )
             }
+            if module in found:
+                # A second ``use`` of the same module widens what it lets in:
+                # CLUBB's saturation says ``use model_flags, only: I_sat_sphum``
+                # and, a few lines on, ``use model_flags, only:
+                # saturation_bolton, ...``. Keeping only the first statement's
+                # list left the saturation formulas invisible, and the emitter
+                # spelled them as a stub module's lower-case attributes.
+                seen = found[module]
+                seen["renames"].update(renames)
+                if seen["only"] is not None:
+                    seen["only"] = (
+                        None
+                        if match.group("only") is None
+                        else sorted(set(seen["only"]) | set(self._only_names(match)))
+                    )
+                if self._carries_on(match, seen["record"]):
+                    pending.extend(seen["record"].get("use_statements", ()))
+                continue
+            if module in INTRINSIC_MODULES or module in self.stub_modules:
+                continue
+            source = index.get(module)
+            if source is None:
+                continue
             try:
                 record_of = self._extracted(source, "interface", interface_mod.extract, module)
                 constants_of = self._extracted(source, "constants", constants_mod.extract, module)
@@ -763,17 +781,7 @@ class FortranFrontend(Frontend):
                     }
                 )
                 continue
-            only = (
-                sorted(
-                    {
-                        item.split("=>", 1)[0].strip().lower()
-                        for item in match.group("only").split(",")
-                        if item.strip()
-                    }
-                )
-                if match.group("only") is not None
-                else None
-            )
+            only = sorted(self._only_names(match)) if match.group("only") is not None else None
             found[module] = {
                 "module": module,
                 "source": str(source.relative_to(resolved_root)),
@@ -789,6 +797,15 @@ class FortranFrontend(Frontend):
             if self._carries_on(match, record_of):
                 pending.extend(record_of.get("use_statements", ()))
         return list(found.values()), unresolved
+
+    @staticmethod
+    def _only_names(match: re.Match[str]) -> set[str]:
+        """The local names a ``use, only:`` list lets in (``a => b`` lets ``a``)."""
+        return {
+            item.split("=>", 1)[0].strip().lower()
+            for item in (match.group("only") or "").split(",")
+            if item.strip()
+        }
 
     @staticmethod
     def _carries_on(match: re.Match[str], record: dict[str, Any]) -> bool:
