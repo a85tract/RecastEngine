@@ -239,18 +239,6 @@ def _bitexact_break(candidate: Candidate) -> Candidate:
     return replace(candidate, files={Path("blend_numpy.py"): emitted.encode()})
 
 
-# --- differential.tolerance --------------------------------------------------
-
-_DECAY = (
-    1.0,
-    0.1353352832366127,
-    0.01831563888873418,
-    0.0024787521766663585,
-    0.00033546262790251185,
-    4.5399929762484854e-05,
-    6.14421235332821e-06,
-    8.315287191035679e-07,
-)
 """Eight points spanning six decades, as literals rather than as a computation.
 
 Both sides multiply by the *same* constants, so any difference in the verdict
@@ -258,79 +246,6 @@ comes from the perturbation and not from two spellings of ``exp``. Index 0 is
 the whole signal and 4..7 sit below the gate's 1e-3 dominance line, which is
 what lets one array exercise both tiers.
 """
-
-_TIERED_EMITTED = """\
-import math
-
-_SIGNATURES = {{
-    "decay": {{
-        "kind": "function",
-        "result": "y",
-        "result_dtype": "float64",
-        "args": [{{"name": "x", "intent": "IN", "dtype": "float64"}}],
-    }}
-}}
-
-_DECAY = (
-    1.0,
-    0.1353352832366127,
-    0.01831563888873418,
-    0.0024787521766663585,
-    0.00033546262790251185,
-    4.5399929762484854e-05,
-    6.14421235332821e-06,
-    8.315287191035679e-07,
-)
-
-
-def decay(x):
-    y = [x * d for d in _DECAY]
-{perturbation}
-    return y
-"""
-
-
-def _tiered_source(perturbation: str) -> bytes:
-    return _TIERED_EMITTED.format(perturbation=perturbation).encode()
-
-
-def _tolerance_candidate(workspace: Path) -> Candidate:
-    """Drifts, in the tail, by less than the ULP bound.
-
-    Not bit-exact on purpose: a backend that could be bit-exact would be using
-    the other gate, so a case whose good candidate agrees exactly would check
-    this one on the one path it was not written for.
-    """
-    return Candidate(
-        unit="conformance:demo/decay",
-        transform="conformance.port",
-        files={Path("decay_numpy.py"): _tiered_source("    y[7] = math.nextafter(y[7], math.inf)")},
-    )
-
-
-def _tolerance_break(candidate: Candidate) -> Candidate:
-    """The same distance, moved into a dominant element instead of the tail.
-
-    The pair is the point of the tiering: a relative tolerance alone cannot
-    tell these two apart, because the relative difference is identical.
-    """
-    return replace(
-        candidate,
-        files={Path("decay_numpy.py"): _tiered_source("    y[0] *= 1.0 + 1e-13")},
-    )
-
-
-def _tolerance_oracle(workspace: Path, executor: Executor) -> OracleRef:
-    def w_decay(x: Any) -> Any:
-        return [x * d for d in _DECAY]
-
-    return OracleRef(
-        unit="conformance:demo/decay",
-        oracle="conformance.python-truth",
-        key="conformance:decay:1",
-        handle={"module": SimpleNamespace(w_decay=w_decay), "wrappers": {"decay": "w_decay"}},
-        cost="cheap",
-    )
 
 
 def _bitexact_oracle(workspace: Path, executor: Executor) -> OracleRef:
@@ -387,7 +302,7 @@ def _different_source(facts: Facts) -> Facts:
     return replace(facts, provenance={**facts.provenance, "digest": "0" * 64})
 
 
-# --- python-numpy accelerator engines ---------------------------------------
+# --- python-numpy: the frontend and the python-source oracle -----------------
 
 _PYTHON_NUMPY = f"""\
 from __future__ import annotations
@@ -412,122 +327,11 @@ def _plant_python_workspace_artifact(workspace: Path) -> None:
     (workspace / "generated.py").write_text(_PYTHON_NUMPY)
 
 
-def _python_subject(scratch: Path) -> TransformSubject:
-    root = scratch / "python-source"
-    root.mkdir(parents=True, exist_ok=True)
-    _plant_python_numpy(root)
-    frontend = REGISTRY.get("frontend", "python-numpy")()
-    unit = next(iter(frontend.discover(root)))
-    return TransformSubject(
-        unit=unit,
-        facts=frontend.analyze(unit, root),
-        config={"root": str(root)},
-    )
-
-
-def _python_numba_defers(scratch: Path) -> TransformSubject:
-    root = scratch / "python-numba-defers"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "kernel.py").write_text(
-        "import numpy as np\n\n"
-        "def dynamic(x: np.ndarray) -> np.ndarray:\n"
-        "    open('runtime.txt')\n"
-        "    return x\n"
-    )
-    frontend = REGISTRY.get("frontend", "python-numpy")()
-    unit = next(iter(frontend.discover(root)))
-    return TransformSubject(unit, frontend.analyze(unit, root), {"root": str(root)})
-
-
-def _python_jax_defers(scratch: Path) -> TransformSubject:
-    root = scratch / "python-jax-defers"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "kernel.py").write_text(
-        "import numpy as np\n\n"
-        "def mutate(x: np.ndarray) -> np.ndarray:\n"
-        "    x[0] = 0.0\n"
-        "    return x\n"
-    )
-    frontend = REGISTRY.get("frontend", "python-numpy")()
-    unit = next(iter(frontend.discover(root)))
-    return TransformSubject(unit, frontend.analyze(unit, root), {"root": str(root)})
-
-
 def _python_oracle_facts() -> Facts:
     return Facts(
         unit="python:kernel.py",
         interface={"module": "kernel", "source": "kernel.py", "exports": ["blend"]},
         provenance={"digest": "1" * 64, "source": "kernel.py", "frontend": "python-numpy"},
-    )
-
-
-_NUMBA_CANDIDATE = f"""\
-{"import"} numpy as np
-{"from"} numba import njit
-
-@njit(cache=False, fastmath=False)
-def blend(x, scale):
-    return np.sin(x) * scale + x * x
-
-__recast_backend__ = "numba"
-__recast_compiled_functions__ = ["blend"]
-"""
-
-_JAX_CANDIDATE = f"""\
-{"import"} jax.numpy as jnp
-{"from"} jax import config, jit
-config.update("jax_enable_x64", True)
-
-@jit
-def blend(x, scale):
-    return jnp.sin(x) * scale + x * x
-
-__recast_backend__ = "jax"
-__recast_compiled_functions__ = ["blend"]
-"""
-
-
-def _accelerator_candidate(backend: str, source: str) -> Candidate:
-    return Candidate(
-        unit="python:kernel.py",
-        transform=f"recast.translate.python-numpy-to-{backend}",
-        files={Path(f"kernel_{backend}.py"): source.encode()},
-        notes={"backend": backend, "exports": ["blend"]},
-    )
-
-
-def _numba_candidate(workspace: Path) -> Candidate:
-    del workspace
-    return _accelerator_candidate("numba", _NUMBA_CANDIDATE)
-
-
-def _jax_candidate(workspace: Path) -> Candidate:
-    del workspace
-    return _accelerator_candidate("jax", _JAX_CANDIDATE)
-
-
-def _break_accelerator(candidate: Candidate) -> Candidate:
-    path, content = next(iter(candidate.files.items()))
-    broken = content.decode().replace("+ x * x", "+ x * x + 1.0")
-    return replace(candidate, files={path: broken.encode()})
-
-
-def _python_accelerator_oracle(workspace: Path, executor: Executor) -> OracleRef:
-    del executor
-    _plant_python_numpy(workspace)
-    root = workspace.resolve()
-
-    return OracleRef(
-        unit="python:kernel.py",
-        oracle="python-source",
-        key="python-source:conformance",
-        handle={
-            "root": str(root),
-            "source": "kernel.py",
-            "module_name": "kernel",
-            "functions": ("blend",),
-        },
-        cost="cheap",
     )
 
 
@@ -602,84 +406,10 @@ def _with_a_refused_block(scratch: Path) -> TransformSubject:
     return _fortran_subject(scratch, _DEFERS, "fortran:conformance_defers")
 
 
-# --- c-kernel, executable-golden, differential.probes, performance.benchmark --
-#
-# Four plugins from the ParaCodex case (C kernels to OpenMP offload), held
-# here without a C compiler: the "programs" are shell scripts that print what
-# an instrumented program prints, the build spec is a ``chmod``, and every
-# rule about staging, keys, refusals and verdicts is exercised for real.
-
-_PROBE_LINES = (
-    "GATE:SUM name=out dtype=u32 algo=fnv1a64 value=00ff n=4\n"
-    "GATE:STAT name=out dtype=f32 n=4 min=0 max=3 mean=1.5 L1=6 L2=3.74\n"
-)
-
-
-def _probe_script(mean: str = "1.5") -> bytes:
-    lines = _PROBE_LINES.replace("mean=1.5", f"mean={mean}")
-    return f'#!/bin/sh\necho "PASS"\nprintf "{lines}"\n'.encode()
-
-
-def _plant_c_kernel(root: Path) -> None:
-    kernel = root / "kern"
-    kernel.mkdir(parents=True)
-    (kernel / "Makefile").write_text("program = main\nsource = main.cpp\nRUN_ARGS ?= 8\n")
-    (kernel / "main.cpp").write_text("int main() { for (int i = 0; i < 8; i++) {} return 0; }\n")
-
-
-def _plant_c_workspace_artifact(workspace: Path) -> None:
-    (workspace / "main.cpp").write_text("int main() { return 0; }\n")
-
-
-PROBE_KERNEL = Path(__file__).resolve().parents[3] / "corpus" / "probe_kernel"
 """The repository's own pair of probe-printing scripts, the reference and a
 candidate that agrees with it; see its README."""
 
-
-_C_UNIT = Unit(
-    uid="c:cand",
-    kind="kernel",
-    attrs={
-        "build": {"dir": "cand", "steps": [["chmod", "+x", "main"]], "program": "main"},
-        "golden": {"dir": "golden", "steps": [], "program": "main", "sources": ["main"]},
-    },
-)
-
-
-def _c_facts() -> Facts:
-    return Facts(unit=_C_UNIT.uid, provenance={"revision": "r1"})
-
-
-def _c_other_source(facts: Facts) -> Facts:
-    return replace(facts, provenance={"revision": "r2"})
-
-
-def _probes_candidate(workspace: Path) -> Candidate:
-    return Candidate(
-        unit=_C_UNIT.uid, transform="conformance.relay", files={Path("cand/main"): _probe_script()}
-    )
-
-
-def _probes_break(candidate: Candidate) -> Candidate:
-    """A statistic off by far more than the tolerance; the checksum too."""
-    return replace(candidate, files={Path("cand/main"): _probe_script(mean="9")})
-
-
-def _benchmark_break(candidate: Candidate) -> Candidate:
-    """A program that crashes cannot be timed."""
-    return replace(candidate, files={Path("cand/main"): b"#!/bin/sh\nexit 1\n"})
-
-
-def _executable_oracle(workspace: Path, executor: Executor) -> OracleRef:
-    from recast.oracle.executable import ExecutableGoldenOracle
-
-    return ExecutableGoldenOracle().materialize(_C_UNIT, _c_facts(), workspace, executor, _C_CONFIG)
-
-
-_C_CONFIG: dict[str, Any] = {"root": str(PROBE_KERNEL), "toolchain": {"cc": "cc"}}
-
-
-PLUGIN_SET = PluginSet(
+_PUBLIC = PluginSet(
     name="recast",
     executors=(ExecutorCase(name="local"),),
     frontends=(
@@ -696,12 +426,6 @@ PLUGIN_SET = PluginSet(
             expect_uids=("python:kernel.py",),
             plant_workspace_artifact=_plant_python_workspace_artifact,
         ),
-        FrontendCase(
-            name="c-kernel",
-            plant_tree=_plant_c_kernel,
-            expect_uids=("c:kern",),
-            plant_workspace_artifact=_plant_c_workspace_artifact,
-        ),
     ),
     transforms=(
         TransformCase(
@@ -709,25 +433,6 @@ PLUGIN_SET = PluginSet(
             subject=_translatable,
             defers=_with_a_refused_block,
             requires=("fparser", "numpy"),
-        ),
-        TransformCase(
-            # The tree translation under empty conventions is the file
-            # translation: same rules, same refusals, plus the use-constants,
-            # stand-ins and adapters a flat single-file unit has none of.
-            name="translate.tree",
-            subject=_translatable,
-            defers=_with_a_refused_block,
-            requires=("fparser", "numpy"),
-        ),
-        TransformCase(
-            name="translate.python-numba",
-            subject=_python_subject,
-            defers=_python_numba_defers,
-        ),
-        TransformCase(
-            name="translate.python-jax",
-            subject=_python_subject,
-            defers=_python_jax_defers,
         ),
     ),
     oracles=(
@@ -738,20 +443,6 @@ PLUGIN_SET = PluginSet(
             move_the_source=_different_source,
             materializes=False,
             submits_jobs=False,
-        ),
-        OracleCase(
-            # A program run as the reference. Its key folds the compiler's
-            # identity and the arguments, and its refusals are the executor's.
-            name="executable-golden",
-            unit=_C_UNIT,
-            facts=_c_facts,
-            config=_C_CONFIG,
-            moves_the_key={
-                "the compiler": {"toolchain": {"cc": "cc -O0"}},
-                "the arguments": {"run_args": ["4"]},
-            },
-            move_the_source=_c_other_source,
-            materializes=True,
         ),
         OracleCase(
             # The one oracle here that needs no toolchain: it derives its
@@ -771,38 +462,6 @@ PLUGIN_SET = PluginSet(
             materializes=True,
             # It derives the reference in this process: no compile, nothing
             # handed to the executor, so nothing for a refusal to stop.
-            submits_jobs=False,
-            requires=("numpy", "fparser"),
-        ),
-        OracleCase(
-            # The only oracle that computes nothing. It reads a recording and
-            # supplies both the inputs and the expected outputs, so it is also
-            # the only one that makes the differential gate run backwards --
-            # which is why it is checked here rather than left to its own
-            # tests: the contract rules about keys and refusals apply to it
-            # exactly as they do to the two that build.
-            #
-            # Its material is synthetic and says so in every file. No
-            # production dump is committed in either repository, so a case
-            # that waited for one would never run.
-            name="dump-replay",
-            unit=Unit(uid=F2PY_UNIT, kind="module"),
-            facts=_toy_physics_facts,
-            config={"root": str(TOY_PHYSICS), "dumps": str(TOY_PHYSICS / "dumps")},
-            moves_the_key={
-                # Which machine the recording is attributed to is part of what
-                # the reference *is*: the same numbers recorded on another
-                # device are another device's numbers.
-                "the recording's attributed device": {"reference_device": "gpu:0"},
-            },
-            # The recording does not depend on the source, and the key folds
-            # the source digest anyway -- see ``DumpReplayOracle.key``. A
-            # recording of code that has since changed is the stale reference
-            # this rule exists to catch.
-            move_the_source=_different_source,
-            materializes=True,
-            # It reads files in this process: nothing compiled, nothing handed
-            # to the executor, so there is no refusal for one to honour.
             submits_jobs=False,
             requires=("numpy", "fparser"),
         ),
@@ -827,27 +486,6 @@ PLUGIN_SET = PluginSet(
             # so even the cheap checks need one on PATH.
             requires_commands=("gfortran",),
         ),
-        OracleCase(
-            # The same reference, built behind a static library and a flat
-            # adapter module; on a unit with no derived types the adapter is
-            # only a re-export, and the contract is the same as f2py-golden's
-            # plus the link flags, which change what the extension loads
-            # against.
-            name="f2py-golden-flat",
-            unit=Unit(uid=F2PY_UNIT, kind="module"),
-            facts=_toy_physics_facts,
-            config={"root": str(TOY_PHYSICS)},
-            moves_the_key={
-                "compiler flags": {"fflags": "-O2"},
-                "wrapped subprograms": {"subprograms": ["settle"]},
-                "wrapper parameters": {"wrapper_parameters": {"n": 8}},
-                "link flags": {"ldflags": "-lm"},
-            },
-            move_the_source=_different_source,
-            materializes=True,
-            requires=("numpy", "fparser"),
-            requires_commands=("gfortran",),
-        ),
     ),
     verifiers=(
         VerifierCase(
@@ -855,29 +493,6 @@ PLUGIN_SET = PluginSet(
             candidate=_complete_candidate,
             break_candidate=_complete_break,
             expect=Confidence.SAMPLED,
-        ),
-        VerifierCase(
-            # Two scripts printing probes; the gate stages, "builds" and runs
-            # both through the executor, so a refusing one fails it closed.
-            name="differential.probes",
-            unit=_C_UNIT,
-            candidate=_probes_candidate,
-            break_candidate=_probes_break,
-            oracle=_executable_oracle,
-            expect=Confidence.TOLERANCED,
-            submits_jobs=True,
-            config={**_C_CONFIG, "runs": 2},
-        ),
-        VerifierCase(
-            # A measurement, not a comparison: it needs no oracle, and says
-            # so, which is why an unavailable one is not its concern.
-            name="performance.benchmark",
-            unit=_C_UNIT,
-            candidate=_probes_candidate,
-            break_candidate=_benchmark_break,
-            expect=Confidence.SAMPLED,
-            submits_jobs=True,
-            config={**_C_CONFIG, "profiler": "wall", "runs": 1},
         ),
         VerifierCase(
             name="static.rwset",
@@ -892,31 +507,6 @@ PLUGIN_SET = PluginSet(
             expect=Confidence.SYMBOLIC,
             config={"samples": 64},
             requires=("sympy", "mpmath"),
-        ),
-        VerifierCase(
-            name="differential.tolerance",
-            candidate=_tolerance_candidate,
-            break_candidate=_tolerance_break,
-            oracle=_tolerance_oracle,
-            expect=Confidence.ULP_BOUNDED,
-            submits_jobs=False,
-            requires=("numpy",),
-        ),
-        VerifierCase(
-            name="differential.python-numba",
-            candidate=_numba_candidate,
-            break_candidate=_break_accelerator,
-            oracle=_python_accelerator_oracle,
-            submits_jobs=True,
-            requires=("numpy", "numba"),
-        ),
-        VerifierCase(
-            name="differential.python-jax",
-            candidate=_jax_candidate,
-            break_candidate=_break_accelerator,
-            oracle=_python_accelerator_oracle,
-            submits_jobs=True,
-            requires=("numpy", "jax"),
         ),
         VerifierCase(
             name="differential.bitexact",
@@ -948,20 +538,35 @@ PLUGIN_SET = PluginSet(
             name="refactor-todo",
             config={"reference_commit": "0" * 40, "executor": "conformance-batch"},
         ),
-        RecipeCase(name="port", config={"dumps": ["reference.nc"]}),
         RecipeCase(name="audit"),
-        RecipeCase(
-            name="python-to-numba",
-            config={"target": "numba", "frontend": "python-numpy", "executor": "local"},
-        ),
-        RecipeCase(
-            name="python-to-jax",
-            config={"target": "jax", "frontend": "python-numpy", "executor": "local"},
-        ),
     ),
-    engines=(
-        EngineCase(name="recast.fortran-python.numpy"),
-        EngineCase(name="recast.python-numpy.numba"),
-        EngineCase(name="recast.python-numpy.jax"),
-    ),
+    engines=(EngineCase(name="recast.fortran-python.numpy"),),
 )
+
+
+def _with_pro(base: PluginSet) -> PluginSet:
+    """The public cases plus the commercial tier's, when that module is
+    installed; the public edition is this tree without it."""
+    try:
+        from recast.conformance.builtin_pro import CASES
+    except ImportError:
+        return base
+    merged = {
+        field: getattr(base, field) + getattr(CASES, field)
+        for field in (
+            "executors",
+            "frontends",
+            "transforms",
+            "oracles",
+            "verifiers",
+            "evidence_stores",
+            "finding_stores",
+            "scanners",
+            "recipes",
+            "engines",
+        )
+    }
+    return replace(base, **merged)
+
+
+PLUGIN_SET = _with_pro(_PUBLIC)

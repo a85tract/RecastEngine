@@ -609,7 +609,14 @@ class FortranFrontend(Frontend):
             if values:
                 facts.extra["dim_parameters"] = values
         if self.flatten:
-            from recast.fortran.flatten import FlatConventions, plans_for
+            try:
+                from recast.fortran.flatten import FlatConventions, plans_for
+            except ImportError as exc:  # the public edition ships without it
+                raise ConfigError(
+                    "flatten: flat adapters for derived-type and module-state "
+                    "interfaces are part of the commercial tier and are not "
+                    "installed; run without `flatten`, or install the tier"
+                ) from exc
 
             spelled = self.flatten if isinstance(self.flatten, dict) else {}
             conventions = FlatConventions(

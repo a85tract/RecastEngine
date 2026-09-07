@@ -170,8 +170,11 @@ def test_cli_exports_catalog_json(capsys: pytest.CaptureFixture[str]) -> None:
     document = json.loads(capsys.readouterr().out)
     assert document["schema"] == "recast.translation-engine-catalog.v1"
     assert document["digest"].startswith("sha256:")
-    assert [engine["id"] for engine in document["engines"]] == [
-        "recast.fortran-python.numpy",
-        "recast.python-numpy.jax",
-        "recast.python-numpy.numba",
-    ]
+    # The accelerator engines are the tier's: registered exactly when their
+    # recipes are, which the public edition ships without.
+    from recast.recipes import BUILTIN
+
+    expected = ["recast.fortran-python.numpy"]
+    if "python-to-jax" in BUILTIN:
+        expected += ["recast.python-numpy.jax", "recast.python-numpy.numba"]
+    assert [engine["id"] for engine in document["engines"]] == expected
