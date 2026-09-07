@@ -70,7 +70,7 @@ class ReferenceRaised(RecastError):
     in-process f2py call would have raised (a shape it cannot take)."""
 
 
-_WORKER = r'''
+_WORKER = r"""
 import importlib, os, pickle, struct, sys
 
 def _read():
@@ -111,7 +111,7 @@ while True:
         _write(("raised", f"{type(error).__name__}: {error}"))
         continue
     _write(("ok", result, args, kwargs))
-'''
+"""
 
 
 class IsolatedModule:
