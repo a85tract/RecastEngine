@@ -61,10 +61,21 @@ FORTRAN_TYPES = {
 """Raw type spellings, no kind parameters: nothing here needs f2py's
 crackfortran to resolve a use-imported kind, which it cannot."""
 
-DEFAULT_FLAGS = "-O1 -fno-fast-math -ffp-contract=off"
+DEFAULT_FLAGS = "-O1 -fno-fast-math -ffp-contract=off -fcheck=bounds"
 """Conservative by default. The reference must round the way the production
 build rounds, and aggressive optimization is a second variable nobody asked
-to test."""
+to test.
+
+``-fcheck=bounds`` because a reference that reads outside its arrays is not
+a reference: what it returns then is whatever memory sat beside the array
+in *this* process, which the next process will not repeat (#42: PCHIP's
+``dpchkt`` drawn with ``n = 1`` reads ``x(0)``; the reference read the byte
+before the buffer, the translation's ``x[-1]`` wrapped to the last element,
+and the verdict's numbers changed with the process the reference ran in).
+With the check on, the reference ends its process on that draw with the
+array and index named, and the gate declines the draw and says so instead
+of comparing two undefined values. The checks do not touch the arithmetic,
+so the rounding is the production build's still."""
 
 _BUILD_LOG_TAIL_CHARS = 3000
 """How much of a failed build's output the error itself quotes. The tail,

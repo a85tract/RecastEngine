@@ -2342,18 +2342,19 @@
       "differential.bitexact": {
        "detail": "2 subprogram(s) could not be compared: dpchia: function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and ",
        "metrics": {
-        "bit_exact": 3067,
+        "bit_exact": 3070,
         "declined": {
+         "reference subscript out of bounds": 1,
          "subscript past extent": 5
         },
         "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 240,
-        "max_rel": 0.5928989261656535,
-        "max_ulp": 2739760636019512,
+        "max_rel": 0.0,
+        "max_ulp": 0,
         "nan_mismatch": 0,
         "points": 3070,
-        "redrawn": 5,
+        "redrawn": 6,
         "reference_isolation": "process",
         "subprograms": {
          "dchfdv": {
@@ -2383,17 +2384,18 @@
           "shaped": 0
          },
          "dpchbs": {
-          "bit_exact": 197,
+          "bit_exact": 200,
           "declined": {
+           "reference subscript out of bounds": 1,
            "subscript past extent": 5
           },
           "integer_mismatch": 0,
           "integer_points": 40,
-          "max_rel": 0.5928989261656535,
-          "max_ulp": 2739760636019512,
+          "max_rel": 0.0,
+          "max_ulp": 0,
           "nan_mismatch": 0,
           "points": 200,
-          "redrawn": 5,
+          "redrawn": 6,
           "reshaped": 5,
           "shaped": 0
          },
