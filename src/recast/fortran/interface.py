@@ -597,10 +597,27 @@ def _fold_local_parameter_bounds(
                 bound = dim.get(key)
                 if bound is None:
                     continue
-                name = str(bound).strip().lower()
-                if name in values:
-                    dim[key] = values[name]
-                    folded[f"{owner}[{axis}].{key}"] = f"{name} -> {values[name]}"
+                text = str(bound).strip().lower()
+                if text in values:
+                    dim[key] = values[text]
+                    folded[f"{owner}[{axis}].{key}"] = f"{text} -> {values[text]}"
+                    continue
+                # ``-nd:nd``: the parameter inside a signed bound. Substituted
+                # and, when what is left is one integer, folded; a bound that
+                # still names a parameter after that is recorded as unfolded,
+                # so the wrapper's failure on it has a name (#32 row 6).
+                named = [n for n in values if re.search(rf"\b{n}\b", text)]
+                if not named:
+                    continue
+                substituted = text
+                for n in named:
+                    substituted = re.sub(rf"\b{n}\b", values[n], substituted)
+                compact = substituted.replace(" ", "")
+                if re.fullmatch(r"[+-]?\d+", compact):
+                    dim[key] = compact.lstrip("+")
+                    folded[f"{owner}[{axis}].{key}"] = f"{text} -> {dim[key]}"
+                else:
+                    folded[f"{owner}[{axis}].{key}"] = f"unfolded: {text}"
     return folded
 
 

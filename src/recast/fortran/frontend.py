@@ -23,7 +23,7 @@ reports 96% coverage of a source tree it never read.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -271,6 +271,7 @@ class FortranFrontend(Frontend):
         intent_overrides: dict[str, Any] | None = None,
         externals: dict[str, dict[str, Any]] | None = None,
         stub_modules: Iterable[str] = (),
+        stub_procedure_names: Mapping[str, Iterable[str]] | None = None,
         exclude: Iterable[str] = (),
         buffer_out_arrays: str = "unsizable",
         constant_modules: Iterable[str] = (),
@@ -304,6 +305,13 @@ class FortranFrontend(Frontend):
         self.intent_overrides = dict(intent_overrides or {})
         self.externals = dict(externals or {})
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
+        # For a stub module the tree does not carry: which of its names are
+        # procedures. Unsaid, every name imported from it is taken for one
+        # and the record says so (``stub_procedures_assumed``).
+        self.stub_procedure_names = {
+            module.lower(): {str(n).lower() for n in names}
+            for module, names in (stub_procedure_names or {}).items()
+        }
         self.exclude = tuple(Path(d) for d in exclude)
         self.buffer_out_arrays = buffer_out_arrays
         """``"unsizable"`` (the default) or ``"all"``: which intent(out) arrays
@@ -511,11 +519,16 @@ class FortranFrontend(Frontend):
         # is a stub and a table of constants) is a read on both sides. The
         # stub module's own record says which names are procedures; a stub
         # the tree does not carry is taken at its import list.
-        stub_procedures = self._stub_procedures(record, Path(root))
+        assumed_stubs: dict[str, list[str]] = {}
+        stub_procedures = self._stub_procedures(record, Path(root), assumed_stubs)
         for name in stub_procedures:
             stubbed = {"kind": "subroutine", "out_positions": [], "buffer_positions": []}
             externals.setdefault(name, {**stubbed, "stub": True})
         record = {**record, "stub_procedures": sorted(stub_procedures)}
+        if assumed_stubs:
+            record["stub_procedures_assumed"] = {
+                module: sorted(names) for module, names in sorted(assumed_stubs.items())
+            }
 
         callgraph: dict[str, list[str]] = {}
         effects: dict[str, Any] = {}
@@ -563,6 +576,9 @@ class FortranFrontend(Frontend):
                 "intent_overrides": dict(self.intent_overrides),
                 "externals": dict(self.externals),
                 "stub_modules": sorted(self.stub_modules),
+                "stub_procedure_names": {
+                    m: sorted(n) for m, n in sorted(self.stub_procedure_names.items())
+                },
                 # What this unit ``use``s that the same tree defines. The
                 # translation of a module that calls into a sibling needs the
                 # sibling's declarations, and a resolver that ran on the
@@ -671,14 +687,19 @@ class FortranFrontend(Frontend):
                 pending.extend(record_of.get("use_statements", ()))
         return found
 
-    def _stub_procedures(self, record: dict[str, Any], root: Path) -> set[str]:
+    def _stub_procedures(
+        self, record: dict[str, Any], root: Path, assumed: dict[str, list[str]] | None = None
+    ) -> set[str]:
         """The local names this unit imports from stubbed modules that are
         procedures of theirs -- calls the translation stubs. A stub module the
-        tree does not carry contributes every name it is imported for."""
+        tree does not carry contributes every name it is imported for unless
+        ``stub_procedure_names`` says otherwise, and ``assumed`` (when given)
+        collects those names per module."""
         from recast.fortran import interface as interface_mod
 
         index = self._module_index(root.resolve())
         names: set[str] = set()
+        assumed = {} if assumed is None else assumed
         for statement in record.get("use_statements", ()):
             match = USE_STATEMENT.match(statement.strip())
             if not match or match.group("module").lower() not in self.stub_modules:
@@ -696,8 +717,22 @@ class FortranFrontend(Frontend):
                 if record_of is not None:
                     procedures = {str(sub["name"]).lower() for sub in record_of["subprograms"]}
                     procedures |= {g.lower() for g in record_of.get("generics") or {}}
+            if procedures is None and module in self.stub_procedure_names:
+                # The tree does not carry the module; the operator says
+                # which of its names are procedures (CLUBB's ``netcdf``).
+                procedures = self.stub_procedure_names[module]
             for local, remote in imported.items():
-                if procedures is None or remote in procedures:
+                if procedures is None:
+                    # Nothing says whether the name is a procedure or a
+                    # constant. It is treated as a procedure -- the stub
+                    # answers a call, and a constant would reach the
+                    # translation unbound -- and the assumption is recorded
+                    # on the record, so a read of a constant it dropped
+                    # from both sides of the read/write check is not
+                    # silent (#32 row 21).
+                    names.add(local)
+                    assumed.setdefault(module, []).append(local)
+                elif remote in procedures:
                     names.add(local)
         return names
 
@@ -1008,6 +1043,7 @@ class FortranFrontend(Frontend):
 def factory(**config: Any) -> FortranFrontend:
     return FortranFrontend(
         kind_assumptions=config.get("kind_assumptions"),
+        stub_procedure_names=config.get("stub_procedure_names"),
         exclude=config.get("exclude") or (),
         extern_constants=config.get("extern_constants", ()),
         intent_overrides=config.get("intent_overrides"),

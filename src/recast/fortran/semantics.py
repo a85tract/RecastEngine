@@ -360,6 +360,12 @@ class Semantics:
 
     # -- shape ----------------------------------------------------------------
 
+    def rank_declared(self, node: Any) -> bool:
+        """Whether ``rank`` of this name is a fact of a declaration this
+        analysis saw, rather than the 0 it returns for a name it has no
+        declaration for."""
+        return str(node).lower() in self._declared_for_rank
+
     def rank(self, node: Any) -> int:
         """Rank of an expression; 0 is scalar.
 
