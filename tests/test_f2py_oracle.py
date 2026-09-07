@@ -2117,6 +2117,7 @@ def test_a_scalar_logical_inout_goes_through_the_wrapper_as_an_integer() -> None
 COMPLEX_VALUED = """\
 module cplx_mod
   implicit none
+  complex(8), parameter :: i_unit = ( 0.0d0, 1.0d0 )
 contains
   function quadratic_solve( n, a, b, c ) result( roots )
     integer, intent(in) :: n
@@ -2133,7 +2134,7 @@ contains
     real(8), intent(in) :: s
     complex(8), dimension(n), intent(out) :: w
     real(8), dimension(n), intent(out) :: re
-    w = conjg( z ) * s
+    w = conjg( z ) * s * i_unit
     re = real( w, kind = 8 ) + aimag( z )
   end subroutine conj_scale
 end module cplx_mod

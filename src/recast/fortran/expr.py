@@ -404,7 +404,7 @@ def fold_check(expr: Expr, declared: str | None) -> str:
     reals32 = sum(1 for leaf in leaves if leaf.dtype == "float32")
     ints = sum(1 for leaf in leaves if leaf.dtype == "int")
     lone = len(leaves) == 1 and expr.kind in REAL_LEAVES
-    if declared in ("int", "complex"):
+    if declared == "int" or str(declared).startswith("complex"):
         return "int"  # no real storage rounding to apply; spelled as before
     if declared == "float64":
         if expr.dtype == "int":

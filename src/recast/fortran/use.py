@@ -143,17 +143,25 @@ def _kind_tables(
 def declared_dtype(
     declared: str | None, kind_spelling: str | None, kinds: dict[str, str]
 ) -> str | None:
-    """The dtype a declaration names, ``None`` when its kind is not known."""
-    if declared in ("int", "complex"):
+    """The dtype a declaration names, ``None`` when its kind is not known.
+
+    A complex is two reals of one kind and reads as ``complex128`` or
+    ``complex64`` by that kind; the default complex is single, like the
+    default real."""
+    if declared == "int":
         return declared
-    if declared != "real":
+    if declared not in ("real", "complex"):
         return None
     if kind_spelling is None:
-        return "float32"  # default real
-    try:
-        return real_kind_of(kind_spelling, kinds)
-    except UnsupportedExpression:
-        return None
+        parts: str | None = "float32"  # default real
+    else:
+        try:
+            parts = real_kind_of(kind_spelling, kinds)
+        except UnsupportedExpression:
+            return None
+    if declared == "complex":
+        return {"float64": "complex128", "float32": "complex64"}.get(parts or "")
+    return parts
 
 
 def resolve(
