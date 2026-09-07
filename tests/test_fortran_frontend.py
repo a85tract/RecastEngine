@@ -303,14 +303,16 @@ def _args(facts, sub="legacy_tend"):
     return {a["name"]: a for a in record["args"]}
 
 
-def test_undeclared_intent_stays_unknown_by_default(fe, tree) -> None:
-    """No table, no guess -- but a body that only reads a dummy has said what
-    its intent is, and that reading is recorded as one. ``y``, assigned whole,
-    is the case nothing here can settle: the state a third of CAM is in."""
+def test_undeclared_intent_is_what_the_body_shows(fe, tree) -> None:
+    """No table, no guess -- but a body has said what its dummies' intents
+    are, and that reading is recorded as one: ``x``, only read, is
+    ``intent(in)``; ``y``, assigned whole and never read, is ``intent(out)``
+    (#23). Neither grows an override key."""
     unit = next(u for u in fe.discover(tree) if u.kind == "module")
     args = _args(fe.analyze(unit, tree))
-    assert args["y"]["intent"] == "UNKNOWN"
-    assert "intent_override" not in args["y"], "an untouched argument grows no extra keys"
+    assert args["y"]["intent"] == "OUT"
+    assert args["y"]["intent_inferred"] is True
+    assert "intent_override" not in args["y"], "an inferred argument grows no override key"
     assert args["x"]["intent"] == "IN"
     assert args["x"]["intent_inferred"] == "read-only"
 
