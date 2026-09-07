@@ -1416,6 +1416,10 @@ def test_a_unit_that_takes_a_procedure_ends_bit_exact(tmp_path: Path) -> None:
     ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
     verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
     assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    # A call-back is this process's Python object: the reference stays here
+    # (an error stop in it would end the run), and the verdict says so.
+    assert ref.handle["isolation"].startswith("in-process (call-back arguments: sweep")
+    assert verdict.metrics["reference_isolation"] == ref.handle["isolation"]
     assert verdict.metrics["uncovered"] == []
     assert verdict.metrics["points"] > 0
 
@@ -2108,3 +2112,67 @@ def test_a_scalar_logical_inout_goes_through_the_wrapper_as_an_integer() -> None
     assert "skip = merge(1, 0, skip_l)" in body
     fn = text[text.index("function w_ia") : text.index("end function w_ia")]
     assert "res = ia(skip_l)" in fn and "skip = merge(1, 0, skip_l)" in fn
+
+
+STOPS_ON_NEGATIVE = """\
+module stopper_mod
+  implicit none
+contains
+  subroutine scale_pos( n, x, y )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(n)
+    real(8), intent(out) :: y(n)
+    if ( any( x < 0.0d0 ) ) error stop 'scale_pos: negative input'
+    y = 2.0d0 * x
+  end subroutine scale_pos
+end module stopper_mod
+"""
+
+
+@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+def test_an_error_stop_in_the_reference_is_a_report_not_a_dead_run(tmp_path: Path) -> None:
+    """``error stop`` in the compiled reference is ``exit()`` in whatever
+    process imported it: no report, no summary, every other unit's verdict
+    gone with it (#21). With the reference in a process of its own, a draw
+    it stops on is an answer. On generated draws the translated ERROR STOP
+    declines the draw first; a profile that asserts the reference takes a
+    negative input is told, by name and with the reference's own message,
+    that it does not -- and this process is here to read it."""
+    from recast.errors import InputProfileError
+
+    (tmp_path / "stopper_mod.f90").write_text(STOPS_ON_NEGATIVE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    config = {
+        "root": tmp_path,
+        "fc": GFORTRAN,
+        "trials": 3,
+        "dims": {"n": 4},
+        "ranges": {"x": (0.0, 1.0)},
+    }
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert ref.handle["isolation"] == "process"
+    assert verdict.metrics["reference_isolation"] == "process"
+
+    (tmp_path / "recast_inputs.py").write_text(
+        "import numpy as np\n\n\n"
+        "def prepare(unit, subprogram, inputs, rng):\n"
+        "    inputs['x'] = np.asfortranarray(-np.abs(inputs['x']) - 0.5)\n"
+        "    return inputs\n"
+    )
+    with pytest.raises(InputProfileError) as caught:
+        BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    message = str(caught.value)
+    assert "ended the process" in message and "negative input" in message, message
+    # The reference is there for the next call: a fresh worker, the same verdict.
+    (tmp_path / "recast_inputs.py").unlink()
+    again = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert again.confidence is Confidence.BIT_EXACT, again.detail
+    assert ref.handle["module"].restarts == 1

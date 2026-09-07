@@ -45,6 +45,7 @@ from typing import Any
 
 from recast.errors import InputProfileError
 from recast.model import Candidate, Confidence, OracleRef, Unit, Verdict
+from recast.oracle.isolated import ReferenceAborted
 from recast.plugins.executor import Executor
 from recast.plugins.verifier import Verifier
 from recast.verify.ulp import ulp_audit
@@ -698,6 +699,10 @@ class BitexactVerifier(Verifier):
             "skipped": skipped,
             "uncovered": uncovered,
             "input_profile": INPUT_PROFILE if profile is not None else None,
+            # Where the reference ran: its own process (an ``error stop``
+            # there declines a draw) or this one (a call-back argument keeps
+            # it here, and an ``error stop`` would end the run).
+            "reference_isolation": handle.get("isolation"),
             "shaped": sorted(name for name, out in per_subprogram.items() if out.get("shaped")),
             "max_rel": worst_rel,
             **({"ungated": declared} if declared else {}),
@@ -1142,6 +1147,18 @@ class BitexactVerifier(Verifier):
                     else:
                         try:
                             truth_out = truth_fn(**truth_kwargs)
+                        except ReferenceAborted as error:
+                            # The reference ended its process on this draw:
+                            # an ERROR STOP the source takes on inputs that
+                            # are not its own, the way the candidate's
+                            # SystemExit says the same. Not a comparison;
+                            # draw again, and say so (#21).
+                            declined = f"reference aborted: {error}"
+                            declined_by["reference error stop"] = (
+                                declined_by.get("reference error stop", 0) + 1
+                            )
+                            redrawn += 1
+                            continue
                         except Exception as error:
                             return {"error": f"oracle raised: {type(error).__name__}: {error}"}
 

@@ -553,3 +553,26 @@ def test_a_subprogram_the_harness_has_no_draw_for_is_ungated_by_name(tmp_path: P
         "shout": "character argument msg: no generated draw for one"
     }
     assert "shout (character argument msg" in (verdict.detail or "")
+
+
+def test_a_reference_that_aborts_declines_the_draw(tmp_path: Path) -> None:
+    """The reference ending its process on a draw (a Fortran ERROR STOP, now
+    an exception from its own process) is the source refusing the inputs,
+    the way the candidate's SystemExit is: the draw is declined, drawn
+    again, and the verdict says so -- the run is not taken down (#21)."""
+    from recast.oracle.isolated import ReferenceAborted
+
+    plain = NAN.replace("return np.sqrt(x + 500.0)", "return x * 2.0")
+    calls = {"n": 0}
+
+    def w_probe(x):
+        calls["n"] += 1
+        if calls["n"] % 3 == 1:
+            raise ReferenceAborted("reference m.w_probe ended the process (exit 2)")
+        return x * 2.0
+
+    verdict = judge(tmp_path, plain, SimpleNamespace(w_probe=w_probe))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    probe = verdict.metrics["subprograms"]["probe"]
+    assert probe["redrawn"] > 0
+    assert "reference error stop" in (verdict.detail or ""), verdict.detail
