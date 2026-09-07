@@ -767,3 +767,118 @@ def test_a_stub_module_the_tree_lacks_is_recorded_as_assumed(tmp_path: Path) -> 
     assert facts.interface["stub_procedures"] == ["do_thing"]
     assert "stub_procedures_assumed" not in facts.interface
     assert facts.provenance["stub_procedure_names"] == {"absent_mod": ["do_thing"], "flags_mod": []}
+
+
+INTEGER_QUOTIENTS = """\
+module quot_mod
+  implicit none
+  integer, parameter :: fbs = 64
+  integer, parameter :: hbs = fbs / 2
+  integer, parameter :: mixed = fbs / 3 * 2
+contains
+  subroutine halves(n, out)
+    integer, intent(in) :: n
+    integer, intent(out) :: out(3)
+    integer, parameter :: h(3) = (/ 1, 2, 3 /) / 2
+    integer, parameter :: g = 3 / 2
+    out = h + g
+  end subroutine halves
+end module quot_mod
+"""
+
+
+def test_an_integer_parameter_quotient_truncates(tmp_path: Path) -> None:
+    """``integer, parameter :: h(3) = (/1, 2, 3/) / 2`` and ``g = 3 / 2``:
+    the local-parameter token pass has no integer division and rendered
+    float64 1.5s where Fortran truncates (ledger #32 row 18); an integer
+    initializer with a quotient takes the parse path and ``_f_int_div``.
+    At module level the constants renderer spells the one shape its flat
+    tokens can, ``int(A / B)``, and refuses a quotient inside a larger
+    expression rather than folding it wrong."""
+    import importlib
+    import sys
+
+    (tmp_path / "quot_mod.f90").write_text(INTEGER_QUOTIENTS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:quot_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    body = candidate.files[Path("quot_mod_numpy.py")].decode()
+    assert "_f_int_div(" in body, body
+    constants = candidate.files[Path("quot_mod_constants.py")].decode()
+    assert "HBS = int(FBS / 2)" in constants, constants
+    assert "# SKIPPED MIXED" in constants and "integer division inside" in constants, constants
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        import numpy as np
+
+        module = importlib.import_module("quot_mod_numpy")
+        assert importlib.import_module("quot_mod_constants").HBS == 32
+        got = module.halves(3)  # the OUT array is returned, by the emitted convention
+        assert np.asarray(got).tolist() == [1, 2, 2]  # (0, 1, 1) + 1, as Fortran has it
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_numpy", "_constants", "_use_constants"):
+            sys.modules.pop(f"quot_mod{suffix}", None)
+
+
+LOOP_INDEX_READ = """\
+module idx_mod
+  implicit none
+contains
+  subroutine find(n, a, flag, k, y)
+    integer, intent(in) :: n
+    real(8), intent(in) :: a(n)
+    logical, intent(in) :: flag
+    integer, intent(out) :: k
+    real(8), intent(out) :: y
+    integer :: j
+    do j = 1, n
+      if (a(j) > 0.5d0) exit
+    end do
+    if (flag) then
+      j = 0
+    else
+      y = real(j, 8)
+    end if
+    do k = 1, n
+      if (a(k) < 0.0d0) exit
+    end do
+  end subroutine find
+end module idx_mod
+"""
+
+
+def test_a_loop_index_read_in_a_sibling_arm_or_by_the_caller_completes(tmp_path: Path) -> None:
+    """Fortran leaves a DO index one step past the end when the loop runs
+    out; Python leaves the last value. The completion was emitted only when
+    a line-order scan saw a read before a redefinition: ``j = 0`` in one IF
+    arm hid the read of ``j`` in the other, and a dummy index (``k``) the
+    caller reads got nothing (ledger #32 row 10). Both complete now."""
+    import importlib
+    import sys
+
+    (tmp_path / "idx_mod.f90").write_text(LOOP_INDEX_READ)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:idx_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    out = tmp_path / "emitted"
+    out.mkdir()
+    for path, content in candidate.files.items():
+        (out / path.name).write_bytes(content)
+    sys.path.insert(0, str(out))
+    try:
+        import numpy as np
+
+        module = importlib.import_module("idx_mod_numpy")
+        k, y = module.find(3, np.array([0.1, 0.2, 0.3]), False)
+        assert (int(k), float(y)) == (4, 4.0), "both loops ran out: index is n + 1"
+    finally:
+        sys.path.remove(str(out))
+        for suffix in ("_numpy", "_constants", "_use_constants"):
+            sys.modules.pop(f"idx_mod{suffix}", None)
