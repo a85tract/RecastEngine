@@ -145,19 +145,18 @@ records that and both sign.
 on the argument that a CLA collects a right — relicensing — the project had no
 plan to use, and that signing a legal document is the wrong toll for the
 graduate students and domain scientists the engine is built for. The first
-half of that argument stopped being true on 2026-09-07: the engine is intended
-to be developed commercially alongside its public release, by the maintainer
-and the students who built it, and a project that may one day carry a
-different license for part of what it ships has to hold that right from every
-contributor or it cannot. Asking afterwards is not a plan when the answer can
-be no. The toll is kept as low as a CLA can be: one row in a file, once, and
-the same `git commit -s` the DCO already asked for. The switch was made while
-the contributors were the people in one research group, which is the cheapest
+half of that argument stopped holding on 2026-09-07: the maintainer may need
+to offer the engine under other terms — to an institution whose policy
+requires them, or in a form that funds the project's upkeep — and a project
+that may one day do so has to hold that right from every contributor, or it
+cannot. Asking afterwards is not a plan when the answer can be no. The toll is
+kept as low as a CLA can be: one row in a file, once, and the same
+`git commit -s` the DCO already asked for. The switch was made while the
+contributors were the people in one research group, which is the cheapest
 moment it will ever have.
 
-Contributions to the public repository are published under Apache-2.0, as
-stated in `LICENSE`; what the agreement adds is that they may also be shipped
-under other terms.
+Contributions are published under Apache-2.0, as stated in `LICENSE`; what
+the agreement adds is that they may also be offered under other terms.
 
 The agreement is required from its adoption forward. The commits before it are
 not rewritten: back-dating a certification nobody was asked for would be a

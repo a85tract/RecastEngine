@@ -170,16 +170,16 @@ BUILTIN: dict[str, type[Recipe]] = {
     "audit": AuditRecipe,
 }
 
-# The recipes of the commercial tier -- the accelerator port and the two
-# Python-accelerator recipes -- are declared beside these and absent from
-# the public edition, which is the same tree with that module left out.
+# Further recipes -- the accelerator port and the two Python-accelerator
+# recipes -- are declared in ``recast.recipes.optional`` and merged in when
+# that module is installed; an installation without it has these three.
 try:
-    from recast.recipes.pro import BUILTIN as _PRO
-    from recast.recipes.pro import (  # noqa: F401 -- re-exported for their tests
+    from recast.recipes.optional import BUILTIN as _OPTIONAL
+    from recast.recipes.optional import (  # noqa: F401 -- re-exported for their tests
         PortRecipe,
         PythonToJaxRecipe,
         PythonToNumbaRecipe,
     )
-except ImportError:  # the public edition
-    _PRO = {}
-BUILTIN.update(_PRO)
+except ImportError:
+    _OPTIONAL = {}
+BUILTIN.update(_OPTIONAL)

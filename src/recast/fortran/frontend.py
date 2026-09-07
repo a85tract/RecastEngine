@@ -611,11 +611,11 @@ class FortranFrontend(Frontend):
         if self.flatten:
             try:
                 from recast.fortran.flatten import FlatConventions, plans_for
-            except ImportError as exc:  # the public edition ships without it
+            except ImportError as exc:
                 raise ConfigError(
                     "flatten: flat adapters for derived-type and module-state "
-                    "interfaces are part of the commercial tier and are not "
-                    "installed; run without `flatten`, or install the tier"
+                    "interfaces are not installed in this RecastEngine; run "
+                    "without `flatten`"
                 ) from exc
 
             spelled = self.flatten if isinstance(self.flatten, dict) else {}

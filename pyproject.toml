@@ -109,10 +109,10 @@ recast = "recast.conformance.builtin:PLUGIN_SET"
 [project.entry-points."recast.recipes"]
 translate = "recast.recipes:TranslateRecipe"
 refactor-todo = "recast.recipes:RefactorRecipe"
-port = "recast.recipes.pro:PortRecipe"
+port = "recast.recipes.optional:PortRecipe"
 audit = "recast.recipes:AuditRecipe"
-python-to-numba = "recast.recipes.pro:PythonToNumbaRecipe"
-python-to-jax = "recast.recipes.pro:PythonToJaxRecipe"
+python-to-numba = "recast.recipes.optional:PythonToNumbaRecipe"
+python-to-jax = "recast.recipes.optional:PythonToJaxRecipe"
 
 [project.entry-points."recast.engines"]
 "recast.fortran-python.numpy" = "recast.engines:fortran_numpy_engine"
