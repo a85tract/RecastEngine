@@ -120,6 +120,42 @@ def test_a_use_only_list_is_carried_as_the_names_this_module_sees(tree: Path) ->
     assert all("only" in c for c in found.values())
 
 
+def test_a_second_use_of_the_same_module_widens_its_only_list(tmp_path: Path) -> None:
+    """CLUBB's saturation says ``use model_flags, only: I_sat_sphum`` and, a
+    few lines on, ``use model_flags, only: saturation_bolton, ...``. The
+    companion carries the union, with every rename: keeping the first
+    statement's list alone left the saturation formulas invisible."""
+    (tmp_path / "helper.f90").write_text(HELPER)
+    (tmp_path / "twouse.f90").write_text(
+        """\
+module twouse
+  use helper, only: bump
+  use helper, only: dbl => twice
+  implicit none
+contains
+  subroutine go(x)
+    double precision, intent(inout) :: x
+    x = dbl(x)
+    call bump(x)
+  end subroutine go
+end module twouse
+"""
+    )
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:twouse")
+    found = {c["module"]: c for c in frontend.analyze(unit, tmp_path).provenance["companions"]}
+    assert found["helper"]["only"] == ["bump", "dbl"]
+    assert found["helper"]["renames"] == {"dbl": "twice"}
+
+    (tmp_path / "twouse.f90").write_text(
+        (tmp_path / "twouse.f90").read_text().replace("use helper, only: bump", "use helper")
+    )
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:twouse")
+    found = {c["module"]: c for c in frontend.analyze(unit, tmp_path).provenance["companions"]}
+    assert found["helper"]["only"] is None, "a bare use beside an only-list lets everything in"
+    assert found["helper"]["renames"] == {"dbl": "twice"}
+
+
 def test_an_intrinsic_module_is_not_looked_for_in_the_tree(tree: Path) -> None:
     """The pipeline this came from treats iso_fortran_env as a companion,
     which is one of the defects its author catalogued."""
