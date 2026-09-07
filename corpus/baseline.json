@@ -72,6 +72,7 @@
         "nan_mismatch": 0,
         "points": 0,
         "redrawn": 0,
+        "reference_isolation": "process",
         "subprograms": {
          "dasum": {
           "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
@@ -1005,6 +1006,7 @@
         "nan_mismatch": 0,
         "points": 18040,
         "redrawn": 7,
+        "reference_isolation": "in-process (call-back arguments: fdjac1, fdjac2, hybrd, hybrd1, hybrj, hybrj1, lmder, lmder1, lmdif, lmdif1, lmstr, lmstr1)",
         "subprograms": {
          "chkder": {
           "bit_exact": 160,
@@ -1483,6 +1485,7 @@
         "nan_mismatch": 0,
         "points": 10,
         "redrawn": 0,
+        "reference_isolation": "process",
         "subprograms": {
          "is_inf": {
           "bit_exact": 10,
@@ -2116,6 +2119,7 @@
         "nan_mismatch": 0,
         "points": 120,
         "redrawn": 0,
+        "reference_isolation": "process",
         "subprograms": {
          "searchsorted_dp": {
           "bit_exact": 10,
@@ -2321,11 +2325,12 @@
         "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 240,
-        "max_rel": 0.2667940455089644,
-        "max_ulp": 1453499978088460,
+        "max_rel": 0.5928989261656535,
+        "max_ulp": 2739760636019512,
         "nan_mismatch": 0,
         "points": 3070,
         "redrawn": 5,
+        "reference_isolation": "process",
         "subprograms": {
          "dchfdv": {
           "bit_exact": 190,
@@ -2360,8 +2365,8 @@
           },
           "integer_mismatch": 0,
           "integer_points": 40,
-          "max_rel": 0.2667940455089644,
-          "max_ulp": 1453499978088460,
+          "max_rel": 0.5928989261656535,
+          "max_ulp": 2739760636019512,
           "nan_mismatch": 0,
           "points": 200,
           "redrawn": 5,
@@ -2788,6 +2793,7 @@
         "nan_mismatch": 0,
         "points": 80,
         "redrawn": 9,
+        "reference_isolation": "process",
         "subprograms": {
          "daxpy": {
           "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"

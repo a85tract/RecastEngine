@@ -798,11 +798,35 @@ class F2pyGoldenOracle(Oracle):
                 + _log_tail(output)
             )
 
-        sys.path.insert(0, str(stage))
-        try:
-            module = importlib.import_module(module_name)
-        finally:
-            sys.path.remove(str(stage))
+        # The reference runs in a process of its own, so that an ``error
+        # stop`` in it is an answer rather than the end of the run (#21).
+        # Not when a wrapped subprogram takes a procedure: an f2py call-back
+        # is a Python object of *this* process that the reference calls, and
+        # it cannot be handed across. Those references stay in-process, and
+        # the handle says so.
+        takes_callbacks = sorted(
+            sub["name"]
+            for sub in facts.interface.get("subprograms", ())
+            if sub["name"] in subprograms
+            and any(a.get("dtype") == "PROCEDURE" for a in sub.get("args", ()))
+        )
+        asked = str(config.get("reference_isolation", "process"))
+        if asked == "in-process":
+            isolation = "in-process (configured)"
+        elif takes_callbacks:
+            isolation = f"in-process (call-back arguments: {', '.join(takes_callbacks)})"
+        else:
+            isolation = "process"
+        if isolation == "process":
+            from recast.oracle.isolated import IsolatedModule
+
+            module: Any = IsolatedModule(stage, module_name, log_dir=build)
+        else:
+            sys.path.insert(0, str(stage))
+            try:
+                module = importlib.import_module(module_name)
+            finally:
+                sys.path.remove(str(stage))
         return OracleRef(
             unit=unit.uid,
             oracle=self.name,
@@ -811,6 +835,7 @@ class F2pyGoldenOracle(Oracle):
                 "module": module,
                 "wrappers": dict(zip(subprograms, wrapper_names, strict=True)),
                 "build_dir": stage,
+                "isolation": isolation,
             },
             cost=self.cost,
         )

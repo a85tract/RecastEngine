@@ -35,6 +35,7 @@
             "nan_mismatch": 0,
             "points": 85,
             "redrawn": 0,
+            "reference_isolation": "process",
             "trials": 5
           },
           "passed": true,
