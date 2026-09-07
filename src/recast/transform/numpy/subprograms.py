@@ -78,6 +78,11 @@ intrinsic (``SIN(0.5)``) or an array reference: syntactically Python, and a
 NameError or TypeError the first time the function runs."""
 
 
+BARE_DIVISION = re.compile(r"(?<![/(])/(?![/)])")
+"""A ``/`` that is neither concatenation (``//``) nor a constructor
+delimiter (``(/``, ``/)``): a quotient."""
+
+
 def _token_pass_guessed(text: str, spelled: str) -> bool:
     """Whether the token pass produced Python that cannot mean the Fortran.
 
@@ -740,7 +745,9 @@ class Subprograms:
                 )
                 continue
             try:
-                value = self._parameter_value(initializer.strip(), own_parameters, statements)
+                value = self._parameter_value(
+                    initializer.strip(), own_parameters, statements, parameter.get("dtype")
+                )
             except REFUSED as refusal:
                 reason = f"local parameter {parameter['name']} ({refusal}): {initializer.strip()}"
                 _emit(
@@ -968,7 +975,9 @@ class Subprograms:
             # does change is a deviation this note is the record of.)
             own = frozenset(p["name"].lower() for p in semantics.subprogram["local_parameters"])
             try:
-                value = self._parameter_value(str(initializer).strip(), own, statements)
+                value = self._parameter_value(
+                    str(initializer).strip(), own, statements, local["dtype"]
+                )
             except REFUSED as refusal:
                 value = None
                 note = f"  # initializer not translated ({refusal})"
@@ -991,6 +1000,7 @@ class Subprograms:
         text: str,
         local_parameters: frozenset[str] = frozenset(),
         statements: Statements | None = None,
+        dtype: str | None = None,
     ) -> str:
         """A local parameter's initializer, as something Python can evaluate.
 
@@ -1007,6 +1017,13 @@ class Subprograms:
         spelled = self._token_parameter_value(
             text, local_parameters, getattr(self, "companion_globals", None)
         )
+        if str(dtype or "").startswith("int") and BARE_DIVISION.search(text):
+            # ``integer, parameter :: h(3) = (/1, 2, 3/) / 2``: the token pass
+            # has no integer division and rendered a float64 1.5 where
+            # Fortran truncates to 1 (ledger #32 row 18). The parse path
+            # spells ``_f_int_div``; an integer initializer with a quotient
+            # takes it.
+            return self._reparsed_parameter_value(text, spelled, statements)
         if _is_expression(spelled) and not _token_pass_guessed(text, spelled):
             return spelled
         return self._reparsed_parameter_value(text, spelled, statements)

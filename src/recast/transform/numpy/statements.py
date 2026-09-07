@@ -157,6 +157,59 @@ def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
             return str(control[0].children[1][0]).lower()
         return None
 
+    constructs = (
+        f03.If_Construct,
+        f03.Case_Construct,
+        f03.Block_Nonlabel_Do_Construct,
+        f03.Block_Label_Do_Construct,
+        f03.Where_Construct,
+    )
+
+    def nesting(node: Any) -> int:
+        depth = 0
+        parent = getattr(node, "parent", None)
+        while parent is not None:
+            if isinstance(parent, constructs):
+                depth += 1
+            parent = getattr(parent, "parent", None)
+        return depth
+
+    arm_breaks = (
+        f03.Else_Stmt,
+        f03.Else_If_Stmt,
+        f03.End_If_Stmt,
+        f03.Case_Stmt,
+        f03.End_Select_Stmt,
+        f03.End_Do_Stmt,
+        f03.Elsewhere_Stmt,
+        f03.End_Where_Stmt,
+    )
+
+    def arm_end(node: Any) -> int | None:
+        """The last line of the branch ``node`` sits in: up to the next
+        else/case/end of its enclosing construct."""
+        parent = getattr(node, "parent", None)
+        if parent is None:
+            return None
+        siblings = list(getattr(parent, "content", None) or getattr(parent, "children", None) or ())
+        after = False
+        for sibling in siblings:
+            if sibling is node:
+                after = True
+                continue
+            if after and isinstance(sibling, arm_breaks):
+                item = getattr(sibling, "item", None)
+                span = getattr(item, "span", None) if item is not None else None
+                return span[0] - 1 if span else None
+        _, end = node_span(parent)
+        return end
+
+    header = walk(subprogram, (f03.Subroutine_Stmt, f03.Function_Stmt))
+    dummies: set[str] = set()
+    if header:
+        dummy_list = header[0].children[2]
+        dummies = {str(d).lower() for d in getattr(dummy_list, "items", ()) or ()}
+
     marked: set[int] = set()
     for loop in walk(subprogram, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
         do_statement = walk(loop, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt))
@@ -164,20 +217,45 @@ def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
         _, end_line = node_span(loop)
         if variable is None or end_line is None:
             continue
+        if variable in dummies:
+            # The caller reads it after the call, whatever this body does.
+            marked.add(id(loop))
+            continue
+        depth = nesting(loop)
+        skip_until = end_line
         for statement in walk(subprogram):
             item = getattr(statement, "item", None)
             span = getattr(item, "span", None) if item is not None else None
-            if not span or span[0] <= end_line:
+            if not span or span[0] <= skip_until:
                 continue
+            # A redefinition closes the question only where it is certain
+            # to run before any read: at the loop's own nesting or above.
+            # One inside an IF arm, or in an enclosing loop's later pass,
+            # hides a read in the sibling arm (ledger #32 row 10).
+            certain = nesting(statement) <= depth
             if isinstance(statement, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt)):
                 if index_of(statement) == variable:
-                    break  # redefined by the next loop over it
+                    if certain:
+                        break  # redefined by the next loop over it
+                    # A deeper loop over the same variable: what its body
+                    # reads is its own index. Resume after it.
+                    _, inner_end = node_span(getattr(statement, "parent", statement))
+                    skip_until = inner_end or span[0]
+                    continue
                 # Another loop's header may still read it in its bounds
                 # (``do k_avg = k_avg_lower, k_avg_upper``): checked below.
             if isinstance(statement, f03.Assignment_Stmt):
                 target = statement.children[0]
                 if isinstance(target, f03.Name) and str(target).lower() == variable:
-                    break  # redefined by assignment
+                    if certain:
+                        break  # redefined by assignment
+                    if variable in names_in(statement.children[2]):
+                        marked.add(id(loop))  # ``j = j + 1`` in one arm: read first
+                        break
+                    # A deeper ``j = 0`` defines it for the rest of its own
+                    # arm; a sibling arm may still read the loop's value.
+                    skip_until = arm_end(statement) or span[0]
+                    continue
             if variable in names_in(statement):
                 marked.add(id(loop))
                 break

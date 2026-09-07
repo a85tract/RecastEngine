@@ -144,6 +144,11 @@ def stand_ins(
             "    def __init__(self, **fields):",
             "        self.__dict__.update(fields)",
             "",
+            "    def __getattr__(self, name):",
+            "        raise AttributeError(",
+            "            f'{name}: component not carried by the flat plan (left to the module)'",
+            "        )",
+            "",
         ]
         entry: dict[str, Any] = {"source": None, "resolved": [], "skipped": []}
         if path is not None:

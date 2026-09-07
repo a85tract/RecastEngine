@@ -143,6 +143,11 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     if kind == "ref":
         return f"{name} = {_stored(payload.upper(), parameter)}  {where}"
     if kind == "expr":
+        quotient = _integer_quotient(payload, parameter)
+        if quotient is not None and quotient[0] is None:
+            return f"# SKIPPED {name} = {parameter['init_expr']}  ({quotient[1]}) {where}"
+        if quotient is not None:
+            return f"{name} = {quotient[0]}  {where}"
         return f"{name} = {_stored(_expression(payload), parameter)}  {where}"
     return f"# SKIPPED {name} = {parameter['init_expr']}  ({payload}) {where}"
 
@@ -276,6 +281,30 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
         else:  # int literals and operators pass through
             spelled.append(token["v"])
     return " ".join(spelled)
+
+
+def _integer_quotient(
+    tokens: list[dict[str, Any]], parameter: dict[str, Any]
+) -> tuple[str | None, str] | None:
+    """An integer constant with a ``/`` in it: Fortran truncates, the
+    token route spelled Python's real division (``HBS = FBS / 2`` is 1.5
+    where the compiler has 1; ledger #32 row 18). The one shape this flat
+    token list can spell exactly is a single quotient of two integer
+    operands, ``int(A / B)`` (truncation toward zero, exact below 2**53);
+    anything richer is refused with the reason rather than folded wrong.
+    ``None`` when the expression is not an integer quotient at all."""
+    declared = str(parameter.get("dtype") or parameter.get("base_type") or "").lower()
+    if not declared.startswith("int"):
+        return None
+    if not any(t["t"] == "op" and t["v"] == "/" for t in tokens):
+        return None
+    operands = (tokens[0], tokens[-1])
+    plain = all(
+        t["t"] in ("int", "ref", "index") and t.get("dtype", "int") == "int" for t in operands
+    )
+    if len(tokens) == 3 and tokens[1] == {"t": "op", "v": "/"} and plain:
+        return f"int({_expression(tokens[:1])} / {_expression(tokens[2:])})", ""
+    return None, "integer division inside a larger expression: not spelled by this renderer"
 
 
 def _call(token: dict[str, Any]) -> str:
