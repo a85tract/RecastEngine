@@ -41,7 +41,28 @@ __all__ = ["IsolatedModule", "ReferenceAborted", "ReferenceRaised"]
 
 class ReferenceAborted(RecastError):
     """The reference process ended during a call -- an ``error stop``, a
-    signal -- instead of answering."""
+    signal, a bounds check -- instead of answering.
+
+    ``runtime_error`` is the libgfortran diagnostic the reference printed
+    before it ended, when the log shows one (``Index '0' of dimension 1 of
+    array 'x' below lower bound of 1``), so a caller can tell a routine
+    refusing its inputs from one reading outside its arrays.
+    """
+
+    def __init__(self, message: str, *, runtime_error: str | None = None) -> None:
+        super().__init__(message)
+        self.runtime_error = runtime_error
+
+
+_RUNTIME_ERROR = "Fortran runtime error:"
+
+
+def _runtime_error(tail: str) -> str | None:
+    """The last libgfortran diagnostic in a worker log's tail, if any."""
+    found = [line for line in tail.splitlines() if _RUNTIME_ERROR in line]
+    if not found:
+        return None
+    return found[-1].split(_RUNTIME_ERROR, 1)[1].strip()
 
 
 class ReferenceRaised(RecastError):
@@ -207,7 +228,8 @@ class IsolatedModule:
             self._end()
             raise ReferenceAborted(
                 f"reference {self._module_name}.{name} ended the process"
-                f" (exit {code if code is not None else '?'}) instead of answering{tail}"
+                f" (exit {code if code is not None else '?'}) instead of answering{tail}",
+                runtime_error=_runtime_error(tail),
             )
         if reply[0] == "raised":
             raise ReferenceRaised(f"{self._module_name}.{name}: {reply[1]}")

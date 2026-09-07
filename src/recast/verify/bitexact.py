@@ -81,6 +81,13 @@ def _passed_buffer(argument: dict[str, Any]) -> bool:
     )
 
 
+def _bounds_violation(runtime_error: str | None) -> bool:
+    """libgfortran's ``-fcheck=bounds`` diagnostics all name the bound: a
+    subscript ``below lower bound`` or ``above upper bound``, a substring
+    ``out of bounds``, an ``Array bound mismatch``."""
+    return "bound" in (runtime_error or "").lower()
+
+
 def _declined_summary(declined_by: dict[str, int]) -> str:
     """``"3 error stop, 1 NaN on both sides"``: the declined draws by kind."""
     return (
@@ -1152,11 +1159,20 @@ class BitexactVerifier(Verifier):
                             # an ERROR STOP the source takes on inputs that
                             # are not its own, the way the candidate's
                             # SystemExit says the same. Not a comparison;
-                            # draw again, and say so (#21).
+                            # draw again, and say so (#21). A bounds check
+                            # tripping is the same answer with a different
+                            # name: the draw put a subscript outside an
+                            # array, and what the reference would have read
+                            # there is this process's memory, not the
+                            # source's arithmetic (#42) -- the kind says
+                            # which, so a profile can be written for it.
                             declined = f"reference aborted: {error}"
-                            declined_by["reference error stop"] = (
-                                declined_by.get("reference error stop", 0) + 1
+                            why = (
+                                "reference subscript out of bounds"
+                                if _bounds_violation(error.runtime_error)
+                                else "reference error stop"
                             )
+                            declined_by[why] = declined_by.get(why, 0) + 1
                             redrawn += 1
                             continue
                         except Exception as error:
@@ -1313,8 +1329,13 @@ class BitexactVerifier(Verifier):
                     max_rel = max(max_rel, measured.get("max_rel", 0.0))
                 break
             else:
+                # Every attempt declined: say what kinds, then the last
+                # reason in full -- the kinds are what a profile answers.
+                kinds = _declined_summary(declined_by)
                 return {
-                    "error": f"no draw this harness could compare in {attempts} attempt(s): "
+                    "error": f"no draw this harness could compare in {attempts} attempt(s)"
+                    + (f" ({kinds})" if kinds else "")
+                    + ": "
                     + (declined or "reason not recorded")
                 }
         if samples is None and reshaped * 2 > len(rounds):

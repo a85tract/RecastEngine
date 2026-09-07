@@ -2114,6 +2114,51 @@ def test_a_scalar_logical_inout_goes_through_the_wrapper_as_an_integer() -> None
     assert "res = ia(skip_l)" in fn and "skip = merge(1, 0, skip_l)" in fn
 
 
+READS_BELOW_THE_ARRAY = """\
+module below_mod
+  implicit none
+contains
+  subroutine spacing_end( n, x, h )
+    integer, intent(in) :: n
+    real(8), intent(in) :: x(*)
+    real(8), intent(out) :: h
+    ! PCHIP's dpchkt: assumes n >= 2 and does not check it.
+    h = x(n) - x(n-1)
+  end subroutine spacing_end
+end module below_mod
+"""
+
+
+@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+def test_a_reference_reading_outside_its_array_declines_the_draw_by_name(tmp_path: Path) -> None:
+    """A subscript outside the array is not a value the source computes: the
+    reference reads whatever memory sits beside the buffer in its process,
+    and the translation's negative index wraps to the other end of the array
+    (#42). Neither is a fact about the Fortran. The reference is built with
+    the bounds check on, so the draw ends its process with the array and the
+    index named, and the gate declines the draw under its own name rather
+    than comparing two undefined values -- and, every draw here being one,
+    fails the routine by name with the reason a profile would have to
+    answer."""
+    (tmp_path / "below_mod.f90").write_text(READS_BELOW_THE_ARRAY)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 2, "dims": {"n": 1}}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert verdict.passed is False, verdict.detail
+    detail = verdict.detail or ""
+    assert "spacing_end: no draw this harness could compare" in detail, detail
+    assert "reference subscript out of bounds" in detail, detail
+    assert "below lower bound" in detail and "'x'" in detail, detail
+    assert verdict.metrics["reference_isolation"] == "process"
+
+
 STOPS_ON_NEGATIVE = """\
 module stopper_mod
   implicit none
