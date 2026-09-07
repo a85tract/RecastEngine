@@ -2010,9 +2010,7 @@ def _infer_read_only_intents(
             | {p["name"] for p in record.get("local_parameters") or []}
             | set(state_names or ())
         )
-        escaping = _written_or_escaping(
-            exec_part, sub_names, variables, _callee_intents(records)
-        )
+        escaping = _written_or_escaping(exec_part, sub_names, variables, _callee_intents(records))
         for argument in candidates:
             if argument["name"] not in escaping:
                 argument["intent"] = "IN"
