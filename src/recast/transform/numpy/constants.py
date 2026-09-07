@@ -23,7 +23,15 @@ import re
 from pathlib import PurePath, PurePosixPath
 from typing import Any
 
-from recast.fortran.expr import Expr, python_call, render, typed, with_integer_division
+from recast.fortran.expr import (
+    Expr,
+    UnsupportedExpression,
+    fold_check,
+    python_call,
+    render,
+    typed,
+    with_integer_division,
+)
 
 __all__ = [
     "constants_module",
@@ -125,7 +133,7 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     if kind == "int":
         return f"{name} = {np_int_literal(int(payload))}  {where}"
     if kind in ("real", "real32"):
-        spelled = _real(payload, kind == "real32")
+        spelled = _stored(_real(payload, kind == "real32"), parameter)
         note = " [unsuffixed default REAL]" if kind == "real32" else ""
         return f"{name} = {spelled}  {where}{note}"
     if kind == "logical":
@@ -133,9 +141,9 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     if kind == "str":
         return f"{name} = {payload!r}  {where}"
     if kind == "ref":
-        return f"{name} = {payload.upper()}  {where}"
+        return f"{name} = {_stored(payload.upper(), parameter)}  {where}"
     if kind == "expr":
-        return f"{name} = {_expression(payload)}  {where}"
+        return f"{name} = {_stored(_expression(payload), parameter)}  {where}"
     return f"# SKIPPED {name} = {parameter['init_expr']}  ({payload}) {where}"
 
 
@@ -151,7 +159,7 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
     if kind == "int":
         return f"{constant} = {np_int_literal(int(payload))}  {about}"
     if kind in ("real", "real32"):
-        spelled = _real(payload, kind == "real32")
+        spelled = _stored(_real(payload, kind == "real32"), parameter)
         note = " [unsuffixed default REAL]" if kind == "real32" else ""
         return f"{constant} = {spelled}  {about}{note}"
     if kind == "logical":
@@ -159,7 +167,7 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
     if kind == "str":
         return f"{constant} = {payload!r}  {about}"
     if kind in ("ref", "expr"):
-        value = payload.upper() if kind == "ref" else _expression(payload)
+        value = _stored(payload.upper() if kind == "ref" else _expression(payload), parameter)
         # The F77 PARAMETER-statement form historically emitted these bare;
         # the declaration form carries its comment. Kept apart because the
         # emitted files are diffed byte-for-byte against the pipeline's.
@@ -272,10 +280,32 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
 
 def _call(token: dict[str, Any]) -> str:
     name = token["v"]
+    dtype = token.get("dtype")
     if name in INQUIRY_SPELLING:
+        # Of the kind the argument had, which the classifier settled; the
+        # 64-bit spelling stands for a record made without kinds.
+        if dtype == "float32":
+            return INQUIRY_SPELLING[name].replace("np.float64", "np.float32")
         return INQUIRY_SPELLING[name]
     arguments = ", ".join(_expression(argument) for argument in token["args"])
+    if name in ("real", "float", "dble") and dtype == "float32":
+        # ``real(x)`` is the default real: single, then widened by whatever
+        # arithmetic it meets -- exact, where ``np.float64(x)`` was not.
+        return f"np.float32({arguments})"
     return f"{INTRINSIC_SPELLING.get(name, name)}({arguments})"
+
+
+def _stored(value: str, parameter: dict[str, Any]) -> str:
+    """The value as the compiler stores it: a single-precision constant is
+    rounded to single before it is widened (``storage == "single"``, or a
+    real declared single), and says so beside the value."""
+    single = parameter.get("storage") == "single" or (
+        parameter.get("dtype") == "float32" and parameter["kind"] in ("real", "ref", "expr")
+    )
+    if not single or value.startswith("np.float64(np.float32("):
+        return value
+    inner = value if value.startswith("np.float32(") else f"np.float32({value})"
+    return f"np.float64({inner})"
 
 
 def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> str:
@@ -294,6 +324,17 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
     env: dict[str, str | None] = {}
     for entry in resolved:
         value = _python(entry["expr"], env)
+        # What the compiler stores: a lone single-precision value is rounded
+        # to single before it is widened -- for a single constant as well as
+        # a double one initialized from a default-real literal -- and a fold
+        # that would be a different number refuses here, by name.
+        try:
+            storage = fold_check(entry["expr"], entry.get("kind_dtype"))
+        except UnsupportedExpression as error:
+            raise UnsupportedExpression(f"{entry['name']}: {error}") from error
+        if storage == "single":
+            single = value if value.startswith("np.float32(") else f"np.float32({value})"
+            value = f"np.float64({single})"
         env[entry["name"]] = entry.get("dtype") or typed(entry["expr"], env)
         where = f"{PurePath(entry['source']).name}:{entry['line']}"
         lines.append(f"{entry['name'].upper()} = {value}  # {where}")
@@ -309,7 +350,9 @@ def _python(expr: Expr, env: dict[str, str | None] | None = None) -> str:
     return render(
         with_integer_division(expr, env=env),
         real=lambda text: f"np.float64('{text}')",
+        real32=lambda text: f"np.float32('{text}')",
         integer=lambda text: text,
         name=lambda text: text.upper(),
-        call=python_call,
+        call=lambda fname, args, kind: python_call(fname, args, result_kind=kind),
+        dtype=lambda kind: f"np.{kind}",
     )

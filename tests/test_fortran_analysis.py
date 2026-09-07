@@ -420,7 +420,7 @@ def test_an_unclassifiable_initializer_refuses(tmp_path: Path) -> None:
     src = """\
 module refuse_mod
   implicit none
-  real, parameter :: derived = mystery_constant * 2.0
+  real(8), parameter :: derived = mystery_constant * 2.0d0
 end module refuse_mod
 """
     rec = constants.extract(_write(tmp_path, "refuse.f90", src))["module_parameters"][0]
@@ -434,7 +434,7 @@ end module refuse_mod
         _write(tmp_path, "refuse.f90", src), extern_names={"mystery_constant"}
     )["module_parameters"][0]
     assert known["kind"] == "expr"
-    assert {"t": "ref", "v": "mystery_constant"} in known["payload"]
+    assert {"t": "ref", "v": "mystery_constant", "dtype": None} in known["payload"]
 
 
 # --- one expression, two languages -------------------------------------------
@@ -563,17 +563,80 @@ def test_a_renderer_without_a_call_spelling_refuses_a_call(tmp_path: Path) -> No
         expr.render(tree, real=str, integer=str, name=str)
 
 
-def test_a_conversion_to_a_kind_the_fold_cannot_honour_refuses(tmp_path: Path) -> None:
+def test_a_conversion_to_single_is_folded_at_single(tmp_path: Path) -> None:
+    """``real( 3, kind = sp )`` with ``sp = 4`` is a single-precision value;
+    the fold used to refuse it for want of a 32-bit spelling. It has one:
+    the conversion is ``np.float32`` and the constant, declared single, is
+    rounded to single before it is widened -- exactly what the compiler
+    stores."""
+    import numpy as np
+
+    from recast.transform.numpy.constants import use_constants_module
+
     src = """\
 module sp_mod
   implicit none
   integer, parameter :: sp = 4
   real(sp), parameter :: x = real( 3, kind = sp )
+  real(sp), parameter :: tenth = 0.1
+  real(8), parameter :: promoted = 0.1
+  real(8), parameter :: exact = 0.1d0
 end module sp_mod
 """
     _write(tmp_path, "sp.f90", src)
-    with pytest.raises(expr.UnsupportedExpression):
-        use.resolve(["x"], [tmp_path / "sp.f90"])
+    resolved = use.resolve(["x", "tenth", "promoted", "exact"], [tmp_path / "sp.f90"])
+    text = use_constants_module(resolved, "sp_mod")
+    scope: dict[str, object] = {}
+    exec(text, scope)  # generated text under test
+    assert scope["X"] == np.float64(3.0) and "np.float32(3)" in text
+    assert scope["TENTH"] == np.float64(np.float32(0.1)) != np.float64(0.1)
+    assert scope["PROMOTED"] == np.float64(np.float32(0.1)), "default real, then widened"
+    assert scope["EXACT"] == np.float64(0.1)
+
+
+def test_a_kind_nothing_defines_refuses_the_fold(tmp_path: Path) -> None:
+    """``real( 3, kind = wp )`` where no source and no assumption says what
+    ``wp`` is: the fold does not guess a width. Told by ``kind_assumptions``,
+    it folds at that width."""
+    src = """\
+module wp_mod
+  implicit none
+  real(8), parameter :: x = real( 3, kind = wp )
+  real(8), parameter :: e = epsilon( 1.0_wp )
+end module wp_mod
+"""
+    _write(tmp_path, "wp.f90", src)
+    with pytest.raises(expr.UnsupportedExpression, match="wp"):
+        use.resolve(["x"], [tmp_path / "wp.f90"])
+    with pytest.raises(expr.UnsupportedExpression, match="wp"):
+        use.resolve(["e"], [tmp_path / "wp.f90"])
+    resolved = use.resolve(["x", "e"], [tmp_path / "wp.f90"], {"wp": "float32"})
+    assert {r["name"]: r["expr"].dtype for r in resolved} == {"x": "float32", "e": "float32"}
+
+
+def test_a_fold_the_compiler_does_in_single_is_refused_not_widened(tmp_path: Path) -> None:
+    """``0.1 * 3`` in a double constant: two default-real operands (the
+    integer is promoted to single, not double) are multiplied in single by
+    the compiler, and this renderer has no single-precision arithmetic --
+    so it says so rather than multiplying in double. One default-real
+    literal beside a double is exact, and stays."""
+    from recast.transform.numpy.constants import use_constants_module
+
+    src = """\
+module mix_mod
+  implicit none
+  real(8), parameter :: pi = 3.141592653589793d0
+  real(8), parameter :: fine = 0.5 * pi
+  real(8), parameter :: coarse = 0.1 * 3
+  real(4), parameter :: single = 0.1 * 3.0
+end module mix_mod
+"""
+    _write(tmp_path, "mix.f90", src)
+    fine = use.resolve(["fine"], [tmp_path / "mix.f90"])
+    assert "np.float32('0.5')" in use_constants_module(fine, "mix_mod")
+    for name in ("coarse", "single"):
+        with pytest.raises(expr.UnsupportedExpression, match=name):
+            use_constants_module(use.resolve([name], [tmp_path / "mix.f90"]), "mix_mod")
 
 
 # --- block boundaries as shared vocabulary -----------------------------------
@@ -1152,22 +1215,36 @@ def test_an_intrinsic_call_in_a_constant_expression_is_carried_not_folded(
     record = _forms(tmp_path)
     kind, payload = _param(record, "diag")["kind"], _param(record, "diag")["payload"]
     assert kind == "expr"
-    assert payload[0] == {"t": "call", "v": "sqrt", "args": [[{"t": "real", "v": "2.0"}]]}
-    assert payload[-1] == {"t": "ref", "v": "pi"}
+    assert payload[0] == {
+        "t": "call",
+        "v": "sqrt",
+        "args": [[{"t": "real", "v": "2.0", "dtype": "float64"}]],
+        "dtype": "float64",
+    }
+    assert payload[-1] == {"t": "ref", "v": "pi", "dtype": "float64"}
 
 
 def test_a_type_inquiry_keeps_its_name(tmp_path: Path) -> None:
     record = _forms(tmp_path)
     for name, intrinsic in (("unset", "huge"), ("fuzz", "epsilon"), ("least", "tiny")):
         payload = _param(record, name)["payload"]
-        assert payload == [{"t": "call", "v": intrinsic, "args": [[{"t": "real", "v": "1.0"}]]}]
+        # The argument was ``1.0_r8``: its kind is what the inquiry is of,
+        # and the kind is all that is kept of it.
+        assert payload == [{"t": "call", "v": intrinsic, "args": [], "dtype": "float64"}]
 
 
 def test_a_trailing_kind_argument_is_not_a_value(tmp_path: Path) -> None:
     """``real(2, r8)`` says what precision to evaluate in, which the target's
     float64 already is; passing it on would be an argument too many."""
     payload = _param(_forms(tmp_path), "promoted")["payload"]
-    assert payload == [{"t": "call", "v": "real", "args": [[{"t": "int", "v": "2"}]]}]
+    assert payload == [
+        {
+            "t": "call",
+            "v": "real",
+            "args": [[{"t": "int", "v": "2", "dtype": "int"}]],
+            "dtype": "float64",
+        }
+    ]
 
 
 def test_a_bare_boz_literal_has_a_value(tmp_path: Path) -> None:
@@ -1209,9 +1286,8 @@ def test_a_constructor_over_names_carries_its_elements(tmp_path: Path) -> None:
     value without this stage folding anything."""
     derived = _param(_forms(tmp_path), "derived")
     assert derived["kind"] == "expr"
-    assert derived["payload"] == [
-        {"t": "array", "elements": [[{"t": "ref", "v": "pi"}], [{"t": "ref", "v": "pi"}]]}
-    ]
+    pi = {"t": "ref", "v": "pi", "dtype": "float64"}
+    assert derived["payload"] == [{"t": "array", "elements": [[pi], [pi]]}]
 
 
 def test_a_constructor_over_an_unknown_name_is_still_skipped() -> None:
@@ -1227,21 +1303,32 @@ def test_an_inquiry_constructor_and_a_subscript_of_it_are_read() -> None:
     dpmpar(1)``: the constructor holds calls rather than literals, and the
     parameter after it subscripts the array -- spelled exactly like a call,
     and told apart only by knowing the name holds an array."""
-    kind, payload = constants.classify_init("[epsilon(1.0_wp), tiny(1.0_wp)]", set())
+    kinds = constants.Kinds({"wp": "float64"})
+    kind, payload = constants.classify_init("[epsilon(1.0_wp), tiny(1.0_wp)]", set(), kinds=kinds)
     assert kind == "expr"
     assert payload == [
         {
             "t": "array",
             "elements": [
-                [{"t": "call", "v": "epsilon", "args": [[{"t": "real", "v": "1.0"}]]}],
-                [{"t": "call", "v": "tiny", "args": [[{"t": "real", "v": "1.0"}]]}],
+                [{"t": "call", "v": "epsilon", "args": [], "dtype": "float64"}],
+                [{"t": "call", "v": "tiny", "args": [], "dtype": "float64"}],
             ],
         }
     ]
+    # The inquiry is of ``wp``'s kind; a ``wp`` nothing defines has no answer.
+    kind, why = constants.classify_init("[epsilon(1.0_wp), tiny(1.0_wp)]", set())
+    assert kind == "skip" and "kind" in why
 
     kind, payload = constants.classify_init("dpmpar(1)", {"dpmpar"}, array_names={"dpmpar"})
     assert kind == "expr"
-    assert payload == [{"t": "index", "v": "dpmpar", "args": [[{"t": "int", "v": "1"}]]}]
+    assert payload == [
+        {
+            "t": "index",
+            "v": "dpmpar",
+            "args": [[{"t": "int", "v": "1", "dtype": "int"}]],
+            "dtype": None,
+        }
+    ]
 
 
 def test_a_signed_literal_node_is_collected(tmp_path: Path) -> None:
@@ -1832,9 +1919,117 @@ end module self_mod
         {
             "t": "call",
             "v": "max",
-            "args": [[{"t": "real", "v": "1.e-10"}], [{"t": "call", "v": "epsilon", "args": []}]],
+            "args": [
+                [{"t": "real", "v": "1.e-10", "dtype": "float64"}],
+                [{"t": "call", "v": "epsilon", "args": [], "dtype": "float64"}],
+            ],
+            "dtype": "float64",
         }
     ]
+
+
+KINDED = """\
+module kinded_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+  integer, parameter :: sp = 4
+  real(4) :: x4
+  real(r8), parameter :: pi = 3.141592653589793_r8
+  real(r8), parameter :: e_default = epsilon(1.0)
+  real(r8), parameter :: e_double = epsilon(pi)
+  real(r8), parameter :: e_x4 = epsilon(x4)
+  real(r8), parameter :: h_single = huge(1.0_sp)
+  real(r8), parameter :: r_default = real(0.1d0)
+  real(r8), parameter :: r_single = real(0.1d0, sp)
+  real(r8), parameter :: r_double = real(0.1, r8)
+  real(r8), parameter :: fine = 0.5 * pi
+  real(r8), parameter :: coarse = 0.1 * 3
+  real(4), parameter :: tenth = 0.1d0
+  real(4), parameter :: twice = 2.0 * tenth
+  real, parameter :: g = 9.81
+  real(wp), parameter :: unplaced = 1.0_wp
+end module kinded_mod
+"""
+
+
+def _kinded(tmp_path: Path, **kinds: str) -> tuple[dict, dict]:
+    """The record and the generated constants module, executed."""
+    from recast.transform.numpy.constants import constants_module
+
+    record = constants.extract(_write(tmp_path, "kinded.f90", KINDED), kind_assumptions=kinds)
+    scope: dict = {}
+    exec(constants_module(record), scope)  # generated text under test
+    return record, scope
+
+
+def test_kind_inquiries_are_of_the_argument_kind(tmp_path: Path) -> None:
+    """``epsilon(1.0)`` is the default real's, ``epsilon(pi)`` the double's,
+    and ``epsilon(x4)`` of a real(4) variable the single's -- 2**-23, not
+    2**-52 -- whatever kind the constant is declared with. The 64-bit
+    spelling stood for all three, and was off by sixteen orders of
+    magnitude on two."""
+    import numpy as np
+
+    record, scope = _kinded(tmp_path)
+    assert scope["E_DEFAULT"] == np.finfo(np.float32).eps
+    assert scope["E_X4"] == np.finfo(np.float32).eps
+    assert scope["E_DOUBLE"] == np.finfo(np.float64).eps
+    assert scope["H_SINGLE"] == np.finfo(np.float32).max
+    assert _param(record, "e_x4")["payload"] == [
+        {"t": "call", "v": "epsilon", "args": [], "dtype": "float32"}
+    ]
+
+
+def test_a_conversion_is_folded_at_its_result_kind(tmp_path: Path) -> None:
+    """``real(0.1d0)`` is single precision (the default real), ``real(x,
+    sp)`` too, ``real(0.1, r8)`` double of a single value: each is spelled at
+    its own kind. All three were ``np.float64(...)``."""
+    import numpy as np
+
+    _record, scope = _kinded(tmp_path)
+    single_tenth = np.float64(np.float32(0.1))
+    assert scope["R_DEFAULT"] == single_tenth != np.float64(0.1)
+    assert scope["R_SINGLE"] == single_tenth
+    assert scope["R_DOUBLE"] == single_tenth, "the literal was single before it was widened"
+
+
+def test_a_fold_the_compiler_does_in_single_is_skipped_not_widened(tmp_path: Path) -> None:
+    """``0.1 * 3`` in a double constant is multiplied in single by the
+    compiler (the integer is promoted to the *single* real); ``2.0 *
+    tenth`` in a single constant likewise. This renderer has no
+    single-precision arithmetic, so it says so instead of multiplying in
+    double. A lone default-real literal beside a double stays: one single
+    operand is widened at its first operation, exactly."""
+    import numpy as np
+
+    record, scope = _kinded(tmp_path)
+    assert scope["FINE"] == np.float32(0.5) * np.float64(np.pi), "0.5 exact; the product double"
+    for name in ("coarse", "twice"):
+        parameter = _param(record, name)
+        assert parameter["kind"] == "skip", name
+        assert "single" in parameter["payload"], parameter["payload"]
+        assert name.upper() not in scope
+    # A single constant initialized from a double literal is rounded to
+    # single, and a default-real one is single: what the compiler stores.
+    assert scope["TENTH"] == np.float64(np.float32(0.1))
+    assert scope["G"] == np.float64(np.float32(9.81))
+    assert _param(record, "tenth")["dtype"] == "float32"
+
+
+def test_a_kind_nothing_defines_is_skipped_until_assumed(tmp_path: Path) -> None:
+    """``real(wp)`` where no parameter of the file and no assumption says what
+    ``wp`` is: the constant is skipped with the reason, not folded at a
+    guessed width. ``kind_assumptions`` supplies it and it folds -- at that
+    width. Nothing in the engine knows a domain's kind names any more."""
+    import numpy as np
+
+    record, scope = _kinded(tmp_path)
+    unplaced = _param(record, "unplaced")
+    assert unplaced["kind"] == "skip" and "wp" in unplaced["payload"]
+    assert unplaced["dtype"] is None and "UNPLACED" not in scope
+    record, scope = _kinded(tmp_path, wp="float32")
+    assert _param(record, "unplaced")["dtype"] == "float32"
+    assert scope["UNPLACED"] == np.float64(np.float32(1.0))
 
 
 # --- what a dummy's bound may name ------------------------------------------

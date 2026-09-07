@@ -20,11 +20,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from recast.fortran._parse import f03, parse, walk
-from recast.fortran.expr import _normalize_real
+from recast.fortran.expr import (
+    CONVERSIONS,
+    UnsupportedExpression,
+    _normalize_real,
+    literal_kind,
+    promoted,
+    real_kind_of,
+)
 from recast.fortran.interface import _scope_of
 
 WHITELIST_INT = frozenset({"0", "1", "2"})
@@ -162,11 +170,40 @@ The target evaluates the call; this stage only says which name it is. Folding
 here would fold at a different precision than the compiler did.
 """
 
-_KIND_ARGUMENT = re.compile(
-    r"^(r4|r8|r16|i4|i8|dp|sp|wp|kind|real32|real64|int32|int64"
-    r"|selected_real_kind|selected_int_kind)$",
-    re.I,
-)
+
+@dataclass
+class Kinds:
+    """What the classifier knows about widths while it reads one initializer.
+
+    ``kind_map`` is kind-parameter name -> dtype (the module's own ``r8 =
+    selected_real_kind(12)`` and the extension's assumptions); ``dtypes`` is
+    every known constant's declared dtype (``None`` for one the width of
+    which is not known, an extern name); ``self_name`` / ``self_dtype`` are
+    the constant being declared, for the one legal self-reference. Without
+    these a fold guesses a width, which is the defect ledger #32 is about.
+    """
+
+    kind_map: dict[str, str] = field(default_factory=dict)
+    dtypes: dict[str, str | None] = field(default_factory=dict)
+    self_name: str | None = None
+    self_dtype: str | None = None
+
+    def literal(self, text: str) -> str | None:
+        try:
+            return literal_kind(text, self.kind_map)
+        except UnsupportedExpression:
+            return None
+
+    def kind_argument(self, token: str) -> str | None:
+        """The dtype a trailing kind argument names, or ``None`` when the
+        token is not a kind this table knows."""
+        try:
+            return real_kind_of(token, self.kind_map)
+        except UnsupportedExpression:
+            return None
+
+    def is_kind_name(self, token: str) -> bool:
+        return token.lower() in self.kind_map or token.lower() in ("4", "8", "real32", "real64")
 
 
 def _split_arguments(tokens: list[str]) -> list[list[str]]:
@@ -190,10 +227,14 @@ def _split_arguments(tokens: list[str]) -> list[list[str]]:
 
 
 def _argument_tokens(
-    tokens: list[str], known_names: set[str], aliases: dict[str, str] | None = None
+    tokens: list[str],
+    known_names: set[str],
+    aliases: dict[str, str] | None = None,
+    kinds: Kinds | None = None,
 ) -> list[dict[str, Any]] | None:
     """One argument as tokens of the same vocabulary; ``None`` if it names
     something no earlier constant defines."""
+    kinds = kinds or Kinds()
     spelled: list[dict[str, Any]] = []
     at = 0
     while at < len(tokens):
@@ -201,23 +242,19 @@ def _argument_tokens(
         if re.match(r"[A-Za-z_]", piece):
             if piece.lower() in INTRINSICS and at + 1 < len(tokens) and tokens[at + 1] == "(":
                 # A call inside an argument: ``max( 1.e-10, epsilon(tol) )``.
-                call, at = _intrinsic_call(tokens, at, known_names, aliases)
+                call, at = _intrinsic_call(tokens, at, known_names, aliases, kinds)
                 if call is None:
                     return None
                 spelled.append(call)
                 continue
             if piece.lower() in known_names:
-                spelled.append({"t": "ref", "v": _spelled_ref(piece, aliases)})
-            elif _KIND_ARGUMENT.match(piece):
+                spelled.append(_ref_token(piece, aliases, kinds))
+            elif kinds.is_kind_name(piece):
                 pass
             else:
                 return None
         elif re.match(r"\d", piece):
-            base = _normalize_real(piece)
-            if "." in base or "e" in base:
-                spelled.append({"t": "real32" if is_default_real(piece) else "real", "v": base})
-            else:
-                spelled.append({"t": "int", "v": base})
+            spelled.append(_number_token(piece, kinds))
         else:
             spelled.append({"t": "op", "v": piece})
         at += 1
@@ -225,6 +262,108 @@ def _argument_tokens(
 
 
 _KIND_INQUIRIES = frozenset({"epsilon", "huge", "tiny"})
+
+
+def _ref_token(name: str, aliases: dict[str, str] | None, kinds: Kinds) -> dict[str, Any]:
+    return {"t": "ref", "v": _spelled_ref(name, aliases), "dtype": kinds.dtypes.get(name.lower())}
+
+
+def _number_token(text: str, kinds: Kinds) -> dict[str, Any]:
+    """A numeric literal token with its kind: ``real32`` for a single (an
+    unsuffixed literal, or one suffixed with a single kind), ``real`` for a
+    double; the dtype is ``None`` when the suffix names a kind nothing
+    defines, and the classifier refuses the initializer for it."""
+    base = _normalize_real(text)
+    if "." in base or "e" in base:
+        dtype = kinds.literal(text)
+        return {"t": "real32" if dtype == "float32" else "real", "v": base, "dtype": dtype}
+    return {"t": "int", "v": base, "dtype": "int"}
+
+
+def _tokens_dtype(tokens: list[dict[str, Any]]) -> str | None:
+    """The kind an expression's tokens promote to, ``None`` if any is unknown."""
+    leaves = [t.get("dtype") for t in _leaf_tokens(tokens)]
+    return promoted(*leaves) if leaves else None
+
+
+def _leaf_tokens(tokens: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The value-carrying tokens: literals, references, conversions and
+    inquiries as themselves, the arguments of every other call."""
+    out: list[dict[str, Any]] = []
+    for token in tokens:
+        kind = token["t"]
+        if kind in ("real", "real32", "int", "ref", "index"):
+            out.append(token)
+        elif kind == "call":
+            if token["v"] in CONVERSIONS or token["v"] in _KIND_INQUIRIES:
+                out.append(token)
+            else:
+                for argument in token["args"]:
+                    out.extend(_leaf_tokens(argument))
+        elif kind == "array":
+            for element in token["elements"]:
+                out.extend(_leaf_tokens(element))
+    return out
+
+
+def _storage(tokens: list[dict[str, Any]], declared: str | None) -> str:
+    """How a fold of ``tokens`` is stored into a constant declared ``declared``
+    -- ``as-is``, ``single`` (rounded to single before it is widened) or
+    ``int`` -- or the reason it cannot be folded exactly (raised). The same
+    rule as ``expr.fold_check``: a leaf of unknown kind refuses; two singles,
+    or a single beside an integer, in a double constant refuse (the compiler
+    folds that step in single, and this renderer has no single-precision
+    arithmetic); arithmetic in a single constant refuses; a lone single
+    value is exact either way."""
+    leaves = _leaf_tokens(tokens)
+    if declared in ("int", "bool", "str", "complex"):
+        return "int"
+    unknown = [leaf for leaf in leaves if leaf.get("dtype") is None]
+    lone = len(tokens) == 1 and tokens[0]["t"] in ("real", "real32", "ref", "index", "call")
+    # A reference whose kind is not known (a constant a sibling translation
+    # defines) is exact where it is the only operand the fold cannot place
+    # and everything it meets is double: whatever it is, it is widened at
+    # its first operation. Two of them, or one beside a single or an
+    # integer, might be folded in single by the compiler.
+    if unknown and not (
+        lone
+        or (
+            declared == "float64"
+            and len(unknown) == 1
+            and all(leaf.get("dtype") in ("float64", None) for leaf in leaves)
+        )
+    ):
+        what = unknown[0]["v"] if unknown[0]["t"] != "call" else f"{unknown[0]['v']}(...)"
+        raise UnsupportedExpression(f"kind of {what!r} is not known; the fold would guess a width")
+    dtype = _tokens_dtype(tokens)
+    reals32 = sum(1 for leaf in leaves if leaf.get("dtype") == "float32")
+    ints = sum(1 for leaf in leaves if leaf.get("dtype") == "int")
+    if declared == "float64":
+        if dtype == "int":
+            return "int"
+        if dtype == "float32" and not lone:
+            raise UnsupportedExpression(
+                "single-precision arithmetic in a double constant: the compiler folds it "
+                "in single, this fold has no single-precision arithmetic"
+            )
+        if dtype == "float32":
+            return "single"
+        if reals32 > 1 or (reals32 == 1 and ints):
+            raise UnsupportedExpression(
+                "a single-precision operand meets another single or an integer before a "
+                "double does: the compiler folds that step in single"
+            )
+        return "as-is"
+    if declared == "float32":
+        if lone:
+            return "single"
+        raise UnsupportedExpression(
+            "arithmetic in a single-precision constant: the compiler folds it in single, "
+            "this fold has no single-precision arithmetic"
+        )
+    raise UnsupportedExpression(
+        f"declared kind {declared!r} is not one this fold knows the width of"
+    )
 
 
 def _spelled_ref(name: str, aliases: dict[str, str] | None) -> str:
@@ -240,19 +379,27 @@ def _spelled_ref(name: str, aliases: dict[str, str] | None) -> str:
 
 
 def _intrinsic_call(
-    tokens: list[str], at: int, known_names: set[str], aliases: dict[str, str] | None = None
+    tokens: list[str],
+    at: int,
+    known_names: set[str],
+    aliases: dict[str, str] | None = None,
+    kinds: Kinds | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """The call starting at ``tokens[at]``, and the index just past it.
 
-    A trailing kind argument -- ``real(x, r8)`` -- is dropped: it says what
-    precision the compiler evaluated in, which the target's own float64 is,
-    and it is not a value to pass on. The argument of a kind inquiry --
+    A trailing kind argument -- ``real(x, r8)`` -- is the conversion's
+    result kind and is recorded as the call's ``dtype`` rather than passed
+    on as a value; ``real(x)`` without one is the default real, single
+    precision, ``dble`` double. The argument of a kind inquiry --
     ``epsilon(pi)``, ``huge(x)`` -- contributes its kind and no value, and
-    may legally be the constant being declared
-    (``tol = max( 1.e-10_core_rknd, epsilon(tol) )``, CLUBB); when it names
-    nothing yet defined the call is kept with no argument, which is what the
-    target renders anyway.
+    may legally be the constant being declared (``tol = max(
+    1.e-10_core_rknd, epsilon(tol) )``, CLUBB): the call is kept with no
+    argument and the kind it asked about. A kind neither the module nor the
+    extension's assumptions can place refuses the initializer: the target
+    would otherwise render ``epsilon`` of the wrong kind, sixteen orders of
+    magnitude from the compiler's.
     """
+    kinds = kinds or Kinds()
     name = tokens[at].lower()
     depth = 0
     end = at + 1
@@ -266,20 +413,53 @@ def _intrinsic_call(
         end += 1
     arguments = _split_arguments(tokens[at + 2 : end])
     kept = []
+    kind_argument: str | None = None
     for index, argument in enumerate(arguments):
         stripped = [token for token in argument if token.strip()]
         last = index == len(arguments) - 1
-        if last and len(stripped) == 1 and _KIND_ARGUMENT.match(stripped[0]):
+        if last and index > 0 and len(stripped) == 1 and kinds.is_kind_name(stripped[0]):
+            kind_argument = stripped[0]
+            continue
+        if last and index > 0 and len(stripped) == 3 and stripped[0].lower() == "kind":
+            kind_argument = stripped[2]  # ``kind = r8``, when the tokenizer keeps it
             continue
         kept.append(argument)
-    spelled = [_argument_tokens(argument, known_names, aliases) for argument in kept]
-    if any(text is None for text in spelled):
-        if name in _KIND_INQUIRIES:
-            # The argument names nothing yet defined -- the constant itself,
-            # legally -- and only its kind was ever asked for.
-            return {"t": "call", "v": name, "args": []}, end + 1
+    if name in _KIND_INQUIRIES:
+        # The argument names nothing yet defined -- the constant itself,
+        # legally -- and only its kind was ever asked for.
+        stripped = [token for argument in kept for token in argument if token.strip()]
+        dtype = None
+        if len(stripped) == 1:
+            token = stripped[0]
+            if token.lower() == kinds.self_name:
+                dtype = kinds.self_dtype
+            elif re.match(r"\d", token):
+                dtype = kinds.literal(token)
+            else:
+                dtype = kinds.dtypes.get(token.lower())
+        if dtype not in ("float32", "float64"):
+            return None, end + 1
+        return {"t": "call", "v": name, "args": [], "dtype": dtype}, end + 1
+    spelled_or_none = [_argument_tokens(argument, known_names, aliases, kinds) for argument in kept]
+    if any(text is None for text in spelled_or_none):
         return None, end + 1
-    return {"t": "call", "v": name, "args": spelled}, end + 1
+    spelled = [text for text in spelled_or_none if text is not None]
+    if name in CONVERSIONS:
+        if kind_argument is not None:
+            dtype = kinds.kind_argument(kind_argument)
+            if dtype is None:
+                return None, end + 1
+        else:
+            dtype = "float64" if name == "dble" else "float32"
+        return {"t": "call", "v": name, "args": spelled, "dtype": dtype}, end + 1
+    if name == "int":
+        return {"t": "call", "v": name, "args": spelled, "dtype": "int"}, end + 1
+    return {
+        "t": "call",
+        "v": name,
+        "args": spelled,
+        "dtype": promoted(*(_tokens_dtype(argument) for argument in spelled)),
+    }, end + 1
 
 
 _CHAR_INTRINSICS = ("achar", "char", "new_line", "repeat", "trim", "adjustl", "adjustr")
@@ -467,6 +647,7 @@ def _array_index(
     known_names: set[str],
     array_names: set[str],
     aliases: dict[str, str] | None = None,
+    kinds: Kinds | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """``dpmpar(1)`` -- a subscript of an earlier *array* parameter.
 
@@ -489,10 +670,15 @@ def _array_index(
     if end >= len(tokens):
         return None, end + 1
     subscripts = _split_arguments(tokens[at + 2 : end])
-    spelled = [_argument_tokens(subscript, known_names, aliases) for subscript in subscripts]
+    spelled = [_argument_tokens(subscript, known_names, aliases, kinds) for subscript in subscripts]
     if not spelled or any(text is None for text in spelled):
         return None, end + 1
-    return {"t": "index", "v": _spelled_ref(name, aliases), "args": spelled}, end + 1
+    return {
+        "t": "index",
+        "v": _spelled_ref(name, aliases),
+        "args": spelled,
+        "dtype": (kinds or Kinds()).dtypes.get(name),
+    }, end + 1
 
 
 def _classify_tokens(
@@ -501,13 +687,19 @@ def _classify_tokens(
     known_names: set[str],
     array_names: set[str],
     aliases: dict[str, str] | None = None,
+    kinds: Kinds | None = None,
+    info: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """A constant expression over earlier parameters, token by token.
 
     Re-emitted rather than folded so the target language evaluates the same
     arithmetic the compiler did, rather than this stage folding it at a
-    different precision.
+    different precision -- which is also why an expression the target's
+    64-bit arithmetic would fold at another width than the compiler is
+    refused here (``_storage``), with the reason, and the way a lone single
+    value is stored is reported through ``info["storage"]``.
     """
+    kinds = kinds or Kinds()
     toks = _TOKEN_RE.findall(e)
     if not (toks and "".join(toks).replace(" ", "") == compact):
         return "skip", f"unevaluated expression: {e}"
@@ -518,16 +710,16 @@ def _classify_tokens(
         called = at + 1 < len(toks) and toks[at + 1] == "("
         if re.match(r"[A-Za-z_]", t) and t.lower() in INTRINSICS:
             if called:
-                call, at = _intrinsic_call(toks, at, known_names, aliases)
+                call, at = _intrinsic_call(toks, at, known_names, aliases, kinds)
                 if call is None:
-                    return "skip", f"unresolved argument in expression: {e}"
+                    return "skip", f"unresolved argument or kind in expression: {e}"
                 out.append(call)
                 continue
             if t.lower() not in known_names:
                 return "skip", f"unknown name {t!r} in expression: {e}"
-            out.append({"t": "ref", "v": _spelled_ref(t, aliases)})
+            out.append(_ref_token(t, aliases, kinds))
         elif re.match(r"[A-Za-z_]", t) and t.lower() in array_names and called:
-            index, at = _array_index(toks, at, known_names, array_names, aliases)
+            index, at = _array_index(toks, at, known_names, array_names, aliases, kinds)
             if index is None:
                 return "skip", f"unresolved subscript in expression: {e}"
             out.append(index)
@@ -535,16 +727,19 @@ def _classify_tokens(
         elif re.match(r"[A-Za-z_]", t):
             if t.lower() not in known_names:
                 return "skip", f"unknown name {t!r} in expression: {e}"
-            out.append({"t": "ref", "v": _spelled_ref(t, aliases)})
+            out.append(_ref_token(t, aliases, kinds))
         elif re.match(r"\d", t):
-            base = _normalize_real(t)
-            if "." in base or "e" in base:
-                out.append({"t": "real32" if is_default_real(t) else "real", "v": base})
-            else:
-                out.append({"t": "int", "v": base})
+            out.append(_number_token(t, kinds))
         else:
             out.append({"t": "op", "v": t})
         at += 1
+    if kinds.self_name is not None:
+        try:
+            storage = _storage(out, kinds.self_dtype)
+        except UnsupportedExpression as why:
+            return "skip", f"{why}: {e}"
+        if info is not None:
+            info["storage"] = storage
     return "expr", out
 
 
@@ -556,6 +751,8 @@ def classify_init(
     *,
     array_names: set[str] | None = None,
     aliases: dict[str, str] | None = None,
+    kinds: Kinds | None = None,
+    info: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Classify a parameter initializer. Returns ``(kind, payload)``.
 
@@ -624,7 +821,21 @@ def classify_init(
         return "int", int(compact)
     m = re.fullmatch(r"(-?)(\d+\.?\d*(?:[edED][+-]?\d+)?)(_\w+)?", compact)
     if m and ("." in compact or "e" in compact.lower() or "d" in compact.lower()):
-        kind = "real32" if is_default_real(compact) else "real"
+        if kinds is not None:
+            # A lone literal is exact whatever the constant's kind -- the
+            # renderer rounds it to the declared width -- but the literal's
+            # own kind and the constant's have to be known to say which.
+            dtype = kinds.literal(compact.lstrip("-"))
+            if dtype is None:
+                return (
+                    "skip",
+                    f"real kind {compact.split('_', 1)[1]!r} is not one this fold knows: {e}",
+                )
+            if kinds.self_dtype is None and (kinds.kind_map or kinds.dtypes):
+                return "skip", f"declared kind is not one this fold knows the width of: {e}"
+            kind = "real32" if dtype == "float32" else "real"
+        else:
+            kind = "real32" if is_default_real(compact) else "real"
         return kind, m.group(1) + _normalize_real(m.group(2))
     if compact.lower() in known_names:
         return "ref", _spelled_ref(compact, aliases)
@@ -648,7 +859,7 @@ def classify_init(
             spelled_elements = []
             for element in elements:
                 kind, payload = _classify_tokens(
-                    element, element.replace(" ", ""), known_names, arrays, aliases
+                    element, element.replace(" ", ""), known_names, arrays, aliases, kinds, info
                 )
                 if kind != "expr":
                     return kind, payload
@@ -660,7 +871,7 @@ def classify_init(
                     return "skip", f"unknown name {name!r} in expression: {e}"
         return "skip", f"array constructor over more than literals: {e}"
 
-    return _classify_tokens(e, compact, known_names, arrays, aliases)
+    return _classify_tokens(e, compact, known_names, arrays, aliases, kinds, info)
 
 
 def _array_elements(init: str) -> str | None:
@@ -750,6 +961,7 @@ def extract(
     *,
     extern_names: set[str] | None = None,
     scope: str | None = None,
+    kind_assumptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Every parameter and hoisted literal in one Fortran source file.
 
@@ -758,11 +970,74 @@ def extract(
     expression. The command-line ancestor learned them by ``exec``-ing a
     generated Python file, which made the frontend's answer depend on a
     previously generated artifact being present and importable.
+    ``kind_assumptions`` maps kind-parameter names the file does not define
+    to dtypes; what it does define is read from its own parameters. Every
+    parameter record carries the ``dtype`` its declaration names
+    (``float64`` / ``float32`` / ``int`` / ... / ``None`` when its kind is
+    not known), and a real expression is classified only when the target's
+    fold of it is the compiler's number (see ``_storage``).
     """
+    from recast.fortran.interface import resolve_kind_map
+    from recast.fortran.use import declared_dtype, kind_spelling
+
     ast = parse(path)
     mod_name, mod_spec, sub_scope = _scope_of(ast, path, scope)
 
     known: set[str] = set(extern_names or ())
+    # The module's own kind parameters, under the extension's assumptions:
+    # ``r8 = selected_real_kind(12)`` says what ``_r8`` and ``real(r8)`` mean
+    # here, and what the tree does not say the operator's table may.
+    kind_map = {k.lower(): v for k, v in (kind_assumptions or {}).items()}
+    integer_decls: list[dict[str, Any]] = []
+    for decl in walk(mod_spec, f03.Type_Declaration_Stmt) if mod_spec is not None else []:
+        type_spec, attr_list, _ = decl.children
+        attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
+        if "PARAMETER" in attrs and str(type_spec).upper().startswith("INTEGER"):
+            for ent in walk(decl, f03.Entity_Decl):
+                if ent.children[3] is not None:
+                    integer_decls.append(
+                        {
+                            "name": str(ent.children[0]).lower(),
+                            "init_expr": str(ent.children[3].children[1]),
+                        }
+                    )
+    kind_map.update(resolve_kind_map(integer_decls))
+    # ``use iso_fortran_env, only: wp => real64``: the language's own kinds
+    # under the names this module gives them.
+    for use in walk(mod_spec, f03.Use_Stmt) if mod_spec is not None else []:
+        if str(use.children[2]).lower() != "iso_fortran_env":
+            continue
+        for item in re.split(r",", str(use.children[4] or "")):
+            if "=>" in item:
+                local, remote = (x.strip().lower() for x in item.split("=>", 1))
+                if remote in ("real32", "real64") and local not in kind_map:
+                    kind_map[local] = "float32" if remote == "real32" else "float64"
+    dtypes: dict[str, str | None] = dict.fromkeys(known)
+
+    def dtype_of_decl(type_spec: Any) -> str | None:
+        text = str(type_spec)
+        base = text.split("(")[0].strip().upper()
+        if base in ("REAL", "DOUBLE PRECISION"):
+            return declared_dtype("real", kind_spelling(text, base), kind_map)
+        if base == "INTEGER":
+            return "int"
+        if base == "LOGICAL":
+            return "bool"
+        if base == "CHARACTER":
+            return "str"
+        if base == "COMPLEX":
+            # A complex constant is spelled as its two parts and stored as
+            # before; its kind is not one this rule reads yet.
+            return "complex"
+        return None
+
+    # The kind of every entity the module declares, variables included: a
+    # kind inquiry may name one (``real(4) :: x`` then ``epsilon(x)``), and
+    # its kind is a fact of the declaration even though its value is not.
+    for decl in walk(mod_spec, f03.Type_Declaration_Stmt) if mod_spec is not None else []:
+        for ent in walk(decl, f03.Entity_Decl):
+            dtypes.setdefault(str(ent.children[0]).lower(), dtype_of_decl(decl.children[0]))
+
     # Which of the known names hold arrays. A subscript of one is spelled
     # exactly like a call, and nothing else here can tell the two apart.
     arrays: set[str] = set()
@@ -780,6 +1055,7 @@ def extract(
             else "?"
         )
         line = _decl_line(decl)
+        decl_dtype = dtype_of_decl(type_spec)
         for ent in walk(decl, f03.Entity_Decl):
             name = str(ent.children[0]).lower()
             init = str(ent.children[3].children[1]) if ent.children[3] is not None else None
@@ -788,7 +1064,10 @@ def extract(
                 "base_type": base,
                 "init_expr": init,
                 "line": line,
+                "dtype": decl_dtype,
             }
+            kinds = Kinds(kind_map, dtypes, name, decl_dtype)
+            info: dict[str, Any] = {}
             # ``[...]`` only, as the pipeline has it. A ``(/.../)`` parameter
             # goes to the classifier instead, which spells its elements
             # ``np.float64('...')`` rather than as kind-stripped source text
@@ -808,12 +1087,17 @@ def extract(
                     char_values,
                     char_length(str(type_spec), str(ent)) if base == "CHARACTER" else None,
                     array_names=arrays,
+                    kinds=kinds,
+                    info=info,
                 )
+            if info.get("storage"):
+                rec["storage"] = info["storage"]
             if rec["kind"] == "str":
                 char_values[name] = rec["payload"]
             module_parameters.append(rec)
             if _holds_an_array(rec):
                 arrays.add(name)
+            dtypes[name] = decl_dtype
             if rec["kind"] != "skip":
                 # Only a parameter that got a value is a name later ones may
                 # be written in terms of. Adding every declared name meant an
@@ -852,21 +1136,33 @@ def extract(
         local_known: set[str] = set(known)
         local_aliases: dict[str, str] = {}
         local_arrays: set[str] = set(arrays)
+        local_dtypes: dict[str, str | None] = dict(dtypes)
 
         spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
         local_chars = dict(char_values)  # the module's values, then this subprogram's
         if spec is not None:
+            # The declared type of every local, for the F77 separate form
+            # whose PARAMETER statement names no type of its own.
+            declared_types: dict[str, str | None] = {}
+            for decl in walk(spec, f03.Type_Declaration_Stmt):
+                for ent in walk(decl, f03.Entity_Decl):
+                    declared_types[str(ent.children[0]).lower()] = dtype_of_decl(decl.children[0])
+            local_dtypes.update(declared_types)
             # F77 separate form: PARAMETER (NAME = expr, ...)
             for pstmt in walk(spec, f03.Parameter_Stmt):
                 for pdef in walk(pstmt, f03.Named_Constant_Def):
                     pname = str(pdef.children[0]).lower()
                     init = str(pdef.children[1])
+                    p_dtype = declared_types.get(pname)
+                    info = {}
                     kind, payload = classify_init(
                         init,
                         local_known,
                         local_chars,
                         array_names=local_arrays,
                         aliases=local_aliases,
+                        kinds=Kinds(kind_map, local_dtypes, pname, p_dtype),
+                        info=info,
                     )
                     if kind == "str":
                         local_chars[pname] = payload
@@ -879,8 +1175,11 @@ def extract(
                             "init_expr": init,
                             "kind": kind,
                             "payload": payload,
+                            "dtype": p_dtype,
+                            **({"storage": info["storage"]} if info.get("storage") else {}),
                         }
                     )
+                    local_dtypes[pname] = p_dtype
                     if kind != "skip":
                         local_known.add(pname)
                         local_aliases[pname] = f"{sname}__{pname}"
@@ -889,10 +1188,12 @@ def extract(
                 attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
                 if "PARAMETER" not in attrs:
                     continue
+                l_dtype = dtype_of_decl(local_type_spec)
                 for ent in walk(decl, f03.Entity_Decl):
                     pname = str(ent.children[0]).lower()
                     init = str(ent.children[3].children[1]) if ent.children[3] is not None else None
                     const = f"{sname.upper()}__{pname.upper()}"
+                    info = {}
                     array_text = (
                         _array_literal(init, module_level=False)
                         if init and init.strip().startswith("[") and ent.children[1] is not None
@@ -908,6 +1209,8 @@ def extract(
                             char_length(str(local_type_spec), str(ent)),
                             array_names=local_arrays,
                             aliases=local_aliases,
+                            kinds=Kinds(kind_map, local_dtypes, pname, l_dtype),
+                            info=info,
                         )
                     if kind == "str":
                         local_chars[pname] = payload
@@ -919,8 +1222,11 @@ def extract(
                         "init_expr": init,
                         "kind": kind,
                         "payload": payload,
+                        "dtype": l_dtype,
+                        **({"storage": info["storage"]} if info.get("storage") else {}),
                     }
                     local_parameters.append(entry)
+                    local_dtypes[pname] = l_dtype
                     if kind != "skip":
                         local_known.add(pname)
                         local_aliases[pname] = f"{sname}__{pname}"

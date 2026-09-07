@@ -329,7 +329,9 @@ class FortranFrontend(Frontend):
         ``FlatConventions`` fields the tree spells differently."""
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._submodule_parents: dict[Path, dict[str, str]] = {}
-        self._analyzed: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+        self._analyzed: dict[
+            tuple[str, str, str | None, tuple[tuple[str, str], ...]], dict[str, Any]
+        ] = {}
 
     # --- discovery -----------------------------------------------------------
 
@@ -443,7 +445,14 @@ class FortranFrontend(Frontend):
             scope=scope_name,
         )
         consts = constants_mod.extract(
-            path, extern_names=set(self.extern_constants), scope=scope_name
+            path,
+            extern_names=set(self.extern_constants),
+            scope=scope_name,
+            kind_assumptions={
+                **{name: found["dtype"] for name, found in tree_kinds.items()},
+                **{k: v for k, v in record.get("kind_map", {}).items() if v.startswith("float")},
+                **self.kind_assumptions,
+            },
         )
 
         _mod_name, _spec, scope = _scope_of(parse_file(path), path, scope_name)
@@ -767,7 +776,22 @@ class FortranFrontend(Frontend):
                 continue
             try:
                 record_of = self._extracted(source, "interface", interface_mod.extract, module)
-                constants_of = self._extracted(source, "constants", constants_mod.extract, module)
+                # The companion's constants are read under the kinds its own
+                # file resolves and the tree defines for it. Not its interface
+                # record: ``declared_names`` counts a kind map's names as the
+                # module's own, and a kind it merely re-exports would then
+                # stop the walk that finds the module that defines it.
+                sibling_kinds = {
+                    name: found["dtype"]
+                    for name, found in self._tree_kinds(source, resolved_root, module).items()
+                }
+                constants_of = self._extracted(
+                    source,
+                    "constants",
+                    constants_mod.extract,
+                    module,
+                    {**sibling_kinds, **record_of.get("kind_map", {})},
+                )
             except Exception as error:  # fparser raises several unrelated types
                 # A sibling that does not parse is not this unit's failure. It
                 # drops out of the companion set, its calls refuse the way any
@@ -841,7 +865,12 @@ class FortranFrontend(Frontend):
             return None
 
     def _extracted(
-        self, source: Path, kind: str, extract: Any, scope: str | None = None
+        self,
+        source: Path,
+        kind: str,
+        extract: Any,
+        scope: str | None = None,
+        kind_assumptions: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """One extraction per (file revision, kind, scope), however many units
         want it. ``scope`` names the program unit of the file -- the module a
@@ -853,18 +882,28 @@ class FortranFrontend(Frontend):
         """
         from recast.fortran._parse import digest
 
-        key = (digest(source), kind, scope)
+        kinds = {**(kind_assumptions or {}), **self.kind_assumptions}
+        key = (digest(source), kind, scope, tuple(sorted(kinds.items())))
         cached = self._analyzed.get(key)
         if cached is None:
             if kind == "interface":
                 cached = extract(
                     source,
-                    kind_assumptions=self.kind_assumptions,
+                    kind_assumptions=kinds,
                     buffer_out_arrays=self.buffer_out_arrays,
                     scope=scope,
                 )
             else:
-                cached = extract(source, extern_names=set(self.extern_constants), scope=scope)
+                # The constants of a file are read under the kinds its own
+                # interface resolved -- its parameters, its use-renames, what
+                # the tree defines -- so ``epsilon(1.0_wp)`` in a companion
+                # is of the width ``wp`` has there.
+                cached = extract(
+                    source,
+                    extern_names=set(self.extern_constants),
+                    scope=scope,
+                    kind_assumptions=kinds,
+                )
             self._analyzed[key] = cached
         return cached
 

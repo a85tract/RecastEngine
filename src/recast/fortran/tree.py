@@ -11,6 +11,7 @@ caller's to say; a domain extension says it from its conventions.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 import sys
@@ -146,10 +147,24 @@ def integer_parameters(
     for name in names:
         if name not in parameters:
             continue
-        value = _evaluate(name, files, resolve, render, UnresolvedConstant)
+        value = _evaluate(
+            name,
+            files,
+            functools.partial(resolve, kind_assumptions=kind_assumptions),
+            render,
+            UnresolvedConstant,
+        )
         if isinstance(value, int) and not isinstance(value, bool):
             values[name] = value
     return values
+
+
+def _single(value: Any) -> float:
+    """``value`` rounded to IEEE single, as a Python float: what a compiler
+    stores into a default-real constant, without NumPy."""
+    import struct
+
+    return float(struct.unpack("f", struct.pack("f", float(value)))[0])
 
 
 def _evaluate(
@@ -159,7 +174,7 @@ def _evaluate(
     initialize it with something a parameter can be folded from."""
     # Lazy, like ``render`` above: ``expr`` parses, and this module is imported
     # by paths that must stay importable without the ``fortran`` extra.
-    from recast.fortran.expr import python_call, typed, with_integer_division
+    from recast.fortran.expr import fold_check, python_call, typed, with_integer_division
 
     try:
         records = resolve([name], files)
@@ -169,16 +184,24 @@ def _evaluate(
     kinds: dict[str, str | None] = {}
     try:
         for entry in records:
-            # Integer arithmetic where Fortran's ``/`` truncates.
+            # Integer arithmetic where Fortran's ``/`` truncates; a single
+            # rounded to single before it is widened, as the compiler stores
+            # it (``_f32`` below); a fold that would be another number is
+            # refused by ``fold_check`` and the value is left unknown.
+            storage = fold_check(entry["expr"], entry.get("kind_dtype"))
             text = render(
                 with_integer_division(entry["expr"], env=kinds),
                 real=lambda t: f"float('{t}')",
+                real32=lambda t: f"_f32('{t}')",
                 integer=lambda t: t,
                 name=lambda t: t.upper(),
-                call=lambda f, a: python_call(f, a, real64="float"),
+                call=lambda f, a, k: python_call(f, a, real64="float", result_kind=k),
+                dtype=lambda k: k,
             )
+            if storage == "single":
+                text = f"_f32({text})"
             scope = {"__builtins__": {}, "max": max, "min": min, "abs": abs, "int": int}
-            scope.update({"float": float, "math": math, "sys": sys})
+            scope.update({"float": float, "math": math, "sys": sys, "_f32": _single})
             env[entry["name"].upper()] = eval(text, scope, dict(env))  # noqa: S307
             kinds[entry["name"]] = entry.get("dtype") or typed(entry["expr"], kinds)
     except Exception:  # an initializer shape the renderer has no rule for
