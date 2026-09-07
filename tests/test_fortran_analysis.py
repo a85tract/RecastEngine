@@ -1408,8 +1408,70 @@ end module f77ish
     assert intents["n"] == "OUT"
     assert intents["used"] == "INOUT"  # read on its own right-hand side
     assert intents["x"] == "IN"  # only read
-    assert intents["buf"] == "UNKNOWN"  # an array mutates through its buffer
+    assert intents["buf"] == "INOUT"  # one element written: the rest is the caller's (#23)
     assert intents["onward"] == "UNKNOWN"  # only passed on; its fate is the callee's
+
+
+def test_an_array_dummy_without_intent_is_given_the_intent_its_use_shows(tmp_path: Path) -> None:
+    """CLUBB declares array dummies without an intent that its bodies write
+    in place (``wp4``, ``lhs``), read only (``current_altitudes``), or hand
+    to a subroutine of the same module. The gate refuses an UNKNOWN intent,
+    so the extension carried a table of ten of them (#23). Written and
+    never read is OUT; written and read is INOUT; only read is IN; handed
+    to a dummy of this file that is ``intent(in)`` is a read, handed to one
+    the callee writes is a write; handed to a procedure this file does not
+    describe stays UNKNOWN."""
+    from recast.fortran import interface
+
+    source = """\
+module arrays_mod
+  implicit none
+contains
+  subroutine fill(n, x, y)
+    integer, intent(in) :: n
+    real, intent(in) :: x(n)
+    real, intent(out) :: y(n)
+    y = 2.0 * x
+  end subroutine fill
+  subroutine peek(n, x, s)
+    integer, intent(in) :: n
+    real, intent(in) :: x(n)
+    real, intent(out) :: s
+    s = sum(x)
+  end subroutine peek
+  subroutine work(n, made, updated, seen, viafill, viapeek, elsewhere_bound, edges, whole)
+    integer, intent(in) :: n
+    real :: made(n), updated(n), seen(n), viafill(n), viapeek(n), elsewhere_bound(n)
+    real :: edges(n), whole(n)
+    real :: total
+    integer :: k
+    do k = 1, n
+      made(k) = seen(k) * 2.0
+      updated(k) = updated(k) + seen(k)
+    end do
+    do k = 2, n - 1
+      edges(k) = 0.0
+    end do
+    whole(:) = 1.0
+    call fill(n, seen, viafill)
+    call peek(n, viapeek, total)
+    call elsewhere(elsewhere_bound)
+  end subroutine work
+end module arrays_mod
+"""
+    record = interface.extract(_write(tmp_path, "arrays.f90", source), kind_assumptions=KINDS)
+    work = next(s for s in record["subprograms"] if s["name"] == "work")
+    intents = {a["name"]: a["intent"] for a in work["args"]}
+    assert intents["made"] == "OUT", "every element, by a loop over the declared bounds"
+    assert intents["edges"] == "INOUT", "a loop over part of the range leaves the rest the caller's"
+    assert intents["whole"] == "OUT", "a full section"
+    assert intents["updated"] == "INOUT"
+    assert intents["seen"] == "IN"
+    assert intents["viafill"] == "OUT", "written by fill, whose dummy is intent(out)"
+    assert intents["viapeek"] == "IN", "handed to peek's intent(in) dummy: a read"
+    assert intents["elsewhere_bound"] == "UNKNOWN", "a procedure this file does not describe"
+    inferred = {a["name"]: a.get("intent_inferred") for a in work["args"]}
+    assert inferred["made"] is True and inferred["seen"] == "read-only"
 
 
 def test_a_dummy_handed_to_what_might_write_it_is_not_read_only(tmp_path: Path) -> None:

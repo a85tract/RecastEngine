@@ -1312,8 +1312,11 @@ def extract(
         extract_subprogram(s, kind_map, state_names, sub_names, overrides.get(sub_name_of(s)))
         for s in subs
     ]
-    _infer_write_only_intents(subs, subprograms)
-    _infer_read_only_intents(subs, subprograms, sub_names, set(state_names))
+    # Twice: a dummy's intent inferred in the first pass is what decides,
+    # in the second, whether its callers' actuals were written or only read.
+    for _ in range(2):
+        _infer_write_only_intents(subs, subprograms)
+        _infer_read_only_intents(subs, subprograms, sub_names, set(state_names))
     _infer_domains(subs, subprograms)
     # After the inference, not before: an intent this pass just gave a
     # dummy is one this rule has to see.
@@ -1585,18 +1588,21 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
 
     Either way, without the attribute the return convention leaves the dummy
     out of the signature and out of the return, and the value the routine
-    computed is dropped on the floor. Scalars only: an array dummy mutates
-    through the buffer it was passed and is not lost either way. A dummy that
-    is only *passed on* to another procedure stays UNKNOWN -- its fate is the
-    callee's, and is not decidable here.
+    computed is dropped on the floor. Arrays too: an array dummy mutates
+    through the buffer it was passed, but the differential gate refuses a
+    subprogram over an UNKNOWN intent, so the direction has to be said
+    (#23). A write through a subprogram of this file counts -- an actual
+    handed to a dummy the callee declares or was inferred to write -- and a
+    dummy only *passed on* to a procedure this file does not describe stays
+    UNKNOWN: its fate is the callee's, and is not decidable here.
     """
     by_name = {sub_name_of(s): s for s in subs}
+    intents_of = _callee_intents(records)
     for record in records:
         candidates = [
             argument
             for argument in record["args"]
             if argument["intent"] == "UNKNOWN"
-            and not argument.get("dims")
             and not argument.get("optional")
             and _intent_inferable(argument.get("dtype"))
         ]
@@ -1611,22 +1617,144 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
             continue
         mentions: dict[str, int] = {}
         assigned: dict[str, int] = {}
+        partial: set[str] = set()  # arrays some write leaves partly unwritten
+        dims_of = {a["name"]: a.get("dims") or [] for a in candidates}
+
+        def base_of(node: Any) -> str | None:
+            while node is not None and not isinstance(node, f03.Name):
+                children = getattr(node, "children", None)
+                if not children:
+                    return None
+                node = children[0]
+            return str(node).lower() if isinstance(node, f03.Name) else None
+
         for exec_part in exec_parts:
             for name in walk(exec_part, f03.Name):
-                key = str(name).lower()
-                mentions[key] = mentions.get(key, 0) + 1
+                mentioned = str(name).lower()
+                mentions[mentioned] = mentions.get(mentioned, 0) + 1
             for assignment in walk(exec_part, f03.Assignment_Stmt):
+                # ``x = ``, ``buf(1) = ``, ``buf(:) = ``: the name at the base
+                # of the target is what the statement writes.
                 target = assignment.children[0]
-                if isinstance(target, f03.Name):
-                    key = str(target).lower()
-                    assigned[key] = assigned.get(key, 0) + 1
+                written_name = base_of(target)
+                if written_name is None:
+                    continue
+                assigned[written_name] = assigned.get(written_name, 0) + 1
+                if written_name in dims_of and not _writes_whole_array(
+                    target, dims_of[written_name]
+                ):
+                    partial.add(written_name)
+            for call in walk(exec_part, f03.Call_Stmt):
+                callee = base_of(call.children[0])
+                dummies = intents_of.get(callee or "")
+                if dummies is None:
+                    continue
+                arguments = call.children[1]
+                items = (
+                    list(arguments.children)
+                    if arguments is not None and type(arguments).__name__.endswith("_List")
+                    else ([arguments] if arguments is not None else [])
+                )
+                for position, item in enumerate(items):
+                    if isinstance(item, f03.Actual_Arg_Spec):
+                        keyword = str(item.children[0]).lower()
+                        intent = next((i for d, i in dummies if d == keyword), None)
+                        item = item.children[1]
+                    else:
+                        intent = dummies[position][1] if position < len(dummies) else None
+                    if not isinstance(item, (f03.Name, f03.Part_Ref)):
+                        continue
+                    actual = base_of(item)
+                    if actual is None or intent not in ("OUT", "INOUT"):
+                        continue
+                    assigned[actual] = assigned.get(actual, 0) + 1
+                    # The callee defines the whole of an ``intent(out)`` it
+                    # is handed whole; an ``inout`` dummy, or an element,
+                    # leaves the rest to the caller.
+                    if intent != "OUT" or not isinstance(item, f03.Name):
+                        partial.add(actual)
         for argument in candidates:
             written = assigned.get(argument["name"], 0)
             if not written:
                 continue
             write_only = mentions.get(argument["name"], 0) == written
+            # An array not every element of which is written is the
+            # caller's where it is not: ``intent(inout)``, whatever the
+            # body reads. CLUBB's ``lhs(i, 2:nzm-1)`` beside its boundary
+            # rows; a scalar write is always whole.
+            if argument["name"] in partial:
+                write_only = False
             argument["intent"] = "OUT" if write_only else "INOUT"
             argument["intent_inferred"] = True
+
+
+def _writes_whole_array(target: Any, dims: list[dict[str, Any]]) -> bool:
+    """Whether an assignment to ``target`` defines every element of the
+    array declared with ``dims``.
+
+    A bare name or a full section does. A subscript does when, for every
+    axis, it is the variable of an enclosing DO whose bounds are, to the
+    letter, the axis's declared bounds -- CLUBB's ``do k = 1, nz; do i = 1,
+    ngrdcol; wp4(i, k) = ...``. Anything else (``lhs(i, 2:nzm-1)``, a
+    computed subscript, a loop over part of the range, a write under an IF)
+    is a partial write as far as this rule can tell, and the array stays
+    the caller's where it is not written.
+    """
+    if isinstance(target, f03.Name) or not dims:
+        return True
+    if not isinstance(target, f03.Part_Ref):
+        return False
+    subscripts = target.children[1]
+    items = (
+        list(subscripts.children)
+        if subscripts is not None and type(subscripts).__name__.endswith("_List")
+        else ([subscripts] if subscripts is not None else [])
+    )
+    if len(items) != len(dims):
+        return False
+
+    def flat(node: Any) -> str:
+        return str(node).lower().replace(" ", "")
+
+    loops: dict[str, tuple[str, str]] = {}
+    conditional = (
+        f03.If_Construct,
+        f03.If_Stmt,
+        f03.Case_Construct,
+        f03.Where_Construct,
+        f03.Where_Stmt,
+    )
+    parent = getattr(target, "parent", None)
+    while parent is not None:
+        if isinstance(parent, conditional):
+            # Written only where the condition holds: the elements it does
+            # not are the caller's. (Both arms writing would be whole; this
+            # rule does not read arms, and says the conservative thing.)
+            return False
+        if isinstance(parent, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
+            control = walk(parent, f03.Loop_Control)
+            if control and control[0].children[1] is not None:
+                variable, bounds = control[0].children[1]
+                if len(bounds) in (2, 3) and (len(bounds) == 2 or flat(bounds[2]) == "1"):
+                    loops.setdefault(flat(variable), (flat(bounds[0]), flat(bounds[1])))
+        parent = getattr(parent, "parent", None)
+    for item, dim in zip(items, dims, strict=True):
+        lower, upper = flat(dim.get("lb") or "1"), flat(dim.get("ub") or "")
+        if isinstance(item, f03.Subscript_Triplet):
+            start, stop, step = item.children
+            if start is None and stop is None and step is None:
+                continue  # ``:``
+            if (
+                (start is None or flat(start) == lower)
+                and (stop is None or flat(stop) == upper)
+                and step is None
+            ):
+                continue  # ``1:n`` spelled out
+            return False
+        if isinstance(item, f03.Name) and loops.get(flat(item)) == (lower, upper):
+            continue
+        return False
+    return True
 
 
 def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) -> None:
@@ -1691,7 +1819,10 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) 
 
 
 def _written_or_escaping(
-    exec_part: Any, sub_names: set[str], variables: set[str] | None = None
+    exec_part: Any,
+    sub_names: set[str],
+    variables: set[str] | None = None,
+    callee_intents: dict[str, list[tuple[str, str]]] | None = None,
 ) -> set[str]:
     """Names this execution part could change, read conservatively.
 
@@ -1705,9 +1836,36 @@ def _written_or_escaping(
     to a use-associated or external procedure parses exactly like a subscript,
     so a base that ``variables`` does not name is taken for a call and its
     variable actuals escape; with no ``variables`` given, only this file's
-    own subprograms are calls, as before.
+    own subprograms are calls, as before. ``callee_intents`` maps this
+    file's subprograms to their dummies ``(name, intent)`` in order: an
+    actual handed to a dummy declared or inferred ``intent(in)`` is read,
+    not handed over, and does not escape.
     """
     escaping: set[str] = set()
+    intents_of = callee_intents or {}
+
+    def passed_to_writer(callee: str, arguments: Any) -> list[str]:
+        """The variable actuals of a call into this file that reach a dummy
+        the callee may write; every variable actual when the callee is not
+        one this file describes."""
+        items = actuals(arguments)
+        dummies = intents_of.get(callee)
+        names: list[str] = []
+        for position, item in enumerate(items):
+            name = variable_actual(item)
+            if name is None:
+                continue
+            if dummies is None:
+                names.append(name)
+                continue
+            if isinstance(item, f03.Actual_Arg_Spec):
+                keyword = str(item.children[0]).lower()
+                intent = next((i for d, i in dummies if d == keyword), None)
+            else:
+                intent = dummies[position][1] if position < len(dummies) else None
+            if intent != "IN":
+                names.append(name)
+        return names
 
     def leftmost(node: Any) -> str | None:
         while node is not None and not isinstance(node, f03.Name):
@@ -1768,14 +1926,16 @@ def _written_or_escaping(
         if name:
             escaping.add(name)
     for call in walk(exec_part, f03.Call_Stmt):
+        callee = leftmost(call.children[0]) or ""
         arguments = call.children[1]
+        if callee in intents_of:
+            escaping.update(passed_to_writer(callee, arguments))
+            continue
         for name in walk(arguments, f03.Name) if arguments is not None else []:
             escaping.add(str(name).lower())
     for function in walk(exec_part, f03.Function_Reference):
-        for item in actuals(function.children[1]):
-            name = variable_actual(item)
-            if name:
-                escaping.add(name)
+        callee = leftmost(function.children[0]) or ""
+        escaping.update(passed_to_writer(callee, function.children[1]))
     for reference in walk(exec_part, (f03.Part_Ref, f03.Structure_Constructor)):
         base = reference.children[0]
         if not isinstance(base, f03.Name):
@@ -1792,9 +1952,21 @@ def _written_or_escaping(
                 if name:
                     escaping.add(name)
             continue
+        if isinstance(reference, f03.Part_Ref) and base_name in intents_of:
+            # A function of this file, parsed as a subscript.
+            escaping.update(passed_to_writer(base_name, reference.children[1]))
+            continue
         for name in walk(reference.children[1], f03.Name):
             escaping.add(str(name).lower())
     return escaping
+
+
+def _callee_intents(records: list[dict[str, Any]]) -> dict[str, list[tuple[str, str]]]:
+    """Each subprogram's dummies with the intent they have so far, declared
+    or inferred, for the escape analysis of its callers."""
+    return {
+        record["name"]: [(a["name"], a["intent"]) for a in record["args"]] for record in records
+    }
 
 
 def _infer_read_only_intents(
@@ -1838,7 +2010,9 @@ def _infer_read_only_intents(
             | {p["name"] for p in record.get("local_parameters") or []}
             | set(state_names or ())
         )
-        escaping = _written_or_escaping(exec_part, sub_names, variables)
+        escaping = _written_or_escaping(
+            exec_part, sub_names, variables, _callee_intents(records)
+        )
         for argument in candidates:
             if argument["name"] not in escaping:
                 argument["intent"] = "IN"

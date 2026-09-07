@@ -60,28 +60,30 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "10 subprogram(s) could not be compared: daxpy: argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs; dcopy: ",
+       "detail": "8 subprogram(s) could not be compared: daxpy: 7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s",
        "metrics": {
-        "bit_exact": 0,
-        "declined": {},
+        "bit_exact": 160,
+        "declined": {
+         "subscript past extent": 9
+        },
         "input_profile": null,
         "integer_mismatch": 0,
         "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 0,
-        "redrawn": 0,
+        "points": 160,
+        "redrawn": 9,
         "reference_isolation": "process",
         "subprograms": {
          "dasum": {
           "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "daxpy": {
-          "error": "argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "dcopy": {
-          "error": "argument(s) dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "ddot": {
           "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
@@ -90,16 +92,38 @@
           "error": "candidate raised: NameError: name 'radix' is not defined"
          },
          "drotm": {
-          "error": "argument(s) dx, dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "error": "9 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 160 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "drotmg": {
-          "error": "argument(s) dparam have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dscal": {
-          "error": "argument(s) dx have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "bit_exact": 80,
+          "declined": {
+           "subscript past extent": 9
+          },
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 9,
+          "reshaped": 4,
+          "shaped": 0
          },
          "dswap": {
-          "error": "argument(s) dx, dy have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 160 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
          },
          "idamax": {
           "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
