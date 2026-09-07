@@ -20,16 +20,13 @@ uv pip install -e ".[fortran,translate,verify]"
 Without `uv`: `python3 -m venv .venv` and `pip install -e` with the same
 extras. The core itself has zero dependencies and stays importable without a
 compiler, a GPU, or a model provider — `fortran`, `translate` and `verify`
-are the extras of the public edition.
+are the extras.
 
-The public edition translates and gates Fortran with flat interfaces, which is
-what the corpus is; a commercial tier, loaded through the same plugin entry
-points, adds what reaching a model takes — flat adapters over derived-type
-and module state, recording and replay from a model's own runs, the JAX
-target, the tolerance gate, and the accelerator backends.
-
+RecastEngine translates and gates Fortran with flat interfaces end to end;
+the corpus of numerical libraries under `corpus/` is what it is proven on.
 <!-- tier -->
-In this tree the tier is present: `numba`, `jax`, `agents` and `all` are its
+
+This tree carries more: `numba`, `jax`, `agents` and `all` are further
 extras, and the shipped catalog contains `recast.fortran-python.numpy`,
 `recast.python-numpy.numba`, and `recast.python-numpy.jax`. The latter two use
 an independent stdlib-AST Python frontend, the untouched source module as their

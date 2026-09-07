@@ -545,10 +545,10 @@ _PUBLIC = PluginSet(
 
 
 def _with_pro(base: PluginSet) -> PluginSet:
-    """The public cases plus the commercial tier's, when that module is
-    installed; the public edition is this tree without it."""
+    """These cases plus those of ``builtin_optional``, when that module is
+    installed; an installation may lack it."""
     try:
-        from recast.conformance.builtin_pro import CASES
+        from recast.conformance.builtin_optional import CASES
     except ImportError:
         return base
     merged = {

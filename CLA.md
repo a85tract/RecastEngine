@@ -22,7 +22,7 @@ conspicuously in writing as "not a contribution".
 
 **"Maintainer"** is Yueqi Chen (yueqi.chen@colorado.edu), and any successor
 or assignee the Maintainer designates in writing — including an organisation
-formed to develop, support, or commercialise the Project. The Maintainer will
+formed to develop or support the Project. The Maintainer will
 name any such successor in this file and in `NOTICE`.
 
 ## 2. Copyright license

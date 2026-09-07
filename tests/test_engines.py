@@ -170,8 +170,8 @@ def test_cli_exports_catalog_json(capsys: pytest.CaptureFixture[str]) -> None:
     document = json.loads(capsys.readouterr().out)
     assert document["schema"] == "recast.translation-engine-catalog.v1"
     assert document["digest"].startswith("sha256:")
-    # The accelerator engines are the tier's: registered exactly when their
-    # recipes are, which the public edition ships without.
+    # The accelerator engines are optional: registered exactly when their
+    # recipes are installed.
     from recast.recipes import BUILTIN
 
     expected = ["recast.fortran-python.numpy"]
