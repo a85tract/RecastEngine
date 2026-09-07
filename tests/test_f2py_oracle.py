@@ -30,6 +30,7 @@ from recast.plugins.executor import JobResult
 from recast.transform.numpy.translate import NumpyTranslation
 from recast.verify.bitexact import BitexactVerifier
 from recast.verify.rwset import ReadWriteSetVerifier
+from tests._f2py_trees import KINDS_SOURCE, SPLIT_SOURCE, _split_tree
 
 GFORTRAN = shutil.which("gfortran")
 MESON = importlib.util.find_spec("mesonbuild") is not None
@@ -1032,69 +1033,6 @@ def fill(n):
     assert "fill (the tail is undefined on both sides)" in verdict.detail
 
 
-def test_a_zero_extent_output_has_no_dominant_value_to_weigh(tmp_path: Path) -> None:
-    """CLUBB's scalar tracers under ``sclr_dim = 0``: an output of shape
-    ``(1, 88, 0)`` on the recording. The tolerance gate's dominant-value
-    mask took the maximum of an empty array and the whole unit's verdict
-    was a plugin exception."""
-    import numpy as np
-
-    from recast.verify.tolerance import ToleranceVerifier
-
-    emitted = b"""\
-import numpy as np
-_SIGNATURES = {
-    "tracers": {
-        "kind": "subroutine",
-        "args": [
-            {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
-            {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False,
-             "dims": [{"lb": "1", "ub": "n"}, {"lb": "1", "ub": "0"}]},
-            {"name": "z", "dtype": "float64", "intent": "OUT", "optional": False},
-        ],
-        "result": None,
-        "result_dtype": None,
-    }
-}
-
-def tracers(n):
-    return np.zeros((n, 0)), 2.0
-"""
-    candidate = Candidate(
-        unit="fortran:tracers",
-        transform="translate.numpy",
-        files={Path("tracers_numpy.py"): emitted},
-    )
-    ref = OracleRef(
-        unit=candidate.unit,
-        oracle="dump-replay",
-        key="k",
-        handle={
-            "module": None,
-            "input_source": "recorded",
-            "return_convention": "recorded",
-            "samples": [
-                {
-                    "subprogram": "tracers",
-                    "source": "tracers.txt",
-                    "inputs": {"n": 3},
-                    "outputs": {"y": np.zeros((3, 0)), "z": 2.0},
-                }
-            ],
-        },
-    )
-    verdict = ToleranceVerifier().verify(
-        Unit(uid=candidate.unit, kind="module"),
-        candidate,
-        ref,
-        tmp_path / "work",
-        LocalExecutor(),
-        {"module_suffix": "_numpy.py", "dominant_axis": "all", "rel_scale": "array"},
-    )
-    assert "exception" not in verdict.detail and "zero-size" not in verdict.detail
-    assert verdict.confidence is not Confidence.FAILED, verdict.detail
-
-
 # --- the whole spine, against a real compiler --------------------------------
 
 SOURCE = """\
@@ -1671,32 +1609,6 @@ def test_a_refused_build_fails_this_stage_and_not_the_run(tmp_path: Path) -> Non
         )
 
 
-KINDS_SOURCE = """\
-module toy_kinds
-  use, intrinsic :: iso_fortran_env
-  implicit none
-  integer, parameter :: wp = real64
-end module toy_kinds
-"""
-
-SPLIT_SOURCE = """\
-module toy_split
-  use toy_kinds, only: wp
-  implicit none
-contains
-  subroutine scale_all(n, a, x)
-    integer, intent(in) :: n
-    real(wp), intent(in) :: a
-    real(wp), intent(inout) :: x(*)
-    integer :: i
-    do i = 1, n
-      x(i) = a * x(i)
-    end do
-  end subroutine scale_all
-end module toy_split
-"""
-
-
 class _CaptureBuild:
     """Records every job and lets the reference compiles through.
 
@@ -1721,14 +1633,6 @@ class _CaptureBuild:
             return JobResult(0, "", "")
         self.job = job
         raise OracleUnavailable("captured before execution")
-
-
-def _split_tree(tmp_path: Path) -> tuple[Unit, object]:
-    (tmp_path / "toy_kinds.f90").write_text(KINDS_SOURCE)
-    (tmp_path / "toy_split.f90").write_text(SPLIT_SOURCE)
-    frontend = FortranFrontend()
-    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:toy_split")
-    return unit, frontend.analyze(unit, tmp_path)
 
 
 def test_the_reference_names_the_siblings_the_unit_uses(tmp_path: Path) -> None:
@@ -1913,71 +1817,6 @@ def test_companions_must_be_regular_files_inside_root(tmp_path: Path, bad_source
 
     with pytest.raises(ConfigError, match=match):
         F2pyGoldenOracle().key(unit, facts, {"root": root})
-
-
-@pytest.mark.parametrize("bad_source", ["missing", "directory", "escape"])
-def test_the_flat_oracle_holds_its_plan_to_the_same_root(tmp_path: Path, bad_source: str) -> None:
-    """The flat oracle plans its library from the unit's source under the
-    project root, the way the engine's oracle reads it: the same boundary,
-    or a source outside root would be compiled by one oracle and refused by
-    the other."""
-    from recast.oracle.flat import F2pyFlatOracle
-
-    root = tmp_path / "root"
-    root.mkdir()
-    unit, facts = _split_tree(root)
-    outside = tmp_path / "outside.f90"
-    outside.write_text(SPLIT_SOURCE)
-    if bad_source == "missing":
-        facts.provenance["source"] = "missing.f90"
-        match = "does not exist"
-    elif bad_source == "directory":
-        (root / "directory.f90").mkdir()
-        facts.provenance["source"] = "directory.f90"
-        match = "not a regular file"
-    else:
-        (root / "escape.f90").symlink_to(outside)
-        facts.provenance["source"] = "escape.f90"
-        match = "outside the configured project root"
-
-    with pytest.raises(ConfigError, match=match):
-        F2pyFlatOracle().key(unit, facts, {"root": root})
-
-
-def test_the_flat_oracle_refuses_an_extra_source_it_cannot_read(tmp_path: Path) -> None:
-    """A configured extra source that is not there used to drop out of the
-    library key without a word and fail the build later, under a message
-    about the compiler."""
-    from recast.oracle.flat import F2pyFlatOracle
-
-    root = tmp_path / "root"
-    root.mkdir()
-    unit, facts = _split_tree(root)
-    with pytest.raises(ConfigError, match=r"extra source 0 .* does not exist"):
-        F2pyFlatOracle().key(unit, facts, {"root": root, "extra_sources": ["nowhere.f90"]})
-
-
-def test_the_flat_oracle_keeps_an_include_dir_with_a_space_as_one_flag(tmp_path: Path) -> None:
-    """The plan carries the compiler flags as one string and the library
-    build splits it back into argv. A configured include directory with a
-    space in its name used to be appended bare and come apart at the split,
-    leaving ``-I/path`` and a stray ``name`` for gfortran to read as a file."""
-    import shlex
-
-    from recast.oracle.flat import F2pyFlatOracle
-
-    root = tmp_path / "root"
-    root.mkdir()
-    include = tmp_path / "head ers"
-    include.mkdir()
-    unit, facts = _split_tree(root)
-    config = {"root": root, "include_dirs": [str(include)]}
-
-    plan = F2pyFlatOracle()._plan(unit, facts, config)
-    flags = shlex.split(plan["fflags"])
-    assert f"-I{include}" in flags
-    assert flags.count(f"-I{include}") == 1
-    assert not any(token == "ers" for token in flags)
 
 
 def test_a_changed_sibling_moves_the_cache_key(tmp_path: Path) -> None:
