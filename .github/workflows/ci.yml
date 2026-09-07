@@ -28,15 +28,16 @@ jobs:
       - run: uv run --extra dev ruff check .
       - run: uv run --extra dev ruff format --check .
 
-  # The DCO (./DCO) is certified one commit at a time, by a Signed-off-by
-  # trailer naming the author. An agreement nothing verifies is not an
-  # agreement, so this is its check -- the same script contributors run
-  # locally. It reads the range the pull request adds, because sign-off is
-  # required from adoption forward and history before that is left alone.
+  # The CLA (./CLA.md) is signed once, by a row in CLA-SIGNATORIES.md, and
+  # asserted one commit at a time by a Signed-off-by trailer naming the
+  # author. An agreement nothing verifies is not an agreement, so this is its
+  # check -- the same script contributors run locally. It reads the range the
+  # pull request adds, because the agreement is required from adoption forward
+  # and history before that is left alone.
   #
   # Dormant until the pull_request trigger is restored: there is no range to
   # check on a manual dispatch, and inventing one would check the wrong thing.
-  dco:
+  cla:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -47,7 +48,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Every commit carries its sign-off
+      - name: Every author has signed the CLA and every commit carries its sign-off
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: python tools/check_signoff.py "$BASE..HEAD"
