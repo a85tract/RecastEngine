@@ -58,8 +58,8 @@ lockfile exactly, which removes anything you installed alongside it.
 
 The last two are the ones people forget. `check_hygiene`: no `/glade` paths,
 allocation accounts, usernames, or scheduler hostnames anywhere in the tree.
-`check_signoff`: every commit carries its DCO trailer, which is cheap to add as
-you go and a rebase to add afterwards.
+`check_signoff`: you are in `CLA-SIGNATORIES.md` and every commit carries its
+sign-off trailer, which is cheap to add as you go and a rebase to add afterwards.
 
 ## What a good PR looks like
 
@@ -75,20 +75,33 @@ you go and a rebase to add afterwards.
   The core installs with zero dependencies and CI asserts it stays importable
   that way.
 
-## Contributor agreement — DCO
+## Contributor agreement — CLA
 
-This project uses the [Developer Certificate of Origin](DCO), not a CLA. You
-keep the copyright in what you write; you certify that you had the right to
-send it. Sign each commit:
+This project takes contributions under a [Contributor License Agreement](CLA.md).
+You keep the copyright in what you write; you license it to the project's
+maintainer under terms that let the project be relicensed, and you certify
+that you had the right to send it (the Developer Certificate of Origin is
+section 4 of the agreement). Two steps, the first once:
 
-```bash
-git commit -s
-```
+1. **Sign, once.** Read `CLA.md`, then add a row for yourself to
+   [`CLA-SIGNATORIES.md`](CLA-SIGNATORIES.md) in your first pull request,
+   listing every e-mail you author commits with.
+2. **Sign off every commit.**
 
-which appends `Signed-off-by: Your Name <your@email>` using your `git config`
-identity. The e-mail has to be the one you author with — a sign-off in someone
-else's name certifies nothing. Forgot it? `git rebase --signoff origin/main`
-and force-push.
+   ```bash
+   git commit -s
+   ```
+
+   appends `Signed-off-by: Your Name <your@email>` using your `git config`
+   identity. That trailer is your statement that the commit is submitted under
+   the agreement. The e-mail has to be the one you author with — a sign-off in
+   someone else's name certifies nothing. Forgot it? `git rebase --signoff
+   origin/main` and force-push.
+
+`tools/check_signoff.py` enforces both: the trailer against the author, the
+author against the signatories file as it stands at the head of your branch.
+If your university or employer has rights in what you write, CLA section 5
+applies; ask before your first patch rather than after.
 
 ### When the work arrives through someone else
 
@@ -128,20 +141,29 @@ and absent, ask for it rather than supply it. Where a commit is rewritten
 heavily enough that the maintainer is genuinely a co-author, `Co-authored-by`
 records that and both sign.
 
-**Why DCO and not a CLA.** A CLA buys the right to relicense later, and its
-price is that every contributor signs a legal document before their first patch
-— which is the wrong toll to charge the graduate students and domain scientists
-this engine is built for. Apache-2.0 already grants what the project needs to
-ship, including the patent grant, so a CLA would be collecting a right we have
-no plan to use. If relicensing ever becomes necessary it will be by asking
-contributors, which is the honest way to ask.
+**Why a CLA, and why it replaced the DCO.** The project began under the DCO,
+on the argument that a CLA collects a right — relicensing — the project had no
+plan to use, and that signing a legal document is the wrong toll for the
+graduate students and domain scientists the engine is built for. The first
+half of that argument stopped being true on 2026-09-07: the engine is intended
+to be developed commercially alongside its public release, by the maintainer
+and the students who built it, and a project that may one day carry a
+different license for part of what it ships has to hold that right from every
+contributor or it cannot. Asking afterwards is not a plan when the answer can
+be no. The toll is kept as low as a CLA can be: one row in a file, once, and
+the same `git commit -s` the DCO already asked for. The switch was made while
+the contributors were the people in one research group, which is the cheapest
+moment it will ever have.
 
-Contributions are accepted under Apache-2.0, as stated in `LICENSE`.
+Contributions to the public repository are published under Apache-2.0, as
+stated in `LICENSE`; what the agreement adds is that they may also be shipped
+under other terms.
 
-Sign-off is required from its adoption forward. The commits before it are not
-rewritten: back-dating a certification nobody was asked for would be a worse
-record than none, and `tools/check_signoff.py` therefore checks the range a
-pull request adds rather than the whole history.
+The agreement is required from its adoption forward. The commits before it are
+not rewritten: back-dating a certification nobody was asked for would be a
+worse record than none, and `tools/check_signoff.py` therefore checks the range
+a pull request adds rather than the whole history. A signatory can extend the
+agreement to their earlier commits with the "covers from" column.
 
 ## Contact
 
