@@ -547,12 +547,20 @@ class Subprograms:
                 continue
             try:
                 statements.dropped_reads.clear()
+                statements.not_ported.clear()
+                statements.expressions.assumed_scalar.clear()
                 body = statements.render(statement, depth)
                 lines.append(f"{pad}# {block} <- L{span[0]}-L{span[1]}")
                 lines.extend(body)
                 entry["status"] = "mechanical"
                 if statements.dropped_reads:
                     entry["dropped_reads"] = sorted(statements.dropped_reads)
+                if statements.not_ported:
+                    # Not deferred -- the branch around the raise is kept --
+                    # but not translated either, and the report says which.
+                    entry["not_ported"] = sorted(statements.not_ported)
+                if statements.expressions.assumed_scalar:
+                    entry["assumed_scalar"] = sorted(statements.expressions.assumed_scalar)
             except REFUSED as refusal:
                 filled, why_not = self._fill(
                     emit_name(subprogram), block, statement, span, refusal, statements

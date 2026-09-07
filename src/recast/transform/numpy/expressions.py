@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from recast.fortran._parse import f03
+from recast.fortran._parse import f03, walk
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
 from recast.fortran.semantics import F77_SPECIFIC_TO_GENERIC, Semantics, Unanalyzable
 from recast.transform.numpy.names import Names
@@ -199,6 +199,10 @@ class Expressions:
     target one too."""
 
     function_transforms: dict[str, Any] = field(default_factory=dict)
+    assumed_scalar: set[str] = field(default_factory=set)
+    """Names whose rank the semantics could not settle and that a logical
+    operator therefore spelled as scalars; cleared per block by the renderer
+    and written into the block report."""
     """Function name -> a domain package's answer for it, given the rendered
     arguments.
 
@@ -420,10 +424,20 @@ class Expressions:
         ``.OR.`` have to be elementwise -- ``any( .not. l_valid )`` over
         ``logical, dimension(nz) :: l_valid`` (CLUBB's new_pdf), outside any
         WHERE. Python's ``not`` on an array raises; ``~`` is the operator.
-        Unsettled ranks fall back to the scalar spelling, as before."""
+
+        A rank the semantics cannot settle -- a name no declaration in this
+        file covers, a use-import of a stubbed module -- takes the scalar
+        spelling, and the name goes on ``assumed_scalar`` so the block
+        report carries the assumption: ``not`` of a length-1 array is a
+        wrong answer that raises nothing (ledger #32 row 5)."""
+        if isinstance(node, f03.Name) and not self.semantics.rank_declared(node):
+            self.assumed_scalar.add(str(node).lower())
+            return False
         try:
             return self.semantics.rank(node) > 0
         except Exception:  # rank refuses what it cannot settle
+            for name in walk(node, f03.Name):
+                self.assumed_scalar.add(str(name).lower())
             return False
 
     # -- references -----------------------------------------------------------

@@ -2065,12 +2065,13 @@ def test_a_bound_naming_a_local_parameter_is_folded_to_its_value(tmp_path: Path)
     assert sub["folded_bounds"] == {
         "weights[2].lb": "t_above -> 1",
         "weights[2].ub": "t_below -> 2",
+        "lhs[0].lb": "- nd -> -3",
         "lhs[0].ub": "nd -> 3",
     }
-    # ``-nd`` is an expression over a parameter, not the parameter: left as
-    # written, and the wrapper's to refuse or spell.
+    # ``-nd`` is the parameter inside a sign: folded on this end too, so the
+    # record the sampler reads is not half-folded (ledger #32 row 6).
     lhs = next(a for a in sub["args"] if a["name"] == "lhs")
-    assert lhs["dims"][0] == {"lb": "- nd", "ub": "3"}  # fparser spaces the unary minus
+    assert lhs["dims"][0] == {"lb": "-3", "ub": "3"}
 
 
 PUBLIC_GENERIC = """\

@@ -252,6 +252,12 @@ class Statements:
 
     active_labels: list[Any] = field(default_factory=list)
     dropped_reads: set[str] = field(default_factory=set)
+    not_ported: set[str] = field(default_factory=set)
+    """Procedures of a stubbed module no stub answers, rendered as a raise in
+    the block just rendered: a path the run does not take, kept so the
+    branch around it survives -- and named, so the block report says the
+    translation is not complete there rather than counting it mechanical
+    and silent (ledger #32 row 7)."""
     """Names read only in the arguments of a call a framework stub replaced
     in the block being rendered (``endrun(msg=trim(errCode)//...)`` is a
     bare ``raise``). The subprogram renderer takes them per block for the
@@ -1780,6 +1786,7 @@ class Statements:
                 # ``if ( method == lapack )`` with it, and the candidate
                 # raised on the path the run *does* take.
                 reason = f"{name}: procedure of a stubbed module, not ported"
+                self.not_ported.add(name)
                 return [f"{pad}raise NotImplementedError({reason!r})"]
             raise NoRule(f"call to external subroutine {name!r}")
 

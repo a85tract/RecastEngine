@@ -707,3 +707,63 @@ def test_a_generic_whose_actual_is_another_generics_result_is_dispatched(tmp_pat
     finally:
         sys.path.remove(str(out))
         sys.modules.pop("core_mod_numpy", None)
+
+
+ABSENT_STUB = """\
+module uses_absent
+  use absent_mod, only: c0, do_thing
+  use flags_mod, only: mask
+  implicit none
+contains
+  subroutine step(n, x, l, r)
+    integer, intent(in) :: n
+    real(8), intent(inout) :: x(n)
+    logical, intent(in) :: l(n)
+    logical, intent(out) :: r
+    x = x * c0
+    call do_thing(x)
+    r = any(.not. l)
+    if (.not. mask) then
+      x = -x
+    end if
+  end subroutine step
+end module uses_absent
+"""
+
+
+def test_a_stub_module_the_tree_lacks_is_recorded_as_assumed(tmp_path: Path) -> None:
+    """``use absent_mod, only: c0, do_thing`` from a stubbed module no file
+    defines: nothing says which name is a procedure. Every one was taken
+    for a procedure, silently, and a read of the constant ``c0`` dropped
+    from both sides of the read/write check (ledger #32 row 21). The
+    assumption is on the record now, and ``stub_procedure_names`` says
+    what the tree cannot. The call that no stub answers is rendered as a
+    raise, as before, and the block report names it (row 7); ``.not.
+    mask`` over a name of unknown rank is spelled scalar and named (row 5)."""
+    (tmp_path / "uses_absent.f90").write_text(ABSENT_STUB)
+    frontend = FortranFrontend(stub_modules=["absent_mod", "flags_mod"])
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:uses_absent")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface["stub_procedures"] == ["c0", "do_thing", "mask"]
+    assert facts.interface["stub_procedures_assumed"] == {
+        "absent_mod": ["c0", "do_thing"],
+        "flags_mod": ["mask"],
+    }
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    blocks = {b["block"]: b for b in candidate.notes["blocks"]}
+    called = next(b for b in blocks.values() if b.get("not_ported"))
+    assert called["not_ported"] == ["do_thing"] and called["status"] == "mechanical"
+    guarded = next(b for b in blocks.values() if b.get("assumed_scalar"))
+    assert guarded["assumed_scalar"] == ["mask"]
+    text = candidate.files[Path("uses_absent_numpy.py")].decode()
+    assert "np.any((~(l)))" in text, "a declared array keeps the elementwise spelling"
+    assert "not _flags_mod.mask" in text, "the unknown rank is spelled scalar, and said"
+
+    told = FortranFrontend(
+        stub_modules=["absent_mod", "flags_mod"],
+        stub_procedure_names={"absent_mod": ["do_thing"], "flags_mod": []},
+    )
+    facts = told.analyze(unit, tmp_path)
+    assert facts.interface["stub_procedures"] == ["do_thing"]
+    assert "stub_procedures_assumed" not in facts.interface
+    assert facts.provenance["stub_procedure_names"] == {"absent_mod": ["do_thing"], "flags_mod": []}
