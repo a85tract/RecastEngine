@@ -79,6 +79,10 @@ intrinsic (``SIN(0.5)``) or an array reference: syntactically Python, and a
 NameError or TypeError the first time the function runs."""
 
 
+_COMPLEX_LITERAL = re.compile(r"^\(\s*([^(),]+?)\s*,\s*([^(),]+?)\s*\)$")
+"""A complex literal as the token pass spells it: two scalar parts in
+parentheses, which Python would read as a tuple."""
+
 BARE_DIVISION = re.compile(r"(?<![/(])/(?![/)])")
 """A ``/`` that is neither concatenation (``//``) nor a constructor
 delimiter (``(/``, ``/)``): a quotient."""
@@ -1059,6 +1063,18 @@ class Subprograms:
         spelled = self._token_parameter_value(
             text, local_parameters, getattr(self, "companion_globals", None)
         )
+        if str(dtype or "").startswith("complex"):
+            # ``complex(kind = k), parameter :: i = (0.0_k, 1.0_k)``: the
+            # token pass spells the literal as its two parts, ``(0.0, 1.0)``,
+            # which Python reads as a tuple -- CLUBB's calc_roots then
+            # raised ``can't multiply sequence`` at the first use. A
+            # two-part literal is the complex it names, at the declared
+            # kind; any other complex initializer takes the parse path.
+            parts = _COMPLEX_LITERAL.match(spelled)
+            ctor = "np.complex64" if dtype == "complex64" else "np.complex128"
+            if parts:
+                return f"{ctor}(complex({parts.group(1)}, {parts.group(2)}))"
+            return f"{ctor}({self._reparsed_parameter_value(text, spelled, statements)})"
         if str(dtype or "").startswith("int") and BARE_DIVISION.search(text):
             # ``integer, parameter :: h(3) = (/1, 2, 3/) / 2``: the token pass
             # has no integer division and rendered a float64 1.5 where

@@ -316,7 +316,7 @@ def _storage(tokens: list[dict[str, Any]], declared: str | None) -> str:
     arithmetic); arithmetic in a single constant refuses; a lone single
     value is exact either way."""
     leaves = _leaf_tokens(tokens)
-    if declared in ("int", "bool", "str", "complex"):
+    if declared in ("int", "bool", "str") or str(declared).startswith("complex"):
         return "int"
     unknown = [leaf for leaf in leaves if leaf.get("dtype") is None]
     lone = len(tokens) == 1 and tokens[0]["t"] in ("real", "real32", "ref", "index", "call")
@@ -1026,9 +1026,10 @@ def extract(
         if base == "CHARACTER":
             return "str"
         if base == "COMPLEX":
-            # A complex constant is spelled as its two parts and stored as
-            # before; its kind is not one this rule reads yet.
-            return "complex"
+            # Two reals of one kind: complex128 / complex64 by that kind,
+            # None when the kind is not known (and the value then refuses
+            # like any leaf of unknown kind).
+            return declared_dtype("complex", kind_spelling(text, base), kind_map)
         return None
 
     # The kind of every entity the module declares, variables included: a

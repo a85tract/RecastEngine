@@ -306,8 +306,9 @@ contains
     complex( kind = rk ), dimension(nz,2) :: roots
     real( kind = rk ), dimension(nz) :: determinant
     complex( kind = rk ), dimension(nz) :: sqrt_det
+    complex( kind = rk ), parameter :: i_unit = ( 0.0_rk, 1.0_rk )
     determinant = b_coef**2 - 4.0_rk * a_coef * c_coef
-    sqrt_det = sqrt( cmplx( determinant, kind = rk ) )
+    sqrt_det = sqrt( cmplx( determinant, kind = rk ) ) * i_unit * i_unit * (-1.0_rk)
     roots(:,1) = ( -cmplx( b_coef, kind = rk ) + sqrt_det ) / cmplx( 2.0_rk * a_coef, kind = rk )
     roots(:,2) = ( -cmplx( b_coef, kind = rk ) - sqrt_det ) / cmplx( 2.0_rk * a_coef, kind = rk )
   end function quadratic_solve
@@ -345,13 +346,57 @@ def test_a_complex_is_spelled_at_its_kind_not_as_float64(tmp_path: Path) -> None
     assert "roots = np.zeros((nz, 2,), dtype=np.complex128)" in module
     assert "sqrt_det = np.zeros((nz,), dtype=np.complex128)" in module
     assert "np.sqrt(np.complex128(determinant))" in module
+    assert "i_unit = np.complex128(complex(0.0, 1.0))" in module
     assert "-np.complex128(b_coef)" in module
-    assert "complex(" not in module.replace("np.complex128(", "")
+    assert "complex(determinant)" not in module and "complex(b_coef)" not in module
     assert "re1[...] = np.real(roots[:, 0])" in module
     assert "im2[...] = np.imag(roots[:, 1])" in module
     assert "    z = 0j" in module
     assert len(candidate.deferred) == 1 and "no_kind" in candidate.deferred[0]
     assert "cmplx without a kind" in candidate.deferred[0]
+
+
+COMPLEX_CONSTANTS = """\
+module cp_mod
+  implicit none
+  integer, parameter :: rk = selected_real_kind(15)
+  complex( kind = rk ), parameter :: i_unit = ( 0.0_rk, 1.0_rk )
+  complex, parameter :: i_single = ( 0.0, 1.0 )
+  complex( kind = rk ), parameter :: two_c = 2.0_rk
+  complex( kind = rk ), parameter :: rich = cmplx( 1.0_rk, 2.0_rk, kind = rk )
+  private
+  public :: rot, i_unit, i_single, two_c, rich
+contains
+  subroutine rot( n, z, w )
+    integer, intent(in) :: n
+    complex( kind = rk ), intent(in) :: z(n)
+    complex( kind = rk ), intent(out) :: w(n)
+    w = z * i_unit
+  end subroutine rot
+end module cp_mod
+"""
+
+
+def test_a_module_complex_parameter_is_a_complex_not_a_tuple(tmp_path: Path) -> None:
+    """``complex(kind = rk), parameter :: i = (0.0_rk, 1.0_rk)`` came out
+    ``I = ( np.float64('0.0') , np.float64('1.0') )`` -- a tuple, which the
+    first multiplication raised on. The two-part literal is the complex at
+    the declared kind, a real initializer is widened as Fortran widens it,
+    and a richer initializer is refused with the reason (#20)."""
+    (tmp_path / "cp_mod.f90").write_text(COMPLEX_CONSTANTS)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:cp_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    constants = candidate.files[Path("cp_mod_constants.py")].decode()
+    assert "I_UNIT = np.complex128(complex(np.float64('0.0'), np.float64('1.0')))" in constants
+    assert "I_SINGLE = np.complex64(complex(np.float64(np.float32('0.0'))" in constants
+    assert "TWO_C = np.complex128(np.float64('2.0'))" in constants
+    assert "# SKIPPED RICH = " in constants and "two-part literal" in constants
+    namespace: dict[str, object] = {}
+    exec(constants, namespace)
+    assert namespace["I_UNIT"] == 1j and namespace["I_UNIT"].dtype == "complex128"
+    assert namespace["I_SINGLE"].dtype == "complex64"
 
 
 SEARCH_LOOP = """\

@@ -122,10 +122,46 @@ def np_int_literal(value: int) -> str:
     return f"np.int64({value})" if not -(2**31) <= value < 2**31 else f"np.int32({value})"
 
 
+def _complex_parameter(parameter: dict[str, Any]) -> tuple[str | None, str]:
+    """A constant declared complex: ``(value, "")`` or ``(None, reason)``.
+
+    The two-part literal ``(0.0_rk, 1.0_rk)`` is the complex it names, at
+    the declared kind -- the token route spelled it as its two parts,
+    which Python reads as a tuple (CLUBB's calc_roots multiplied one and
+    raised). A real or integer initializer is widened to the complex, as
+    Fortran does. Anything richer -- ``cmplx(...)``, arithmetic -- is
+    refused with the reason rather than folded by a renderer that has no
+    complex arithmetic rules.
+    """
+    ctor = "np.complex64" if parameter.get("dtype") == "complex64" else "np.complex128"
+    kind, payload = parameter["kind"], parameter["payload"]
+    if kind in ("real", "real32"):
+        return f"{ctor}({_real(payload, kind == 'real32')})", ""
+    if kind == "int":
+        return f"{ctor}({int(payload)})", ""
+    if kind == "expr" and len(payload) == 5:
+        opens, real_part, comma, imag_part, closes = payload
+        literal = (
+            opens == {"t": "op", "v": "("}
+            and closes == {"t": "op", "v": ")"}
+            and comma == {"t": "op", "v": ","}
+            and real_part["t"] in ("real", "real32", "int")
+            and imag_part["t"] in ("real", "real32", "int")
+        )
+        if literal:
+            return f"{ctor}(complex({_expression([real_part])}, {_expression([imag_part])}))", ""
+    return None, "a complex constant that is not a two-part literal: not spelled by this renderer"
+
+
 def _module_parameter(parameter: dict[str, Any], source: str) -> str:
     name = parameter["name"].upper()
     kind, payload = parameter["kind"], parameter["payload"]
     where = f"# {source}:{parameter['line']} ({parameter['base_type']})"
+    if str(parameter.get("dtype") or "").startswith("complex") and kind != "ref":
+        value, why = _complex_parameter(parameter)
+        if value is None:
+            return f"# SKIPPED {name} = {parameter['init_expr']}  ({why}) {where}"
+        return f"{name} = {value}  {where}"
     if kind == "array":
         return f"{name} = {_array(payload)}  {where} [array param]"
     if kind == "int64":
