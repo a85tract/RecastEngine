@@ -202,7 +202,13 @@ class IsolatedModule:
         except (BrokenPipeError, OSError):
             reply = None
         if reply is None:
-            code = self._proc.poll()
+            # EOF on the pipe means the child closed it, which is not yet the
+            # child having been reaped: poll() here can still say None. Wait
+            # for the status the message is about, bounded as _end bounds it.
+            try:
+                code = self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                code = None
             tail = self._tail(" -- last lines the reference wrote:\n")
             self._end()
             raise ReferenceAborted(
