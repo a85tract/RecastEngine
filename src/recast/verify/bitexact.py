@@ -256,6 +256,28 @@ def _file_bytes(path: Any) -> bytes | None:
         return None
 
 
+def _reference_takes(argument: dict[str, Any]) -> bool:
+    """Whether the reference's wrapper takes this OUT array as an argument.
+
+    An OUT array that is the caller's buffer with an axis of no declared
+    extent, or an allocatable one: the wrapper cannot size a result for it
+    and spells it ``inout``, so the reference takes it in, writes it in
+    place, and it is read back from what was passed (the f2py oracle's
+    ``_passed_buffer`` and its allocatable shim). Every other OUT array --
+    a buffer with declared extents included, which is every OUT array of a
+    tree read under ``buffer_out_arrays="all"`` (CLUBB's) -- the wrapper
+    allocates and returns, and handing it would be one keyword argument
+    more than the wrapper takes. The candidate takes every buffer either
+    way, and so does a reference emitted the way the candidate was (a NumPy
+    anchor); that side is ``buffer`` alone. This is the f2py wrapper's
+    rule."""
+    if argument.get("intent") != "OUT" or not argument.get("dims"):
+        return False
+    if argument.get("allocatable"):
+        return True
+    return bool(argument.get("buffer")) and any(not d.get("ub") for d in argument.get("dims") or ())
+
+
 class _CallTimedOut(Exception):
     """The candidate did not return from a draw within its bound.
 
@@ -507,10 +529,11 @@ def _guarded_shapes(
     it replaces, and the subprogram refusing it says so where a shape nobody
     can name would not.
     """
+    # Every axis at its declared extent -- ``ub - lb + 1`` where a lower
+    # bound is declared: CLUBB's tridiagonal solvers take ``lhs(-1:1, ...)``,
+    # three rows, and drawing the upper bound alone handed them one.
     shapes = {
-        str(argument["name"]).lower(): [
-            _resolve_extent(dim.get("ub"), dims) for dim in argument["dims"]
-        ]
+        str(argument["name"]).lower(): [_extent(dim, dims) for dim in argument["dims"]]
         for argument in required
         if argument.get("dims")
     }
@@ -746,6 +769,12 @@ class BitexactVerifier(Verifier):
 
     call_seconds: float = 5.0
     """How long one generated draw may keep the candidate before it is refused.
+
+    A generated draw only. A recorded sample is the production run's own
+    numbers, which the source came back from, and it cannot be drawn again;
+    it is compared however long the candidate takes -- the first call of a
+    JIT-compiled whole step is minutes of compilation, not a loop the source
+    never leaves.
 
     Generous by three orders of magnitude: the gate's draws are small -- a
     default extent of eight -- and a subprogram that has not answered one in
@@ -1021,7 +1050,18 @@ class BitexactVerifier(Verifier):
         # hydraulic-stress routine). It fails by name, with the backend's
         # reason, unless declared ungated like any other silence.
         lowered = getattr(translated, "_JAX_KERNELS", None)
-        delegated = (candidate.notes.get("jax") or {}).get("delegated") or {}
+        jax_notes = candidate.notes.get("jax") or {}
+        # A companion's reasons beside the module's own: the chain from a
+        # driver to the companion kernel it lost ends in the companion's
+        # note, and the tree port keeps those by module.
+        delegated = {
+            name: why
+            for per_module in (
+                (jax_notes.get("companion_notes") or {}).get("delegated") or {}
+            ).values()
+            for name, why in per_module.items()
+        }
+        delegated.update(jax_notes.get("delegated") or {})
         declared_flat = handle.get("flattened")
         flattened: dict[str, Any] = declared_flat if isinstance(declared_flat, dict) else {}
         for name in wanted:
@@ -1571,15 +1611,20 @@ class BitexactVerifier(Verifier):
                 # emitted way instead, because both sides of that comparison came
                 # out of the same emitter.
                 #
-                # A caller-buffer OUT array is handed to the reference as well:
-                # it is the caller's storage on both sides, and the reference
-                # cannot allocate what its wrapper never sized. The copy
-                # ``_truth_input`` makes keeps the two sides independent.
+                # A caller-buffer OUT array the wrapper cannot size is handed
+                # to the reference as well: it is the caller's storage on
+                # both sides. One the wrapper sizes and returns is not -- see
+                # ``_reference_takes``. The copy ``_truth_input`` makes keeps
+                # the two sides independent.
                 spell = pysafe if arg_naming == "pysafe" else _f2py_name
                 handed = [
                     a
                     for a in required
-                    if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
+                    if a["intent"] != "OUT"
+                    or (
+                        (_reference_takes(a) if convention == "f2py" else a.get("buffer"))
+                        and a["name"] in inputs
+                    )
                 ]
                 try:
                     truth_kwargs = {
@@ -1621,7 +1666,14 @@ class BitexactVerifier(Verifier):
                         }
                 else:
                     try:
-                        with _bounded(call_seconds):
+                        # A generated draw is bounded (``call_seconds``): a
+                        # value the source's own loop never leaves is drawn
+                        # again. A recorded sample is not: the production
+                        # run came back from it, there is no drawing again,
+                        # and a candidate that compiles its whole step in
+                        # the first call (CLUBB's, under JAX, for minutes)
+                        # is not a loop that never leaves.
+                        with _bounded(call_seconds if samples is None else 0.0):
                             translated_out = translated_fn(**translated_kwargs)
                     except _CallTimedOut as error:
                         # The draw, not the translation: the reference runs
@@ -2473,19 +2525,20 @@ class BitexactVerifier(Verifier):
             if isinstance(truth_out, tuple)
             else ([truth_out] if truth_out is not None else [])
         )
-        # A caller-buffer OUT array is not among them: the wrapper spells it
-        # ``intent(in out)``, because the caller owns the storage on both
-        # sides, so it is read back from the array that was passed exactly as
-        # an INOUT is.
-        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not a.get("buffer")]
+        # A caller-buffer OUT array the wrapper cannot size is not among
+        # them: the wrapper spells it ``intent(in out)``, because the caller
+        # owns the storage on both sides, so it is read back from the array
+        # that was passed exactly as an INOUT is. One with declared extents
+        # the wrapper sizes and returns like any OUT.
+        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not _reference_takes(a)]
         if len(theirs_out) != len(pure_out):
             return (
                 f"oracle returned {len(theirs_out)} value(s) for "
                 f"{len(pure_out)} intent(out) argument(s)"
             )
         theirs = dict(zip([a["name"] for a in pure_out], theirs_out, strict=True))
-        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or a.get("buffer")]
-        read_back = [a for a in outs_required if a["intent"] == "INOUT" or a.get("buffer")]
+        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or _reference_takes(a)]
+        read_back = [a for a in outs_required if a["intent"] == "INOUT" or _reference_takes(a)]
         if read_back and len(truth_args) != len(passed_in):
             return (
                 f"the reference was handed {len(truth_args)} argument(s) for "
@@ -2681,11 +2734,19 @@ class BitexactVerifier(Verifier):
         the interface.
         """
         site = _profile_site(unit_uid, name, trial)
-        offered = {key: _copy_input(value) for key, value in drawn.items()}
+        # The profile is the operator's Python, and reads the draw the way
+        # Python does -- ``xlist[-1]`` for the last altitude (CLUBB's
+        # interpolation profile). The subscript guard on a drawn array is
+        # for the translated body, whose every subscript is ``expr - lb``;
+        # the profile sees plain arrays, and what it hands back is guarded
+        # again before the candidate sees it.
+        offered = {key: _plain_input(np, _copy_input(value)) for key, value in drawn.items()}
         try:
             shaped = prepare(unit_uid, name, offered, rng)
         except Exception as error:
             raise InputProfileError(f"{site} raised {type(error).__name__}: {error}") from error
+        if shaped is not None and isinstance(shaped, dict):
+            shaped = {key: _guarded_input(np, value) for key, value in shaped.items()}
         if shaped is None:
             edited = sorted(key for key in drawn if not _same_input(np, offered[key], drawn[key]))
             if edited:
@@ -2834,6 +2895,21 @@ def _module_under_judgement(unit: str, offered: list[Path], suffix: str) -> Path
 
 def _profile_site(unit_uid: str, name: str, trial: int) -> str:
     return f"{INPUT_PROFILE}: prepare({unit_uid!r}, {name!r}) at trial {trial}"
+
+
+def _plain_input(np: Any, value: Any) -> Any:
+    """A drawn array as a plain ndarray, the guard on its subscripts off."""
+    if isinstance(value, np.ndarray) and type(value) is not np.ndarray:
+        return value.view(np.ndarray)
+    return value
+
+
+def _guarded_input(np: Any, value: Any) -> Any:
+    """A plain array with the guard on its subscripts on, the way a draw is
+    handed to the candidate: an array the profile shaped is one too."""
+    if isinstance(value, np.ndarray) and type(value) is np.ndarray and value.ndim > 0:
+        return value.view(_no_wrap_array_type(np))
+    return value
 
 
 def _copy_input(value: Any) -> Any:

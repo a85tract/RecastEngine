@@ -200,6 +200,8 @@ def _evaluate(
             )
             if storage == "single":
                 text = f"_f32({text})"
+            if entry.get("dtype") == "int" and typed(entry["expr"], kinds) == "real":
+                text = f"int({text})"  # an integer parameter over a real truncates
             scope = {"__builtins__": {}, "max": max, "min": min, "abs": abs, "int": int}
             scope.update({"float": float, "math": math, "sys": sys, "_f32": _single})
             env[entry["name"].upper()] = eval(text, scope, dict(env))  # noqa: S307

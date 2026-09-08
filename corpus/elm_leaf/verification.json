@@ -1,0 +1,56 @@
+{
+  "recipe": "translate",
+  "schema": 1,
+  "units": [
+    {
+      "candidate": "16b9e1f1f57c29f37a658a2a28e06c64f363f25f98c4dbe615f1ba6c537a97f2",
+      "deferred": 0,
+      "oracle": "f2py-golden",
+      "stopped_by": null,
+      "transform": "recast.translate.tree-to-numpy",
+      "unit": "fortran:leaf_layers",
+      "verdicts": [
+        {
+          "confidence": "sampled",
+          "detail": "1 blocks match",
+          "metrics": {
+            "blocks_checked": 1,
+            "blocks_deferred": 0,
+            "blocks_matched": 1,
+            "blocks_waived": 0,
+            "reads_excused_by_stubs": 0
+          },
+          "passed": true,
+          "verifier": "static.rwset"
+        },
+        {
+          "confidence": "bit_exact",
+          "detail": "60 points across 1 subprogram(s), all bit-exact",
+          "metrics": {
+            "bit_exact": 60,
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "points": 60,
+            "redrawn": 0,
+            "reference_isolation": "process",
+            "trials": 5
+          },
+          "passed": true,
+          "verifier": "differential.bitexact"
+        },
+        {
+          "confidence": "symbolic",
+          "detail": "no rewrites to notarize; the translation is print-order faithful",
+          "metrics": {
+            "rewrites": 0
+          },
+          "passed": true,
+          "verifier": "symbolic.notary"
+        }
+      ]
+    }
+  ]
+}
