@@ -23,26 +23,22 @@ other plugin changes it without changing RecastEngine.
 manifests describe artifact contracts and select a default recipe; they do not
 run work themselves. See [translation-engines.md](translation-engines.md).
 
-## The six recipes
+## The recipes
 
 ```console
 $ recast recipes
 audit           Secret scan and SBOM/CVE/VEX, gating the way hpc-devsecops does.
-port            Retarget a kernel to an accelerator; gate on captured production dumps.
-python-to-jax   Lower Python/NumPy functions to JAX and verify against the source.
-python-to-numba Compile Python/NumPy functions with Numba and verify against the source.
 refactor-todo   Restructure architecture without touching numerics; gate on a full run.
 translate       Translate a source language to a target language, gated bit-exact.
 ```
 
-Six recipes, one spine — every recipe is the same five steps
+One spine — every recipe is the same five steps
 (`discover → analyze → transform → verify → record`) with different plugins in
 the slots, which is [architecture.md](architecture.md)'s subject.
 
 They are not equally far along. `translate` runs end to end, gated bit-exact.
-`port` and `audit` plan clean on the plugins shipped here. `refactor-todo` declares
-four slots nothing fills yet. [`roadmap.md`](roadmap.md) is where each is
-going.
+`audit` plans clean on the plugins shipped here. `refactor-todo` declares
+four slots nothing fills yet.
 
 ## plan
 
@@ -50,10 +46,10 @@ going.
 makes it the cheap check before an oracle costs hours:
 
 ```console
-$ recast plan translate --config '{"target": "numba"}'
+$ recast plan translate
  1. [ok ] executor     local
  2. [ok ] frontend     fortran
- 3. [ok ] transform    translate.numba
+ 3. [ok ] transform    translate.numpy
  4. [ok ] verifier     static.rwset                 gate
  5. [ok ] oracle       f2py-golden
  6. [ok ] verifier     differential.bitexact        gate
@@ -63,8 +59,7 @@ $ recast plan translate --config '{"target": "numba"}'
 
 `[MISS]` means nothing is registered under the name the recipe asked for. What
 that does and does not tell you is in
-[`writing-a-plugin.md`](writing-a-plugin.md); how far each `translate`
-target's evidence actually reaches is in [`roadmap.md`](roadmap.md).
+[`writing-a-plugin.md`](writing-a-plugin.md).
 
 ## Configuration
 
@@ -90,12 +85,9 @@ a path to a `.json` or `.toml` file. Same object either way, and
 
 | Recipe | Keys of its own |
 |---|---|
-| `translate` | `target` — `numpy` (default), `numba`, `cuda`, or `tree`: the NumPy translation of a unit that `use`s sibling modules in the same tree, with their translations bundled into the candidate so the gate can import it |
-| `port` | `backend` — `jax` (default), `numba` or `cuda`. `oracle` — what to gate against, `numpy-anchor` by default; `dump-replay` also requires `dumps`. `benchmark` — `true` adds the `performance.benchmark` measurement after the gate, for a unit whose attrs carry a build spec |
+| `translate` | `target` — `numpy` (default) |
 | `refactor-todo` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
 | `audit` | none |
-| `python-to-numba` | fixed `target=numba`, `frontend=python-numpy`; local executor |
-| `python-to-jax` | fixed `target=jax`, `frontend=python-numpy`; local executor |
 
 The four legacy recipes also read `executor` and `frontend`, defaulting to
 `local` and `fortran`. The two Python accelerator engine manifests pin both

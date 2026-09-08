@@ -450,55 +450,6 @@ which run you are looking at, delete `output/satvap` and run again; it is
 safe to delete all of `output/` at any time. Your Fortran is never written
 to.
 
-**One module that `use`s another.** Put both files in the same folder,
-and say `"target": "tree"` in the settings file. Without it, each module is
-translated and checked on its own, and the one that imports its sibling
-fails its check with `candidate does not import: No module named
-'<sibling>_numpy'`; with it, the sibling's translation is bundled into the
-candidate so the check can run. A `dewpoint.f90` that begins with
-`use satvap, only: esat, r8`, beside the `satvap.f90` above, with this
-`recast.json`:
-
-```json
-{
-  "target": "tree",
-  "stages": {
-    "differential.bitexact": {
-      "dims": {"n": 16},
-      "ranges": {"t": [220.0, 320.0], "p": [300.0, 1050.0], "rh": [0.05, 1.0]}
-    }
-  }
-}
-```
-
-```console
-$ recast run translate pair --config pair/recast.json
-fortran:dewpoint
-  [ok ] frontend   fortran
-  [ok ] transform  translate.tree
-  [ok ] verifier   static.rwset                sampled: 3 blocks match
-  [ok ] oracle     f2py-golden                 f2py:dewpoint:6cd05706f7b310c3
-  [ok ] verifier   differential.bitexact       bit_exact: 10 points across 1 subprogram(s), all bit-exact
-  [ok ] verifier   symbolic.notary             symbolic: no rewrites to notarize; the translation is print-order faithful
-  [ok ] store      fs-evidence                 3 verdict(s) recorded
-fortran:satvap
-  [ok ] frontend   fortran
-  [ok ] transform  translate.tree
-  ...
-  [ok ] verifier   differential.bitexact       bit_exact: 170 points across 2 subprogram(s), all bit-exact
-  ...
-
-2 unit(s), 6 verdict(s), all passed
-```
-
-Each module is still checked as its own unit, against its own compiled
-Fortran; `--unit fortran:dewpoint` picks one. The `rh` range starts above
-zero on purpose: `dewpt` takes a logarithm of `rh`, and where Fortran's
-`log` of a negative number quietly returns NaN, Python's raises, so a range
-that reaches below zero makes the check stop with `math domain error`
-instead of comparing. Ranges are where you say what the code is for. For a
-real model tree, with constants modules and framework calls, read
-[`tree-units.md`](tree-units.md).
 
 ## 7. Where to go next
 
@@ -506,5 +457,3 @@ real model tree, with constants modules and framework calls, read
 |---|---|
 | [`cli.md`](cli.md) | every command and every key the settings file accepts |
 | [`corpus-numfor-example.md`](corpus-numfor-example.md) | the same walk over a real third-party library, and a careful reading of how much a passing run actually proves |
-| [`tree-units.md`](tree-units.md) | what changes when the Fortran is not one module but a model tree |
-| [`roadmap.md`](roadmap.md) | how far each of the six recipes reaches today |
