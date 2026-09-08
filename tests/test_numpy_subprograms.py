@@ -88,6 +88,12 @@ contains
     return
   end function total
 
+  function ranking(a) result(b)
+    integer, intent(in) :: a(:)
+    integer :: b(size(a))
+    b = a
+  end function ranking
+
   function pick(n) result(t)
     integer, intent(in) :: n
     real(r8) :: t
@@ -120,6 +126,16 @@ contains
     end if
     k = k + 1
   end subroutine climb
+
+  subroutine sized_locals(x, c)
+    real(r8), intent(in) :: x(:)
+    real(r8), intent(out) :: c(0:, :)
+    real(r8) :: knots(0:4, size(x) - 1)
+    real(r8) :: band(5, 2*size(c, 2))
+    knots = 0.0_r8
+    band = 0.0_r8
+    c = 0.0_r8
+  end subroutine sized_locals
 
 end module asm_mod
 """
@@ -164,10 +180,12 @@ def node_of(source: Path, name: str) -> Any:
 
 def test_the_signature_reorders_by_intent(source: Path) -> None:
     """An optional OUT is not a parameter but a ``want_`` sentinel; an
-    optional IN becomes a keyword; a plain OUT vanishes from the def line
-    entirely, because the callee owns its buffer and returns it."""
+    optional IN becomes a keyword. An assumed-shape OUT stays a parameter:
+    its extent is the actual's, which only the caller has, so the caller's
+    storage is passed in and handed back (see
+    ``test_out_arguments_are_allocated_or_zeroed``)."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
-    assert lines[0] == "def work(n, a, b, want_opt=False, flags=None):"
+    assert lines[0] == "def work(n, a, b, out1, want_opt=False, flags=None):"
 
 
 def test_the_return_tuple_carries_every_out_intent(source: Path) -> None:
@@ -223,11 +241,16 @@ def test_module_state_written_becomes_global(source: Path) -> None:
 
 
 def test_out_arguments_are_allocated_or_zeroed(source: Path) -> None:
-    """An assumed-shape OUT borrows the shape of a same-rank assumed-shape
-    IN argument -- Fortran took the extent from the actual, and the donor is
-    the only place that extent still exists."""
+    """An assumed-shape OUT is the caller's buffer, not a fresh array sized
+    off a same-rank assumed-shape IN sibling. That donor was a guess about
+    the caller, and BVLS is where it was wrong: ``x(:)`` and ``w(:)`` are
+    ``n``-vectors while the only rank-1 donor, ``b(:)``, is an ``m``-vector,
+    so the translation sized its solution off the wrong axis and the f2py
+    reference could not allocate an ``intent(out)`` of extent ``:`` at all.
+    An optional scalar OUT is still the callee's to define."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
-    assert "    out1 = np.zeros(np.shape(a), dtype=np.float64)" in lines
+    assert not any(line.strip().startswith("out1 = np.zeros(") for line in lines)
+    assert lines[0].startswith("def work(n, a, b, out1,")
     assert "    opt = 0.0  # optional OUT: may not be assigned" in lines
 
 
@@ -284,6 +307,32 @@ def test_the_integer_arm_is_a_second_switch(source: Path) -> None:
 def test_a_function_result_is_preinitialized(source: Path) -> None:
     lines, _ = build(source).render(node_of(source, "total"), "total")
     assert "    t = 0.0" in lines
+
+
+def test_an_array_result_is_preinitialized_once_and_in_its_own_dtype(source: Path) -> None:
+    """The array form and the scalar forms were alternatives written as
+    separate ``if``s, so ``integer :: b(size(a))`` got both: a float64 buffer
+    and then ``b = 0``, which rebound the name to a scalar and made the first
+    store into the result raise TypeError. Every integer-, logical- and
+    character-valued array function was unrunnable, which is where the
+    corpus's ``iargsort`` and ``rargsort`` stopped."""
+    lines, _ = build(source).render(node_of(source, "ranking"), "ranking")
+    assert "    b = np.zeros((np.size(a),), dtype=np.int32)" in lines
+    assert "    b = 0" not in lines
+
+
+def test_an_extent_is_a_term_of_a_bound_not_only_a_whole_one(source: Path) -> None:
+    """``size(a)`` alone resolved; ``size(x) - 1`` and ``2*size(c, 2)`` did
+    not. The inquiry was substituted into the bound text first and the
+    tokenizer that read what came back had no token for the ``.`` in
+    ``np.size(x)``, so every automatic array sized off an argument by
+    arithmetic -- the spline coefficient tables, their band matrices --
+    deferred as "extent not resolvable" and took its subprogram with it. The
+    inquiry is one token now, comma and all."""
+    lines, report = build(source).render(node_of(source, "sized_locals"), "sized_locals")
+    assert "    knots = np.zeros(((I_4) - (0) + 1, np.size(x) - 1,), dtype=np.float64)" in lines
+    assert "    band = np.zeros((I_5, 2 * np.size(c, 1),), dtype=np.float64)" in lines
+    assert [entry for entry in report if entry["status"] == "agent_queue"] == []
 
 
 # --- blocks ------------------------------------------------------------------
@@ -588,3 +637,37 @@ def test_a_local_parameter_from_a_use_imported_constant_is_spelled_through_its_c
     )
     lines, _ = assembler.render(node_of(path, "nearly"), "nearly")
     assert "    delta = _basic.SMALL" in lines
+
+
+POWERS = """\
+module powers_mod
+  implicit none
+contains
+  subroutine fill(x, a)
+    real, intent(in) :: x
+    real, intent(out) :: a(4)
+    integer :: j
+    do j = 1, 4
+      a(j) = x**(j-1)
+    end do
+  end subroutine fill
+end module powers_mod
+"""
+
+
+def test_a_runtime_integer_exponent_is_lowered_the_way_a_literal_one_is(tmp_path: Path) -> None:
+    """``x**(j-1)`` inside a loop has no literal for ``expand_power`` to
+    expand, so what was emitted was Python's ``**`` -- a libm ``pow`` call
+    gfortran makes for no integer exponent, literal or not. One to two ULP,
+    on the matrix ``spline3pars`` builds its end conditions from, is enough
+    to fail the gate for the caller.
+
+    Under a profile that does not expand a literal exponent either, nothing
+    changes: the two decisions are the same fact about the reference binary.
+    """
+    path = tmp_path / "powers.f90"
+    path.write_text(POWERS)
+    lowered = "\n".join(build(path, profile="gfortran").render(node_of(path, "fill"), "fill")[0])
+    assert "_f_powi(x, ((j - 1)))" in lowered
+    left = "\n".join(build(path, profile="ifx").render(node_of(path, "fill"), "fill")[0])
+    assert "(x ** ((j - 1)))" in left

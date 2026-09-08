@@ -443,3 +443,90 @@ def test_the_where_constructs_masks_are_scaffolding() -> None:
         assert DISCARD.fullmatch(name), name
     for name in ("_wet", "_we", "_wn_x", "wn", "_f_copy_out", "x_we0_1"):
         assert not DISCARD.fullmatch(name), name
+
+
+def test_a_masked_elsewhere_s_temporaries_are_scaffolding() -> None:
+    """A WHERE with a masked ELSEWHERE is emitted with ``_wn`` (what no
+    branch has claimed yet) and ``_we0_1`` (this branch's mask) beside
+    ``_wm``. They are the emitter's, like ``_wm``; counted, they failed
+    every such construct as reading and writing two names the source does
+    not have (SLSQP's ``enforce_bounds``)."""
+    import ast as pyast
+
+    code = (
+        "def clip(x, xl, xu):\n"
+        "    _wm = (x < xl)\n"
+        "    _wn = (~_wm)\n"
+        "    x[...][_wm] = (xl)[_wm]\n"
+        "    _we0_1 = (_wn & (x > xu))\n"
+        "    _wn = (_wn & (~(x > xu)))\n"
+        "    x[...][_we0_1] = (xu)[_we0_1]\n"
+    )
+    reads, writes = span_rwset(pyast.parse(code), 2, 7, Protocol())
+    assert reads == {"x", "xl", "xu"}
+    assert writes == {"x"}
+
+
+def test_a_do_loop_s_held_bounds_are_scaffolding() -> None:
+    """A counted DO whose index is read after the loop, and whose body writes
+    a name its bounds use, holds the bounds in ``_dolo_i``/``_dohi_i``/
+    ``_dost_i`` so the completion value is the one Fortran computed at
+    entry. They are the emitter's, like ``_wm``: the source reads ``m`` and
+    writes ``i`` and ``m``, and nothing else."""
+    import ast as pyast
+
+    code = (
+        "def trim(m):\n"
+        "    _dolo_i = 1\n"
+        "    _dohi_i = m\n"
+        "    _dost_i = 2\n"
+        "    for i in range(_dolo_i, _dohi_i + 1, _dost_i):\n"
+        "        m = m - 1\n"
+        "    else:\n"
+        "        i = (_dolo_i) + max(0, ((_dohi_i) - (_dolo_i) + (_dost_i)) // (_dost_i))"
+        " * (_dost_i)\n"
+        "    return m, i\n"
+    )
+    protocol = Protocol(scaffolding=frozenset({"range", "max"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 8, protocol)
+    assert reads == {"m"}
+    assert writes == {"i", "m"}
+
+
+def test_an_assumed_size_write_back_writes_its_target() -> None:
+    """``_f_seq_tail_out(a, start, value)`` is the copy-out of a callee's
+    assumed-size dummy onto the caller's matrix -- a write of ``a``, the way
+    ``_f_copy_out`` is, with the start expression and the value read."""
+    import ast as pyast
+
+    code = (
+        "def recover(a, w, i, n):\n"
+        "    _f_seq_tail_out(a, (i - 1) + (1 - 1) * 1 * np.size(a, 0), np.ravel(w, order='F'))\n"
+    )
+    protocol = Protocol(scaffolding=frozenset({"np", "_f_seq_tail_out"}))
+    reads, writes = span_rwset(pyast.parse(code), 2, 2, protocol)
+    assert reads == {"a", "i", "w"}
+    assert writes == {"a"}
+
+
+def test_a_procedure_name_the_function_binds_is_a_variable() -> None:
+    """``rpqr79`` has a local ``scale``; ``cpoly`` contains a function
+    ``scale``, so the name is in ``procedures``. Python and Fortran both
+    resolve it inside ``rpqr79`` to the local, so a load of it there is a
+    read -- it was skipped as a call, and the block failed on the source's
+    read of it. At callee position the name stays a call, and in a function
+    that binds nothing of the name it stays a call everywhere."""
+    import ast as pyast
+
+    code = "def rpqr79(coeff):\n    scale = 1.0 / coeff[0]\n    work = coeff[1] * scale\n"
+    protocol = Protocol(procedures=frozenset({"scale", "rpqr79"}))
+    reads, writes = span_rwset(pyast.parse(code), 3, 3, protocol, own="rpqr79")
+    assert reads == {"coeff", "scale"} and writes == {"work"}
+
+    other = "def cpoly(pt):\n    bnd = scale(pt)\n    scale = 2.0\n"
+    reads, writes = span_rwset(pyast.parse(other), 2, 2, protocol, own="cpoly")
+    assert reads == {"pt"} and writes == {"bnd"}, "callee position is control flow"
+
+    unbound = "def cauchy(pt):\n    bnd = scale * pt[0]\n"
+    reads, writes = span_rwset(pyast.parse(unbound), 2, 2, protocol, own="cauchy")
+    assert reads == {"pt"} and writes == {"bnd"}, "nothing binds scale here: a procedure"

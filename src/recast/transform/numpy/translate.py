@@ -10,7 +10,8 @@ Candidate, decide nothing about correctness.
 
 The Candidate carries the whole product of a translation: the generated
 module, its constants module, its use-constants module when the source
-imports constants from modules that are not being translated -- and, in
+imports constants from modules that are not being translated, the
+translation of every sibling module the generated one imports -- and, in
 ``notes``, the block report and the name-protocol table. The report says
 which blocks are mechanical and which are deferred, and the deferred list is
 the agent queue: a partial Candidate with an honest list of what it could
@@ -101,6 +102,14 @@ def companion_tables(
                 remotes[local] = Remote(alias, remote)
         for subprogram in record["subprograms"]:
             remotes.setdefault(subprogram["name"], Remote(alias, subprogram["name"]))
+        # A procedure the sibling declares through an INTERFACE block and does
+        # not define: an interface module over a compiled library. It is
+        # reached the way every other name of that module is -- through the
+        # sibling's alias -- because that is where the source says it lives,
+        # and a translation of the library is not this engine's to invent.
+        for declared in (record.get("interfaces") or {}).values():
+            if declared.get("kind") in ("subroutine", "function"):
+                remotes.setdefault(declared["name"], Remote(alias, declared["name"]))
         # A parameter is spelled as the companion's constants file spells it:
         # upper-case when that file defines it, lower-case when the file has
         # only a SKIPPED line for it. Without the companion's constants record
@@ -411,6 +420,15 @@ class NumpyTranslation(Transform):
                 use["resolved"], use["module_name"]
             ).encode()
 
+        # Every import the header makes has to be answered by a file this
+        # candidate carries: the gate stages a candidate's own files and
+        # nothing else. The companions' translations go in first, so a
+        # sibling that spells a file this module already carries loses to
+        # the unit's own.
+        bundled = self._bundle(declared, companion_imports, text, config)
+        if bundled:
+            files = {**bundled, **files}
+
         # Emitted name -> source name, per subprogram: the record the
         # read/write cross-check needs to undo the constant renames.
         # Producing it is part of this Transform's obligation, not an
@@ -443,6 +461,21 @@ class NumpyTranslation(Transform):
                     )
                 },
                 "profile": assembler.profile.name,
+                # Which siblings' translations ride along, for whoever reads
+                # the candidate; the unit's own files are unaffected.
+                **(
+                    {
+                        "bundled": sorted(
+                            {
+                                p.stem[: -len("_numpy")]
+                                for p in bundled
+                                if p.name.endswith("_numpy.py")
+                            }
+                        )
+                    }
+                    if bundled
+                    else {}
+                ),
                 "source_digest": facts.provenance.get("digest"),
                 "companions": [c["alias"] for c in config.get("companions", [])],
                 "renames": renames,
@@ -451,6 +484,94 @@ class NumpyTranslation(Transform):
                 ),
             },
         )
+
+    def _bundle(
+        self,
+        companions: list[dict[str, Any]],
+        imports: tuple[str, ...],
+        emitted: str,
+        config: dict[str, Any],
+    ) -> dict[Path, bytes]:
+        """The companions' own translations, to carry in this candidate.
+
+        The emitted header imports ``<sibling>_numpy`` for every companion the
+        unit ``use``s, and ``differential.bitexact`` stages a candidate's own
+        files and nothing else -- so a candidate that names a file it does not
+        carry raises ``ModuleNotFoundError`` before a single number is
+        compared. That is what a whole corpus case's siblings did: a kinds-only
+        ``use types`` and a ``call stop_error`` are enough, and neither is a
+        tree, an extension or a table away from being translatable. So the
+        translation of each companion rides along, produced by this same
+        Transform from the source the frontend resolved the ``use`` to.
+
+        Two companions are left alone, and each for a reason:
+
+        * one the operator declared with a ``module_py`` of its own, which
+          says the sibling's translation is already deployed under that name
+          -- the pipeline's arrangement, and not ours to overwrite;
+        * one whose source this root does not hold, or which does not
+          translate. Bundling is not the place to decide what that means: the
+          import it would have answered is left unanswered and the gate fails
+          the unit on it, saying which module was missing.
+
+        ``bundle_companions: false`` turns it off for a caller that bundles on
+        its own terms -- ``translate.tree``, which resolves the companions'
+        use-constants and writes stand-ins beside them.
+        """
+        from recast.registry import REGISTRY
+
+        if not companions or not config.get("bundle_companions", True):
+            return {}
+        # Only what the header ended up importing: a ``use`` that brought
+        # nothing but a kind parameter binds no alias, its import is dropped,
+        # and translating that sibling would put a file in the candidate
+        # nothing reads.
+        wanted = {
+            module
+            for module, line in zip(map(_module_of, companions), imports, strict=True)
+            if f"\n{line}\n" in emitted
+        }
+        root = Path(config.get("root", ".")).resolve()
+        seen: set[str] = set(config.get("_bundled") or ())
+        files: dict[Path, bytes] = {}
+        frontend: Any = None
+        units: dict[str, Unit] = {}
+        for companion in companions:
+            module = _module_of(companion)
+            if not module or module not in wanted or module in seen:
+                continue
+            if companion.get("module_py"):
+                continue
+            if not companion.get("source"):
+                continue
+            seen.add(module)
+            if frontend is None:
+                frontend = REGISTRY.get("frontend", config.get("frontend", "fortran"))()
+                units = {u.uid: u for u in frontend.discover(root)}
+            sibling = units.get(f"fortran:{module}")
+            if sibling is None:
+                continue
+            own = {
+                key: value
+                for key, value in config.items()
+                if key
+                not in (
+                    "companions",
+                    "use_constants",
+                    "constants_stem",
+                    "use_constants_stem",
+                    "extern_constants",
+                )
+            }
+            try:
+                inner = self.apply(
+                    sibling, frontend.analyze(sibling, root), {**own, "_bundled": seen}
+                )
+            except Exception:  # noqa: S112 -- the gate reports the import left unanswered
+                continue
+            for path, blob in inner.files.items():
+                files.setdefault(path, blob)
+        return files
 
     def _rwset_protocol(
         self,
@@ -469,6 +590,7 @@ class NumpyTranslation(Transform):
         ``raise NotImplementedError`` is not a translation, and the gate's
         job is to judge translations.
         """
+        from recast.fortran.interface import emit_name
         from recast.transform.numpy.vocabulary import RESERVED, pysafe
 
         blocks = []
@@ -515,6 +637,18 @@ class NumpyTranslation(Transform):
             "names": names,
             "procedures": sorted(
                 {pysafe(record["name"]) for record in facts.interface["subprograms"]}
+                # ...under the name the file defines them by as well: two hosts'
+                # ``func`` come out as ``host__func``, and the bare name alone
+                # left every call to one counted as a read of the callee.
+                | {pysafe(emit_name(record)) for record in facts.interface["subprograms"]}
+                # A procedure this module declares through an INTERFACE block
+                # and defines nowhere binds like a module procedure and is
+                # called by its own name; the reference build stubs it.
+                | {
+                    pysafe(declared["name"])
+                    for declared in (facts.interface.get("interfaces") or {}).values()
+                    if declared.get("kind") in ("subroutine", "function")
+                }
                 # The siblings' procedures too: `_wv.wv_sat_svp_water(t)` is a
                 # call, and without these the alias rule would read it as data.
                 | {remote.name for remote in assembler.remotes.values()}

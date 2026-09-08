@@ -85,7 +85,7 @@ a path to a `.json` or `.toml` file. Same object either way, and
 
 | Recipe | Keys of its own |
 |---|---|
-| `translate` | `target` — `numpy` (default) |
+| `translate` | `target` — `numpy` (default). The transform lowers under the compiler profile of the golden oracle's `fc` (`gfortran` unless configured) so `x**2` rounds the way the reference binary does; `compiler_semantics` at the top level, or `stages.translate.<target>.profile`, overrides that |
 | `refactor-todo` | `reference_commit`, required. And an `executor` that is not `local`, because the gate is a batch oracle |
 | `audit` | none |
 

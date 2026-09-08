@@ -22,6 +22,7 @@ ELEMENTAL = frozenset(
     {
         "abs",
         "acos",
+        "achar",
         "adjustl",
         "aimag",
         "aint",
@@ -88,6 +89,7 @@ ELEMENTAL = frozenset(
         "mvbits",
         "nint",
         "precision",
+        "radix",
         "real",
         "scan",
         "shape",
@@ -143,6 +145,37 @@ rank, and a read/write analysis has to know their argument is read entire
 rather than at one index.
 """
 
+LOCATION = frozenset({"maxloc", "minloc"})
+"""Report *where* an array's extreme value is, not what it is.
+
+Kept apart from ``TRANSFORMATIONAL`` because their result is a rank-1 position
+vector unless DIM is given, so this is not a set a rank query may answer 0
+for; the read/write analysis needs only the membership. Named here because
+``minloc(a2(i:), 1)`` is a call: counting the name as a variable read makes
+every block holding one disagree with a translation that spells it
+``np.argmin``, which is what failed ``iargsort`` and ``rargsort`` of the
+corpus's sorting module.
+"""
+
+RESHAPING = frozenset({"spread"})
+"""Rearrange an array into another array rather than collapsing it.
+
+Kept apart from ``TRANSFORMATIONAL`` for the reason ``LOCATION`` is: the
+result is an array, so this is not a set a rank query may answer 0 for, and
+the read/write analysis needs only the membership. Named here because
+``spread(x, 1, size(y))`` is a call: counting the name as a variable read
+makes every block holding one disagree with a translation that spells it
+``np.repeat``, which is what failed both blocks of ``meshgrid`` in the
+corpus's mesh module.
+
+Only ``spread``, for the same reason ``LOCATION`` holds only the two
+locators: the emitter reshapes with ``cshift``, ``eoshift``, ``pack``,
+``reshape``, ``transpose`` and ``unpack`` as well, and those sites are still
+the divergence this frontend deliberately keeps -- the read as a variable is
+the answer a bit-exact gate has been run against, and no translation has yet
+been checked against the tidier one. A name moves here when one is.
+"""
+
 STATE_QUERY = frozenset({"allocated", "associated", "present", "merge"})
 """Answer about a variable's status rather than its value.
 
@@ -177,5 +210,5 @@ lets a call to one refuse as the intrinsic it is rather than as somebody
 else's missing library.
 """
 
-ALL = ELEMENTAL | TRANSFORMATIONAL | STATE_QUERY
+ALL = ELEMENTAL | TRANSFORMATIONAL | STATE_QUERY | LOCATION | RESHAPING
 """Every name this frontend recognises as an intrinsic rather than a symbol."""

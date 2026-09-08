@@ -483,6 +483,7 @@ class FortranFrontend(Frontend):
         # a use-rename is looked up under the local spelling the call uses.
         # The operator's table wins where both name a procedure.
         companions, unresolved = self._companions(record, path, Path(root))
+        dependencies = self._companion_dependencies(companions, own.lower(), Path(root))
         # A submodule's procedures belong to its parent's namespace -- `use
         # parent` reaches them -- so the parent's translation re-exports them
         # (#29). Which submodules, and what they define, is a fact about the
@@ -585,6 +586,11 @@ class FortranFrontend(Frontend):
                 # operator's config alone could only answer for a tree the
                 # operator had already mapped by hand.
                 "companions": companions,
+                # What the companions themselves ``use``. Not in scope here --
+                # this unit cannot name them -- but a reference build compiles
+                # the companions from source, and a compiler wants every
+                # ``.mod`` under them.
+                "companion_dependencies": dependencies,
                 # A module the tree defines and this one uses, that could not
                 # be read. Its calls will refuse; this says why.
                 "companions_unresolved": unresolved,
@@ -863,6 +869,59 @@ class FortranFrontend(Frontend):
             if self._carries_on(match, record_of):
                 pending.extend(record_of.get("use_statements", ()))
         return list(found.values()), unresolved
+
+    def _companion_dependencies(
+        self, companions: list[dict[str, Any]], own: str, root: Path
+    ) -> list[dict[str, Any]]:
+        """Tree files the *companions* need in order to compile.
+
+        A companion is handed to a reference build as source, and gfortran
+        cannot compile ``use types, only: dp`` without ``types.mod``: the
+        file that would produce it was never in the build, and the whole unit
+        stops at "cannot open module file". Visibility stops the companion
+        walk at an ``only`` list the used module can answer for
+        (``_carries_on``); a compiler stops nowhere, so the closure it needs
+        is wider than the one this unit can see.
+
+        Deliberately kept apart from the companions rather than folded in.
+        Nothing in these modules is visible here, and putting them in scope
+        would let a name in this unit resolve through a module it cannot
+        name. They are what the build needs, and they say so.
+        """
+        from recast.fortran import interface as interface_mod
+
+        resolved_root = root.resolve()
+        index = self._module_index(resolved_root)
+        seen = {str(c["module"]).lower() for c in companions} | {own}
+        found: dict[str, dict[str, Any]] = {}
+        pending: list[str] = []
+        for companion in companions:
+            pending.extend(companion.get("record", {}).get("use_statements", ()))
+        while pending:
+            statement = pending.pop(0)
+            match = USE_STATEMENT.match(statement.strip())
+            if not match:
+                continue
+            module = match.group("module").lower()
+            if module in seen or module in INTRINSIC_MODULES or module in self.stub_modules:
+                continue
+            seen.add(module)
+            source = index.get(module)
+            if source is None:
+                continue
+            # A sibling that does not parse costs the build the file it would
+            # have named; the unit still stops at the compiler, and says so
+            # there rather than here.
+            record_of = self._readable(source, interface_mod.extract, module)
+            if record_of is None:
+                continue
+            found[module] = {
+                "module": module,
+                "source": str(source.relative_to(resolved_root)),
+                "record": record_of,
+            }
+            pending.extend(record_of.get("use_statements", ()))
+        return [found[name] for name in sorted(found)]
 
     @staticmethod
     def _only_names(match: re.Match[str]) -> set[str]:

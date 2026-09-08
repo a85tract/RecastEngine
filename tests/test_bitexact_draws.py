@@ -152,24 +152,118 @@ def probe(n, lr, r):
 """
 
 
-def test_a_subprogram_compared_mostly_on_moved_extents_fails_by_name(tmp_path: Path) -> None:
+def test_a_packed_workspace_is_grown_to_a_shape_the_body_takes(tmp_path: Path) -> None:
     """Every unpinned extent defaults to the same number, so a packed
     triangular workspace -- ``n*(n+1)/2`` long for an order ``n`` -- is a
-    subscript past the end. A refusal for a *shape* moves the extents, and
-    the draws that then fit are the small orders: a pass on those is evidence
-    about n = 1, not about the extents the run was configured with, so the
-    subprogram fails by name and says which extents to pin."""
+    subscript past the end at the default, and no order it goes with makes
+    it not one. An extent nobody pinned is this harness's own choice, so the
+    choice is *grown* -- once, before the trials, and only upward -- until
+    the body's subscripts fit, and every trial is then compared at that one
+    shape rather than at whatever a per-trial redraw landed on. The metrics
+    say which extent grew and to what, because a reader told the points were
+    bit-exact is owed the shape they were bit-exact at."""
     verdict = judge(
         tmp_path,
         PACKED,
         SimpleNamespace(w_probe=lambda n, lr, r: float(r[(int(n) * (int(n) + 1)) // 2 - 1])),
     )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    probe = verdict.metrics["subprograms"]["probe"]
+    # ``n`` is a value, not an extent, and is drawn across its whole range;
+    # ``lr`` is the extent, and 64 covers the largest order the range holds.
+    assert probe["extents"] == {"lr": 64}
+    assert (probe["points"], probe["redrawn"], probe["reshaped"]) == (10, 0, 0)
+
+
+SHORT = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [
+            {"name": "lr", "intent": "IN", "dtype": "int32"},
+            {
+                "name": "r",
+                "intent": "IN",
+                "dtype": "float64",
+                "dims": [{"lb": "1", "ub": "lr"}],
+            },
+        ],
+    }
+}
+
+WEIGHT = [0.25, 0.5, 0.75, 1.0]
+
+
+def probe(lr, r):
+    return float(r[0] * WEIGHT[int(lr) - 1])
+"""
+
+
+def _short(lr: Any, r: Any) -> float:
+    return float(r[0] * [0.25, 0.5, 0.75, 1.0][int(lr) - 1])
+
+
+def test_a_subprogram_compared_mostly_on_moved_extents_fails_by_name(tmp_path: Path) -> None:
+    """Growth only goes up, and a body that indexes a fixed table of four by
+    its workspace's extent takes no shape above four -- so no growth reaches
+    one, and the trials fall back to the shape redraw. The draws that then
+    fit are the short ones: a pass on those is evidence about a workspace of
+    one or two, not about the extents the run was configured with, so the
+    subprogram fails by name and says which extents to pin."""
+    verdict = judge(tmp_path, SHORT, SimpleNamespace(w_probe=_short))
     assert verdict.confidence is Confidence.FAILED
     detail = verdict.detail or ""
-    # ``n`` is a value, not an extent: the three trials that fit as drawn did
-    # so on an ``n`` the seed made small. ``lr`` is the extent that moved.
-    assert "probe: 7 of 10 trial(s) were compared only after the free extent(s) lr" in detail
+    assert "probe: 10 of 10 trial(s) were compared only after the free extent(s) lr" in detail
     assert "Pin `dims`" in detail
+
+
+NEGATIVE_SUBSCRIPT = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [
+            {"name": "n", "intent": "IN", "dtype": "int32"},
+            {
+                "name": "x",
+                "intent": "IN",
+                "dtype": "float64",
+                "dims": [{"lb": "1", "ub": None}],
+            },
+        ],
+    }
+}
+
+
+def probe(n, x):
+    return float(x[int(n) - 2])
+"""
+
+
+def test_a_subscript_below_the_lower_bound_is_drawn_again_not_wrapped(tmp_path: Path) -> None:
+    """PCHIP's ``dpchkt`` forms ``x(n-1)`` and is only ever called with N>=2,
+    so ``n=1`` reads ``x(0)`` -- one before the dummy's declared lower bound.
+    Plain ndarray wraps a negative Python index to the array's *last*
+    element instead of refusing it, so the candidate would silently compare
+    the wrong value instead of the reference never being called on a draw
+    outside its own domain. It must be drawn again like any other refused
+    value -- and quietly: growing an extent never changes whether an index
+    is negative, so it must not be counted as the ``reshaped`` extent-moved
+    failure ``test_a_subprogram_compared_mostly_on_moved_extents_fails_by_name``
+    covers."""
+
+    def w_probe(n: Any, x: Any) -> Any:
+        assert int(n) >= 2, "the reference was called on n=1, which reads before x's start"
+        return float(x[int(n) - 2])
+
+    verdict = judge(tmp_path, NEGATIVE_SUBSCRIPT, SimpleNamespace(w_probe=w_probe))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    probe = verdict.metrics["subprograms"]["probe"]
+    assert probe["redrawn"] > 0
+    assert probe["reshaped"] == 0
 
 
 def test_pinned_extents_the_body_takes_are_not_redrawn(tmp_path: Path) -> None:
@@ -576,3 +670,242 @@ def test_a_reference_that_aborts_declines_the_draw(tmp_path: Path) -> None:
     probe = verdict.metrics["subprograms"]["probe"]
     assert probe["redrawn"] > 0
     assert "reference error stop" in (verdict.detail or ""), verdict.detail
+
+
+BUFFER = """\
+import numpy as np
+
+_SIGNATURES = {
+    "fill": {
+        "kind": "subroutine",
+        "args": [
+            {
+                "name": "x",
+                "intent": "IN",
+                "dtype": "float64",
+                "dims": [{"lb": "1", "ub": None}],
+            },
+            {
+                "name": "y",
+                "intent": "OUT",
+                "dtype": "float64",
+                "dims": [{"lb": "1", "ub": None}],
+                "buffer": True,
+            },
+        ],
+    }
+}
+
+
+def fill(x, y):
+    y[0] = x[0] * 2.0
+    return y
+"""
+
+
+def test_a_caller_buffer_out_array_is_handed_to_the_reference_too(tmp_path: Path) -> None:
+    """``y`` is the caller's storage on both sides: the callee writes one cell
+    of it and leaves the rest as the caller had it. So the gate generates it,
+    hands the same values to the reference and the candidate, and reads the
+    reference's answer back out of the array it passed -- an f2py wrapper
+    spells such a dummy ``intent(in out)`` and returns nothing for it. Handed
+    to the candidate only, the reference is called an argument short, and the
+    cells it never writes are compared against a fresh allocation."""
+    seen: dict[str, Any] = {}
+
+    def w_fill(x: Any, y: Any) -> None:
+        seen["y"] = np.copy(y)
+        y[0] = x[0] * 2.0
+
+    verdict = BitexactVerifier().verify(
+        Unit(uid="draw:m", kind="subprogram"),
+        Candidate(
+            unit="draw:m", transform="test.draw", files={Path("m_numpy.py"): BUFFER.encode()}
+        ),
+        OracleRef(
+            unit="draw:m",
+            oracle="test.python-truth",
+            key="k",
+            handle={"module": SimpleNamespace(w_fill=w_fill), "wrappers": {"fill": "w_fill"}},
+        ),
+        tmp_path,
+        LocalExecutor(),
+        {"draws": 2},
+    )
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert seen["y"].any(), "the reference was handed a fresh buffer, not the caller's"
+
+
+LOOPS = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [
+            {"name": "mode", "intent": "IN", "dtype": "int32"},
+            {"name": "x", "intent": "IN", "dtype": "float64"},
+        ],
+    }
+}
+
+
+def probe(mode, x):
+    while int(mode) > 4:
+        pass
+    return x * 2.0
+"""
+
+
+def test_a_draw_the_source_never_returns_from_is_drawn_again(tmp_path: Path) -> None:
+    """A fourth way a draw is not one the subprogram takes, and the only one
+    with nothing to raise: the source's own loop never ends on it --
+    ``do while (b - a > tol)`` under a negative tolerance. The reference is
+    the same loop, so it must not be called on that draw either."""
+
+    def w_probe(mode: Any, x: Any) -> Any:
+        assert int(mode) <= 4, "the reference was called on a draw that never returns"
+        return x * 2.0
+
+    verdict = judge(tmp_path, LOOPS, SimpleNamespace(w_probe=w_probe), call_seconds=0.25, trials=4)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["subprograms"]["probe"]["redrawn"] > 0
+
+
+OPTIONAL = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "function",
+        "result": "y",
+        "result_dtype": "float64",
+        "args": [
+            {"name": "x", "intent": "IN", "dtype": "float64"},
+            {"name": "maxiter", "intent": "UNKNOWN", "dtype": "int32", "optional": True},
+        ],
+    }
+}
+
+
+def probe(x, maxiter=None):
+    return x * 2.0
+"""
+
+
+def test_an_optional_argument_of_unknown_intent_does_not_stop_the_comparison(
+    tmp_path: Path,
+) -> None:
+    """``integer, optional :: maxiter`` declares no intent, and neither side
+    is passed it: the wrapper drops an optional dummy and the translation
+    spells it as a keyword sentinel. An intent nothing reads decides nothing,
+    and refusing over it cost ``secant`` its comparison."""
+    verdict = judge(tmp_path, OPTIONAL, SimpleNamespace(w_probe=lambda x: x * 2.0))
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+
+
+def test_a_required_argument_of_unknown_intent_still_stops_it(tmp_path: Path) -> None:
+    """The refusal it is a relaxation of: an argument both sides are passed
+    whose post-call value may or may not be an output is not comparable."""
+    required = OPTIONAL.replace(', "optional": True', "").replace("maxiter=None", "maxiter")
+    verdict = judge(tmp_path, required, SimpleNamespace(w_probe=lambda x, maxiter: x * 2.0))
+    assert verdict.confidence is Confidence.FAILED
+    assert "maxiter have UNKNOWN intent" in (verdict.detail or "")
+
+
+WRITER = """\
+_SIGNATURES = {
+    "probe": {
+        "kind": "subroutine",
+        "result": None,
+        "result_dtype": None,
+        "args": [
+            {"name": "filename", "intent": "IN", "dtype": "str", "path": "created"},
+            {"name": "x", "intent": "IN", "dtype": "float64"},
+        ],
+    }
+}
+
+
+def probe(filename, x):
+    with open(filename, "wb") as handle:
+        handle.write(b"%a" % float(x))
+"""
+
+
+def test_a_subprogram_whose_only_output_is_a_file_is_compared_on_that_file(
+    tmp_path: Path,
+) -> None:
+    """No OUT argument and no result: without the file there is nothing to
+    pair, and the gate would have to call this uncompared. Each side is given
+    a scratch path of its own -- one path and the second call would overwrite
+    what the comparison is about to read -- and the bytes are compared."""
+    written: list[str] = []
+
+    def w_probe(filename: Any, x: Any) -> None:
+        written.append(str(filename))
+        with open(str(filename), "wb") as handle:
+            handle.write(b"%a" % float(x))
+
+    verdict = judge(tmp_path, WRITER, SimpleNamespace(w_probe=w_probe), trials=2)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["integer_points"] == verdict.metrics["points"] > 0
+    assert len(set(written)) == len(written), "each trial draws its own path"
+
+
+def test_a_file_that_differs_by_one_byte_is_not_a_pass(tmp_path: Path) -> None:
+    """The bar for a file is the bar for anything else: the same bytes. A
+    candidate that opened the file and wrote nothing passed every structural
+    check there is, which is what this gate is for."""
+
+    def w_probe(filename: Any, x: Any) -> None:
+        with open(str(filename), "wb") as handle:
+            handle.write(b"%a " % float(x))
+
+    verdict = judge(tmp_path, WRITER, SimpleNamespace(w_probe=w_probe), trials=1)
+    assert verdict.confidence is Confidence.FAILED
+    assert "filename (file)" in (verdict.detail or "")
+
+
+def test_a_side_that_wrote_no_file_is_named(tmp_path: Path) -> None:
+    """An absent file is not an empty file to compare against an empty file:
+    the source's OPEN creates one, so nothing there is the call having done
+    nothing."""
+    verdict = judge(tmp_path, WRITER, SimpleNamespace(w_probe=lambda filename, x: None), trials=1)
+    assert verdict.confidence is Confidence.FAILED
+    assert "the oracle left no file at the path it was given" in (verdict.detail or "")
+
+
+def test_a_shape_the_body_checks_for_is_the_shape_it_is_drawn_at() -> None:
+    """``if (size(c,1) /= 5) call stop_error(...)`` is not a diagnostic aside:
+    it is the declaration the language had no way to make about an
+    assumed-shape dummy. Without it every extent is ``default_dim``, the body
+    stops on every draw, and the subprogram is reported as one nothing could
+    compare -- which says nothing about the translation."""
+    from recast.verify.bitexact import DEFAULT_DIMENSION, _guarded_shapes
+
+    required = [
+        {"name": "xi", "dims": [{"lb": "1", "ub": None}]},
+        {"name": "c", "dims": [{"lb": "0", "ub": None}, {"lb": "1", "ub": None}]},
+        {"name": "val"},
+    ]
+    guards = [
+        {"arg": "c", "axis": 0, "extent": "5"},
+        {"arg": "c", "axis": 1, "extent": "size(xi,0) - 1"},
+    ]
+    assert _guarded_shapes(required, guards, {}) == {
+        "xi": [DEFAULT_DIMENSION],
+        "c": [5, DEFAULT_DIMENSION - 1],
+    }
+
+
+def test_a_shape_guard_that_resolves_to_nothing_leaves_the_default_alone() -> None:
+    """An extent this cannot resolve, or one no array can have, is worse than
+    the default it would replace: the subprogram refusing the default says so
+    where a shape nobody can name would not."""
+    from recast.verify.bitexact import DEFAULT_DIMENSION, _guarded_shapes
+
+    required = [{"name": "a", "dims": [{"lb": "1", "ub": None}]}]
+    guards = [
+        {"arg": "a", "axis": 0, "extent": "size(missing,0)"},
+        {"arg": "a", "axis": 0, "extent": "0"},
+    ]
+    assert _guarded_shapes(required, guards, {}) == {"a": [DEFAULT_DIMENSION]}

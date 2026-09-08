@@ -82,6 +82,15 @@ class Scope:
     chars: frozenset[str] = frozenset()
     """Character-typed symbols. ``write(buf, ...)`` to one of these is a write."""
 
+    file_units: frozenset[str] = frozenset()
+    """Unit variables an OPEN in this body connects to a file.
+
+    ``interface.file_units``. A WRITE to one of them is translated -- the
+    records go in the file -- so it reads its item list; a WRITE anywhere
+    else is the log stub, which reads nothing. The two sides have to draw the
+    line in the same place or every such block disagrees.
+    """
+
     semantics: Semantics | None = None
     """Type and shape answers, for the questions dispatch needs.
 
@@ -139,6 +148,14 @@ def scope_for(
     # counts it as a call on the other side, so the two sides disagreed on
     # every block that calls a host-associated procedure.
     subs = {s["name"]: s for s in record["subprograms"]}
+    # Host association: inside a host, and inside its other internal
+    # procedures, the host's internals shadow any same-named procedure --
+    # two hosts may each contain a ``func``, and the bare-name table above
+    # kept whichever came last, with the other host's variables.
+    scope_host = sub.get("host") or sub["name"]
+    for s in record["subprograms"]:
+        if s.get("host") == scope_host:
+            subs[s["name"]] = s
     # An explicit interface is the shape a procedure dummy calls through:
     # ``call func(x, val)`` binds its actuals the way a call to a known
     # procedure does, or ``val`` is counted read where the callee wrote it.
@@ -147,20 +164,39 @@ def scope_for(
 
     ranks: dict[str, int] = {}
     chars: set[str] = set()
+    # Outermost first, so the innermost declaration is the one that stands:
+    # cpoly's local array ``pi`` shadows the module parameter ``pi``, and with
+    # the module's entries written last the local came out rank 0 -- which
+    # made ``pi(i) = opi(i)`` look like a statement-function definition and
+    # dropped the write. An internal procedure sees its host's dummies and
+    # locals between the module's and its own (host association).
+    host = next(
+        (s for s in record["subprograms"] if s["name"] == sub.get("host") and not s.get("host")),
+        None,
+    )
     declared: list[dict[str, Any]] = [
-        *sub["args"],
-        *sub["locals"],
-        *sub["local_parameters"],
-        *record["module_state"],
         *record["module_parameters"],
+        *record["module_state"],
+        *((*host["args"], *host["locals"], *host["local_parameters"]) if host else ()),
+        *sub["local_parameters"],
+        *sub["locals"],
+        *sub["args"],
     ]
     for entry in declared:
         name = entry["name"]
         ranks[name] = len(entry.get("dims") or [])
         if entry.get("dtype") == "str":
             chars.add(name)
+        else:
+            chars.discard(name)
     if sub["result"] is not None:
         ranks.setdefault(sub["result"], len(sub["result_dims"] or []))
+        # ``character(len=n) function str(i)`` writes its result the way any
+        # other character variable is written -- ``write(str, '(i0)') i`` --
+        # and the result variable is declared by the function statement
+        # rather than by a declaration this loop walked.
+        if sub.get("result_dtype") == "str":
+            chars.add(sub["result"])
 
     interfaces = record.get("interfaces") or {}
     dummy_procedures = {
@@ -175,6 +211,7 @@ def scope_for(
         generics=dict(record["generics"]),
         ranks=ranks,
         chars=frozenset(chars),
+        file_units=frozenset(sub.get("file_units") or ()),
         semantics=for_subprogram(record, sub_name, companions=companions),
         externals=dict(externals or {}),
     )
@@ -259,7 +296,13 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
         return reads
 
     if isinstance(
-        node, (f03.Part_Ref, f03.Intrinsic_Function_Reference, f03.Structure_Constructor)
+        node,
+        (
+            f03.Part_Ref,
+            f03.Function_Reference,
+            f03.Intrinsic_Function_Reference,
+            f03.Structure_Constructor,
+        ),
     ):
         fname = str(node.children[0]).lower()
         if node.children[1] is not None:
@@ -269,6 +312,7 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
                 items = _without_kind_argument(fname, items)
             for item in items:
                 reads |= expr_reads(item, scope)
+        reads |= host_reads(fname, scope)
         if scope.ranks.get(fname, 0) > 0 or fname in scope.alias_dims:
             # A declared array shadows an intrinsic name -- the same rule the
             # bare-Name branch applies. zm_conv declares `gamma(pcols,pver)`,
@@ -290,6 +334,15 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
     if isinstance(node, (f03.Actual_Arg_Spec, f03.Component_Spec)):
         return expr_reads(node.children[1], scope)  # the keyword is not a read
 
+    if isinstance(node, f03.Ac_Implied_Do_Control):
+        # ``(expr, i = 1, n)``: the bounds are read; ``i`` is the constructor's
+        # own counter, written by it -- ``rwset`` records that -- and read only
+        # where the value expression mentions it, which is how the emitted
+        # comprehension ``[... for i in range(1, n + 1)]`` reads too.
+        for bound in node.children[1]:
+            reads |= expr_reads(bound, scope)
+        return reads
+
     if isinstance(node, f03.Data_Ref):
         # The root object is the read; component names are attributes of it,
         # which the target side spells the same way and also does not count.
@@ -302,6 +355,24 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
     for child in getattr(node, "children", []) or []:
         reads |= expr_reads(child, scope)
     return reads
+
+
+def host_reads(name: str, scope: Scope) -> set[str]:
+    """The host variables a call to internal procedure ``name`` reads.
+
+    An internal procedure uses its host's variables without naming them in
+    the call, and the translation passes exactly those as trailing actuals
+    (``interface._host_associate`` lists them as ``host_vars``). Reads on
+    that side with no counterpart here failed every block of ``rpoly`` that
+    called one of its helpers. A declared variable of the same name is data,
+    not a call, and reads nothing of anyone's.
+    """
+    if scope.ranks.get(name, 0) > 0 or name in scope.alias_dims:
+        return set()
+    callee = scope.subprograms.get(name)
+    if callee is None:
+        return set()
+    return {str(v).lower() for v in callee.get("host_vars") or ()}
 
 
 def _resolve_generic(name: str, actuals: list[Any], scope: Scope) -> str | None:
@@ -343,19 +414,65 @@ def _bind_actuals(callee: dict[str, Any], items: list[Any]) -> list[Any]:
     return bound
 
 
+IO_OUTPUT_SPECS = frozenset({"IOSTAT", "IOMSG", "SIZE", "NEWUNIT"})
+"""I/O specifiers that write a variable instead of reading one.
+
+An I/O statement is otherwise all reads: the unit, the file name, the format.
+These four are where the statement puts something, and a translation that
+dropped them would leave the variable at whatever it held -- which is the
+whole reason READ and INQUIRE are translated rather than stubbed.
+"""
+
+IO_SPEC_CLASSES = (
+    f03.Connect_Spec,
+    f03.Close_Spec,
+    f03.Position_Spec,
+    f03.Flush_Spec,
+    f03.Inquire_Spec,
+    f03.Io_Control_Spec,
+)
+
+
+def _io_specifiers(stmt: Any) -> list[tuple[str | None, Any]]:
+    """``[(KEYWORD or None, value), ...]`` of an I/O statement's specifiers."""
+    found = []
+    for spec in walk(stmt, IO_SPEC_CLASSES):
+        keyword, value = spec.children
+        found.append((str(keyword).upper() if keyword is not None else None, value))
+    return found
+
+
+def _unit_position(specifiers: list[tuple[str | None, Any]]) -> int:
+    """Which specifier says what the statement is connected to.
+
+    ``UNIT=`` if it is spelled, otherwise the first positional one -- the
+    order Fortran fixes for the un-keyworded form. ``-1`` when there is
+    neither, so every specifier is read.
+    """
+    for at, (keyword, _value) in enumerate(specifiers):
+        if keyword == "UNIT":
+            return at
+    for at, (keyword, _value) in enumerate(specifiers):
+        if keyword is None:
+            return at
+    return -1
+
+
 def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
     """``(reads, writes)`` for one statement or construct."""
     reads: set[str] = set()
     writes: set[str] = set()
 
     def _write_actual(actual: Any) -> None:
-        """Record an out-argument, the way the pipeline this came from did.
+        """Record an out-argument: the root is written, its subscripts read.
 
-        Differs from ``write_target`` on a derived-type actual: this counts the
-        *component* name as a read as well, where the assignment path does not.
-        The two disagree, and this repository keeps the disagreement rather
-        than resolving it, because the pipeline's answers are the ones a
-        bit-exact gate has been run against and this one has not.
+        A derived-type actual -- ``sdat%t`` to an intent(inout) dummy -- is
+        a write of ``sdat``; the component is an attribute of it, not a
+        symbol, which is what the assignment path (``write_target``) and the
+        target side both say. The pipeline this came from counted the
+        component name as a read here as well, and that disagreement failed
+        every block that passes a structure component to a callee (SLSQP's
+        ``slsqpb(..., sdat%t, sdat%f0, ...)``), so the tidier answer stands.
         """
         if isinstance(actual, f03.Name):
             writes.add(str(actual).lower())
@@ -387,6 +504,20 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             reads.update(lower_bound_reads(root, scope))
             for child in target.children[1:]:
                 reads.update(expr_reads(child, scope))
+
+    def io_output(value: Any) -> None:
+        """Where an I/O statement puts an answer. ``ERR=``/``END=`` name a
+        statement label instead: control flow, and nothing to write."""
+        if isinstance(value, (f03.Name, f03.Part_Ref, f03.Data_Ref)):
+            write_target(value)
+
+    def io_specifier_rwset(container: Any) -> None:
+        """An I/O statement's specifiers: the output ones write, the rest read."""
+        for keyword, value in _io_specifiers(container):
+            if keyword in IO_OUTPUT_SPECS:
+                io_output(value)
+            else:
+                reads.update(expr_reads(value, scope))
 
     def call(stmt: Any) -> None:
         name = str(stmt.children[0]).lower()
@@ -457,6 +588,12 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     external = fitting[0]
             out_positions = set(external.get("out_positions", [])) if external else set()
             buffers = set(external.get("buffer_positions", [])) if external else set()
+            # A position the callee reads as well as writes -- an INOUT dummy,
+            # or a caller-buffer OUT the translation passes in and unpacks --
+            # is a read here too. A sibling's table names those positions
+            # explicitly (``read_positions``, which includes its INOUT
+            # actuals); with no such list, a buffer OUT is still read (#38)
+            # and every non-OUT position is.
             read_positions = (
                 set(external["read_positions"])
                 if external and "read_positions" in external
@@ -485,6 +622,12 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     reads.update(expr_reads(actual, scope))
             return
 
+        # Host association: the callee's host variables travel as trailing
+        # actuals in the translation, so they are reads of this statement,
+        # and the ones the callee changes come back as unpack targets, so
+        # they are writes of it.
+        reads.update(str(v).lower() for v in callee.get("host_vars") or ())
+        writes.update(str(v).lower() for v in callee.get("host_writes") or ())
         for formal, actual in zip(callee["args"], actuals, strict=False):
             if actual is None:
                 continue
@@ -499,6 +642,29 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 _write_actual(actual)
             if formal.get("optional") and formal["intent"] == "OUT":
                 hands_on_presence(actual)
+
+    def function_writes(value: Any) -> None:
+        """A function reference's OUT/INOUT actuals are written too.
+
+        ``alpha = linmin(line, ..., ldat%a, ...)`` changes ``line`` and
+        ``ldat`` as surely as a CALL would; the translation hands them back
+        beside the result and unpacks them (``function_outputs``), so both
+        sides count the write. The reference has to be the whole right-hand
+        side -- inside a larger expression the translation refuses it, and
+        a refused block is not compared.
+        """
+        if not isinstance(value, (f03.Part_Ref, f03.Function_Reference)):
+            return
+        name = str(value.children[0]).lower()
+        if scope.ranks.get(name, 0) > 0:
+            return
+        callee = scope.subprograms.get(name)
+        if callee is None or callee.get("kind") != "function":
+            return
+        items = list(value.children[1].children) if value.children[1] is not None else []
+        for formal, actual in zip(callee["args"], _bind_actuals(callee, items), strict=False):
+            if actual is not None and formal["intent"] in ("OUT", "INOUT"):
+                _write_actual(actual)
 
     def visit(stmt: Any) -> None:
         if isinstance(stmt, f08.Block_Construct):
@@ -536,6 +702,7 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     return  # a statement-function definition, not dataflow
             write_target(lhs)
             reads.update(expr_reads(rhs, scope))
+            function_writes(rhs)
 
         elif isinstance(stmt, f03.If_Stmt):
             reads.update(expr_reads(stmt.children[0], scope))
@@ -593,14 +760,92 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     writes.add(str(obj).lower())
 
         elif isinstance(stmt, f03.Write_Stmt):
-            # A write to a log unit has no dataflow. An *internal* write, whose
-            # unit is a character variable, writes that variable.
+            # An *internal* write, whose unit is a character variable, writes
+            # that variable -- and reads its format, which can be a dummy
+            # argument carrying one, or an expression built from one. An
+            # external one writes a file rather than a variable, but a write
+            # to a unit this body connected to a file still *reads* every item
+            # in its list, its unit and its format, and the translation spells
+            # those reads: the record has to be built out of something. A
+            # write anywhere else -- ``*``, a bare unit number, a unit the
+            # caller connected -- is a log, and reads nothing on either side.
+            #
+            # The format is read through ``expr_reads`` rather than by taking
+            # every remaining name: ``write(s, "(f0." // str_int(n) // ")") r``
+            # reads ``n``, and the call to ``str_int`` is control flow, which
+            # is exactly the distinction ``expr_reads`` already draws. Counting
+            # the bare names instead reported the callee as a read the emitted
+            # call does not make, and failed the block over it.
             control, items = stmt.children
             units = [str(n).lower() for n in walk(control, f03.Name)]
             if units and units[0] in scope.chars:
                 writes.add(units[0])
+                specifiers = _io_specifiers(control)
+                for at, (keyword, value) in enumerate(specifiers):
+                    if at == _unit_position(specifiers):
+                        continue  # the internal unit itself: written, not read
+                    if keyword in IO_OUTPUT_SPECS:
+                        io_output(value)  # IOSTAT= puts an answer somewhere
+                    else:
+                        reads.update(expr_reads(value, scope))
                 if items is not None:
                     reads.update(expr_reads(items, scope))
+            elif units and units[0] in scope.file_units:
+                io_specifier_rwset(control)
+                if items is not None:
+                    reads.update(expr_reads(items, scope))
+
+        elif isinstance(stmt, f03.Read_Stmt):
+            # Every item in the list is a write: that is what a READ is for,
+            # and the reason it is translated rather than stubbed. An item
+            # that is a whole array or an array section is also a *read* of
+            # itself, because its extent is what decides how many values the
+            # statement consumes -- which is how the translation spells it.
+            control, _label, items = stmt.children
+            io_specifier_rwset(control)
+            for item in items.children if hasattr(items, "children") else [items]:
+                if item is None:
+                    continue
+                if not isinstance(item, (f03.Name, f03.Part_Ref, f03.Data_Ref)):
+                    # An implied-do, which the emitter refuses: every name in
+                    # it may be written, and under-reporting a write is the
+                    # one direction this analysis is not allowed to err in.
+                    writes.update(str(n).lower() for n in walk(item, f03.Name))
+                    continue
+                write_target(item)
+                if isinstance(item, f03.Name):
+                    if scope.ranks.get(str(item).lower(), 0) > 0:
+                        reads.add(str(item).lower())
+                elif isinstance(item, f03.Part_Ref) and walk(item, f03.Subscript_Triplet):
+                    reads.add(str(item.children[0]).lower())
+
+        elif isinstance(stmt, f03.Inquire_Stmt):
+            # UNIT= and FILE= say what is being asked about; every other
+            # specifier is somewhere to put the answer.
+            for keyword, value in _io_specifiers(stmt):
+                if keyword in ("UNIT", "FILE"):
+                    reads.update(expr_reads(value, scope))
+                else:
+                    io_output(value)
+
+        elif isinstance(
+            stmt,
+            (
+                f03.Open_Stmt,
+                f03.Close_Stmt,
+                f03.Rewind_Stmt,
+                f03.Backspace_Stmt,
+                f03.Endfile_Stmt,
+                f03.Flush_Stmt,
+            ),
+        ):
+            # NEWUNIT= and IOSTAT= are writes; the rest of a connection's
+            # specifiers are reads. The bare forms (``rewind u``) carry no
+            # specifier list at all and fall to the conservative reading.
+            if _io_specifiers(stmt):
+                io_specifier_rwset(stmt)
+            else:
+                reads.update(expr_reads(stmt, scope))
 
         elif isinstance(stmt, f03.Pointer_Assignment_Stmt):
             target, _, rhs = stmt.children
@@ -666,6 +911,11 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             reads.update(expr_reads(stmt, scope))
 
     visit(node)
+    # An array constructor's implied-do writes its counter, wherever in the
+    # block the constructor stands; the emitted comprehension binds the same
+    # name as its loop target.
+    for control in walk(node, f03.Ac_Implied_Do_Control):
+        writes.add(str(control.children[0]).lower())
     return reads, writes
 
 

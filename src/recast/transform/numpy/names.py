@@ -83,6 +83,11 @@ class Names:
             return pysafe(lowered)
         if any(loc["name"] == lowered for loc in subprogram.get("locals") or ()):
             return pysafe(lowered)
+        # A host variable arrives as a trailing parameter under its own name
+        # (``signature``), and it shadows the module's: cpoly's array ``pi``,
+        # read inside ``noshft``, is that parameter and not the constant PI.
+        if lowered in (subprogram.get("host_vars") or ()):
+            return pysafe(lowered)
         if lowered in self.module_parameters:
             return self.module_parameters[lowered]
         # Host module declarations shadow USE-imported names.

@@ -293,3 +293,59 @@ def test_a_generic_call_that_matches_nothing_refuses(sem) -> None:
 def test_a_name_that_is_not_generic_refuses(sem) -> None:
     with pytest.raises(semantics.AmbiguousDispatch, match="not a generic"):
         sem.dispatch("scale_scalar", [])
+
+
+def test_a_complex_overload_does_not_match_a_real_actual(tmp_path: Path) -> None:
+    """``interface.dtype_of`` has no dtype for COMPLEX and spells it
+    ``UNKNOWN(COMPLEX)``. Read as undecided, that marker matched anything, and
+    the corpus's ``call sortpairs(len2, vecs)`` -- two reals -- was ambiguous
+    between the real-vector and the complex-vector overload, which deferred
+    the only call site in the subprogram.
+
+    Unreduced is not undecided: no real actual reaches a complex dummy.
+    """
+    src = tmp_path / "pairs.f90"
+    src.write_text(
+        "module pairs_mod\n"
+        "  implicit none\n"
+        "  interface sortpairs\n"
+        "    module procedure real_vecs, complex_vecs\n"
+        "  end interface sortpairs\n"
+        "contains\n"
+        "  subroutine drive(nums, vecs)\n"
+        "    real(8), intent(inout) :: nums(:)\n"
+        "    real(8), intent(inout) :: vecs(:,:)\n"
+        "    call sortpairs(nums, vecs)\n"
+        "  end subroutine drive\n"
+        "  subroutine real_vecs(nums, vecs)\n"
+        "    real(8), intent(inout) :: nums(:)\n"
+        "    real(8), intent(inout) :: vecs(:,:)\n"
+        "  end subroutine real_vecs\n"
+        "  subroutine complex_vecs(nums, vecs)\n"
+        "    real(8), intent(inout) :: nums(:)\n"
+        "    complex(8), intent(inout) :: vecs(:,:)\n"
+        "  end subroutine complex_vecs\n"
+        "end module pairs_mod\n"
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    sem = semantics.for_subprogram(record, "drive")
+    sub = next(
+        s
+        for s in walk(parse(src), f03.Subroutine_Subprogram)
+        if str(walk(s, f03.Subroutine_Stmt)[0].children[1]).lower() == "drive"
+    )
+    call = walk(sub, f03.Call_Stmt)[0]
+    assert sem.dispatch("sortpairs", list(call.children[1].children)) == "real_vecs"
+
+
+def test_double_complex_is_complex_and_not_a_double(tmp_path: Path) -> None:
+    """``DOUBLE COMPLEX`` starts with DOUBLE and was answered ``float64``,
+    which now that COMPLEX rules an overload out would offer a complex actual
+    to a real dummy -- the silent wrong pick dispatch refuses to make.
+
+    Upstream now gives a complex a concrete dtype (``complex128``) rather than
+    the ``UNKNOWN(COMPLEX)`` marker the lab used before COMPLEX had one; what
+    this still checks is that DOUBLE COMPLEX reads as *complex*, not as the
+    float64 that ``startswith('DOUBLE')`` would otherwise hand back."""
+    assert interface.dtype_of("DOUBLE COMPLEX", None, {}) == "complex128"
+    assert interface.dtype_of("DOUBLE PRECISION", None, {}) == "float64"

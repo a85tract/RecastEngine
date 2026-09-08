@@ -88,6 +88,71 @@ def test_wrappers_drop_optionals_and_route_generics() -> None:
     assert "real(8), intent(out) :: p(n)" in text  # dims spelled so f2py can size them
 
 
+def test_an_extent_that_is_an_intrinsic_call_is_not_a_hidden_dummy() -> None:
+    """An extent naming neither an argument nor a parameter becomes a hidden
+    integer dummy the caller supplies. ``integer :: b(size(a))`` names one of
+    each: ``a`` is the argument, and ``size`` is a call. Hiding it declared
+    ``integer, intent(in) :: size`` beside ``res(size(a))``, which gfortran
+    rejects twice -- PROCEDURE conflicting with INTENT, and a call to
+    something not PURE -- and no reference for the corpus's sorting module
+    could be built."""
+    record = {
+        "module": "sort_mod",
+        "generics": {"argsort": ["iargsort"]},
+        "subprograms": [
+            {
+                "name": "iargsort",
+                "kind": "function",
+                "args": [
+                    {
+                        "name": "a",
+                        "dtype": "int32",
+                        "intent": "IN",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}],
+                    }
+                ],
+                "result": "b",
+                "result_dtype": "int32",
+                "result_dims": [{"lb": "1", "ub": "size(a)"}],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["iargsort"])
+    assert "subroutine w_iargsort(a, res)" in text
+    assert "intent(in) :: size" not in text.lower()
+    assert "integer, intent(out) :: res(size(a))" in text
+
+
+def test_an_extent_naming_an_argument_in_another_case_is_not_hidden() -> None:
+    """Fortran does not distinguish ``N`` from ``n``. The extent keeps the
+    source's spelling and the argument names arrive lowercased from the
+    frontend, so ``real(dp) :: mesh(N+1)`` over ``integer, intent(in) :: N``
+    hid an ``N`` beside the wrapper's own ``n`` -- a duplicate formal argument
+    gfortran refuses, which took the mesh module's three exponential-mesh
+    functions out of the reference build."""
+    record = {
+        "module": "mesh",
+        "subprograms": [
+            {
+                "name": "meshexp",
+                "kind": "function",
+                "args": [
+                    {"name": "rmin", "dtype": "float64", "intent": "IN", "optional": False},
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                ],
+                "result": "mesh",
+                "result_dtype": "float64",
+                "result_dims": [{"lb": "1", "ub": "N + 1"}],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["meshexp"])
+    assert "subroutine w_meshexp(rmin, n, res)" in text
+    assert text.lower().count("intent(in) :: n") == 1
+    assert "real(8), intent(out) :: res(N + 1)" in text
+
+
 def test_out_arguments_are_defined_before_the_call() -> None:
     """An intent(out) dummy is undefined on entry, and a subprogram that
     returns early -- a guard rejecting its own arguments -- never assigns it.
@@ -103,7 +168,7 @@ def test_out_arguments_are_defined_before_the_call() -> None:
     assert "  rho = 0" not in body
 
 
-def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
+def test_a_caller_buffer_out_array_is_the_caller_s_on_both_sides() -> None:
     """An intent(out) array the callee cannot size -- ``dy(*)`` -- is the
     caller's storage on both sides: the gate generates it and hands the same
     values to the reference and the candidate. Zeroing it in the wrapper would
@@ -145,6 +210,190 @@ def test_a_caller_buffer_out_array_is_not_defined_by_the_wrapper() -> None:
     assert "  dy = 0" not in body
 
 
+def test_a_character_out_dummy_is_defined_with_a_string() -> None:
+    """``ss = 0`` is a type error the compiler rejects outright -- "Cannot
+    convert INTEGER(4) to CHARACTER(128)" -- and it cost every module with a
+    character output its whole reference, not just that one wrapper."""
+    record = {
+        "module": "text_mod",
+        "subprograms": [
+            {
+                "name": "getword",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "s", "dtype": "str", "intent": "IN", "optional": False},
+                    {"name": "ss", "dtype": "str", "intent": "OUT", "optional": False},
+                    {"name": "ok", "dtype": "bool", "intent": "OUT", "optional": False},
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["getword"])
+    assert "  ss = ''" in text
+    assert "  ok = .false." in text
+
+
+def test_an_allocatable_dummy_is_passed_an_allocatable_actual() -> None:
+    """``call loadtxt(filename, d)`` with ``d`` a plain assumed-shape dummy is
+    "Actual argument for 'd' must be ALLOCATABLE at (1)": the call does not
+    compile, so the unit gets no reference at all. The wrapper keeps its
+    caller-side buffer -- f2py has no allocatable to offer -- and calls
+    through a local one."""
+    record = {
+        "module": "io_mod",
+        "subprograms": [
+            {
+                "name": "loadtxt",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "filename", "dtype": "str", "intent": "IN", "optional": False},
+                    {
+                        "name": "d",
+                        "dtype": "float64",
+                        "intent": "OUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}, {"lb": "1", "ub": None}],
+                        "allocatable": True,
+                        "buffer": True,
+                    },
+                ],
+            }
+        ],
+    }
+    text, _ = wrappers_for(record, ["loadtxt"])
+    body = text[text.index("subroutine w_loadtxt") : text.index("end subroutine w_loadtxt")]
+    assert "real(8), intent(in out) :: d(:, :)" in body
+    assert "real(8), allocatable :: d_alloc(:, :)" in body
+    assert "  call loadtxt(filename, d_alloc)" in body
+    # What the callee allocated, as far as the caller's buffer reaches.
+    assert "d_n = min(shape(d), shape(d_alloc))" in body
+    assert "d(:d_n(1), :d_n(2)) = d_alloc(:d_n(1), :d_n(2))" in body
+
+
+def test_a_reference_the_differential_cannot_exercise_is_named_ungated() -> None:
+    """The wrapper compiles; calling it is what means nothing. A character
+    dummy is fixed at ``len=128`` and has no draw, and an array the callee
+    allocates is not the buffer f2py hands back. Named, with the reason, so
+    the verdict can say why a public subprogram was not compared -- silence
+    is what the gate refuses."""
+    record = {
+        "module": "mix_mod",
+        "subprograms": [
+            {
+                "name": "loadtxt",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "filename", "dtype": "str", "intent": "IN", "optional": False},
+                    {
+                        "name": "d",
+                        "dtype": "float64",
+                        "intent": "OUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}],
+                        "allocatable": True,
+                    },
+                ],
+            },
+            {
+                "name": "arange",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "a", "dtype": "float64", "intent": "IN", "optional": False},
+                    {
+                        "name": "u",
+                        "dtype": "float64",
+                        "intent": "OUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}],
+                        "allocatable": True,
+                    },
+                ],
+            },
+            {
+                "name": "label",
+                "kind": "function",
+                "args": [{"name": "i", "dtype": "int32", "intent": "IN", "optional": False}],
+                "result": "s",
+                "result_dtype": "str",
+            },
+            {
+                "name": "newunit",
+                "kind": "function",
+                "args": [{"name": "unit", "dtype": "int32", "intent": "OUT", "optional": True}],
+                "result": "n",
+                "result_dtype": "int32",
+            },
+            {
+                # PCHIP's ``dpchfe``/``dpchfd``/``dpchcm`` shape: a mandatory
+                # scalar LOGICAL SKIP the caller can toggle across repeated
+                # calls. f2py marshals a scalar INOUT as a writable rank-0
+                # array, so this compares fine.
+                "name": "dpchfe",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {"name": "skip", "dtype": "bool", "intent": "INOUT", "optional": False},
+                ],
+            },
+            {
+                "name": "monotonic",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {"name": "skip", "dtype": "bool", "intent": "INOUT", "optional": True},
+                ],
+            },
+            {
+                # PCHIP's DPCHIA/DPCHID shape: a FUNCTION that also declares
+                # a mandatory SKIP/IERR dummy. The verifier's
+                # ``_paired_outputs`` only ever pairs a function's single
+                # result, so this compares nothing today -- named ungated
+                # here rather than reaching that refusal and failing the
+                # whole unit's differential gate.
+                "name": "dpchia",
+                "kind": "function",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {"name": "skip", "dtype": "bool", "intent": "INOUT", "optional": False},
+                    {"name": "ierr", "dtype": "int32", "intent": "OUT", "optional": False},
+                ],
+                "result": "value",
+                "result_dtype": "float64",
+            },
+            {
+                # Unlike a scalar, an array LOGICAL INOUT needs f2py's
+                # in-place buffer, whose element size this harness's 1-byte
+                # bool draw does not match.
+                "name": "flags_inout",
+                "kind": "subroutine",
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {
+                        "name": "flags",
+                        "dtype": "bool",
+                        "intent": "INOUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}],
+                    },
+                ],
+            },
+        ],
+    }
+    reasons = {s["name"]: f2py_module.unexercisable(s) for s in record["subprograms"]}
+    assert reasons["loadtxt"].startswith("filename: character dummy")
+    assert reasons["arange"] == "u: allocatable array the callee sizes"
+    assert reasons["label"] == "character result, fixed at len=128 by the wrapper"
+    # An optional dummy is dropped from both calls, so it disqualifies nothing.
+    assert reasons["newunit"] is None
+    # A scalar LOGICAL INOUT, mandatory or not, compares fine.
+    assert reasons["dpchfe"] is None
+    assert reasons["monotonic"] is None
+    # A function's mandatory OUT/INOUT dummies have no side-effect leg to
+    # pair with the result, unlike a subroutine's.
+    assert reasons["dpchia"].startswith("declares OUT/INOUT dummy argument(s) skip, ierr")
+    assert reasons["flags_inout"].startswith("flags: LOGICAL INOUT array dummy")
+
+
 def test_a_dtype_the_wrapper_cannot_spell_refuses() -> None:
     broken = {
         "module": "m",
@@ -166,6 +415,107 @@ def test_a_dtype_the_wrapper_cannot_spell_refuses() -> None:
     }
     with pytest.raises(ConfigError, match="cannot spell"):
         wrappers_for(broken, ["s"])
+
+
+def _derived_record(**overrides: object) -> dict:
+    """A module whose public subroutine carries its state in a derived type
+    of scalar components -- SLSQP's ``slsqp`` and its ``slsqpb_data``."""
+    record = {
+        "module": "m",
+        "generics": {},
+        "types": {
+            "state_t": {
+                "a": {"dtype": "float64", "dims": None, "allocatable": False, "pointer": False},
+                "i": {"dtype": "int32", "dims": None, "allocatable": False, "pointer": False},
+            }
+        },
+        "public_types": ["state_t"],
+        "subprograms": [
+            {
+                "name": "step",
+                "kind": "subroutine",
+                "public": True,
+                "args": [
+                    {"name": "n", "dtype": "int32", "intent": "IN", "optional": False},
+                    {
+                        "name": "x",
+                        "dtype": "float64",
+                        "intent": "INOUT",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": "n"}],
+                    },
+                    {
+                        "name": "state",
+                        "dtype": "UNKNOWN(TYPE(STATE_T))",
+                        "intent": "INOUT",
+                        "optional": False,
+                    },
+                ],
+            }
+        ],
+    }
+    record.update(overrides)
+    return record
+
+
+def test_a_derived_type_of_scalars_is_spelled_component_by_component() -> None:
+    """f2py cannot marshal a derived type, and a module whose only public
+    subprogram takes one had no reference at all. A type of scalar
+    components is spelled as one flat dummy per component, copied into a
+    local of the type before the call and back out after it, and the plan
+    for the candidate side names the same flat dummies in the same order."""
+    record = _derived_record()
+    text, names = wrappers_for(record, ["step"])
+    assert names == ["w_step"]
+    assert "subroutine w_step(n, x, state_a, state_i)" in text
+    assert "  use m, only: step, state_t" in text
+    assert "  type(state_t) :: state" in text
+    assert "  real(8), intent(in out) :: state_a" in text
+    assert "  integer, intent(in out) :: state_i" in text
+    assert text.index("  state%a = state_a") < text.index("  call step(n, x, state)")
+    assert text.index("  call step(n, x, state)") < text.index("  state_i = state%i")
+    assert f2py_module.unspellable(record, ["step"]) == {}
+    plan = f2py_module.flattened_dummies(record, ["step"])
+    assert plan == {
+        "step": {
+            "state": {
+                "type": "state_t",
+                "components": [
+                    {"name": "state_a", "component": "a", "dtype": "float64"},
+                    {"name": "state_i", "component": "i", "dtype": "int32"},
+                ],
+            }
+        }
+    }
+
+
+def test_a_derived_type_the_wrapper_cannot_flatten_says_why() -> None:
+    """Refused, with the reason, rather than compiled into a wrapper that
+    does not build: a type the module does not export cannot be USEd, an
+    array component is not a scalar the flat dummy can carry, and a type
+    the record never defined has no components to spell."""
+    private = _derived_record(public_types=[])
+    with pytest.raises(ConfigError, match=r"cannot spell.*not public"):
+        wrappers_for(private, ["step"])
+    arrays = _derived_record(
+        types={
+            "state_t": {
+                "v": {
+                    "dtype": "float64",
+                    "dims": [{"lb": "1", "ub": "3"}],
+                    "allocatable": False,
+                    "pointer": False,
+                }
+            }
+        }
+    )
+    with pytest.raises(ConfigError, match=r"cannot spell.*not a scalar"):
+        wrappers_for(arrays, ["step"])
+    unknown = _derived_record(types={})
+    with pytest.raises(ConfigError, match=r"cannot spell.*not defined"):
+        wrappers_for(unknown, ["step"])
+    assert f2py_module.flattened_dummies(unknown, ["step"]) == {}
+    assert set(f2py_module.unspellable(unknown, ["step"])) == {"step"}
 
 
 CALLBACK_RECORD = {
@@ -239,6 +589,94 @@ def test_a_procedure_argument_becomes_an_f2py_call_back() -> None:
     # ``n`` sizes another argument, so f2py would make it optional and move it
     # to the end; the translation calls the same object in declaration order.
     assert text.count("required") == 1
+
+
+FUNCTION_CALLBACK_RECORD = {
+    "module": "optimize",
+    "generics": {},
+    "interfaces": {
+        "func": {
+            "kind": "function",
+            "args": [{"name": "x", "dtype": "float64", "intent": "IN", "optional": False}],
+            "result": "func",
+            "result_dtype": "float64",
+        }
+    },
+    "subprograms": [
+        {
+            "name": "bisect",
+            "kind": "function",
+            "args": [
+                {
+                    "name": "f",
+                    "dtype": "PROCEDURE",
+                    "intent": "IN",
+                    "optional": False,
+                    "procedure": True,
+                    "interface": "func",
+                },
+                {"name": "a", "dtype": "float64", "intent": "IN", "optional": False},
+                {"name": "b", "dtype": "float64", "intent": "IN", "optional": False},
+                {"name": "tol", "dtype": "float64", "intent": "IN", "optional": False},
+            ],
+            "result": "c",
+            "result_dtype": "float64",
+        }
+    ],
+}
+
+
+def test_a_function_procedure_argument_becomes_an_f2py_call_back() -> None:
+    """crackfortran tells a function call-back from a subroutine one by the
+    statement that uses it: a CALL is a subroutine, and an assignment whose
+    right-hand side calls the dummy is a function whose result type is the
+    assigned variable's. The dummy carries that type in real Fortran too,
+    because the wrapper is ``implicit none``."""
+    text, names = wrappers_for(FUNCTION_CALLBACK_RECORD, ["bisect"])
+    assert names == ["w_bisect"]
+    assert "  real(8), external :: f" in text
+    assert "!f2py  real(8), intent(in) :: cb_f_x" in text
+    assert "!f2py  real(8) :: cb_f_res" in text
+    assert "!f2py  cb_f_res = f(cb_f_x)" in text
+    # The declaration has to reach crackfortran before the line that assigns
+    # to it, or the call-back's result has no type.
+    assert text.index("real(8) :: cb_f_res") < text.index("cb_f_res = f(")
+
+
+def test_a_function_call_back_that_writes_an_argument_refuses() -> None:
+    """Its result and its written argument both come back, and which one f2py
+    hands over first is not a convention this wrapper shares with the
+    translation."""
+    record = {
+        **FUNCTION_CALLBACK_RECORD,
+        "interfaces": {
+            "func": {
+                "kind": "function",
+                "args": [
+                    {"name": "x", "dtype": "float64", "intent": "IN", "optional": False},
+                    {"name": "ierr", "dtype": "int32", "intent": "OUT", "optional": False},
+                ],
+                "result": "func",
+                "result_dtype": "float64",
+            }
+        },
+    }
+    with pytest.raises(ConfigError, match=r"only\s+read theirs"):
+        wrappers_for(record, ["bisect"])
+
+
+def test_the_harness_builds_a_function_call_back() -> None:
+    """A function call-back answers through its return on both sides, so the
+    stand-in returns one value rather than a tuple of written arguments."""
+    import numpy as np
+
+    from recast.verify.bitexact import callback_for
+
+    callback = callback_for(np, "f", FUNCTION_CALLBACK_RECORD["interfaces"]["func"])
+    assert callback.__code__.co_argcount == 1
+    value = callback(np.float64(2.0))
+    assert isinstance(value, np.floating)
+    assert value == callback(np.float64(2.0))  # deterministic
 
 
 def test_a_procedure_argument_with_no_interface_refuses() -> None:
@@ -443,7 +881,6 @@ _SIGNATURES = {
     "flip": {
         "kind": "subroutine",
         "args": [
-            {"name": "x", "dtype": "bool", "intent": "INOUT", "optional": False},
             {"name": "a", "dtype": "bool", "intent": "INOUT", "optional": False,
              "dims": [{"lb": "1", "ub": "3"}]},
             {"name": "y", "dtype": "bool", "intent": "OUT", "optional": False},
@@ -453,18 +890,18 @@ _SIGNATURES = {
     }
 }
 
-def flip(x, a):
+def flip(a):
     raise AssertionError("candidate subroutine must not execute")
 """
     candidate = Candidate(
-        unit="fortran:logical_inout",
+        unit="fortran:logical_inout_array",
         transform="translate.numpy",
-        files={Path("logical_inout_numpy.py"): emitted},
+        files={Path("logical_inout_array_numpy.py"): emitted},
     )
 
     class Truth:
         @staticmethod
-        def w_flip(x, a):
+        def w_flip(a):
             raise AssertionError("oracle subroutine must not execute")
 
     ref = OracleRef(
@@ -575,6 +1012,57 @@ def identity(x):
         oracle="f2py-golden",
         key="k",
         handle={"module": Truth(), "wrappers": {"identity": "w_identity"}},
+    )
+    verdict = BitexactVerifier().verify(
+        Unit(uid=candidate.unit, kind="module"),
+        candidate,
+        ref,
+        tmp_path / "work",
+        LocalExecutor(),
+        {"trials": 3},
+    )
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 3
+
+
+def test_f2py_badname_argument_is_spelled_with_its_bn_suffix(tmp_path: Path) -> None:
+    """A dummy that collides with a C keyword -- PCHIP's ``dpchic`` declares
+    one named ``switch`` -- is not the keyword the compiled reference answers
+    to. f2py's own ``crackfortran`` frontend renames every name in its
+    ``badnames`` table to ``<name>_bn`` before it reaches the extension, so
+    the reference call must spell it that way too, not lowercased verbatim."""
+    emitted = b"""\
+_SIGNATURES = {
+    "scale": {
+        "kind": "function",
+        "args": [
+            {"name": "switch", "dtype": "float64", "intent": "IN", "optional": False},
+        ],
+        "result": "y",
+        "result_dtype": "float64",
+    }
+}
+
+def scale(switch):
+    return switch * 2.0
+"""
+    candidate = Candidate(
+        unit="fortran:badname_argument",
+        transform="translate.numpy",
+        files={Path("badname_argument_numpy.py"): emitted},
+    )
+
+    class Truth:
+        @staticmethod
+        def w_scale(switch_bn):
+            return switch_bn * 2.0
+
+    ref = OracleRef(
+        unit=candidate.unit,
+        oracle="f2py-golden",
+        key="k",
+        handle={"module": Truth(), "wrappers": {"scale": "w_scale"}},
     )
     verdict = BitexactVerifier().verify(
         Unit(uid=candidate.unit, kind="module"),
@@ -1175,12 +1663,80 @@ def test_logical_values_are_bit_exact_against_real_f2py(tmp_path: Path) -> None:
     assert verdict.metrics["bit_exact"] == 10
 
 
+PACKED_SOURCE = """\
+module packed_workspace
+  implicit none
+contains
+  subroutine solve(n, lr, r, qtb, x)
+    integer, intent(in) :: n
+    integer, intent(in) :: lr
+    real(8), intent(in) :: r(lr)
+    real(8), intent(in) :: qtb(n)
+    real(8), intent(out) :: x(n)
+    integer :: i, j, jj, jp1, k, l
+    real(8) :: sm
+    jj = (n*(n + 1))/2 + 1
+    do k = 1, n
+       j = n - k + 1
+       jp1 = j + 1
+       jj = jj - k
+       l = jj + 1
+       sm = 0.0d0
+       if (n >= jp1) then
+          do i = jp1, n
+             sm = sm + r(l)*x(i)
+             l = l + 1
+          end do
+       end if
+       x(j) = (qtb(j) - sm)/r(jj)
+    end do
+  end subroutine solve
+end module packed_workspace
+"""
+"""MINPACK's ``dogleg`` back-substitution: ``r(lr)`` holds the upper triangle
+of an order-``n`` matrix, so the subprogram takes no draw where ``lr`` is
+``n`` -- which is what every extent nobody pinned defaults to."""
+
+
 @pytest.mark.skipif(
     GFORTRAN is None or not MESON,
     reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
 )
-def test_real_f2py_logical_inout_fails_closed(tmp_path: Path) -> None:
-    """The real ABI hazard is reported, never mistaken for a mismatch."""
+def test_a_packed_workspace_is_compared_against_real_f2py(tmp_path: Path) -> None:
+    """The extent is grown to a shape the body takes and the whole spine runs
+    on it: without that, the first subscript the translation forms is past the
+    end of ``r`` at every trial, and the subprogram is one no draw compared."""
+    (tmp_path / "packed_workspace.f90").write_text(PACKED_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 4}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    solve = verdict.metrics["subprograms"]["solve"]
+    # The order stays at the default the run was configured with; the
+    # workspace is what grew, and the outcome says so.
+    assert solve["extents"] == {"lr": 64}
+    assert (solve["points"], solve["redrawn"], solve["reshaped"]) == (32, 0, 0)
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_real_f2py_logical_inout_array_fails_closed_scalar_compares(tmp_path: Path) -> None:
+    """The real array ABI hazard is reported, never mistaken for a mismatch,
+    but a scalar LOGICAL INOUT in the same module -- PCHIP's ``dpchfe``
+    shape -- still gets compared against the real compiled reference."""
     (tmp_path / "logical_inout.f90").write_text(LOGICAL_INOUT_SOURCE)
     workspace = tmp_path / "work"
     workspace.mkdir()
@@ -1196,8 +1752,9 @@ def test_real_f2py_logical_inout_fails_closed(tmp_path: Path) -> None:
     ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
     verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
 
-    assert verdict.confidence is Confidence.FAILED
-    assert "no portable Python buffer ABI" in verdict.detail
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert "flip_scalar" in verdict.metrics["subprograms"]
+    assert "LOGICAL INOUT array dummy" in verdict.metrics["ungated"]["flip_array"]
 
 
 @pytest.mark.skipif(
@@ -1410,6 +1967,114 @@ def test_the_oracle_defaults_to_public_subprograms() -> None:
     assert F2pyGoldenOracle._subprograms(facts, {}) == ["api"]
     # Explicit config still wins, and then fails loudly if it names a private.
     assert F2pyGoldenOracle._subprograms(facts, {"subprograms": ["detail"]}) == ["detail"]
+
+
+def test_a_specific_of_a_public_generic_is_reachable_though_its_name_is_not() -> None:
+    """A module may publish nothing but generics: the corpus's sorting module
+    is ``private`` with ``public sort, sortpairs, argsort`` over twelve
+    specifics, every one of them private. Selecting on the specific's own
+    accessibility left nothing to wrap and no reference to build, while
+    ``wrappers_for`` stood ready to call each one through its generic -- which
+    is the name the wrapper ``use``s, and which is public.
+    """
+    from recast.model import Facts
+
+    facts = Facts(
+        unit="fortran:sorting",
+        interface={
+            "module": "sorting",
+            "public": ["sort", "sortpairs"],
+            "generics": {"sort": ["sortnums"], "sortpairs": ["sortnumnumpairs"], "hidden": ["aux"]},
+            "subprograms": [
+                {
+                    "name": "sortnums",
+                    "kind": "subroutine",
+                    "public": False,
+                    "args": [
+                        {
+                            "name": "nums",
+                            "dtype": "float64",
+                            "intent": "INOUT",
+                            "optional": False,
+                            "dims": [{"lb": "1", "ub": None}],
+                        }
+                    ],
+                },
+                {
+                    "name": "sortnumnumpairs",
+                    "kind": "subroutine",
+                    "public": False,
+                    "args": [
+                        {
+                            "name": "nums1",
+                            "dtype": "float64",
+                            "intent": "INOUT",
+                            "optional": False,
+                            "dims": [{"lb": "1", "ub": None}],
+                        }
+                    ],
+                },
+                # Behind a generic nothing published: still unreachable.
+                {"name": "aux", "kind": "subroutine", "public": False, "args": []},
+            ],
+        },
+    )
+    assert F2pyGoldenOracle._subprograms(facts, {}) == ["sortnums", "sortnumnumpairs"]
+
+
+def test_a_reached_specific_the_wrapper_cannot_spell_is_dropped_not_fatal() -> None:
+    """Reached, not exported. ``sortpairs`` also covers a COMPLEX overload,
+    which ``FORTRAN_TYPES`` has no spelling for; raising on it would cost the
+    other ten specifics their reference for the sake of one the module never
+    named. A *public* name of the same dtype is still an error, because the
+    module says it is part of its surface.
+    """
+    from recast.model import Facts
+
+    def module(public_specific: bool) -> dict[str, object]:
+        return {
+            "module": "sorting",
+            "public": ["sortpairs"],
+            "generics": {"sortpairs": ["real_pairs", "complex_pairs"]},
+            "subprograms": [
+                {
+                    "name": "real_pairs",
+                    "kind": "subroutine",
+                    "public": False,
+                    "args": [
+                        {
+                            "name": "nums",
+                            "dtype": "float64",
+                            "intent": "INOUT",
+                            "optional": False,
+                            "dims": [{"lb": "1", "ub": None}],
+                        }
+                    ],
+                },
+                {
+                    "name": "complex_pairs",
+                    "kind": "subroutine",
+                    "public": public_specific,
+                    "args": [
+                        {
+                            "name": "nums",
+                            "dtype": "UNKNOWN(COMPLEX)",
+                            "intent": "INOUT",
+                            "optional": False,
+                            "dims": [{"lb": "1", "ub": None}],
+                        }
+                    ],
+                },
+            ],
+        }
+
+    reached = Facts(unit="fortran:sorting", interface=module(public_specific=False))
+    assert F2pyGoldenOracle._subprograms(reached, {}) == ["real_pairs"]
+
+    exported = Facts(unit="fortran:sorting", interface=module(public_specific=True))
+    assert F2pyGoldenOracle._subprograms(exported, {}) == ["real_pairs", "complex_pairs"]
+    with pytest.raises(ConfigError, match="cannot spell"):
+        wrappers_for(exported.interface, ["complex_pairs"])
 
 
 def test_wrappers_serve_a_file_of_bare_subprograms() -> None:
@@ -1646,6 +2311,40 @@ def test_the_reference_names_the_siblings_the_unit_uses(tmp_path: Path) -> None:
 
     _unit, facts = _split_tree(tmp_path)
     assert companion_sources(facts, tmp_path) == [(tmp_path / "toy_kinds.f90").resolve()]
+
+
+USER_SOURCE = """\
+module toy_user
+  use toy_split, only: scale_all
+  implicit none
+contains
+  subroutine drive(n, x)
+    integer, intent(in) :: n
+    real, intent(inout) :: x(*)
+    call scale_all(n, 2.0, x)
+  end subroutine drive
+end module toy_user
+"""
+
+
+def test_the_reference_also_gets_what_the_siblings_themselves_use(tmp_path: Path) -> None:
+    """``toy_user`` cannot see ``toy_kinds``: ``toy_split`` answers for the
+    only-list asked of it, so nothing of ``toy_kinds`` is in scope here. The
+    build still needs the file -- ``toy_split.f90`` is compiled from source,
+    and gfortran stops at "cannot open module file toy_kinds.mod" -- so the
+    closure is staged, dependencies first."""
+    from recast.oracle.f2py import companion_sources
+
+    (tmp_path / "toy_kinds.f90").write_text(KINDS_SOURCE)
+    (tmp_path / "toy_split.f90").write_text(SPLIT_SOURCE)
+    (tmp_path / "toy_user.f90").write_text(USER_SOURCE)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:toy_user")
+    facts = frontend.analyze(unit, tmp_path)
+    assert companion_sources(facts, tmp_path) == [
+        (tmp_path / "toy_kinds.f90").resolve(),
+        (tmp_path / "toy_split.f90").resolve(),
+    ]
 
 
 def test_f2py_only_receives_canonical_source_and_include_tokens(
@@ -2123,3 +2822,276 @@ def test_an_error_stop_in_the_reference_is_a_report_not_a_dead_run(tmp_path: Pat
     again = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
     assert again.confidence is Confidence.BIT_EXACT, again.detail
     assert ref.handle["module"].restarts == 1
+
+
+def test_a_path_the_body_creates_is_exercisable_and_one_it_reads_is_not() -> None:
+    """A character dummy has no draw in general. A path an OPEN in the body
+    *creates* does: any name works, because the subprogram makes the file
+    rather than finding one, and the gate compares what each side left there.
+    A path opened ``STATUS='OLD'`` would need a draw that is a file already
+    holding something, so it stays ungated -- and says so in those words,
+    because "fixed at len=128" is not why."""
+    record = {
+        "module": "io_mod",
+        "generics": {},
+        "subprograms": [
+            {
+                "name": "saveppm",
+                "kind": "subroutine",
+                "args": [
+                    {
+                        "name": "filename",
+                        "dtype": "str",
+                        "intent": "IN",
+                        "optional": False,
+                        "path": "created",
+                    },
+                    {
+                        "name": "img",
+                        "dtype": "int32",
+                        "intent": "IN",
+                        "optional": False,
+                        "dims": [{"lb": "1", "ub": None}, {"lb": "1", "ub": None}],
+                    },
+                ],
+            },
+            {
+                "name": "loadppm",
+                "kind": "subroutine",
+                "args": [
+                    {
+                        "name": "filename",
+                        "dtype": "str",
+                        "intent": "IN",
+                        "optional": False,
+                        "path": "existing",
+                    },
+                    {"name": "n", "dtype": "int32", "intent": "OUT", "optional": False},
+                ],
+            },
+        ],
+    }
+    reasons = {s["name"]: f2py_module.unexercisable(s) for s in record["subprograms"]}
+    assert reasons["saveppm"] is None
+    assert reasons["loadppm"] == (
+        "filename: names a file the body opens STATUS='OLD', which no generated draw can put there"
+    )
+    text, _ = wrappers_for(record, ["saveppm"])
+    # TRIM, because the wrapper's dummy is padded to 128 and the callee's is
+    # ``len=*``: without it the callee sees a length no caller ever passes.
+    assert "  call saveppm(trim(filename), img)" in text
+
+
+FILE_SOURCE = """\
+module file_mod
+  implicit none
+contains
+  subroutine save_grid(filename, n, d)
+    character(len=*), intent(in) :: filename
+    integer, intent(in) :: n
+    real(8), intent(in) :: d(n)
+    integer :: u, i
+    open(newunit=u, file=filename, status="replace")
+    write(u, '(i0)') n
+    do i = 1, n
+      write(u, '(3a1)', advance='no') achar(modulo(int(d(i)), 60) + 40)
+    end do
+    write(u,*) d
+    close(u)
+  end subroutine save_grid
+
+  subroutine load_grid(filename, n)
+    character(len=*), intent(in) :: filename
+    integer, intent(out) :: n
+    integer :: u
+    open(newunit=u, file=filename, status="old")
+    read(u, '(i6)') n
+    close(u)
+  end subroutine load_grid
+end module file_mod
+"""
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_a_subprogram_whose_only_product_is_a_file_is_gated_on_that_file(
+    tmp_path: Path,
+) -> None:
+    """``save_grid`` declares two inputs and nothing else: every output the
+    harness could pair is absent, and its whole result is the file it writes.
+    So the file is the output -- each side writes its own, and the bytes are
+    compared. ``load_grid`` reads a file that has to already exist, which no
+    draw can produce, and stays ungated with that as the reason.
+
+    The stub this replaces made the point sharply: the emitted ``save_grid``
+    opened a file, wrote nothing to it and returned, and passed every
+    structural check on the way.
+    """
+    (tmp_path / "file_mod.f90").write_text(FILE_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.kind == "module")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 3, "dims": {"n": 6}}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    assert ref.handle["ungated"] == {
+        "load_grid": "filename: names a file the body opens STATUS='OLD', "
+        "which no generated draw can put there"
+    }
+
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["bit_exact"] == verdict.metrics["points"] > 0
+    # Every point is a byte of the file: the subprogram has no other output.
+    assert verdict.metrics["integer_points"] == verdict.metrics["points"]
+    assert set(verdict.metrics["subprograms"]) == {"save_grid"}
+    assert "load_grid" in verdict.metrics["ungated"]
+
+
+LIBRARY_RECORDS = [
+    {
+        "module": "solver",
+        "subprograms": [
+            {"name": "go", "calls": ["helper"], "external_calls": ["solve_it"]},
+            {"name": "helper", "calls": [], "external_calls": []},
+            {"name": "outer", "calls": ["go"], "external_calls": []},
+        ],
+        "interfaces": {},
+    },
+    {
+        "module": "libwrap",
+        "subprograms": [],
+        "interfaces": {
+            "solve_it": {"name": "solve_it", "kind": "subroutine"},
+            "helper": {"name": "helper", "kind": "subroutine"},
+            "shape_t": {"name": "shape_t"},
+        },
+    },
+]
+
+
+def test_a_procedure_declared_by_an_interface_and_defined_nowhere_is_named() -> None:
+    """The reference build links nothing but the sources staged for it, so a
+    name only an INTERFACE block declares is a symbol nothing defines: the
+    extension links with it undefined and *importing* it fails, which costs
+    the module's every other subprogram its reference too. ``helper`` is
+    declared the same way and defined in the tree, so it is not one."""
+    assert f2py_module.undefined_externals(LIBRARY_RECORDS, []) == ["solve_it"]
+
+
+def test_a_definition_the_operator_added_from_outside_the_tree_is_not_stubbed(
+    tmp_path: Path,
+) -> None:
+    """``extra_sources`` is where a build gets what the tree does not hold.
+    Stubbing a name that source already defines is a duplicate symbol where
+    there was a working reference -- and its own interface block, which is a
+    declaration, must not be read as the definition."""
+    extra = tmp_path / "lib.f90"
+    extra.write_text(
+        "interface\n  subroutine solve_it(n)\n  end subroutine\nend interface\n"
+        "subroutine solve_it(n)\n  integer :: n\nend subroutine solve_it\n"
+    )
+    assert f2py_module.undefined_externals(LIBRARY_RECORDS, [extra]) == []
+
+
+def test_every_caller_of_a_missing_library_is_found_through_the_call_graph() -> None:
+    """``outer`` calls ``go``, which calls ``solve_it``. Neither can be run
+    against a reference whose ``solve_it`` is a refusal, and only the closure
+    says so about the first one."""
+    reached = f2py_module.reaching(LIBRARY_RECORDS, {"solve_it"})
+    assert reached == {"go": "solve_it", "outer": "solve_it"}
+
+
+def test_a_stub_for_a_missing_library_refuses_rather_than_returns() -> None:
+    """The reference exists to say what the original program computes, and for
+    a call into a library this build does not have it cannot say. The symbol
+    resolves, so the extension loads and the subprograms that never reach the
+    library are compared as usual; anything that does reach it stops, naming
+    the routine, rather than returning a number nobody computed."""
+    text = f2py_module.unresolved_stubs(["solve_it"])
+    assert "subroutine solve_it()" in text
+    assert "error stop" in text and "solve_it has no definition" in text
+
+
+LIBRARY_INTERFACE_SOURCE = """\
+module tiny_lapack
+  implicit none
+  interface
+    subroutine dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+      integer :: info, lda, ldb, n, nrhs
+      integer :: ipiv(*)
+      double precision :: a(lda,*), b(ldb,*)
+    end subroutine
+  end interface
+end module tiny_lapack
+"""
+
+LIBRARY_CALLER_SOURCE = """\
+module tiny_solver
+  use tiny_lapack, only: dgesv
+  implicit none
+contains
+  subroutine solve3(a, rhs, x)
+    double precision, intent(in) :: a(3,3)
+    double precision, intent(in) :: rhs(3)
+    double precision, intent(out) :: x(3)
+    double precision :: work(3,3), b(3,1)
+    integer :: ipiv(3), info
+    work = a
+    b(:,1) = rhs
+    call dgesv(3, 1, work, 3, ipiv, b, 3, info)
+    x = b(:,1)
+  end subroutine solve3
+end module tiny_solver
+"""
+
+
+@pytest.mark.skipif(
+    GFORTRAN is None or not MESON,
+    reason="needs a Fortran compiler and the meson backend (recast-engine[verify])",
+)
+def test_a_call_into_a_declared_only_library_is_compared_not_disclaimed(tmp_path: Path) -> None:
+    """The shape the corpus's ``splines`` has, end to end.
+
+    ``tiny_lapack`` is interface blocks and nothing else -- the bodies are in
+    a library neither build links -- so ``dgesv`` used to get a body that
+    error-stops on the reference side and nothing at all on the candidate's,
+    and every subprogram reaching it came out ungated: the unit passed with
+    its one real subprogram never compared. ``recast.references`` defines it
+    on both sides instead, from one implementation, so ``solve3`` is compared
+    like anything else -- and the verdict says what stood in for the library,
+    because the numbers it was compared at are not the ones LAPACK would have
+    produced.
+    """
+    (tmp_path / "tiny_lapack.f90").write_text(LIBRARY_INTERFACE_SOURCE)
+    (tmp_path / "tiny_solver.f90").write_text(LIBRARY_CALLER_SOURCE)
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    executor = LocalExecutor()
+
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:tiny_solver")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path, "profile": "gfortran"})
+    assert candidate.deferred == []
+
+    config = {"root": tmp_path, "fc": GFORTRAN, "trials": 5}
+    ref = F2pyGoldenOracle().materialize(unit, facts, workspace, executor, config)
+    assert ref.handle["ungated"] == {}, "nothing reaches a procedure with no definition now"
+    assert "dgesv" in ref.handle["substituted"]
+
+    verdict = BitexactVerifier().verify(unit, candidate, ref, workspace, executor, config)
+    assert verdict.confidence is Confidence.BIT_EXACT, verdict.detail
+    assert verdict.metrics["points"] == 15
+    assert verdict.metrics["bit_exact"] == 15
+    assert "ungated" not in verdict.metrics
+    assert set(verdict.metrics["substituted"]) == {"dgesv"}
+    assert "stood in for by recast's own reference implementation" in verdict.detail

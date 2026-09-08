@@ -282,8 +282,10 @@ INTRINSIC_SPELLING = {
 """Intrinsic -> how this target spells it in a constant expression."""
 
 INQUIRY_SPELLING = {
+    "digits": "53",
     "epsilon": "np.finfo(np.float64).eps",
     "huge": "np.finfo(np.float64).max",
+    "radix": "2",
     "tiny": "np.finfo(np.float64).tiny",
 }
 """Type inquiries: the argument only says which type is being asked about."""

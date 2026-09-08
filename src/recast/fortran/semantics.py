@@ -35,10 +35,11 @@ CONCRETE_DTYPES = frozenset({"float32", "float64", "int32", "int64", "bool", "st
 """Dtypes settled enough to rule an overload out.
 
 A derived type counts too -- ``DERIVED_TYPE_MARKER`` matches it -- because
-``type(cartesian2D_t)`` is exactly as decided as ``float64``. What is *not*
-here is the point: ``UNKNOWN_REAL_KIND(k)`` names a real whose kind this stage
-could not resolve, and an unresolved kind must not be allowed to reject a
-candidate it might have matched."""
+``type(cartesian2D_t)`` is exactly as decided as ``float64``, and so does
+COMPLEX -- ``COMPLEX_MARKER`` matches it -- because a type with no dtype here
+is still a type. What is *not* here is the point: ``UNKNOWN_REAL_KIND(k)``
+names a real whose kind this stage could not resolve, and an unresolved kind
+must not be allowed to reject a candidate it might have matched."""
 
 ARITHMETIC = frozenset({"+", "-", "*", "/", "**"})
 
@@ -205,6 +206,20 @@ DERIVED_TYPE_MARKER = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)")
 It refuses on purpose -- a derived type has no single numeric type -- and the
 name is recoverable from the refusal, which is what makes component lookup
 possible without a second pass.
+"""
+
+COMPLEX_MARKER = re.compile(r"(UNKNOWN\(COMPLEX\)|complex\d+)$")
+"""How ``interface.dtype_of`` spells a COMPLEX whose type is decided.
+
+A resolved complex has a concrete dtype now -- ``complex128``/``complex64`` --
+and an unresolved *kind* stays ``UNKNOWN(COMPLEX)``; both name a decided type
+even when the second carries no kind. So the *type* is as decided as
+``float64`` is: no actual of any real or integer kind reaches a COMPLEX dummy,
+and none of any complex kind reaches a real one. Reading a complex as
+undecided is what left ``sortpairs(real, real(:,:))`` ambiguous between the
+real-vector and the complex-vector overload. (An ``UNKNOWN_COMPLEX_KIND(k)``
+is deliberately *not* matched: its kind is unresolved, so like
+``UNKNOWN_REAL_KIND(k)`` it must not reject a candidate it might have matched.)
 """
 
 
@@ -858,7 +873,11 @@ class Semantics:
 
 
 def _concrete_dtype(dtype: str) -> bool:
-    return dtype in CONCRETE_DTYPES or bool(DERIVED_TYPE_MARKER.match(dtype))
+    return (
+        dtype in CONCRETE_DTYPES
+        or bool(DERIVED_TYPE_MARKER.match(dtype))
+        or bool(COMPLEX_MARKER.match(dtype))
+    )
 
 
 def _dtype_match(actual: str | None, formal: str | None) -> bool:
@@ -890,6 +909,14 @@ def for_subprogram(
     not have to know which file declared its callee.
     """
     procedures = {s["name"]: s for s in record["subprograms"]}
+    # This module's own INTERFACE declarations of procedures it defines
+    # nowhere -- LAPACK's ``dgeev``, declared in the subroutine that calls it
+    # -- bind the same way a companion's do below: the interface is the whole
+    # statement of what calling it means. ``setdefault`` again, and before the
+    # companions, so a body anywhere outranks a declaration here.
+    for declared in (record.get("interfaces") or {}).values():
+        if declared.get("kind") in ("subroutine", "function"):
+            procedures.setdefault(declared["name"], declared)
     generics = dict(record["generics"])
     companion_generics: dict[str, list[str]] = {}
     types = dict(record["types"])
@@ -897,6 +924,16 @@ def for_subprogram(
     companion_state: dict[str, dict[str, Any]] = {}
     for other in companions:
         procedures.update({s["name"]: s for s in other["subprograms"]})
+        # A module that declares a procedure through an explicit INTERFACE
+        # block and defines no body for it is the interface module a library
+        # is reached through -- ``use lapack, only: dgesv``. The name is in
+        # scope here exactly as a module procedure would be, and the
+        # interface is the whole statement of what calling it means, so it
+        # binds like one. ``setdefault``: a sibling that actually defines the
+        # procedure outranks another's declaration of it.
+        for declared in (other.get("interfaces") or {}).values():
+            if declared.get("kind") in ("subroutine", "function"):
+                procedures.setdefault(declared["name"], declared)
         companion_generics.update(other["generics"])
         types.update(other["types"])
         parameters |= {p["name"] for p in other["module_parameters"]}

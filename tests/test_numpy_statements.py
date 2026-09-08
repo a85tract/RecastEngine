@@ -119,12 +119,13 @@ contains
     allocate(off(2:n))
   end subroutine alloc
 
-  subroutine calls(a, s, t, c, n, j, w, flat)
+  subroutine calls(a, s, t, c, n, j, w, flat, m2)
     real(r8), intent(inout) :: a(10), c(10)
     real(r8), intent(inout) :: s, t
     integer, intent(in) :: n, j
     real(r8), intent(in) :: w(4, 3)
     real(r8), intent(in) :: flat(8)
+    real(r8), intent(inout) :: m2(4, 3)
     call scale_it(a, s)
     call helper(s, c(1))
     call helper(s, c(1), extra=t)
@@ -143,6 +144,10 @@ contains
     call tailv(a(n))
     call tailm(a(n))
     s = tail_norm(a(n))
+    call tailv(m2(2, j))
+    call tailm(m2(2, j))
+    call tailv(m2)
+    s = tail_norm(m2(2, j))
   end subroutine calls
 
   subroutine initialised(x)
@@ -227,9 +232,15 @@ contains
     real(r8), intent(inout) :: a(10)
     integer, intent(out) :: ios
     character(len=32) :: line
+    character :: ccode
+    integer :: u, offset
+    open(newunit=u, file='out.dat', status='replace')
     write(*,*) s
     write(line,*) s, a(1)
     write(11,*,iostat=ios) s
+    read(u, pos=offset-1) ccode
+    write(u, '(a1)', advance='no') ccode
+    write(line, '(a1)', advance='no') ccode
     stop 'boom'
     return
   end subroutine io
@@ -373,14 +384,60 @@ contains
     j = tab(1)
   end subroutine seeded
 
-  subroutine io_edges(u, ok)
+  subroutine io_edges(u, ok, x, name)
     integer, intent(in) :: u
     logical, intent(out) :: ok
+    real(r8), intent(out) :: x
+    character(len=*), intent(in) :: name
+    integer :: ios, u2
+    character(len=20) :: enc
+    open(newunit=u2, file=name, status='old')
     rewind(u)
     backspace(u)
     inquire(unit=u, opened=ok)
+    read(u, *, iostat=ios) x
+    print *, x
+    close(u)
+    inquire(unit=u, encoding=enc)
     error stop 'nothing to do'
   end subroutine io_edges
+  subroutine pseudorank(a, n, tau, k, kp1)
+    real(r8), intent(in) :: a(n, n)
+    integer, intent(in) :: n
+    real(r8), intent(in) :: tau
+    integer, intent(out) :: k, kp1
+    integer :: j, i, m
+    do j = 1, n
+      if (abs(a(j, j)) <= tau) exit
+    end do
+    k = j - 1
+    kp1 = j
+    do i = 1, n
+      kp1 = kp1 + i
+    end do
+    m = n
+    do i = 1, m, 2
+      m = m - 1
+    end do
+    k = k + i
+  end subroutine pseudorank
+
+  function bump(x, cnt) result(y)
+    real(r8), intent(in) :: x
+    integer, intent(inout) :: cnt
+    real(r8) :: y
+    cnt = cnt + 1
+    y = x * 2.0_r8
+  end function bump
+
+  subroutine search(x, cnt, alpha, t)
+    real(r8), intent(in) :: x
+    integer, intent(inout) :: cnt
+    real(r8), intent(out) :: alpha, t
+    alpha = bump(x, cnt)
+    t = 1.0_r8 + bump(x, cnt)
+  end subroutine search
+
 end module emit_mod
 """
 
@@ -412,13 +469,20 @@ contains
     real(r8) :: y
     y = x + 1.0_r8
   end function rise
+
+  function tail_sum(n, x) result(y)
+    integer, intent(in) :: n
+    real(r8), intent(in) :: x(*)
+    real(r8) :: y
+    y = sum(x(1:n))
+  end function tail_sum
 end module sibling_mod
 """
 
 CALLER = """\
 module caller_mod
   use precision_mod, only: r8 => wp_r8
-  use sibling_mod, only: cscale, rise
+  use sibling_mod, only: cscale, rise, tail_sum
   implicit none
 contains
   subroutine drive(a, s)
@@ -426,6 +490,7 @@ contains
     real(r8), intent(inout) :: s
     call cscale(a, s)
     s = rise(s)
+    s = tail_sum(2, a(3))
   end subroutine drive
 end module caller_mod
 """
@@ -667,6 +732,94 @@ def test_do_bounds_shift_by_the_sign_of_the_step(sources: dict[str, Path]) -> No
         statements.render(variable, 1)[0]
         == "    for i in range(1, (n) + (1 if (j) > 0 else -1), j):"
     )
+
+
+def test_a_do_index_read_after_the_loop_gets_its_completion_value(
+    sources: dict[str, Path],
+) -> None:
+    """Fortran leaves the index one past the last iteration when the loop
+    runs out (and at its start when it never runs); Python leaves it at the
+    last iteration. hfti's ``do j=1,ldiag; if (...) exit; end do; k=j-1``
+    reads that value as the pseudorank, so a loop whose index is read
+    afterwards gets an ``else`` that sets it -- an EXIT skips it, as the
+    index keeps its value there on both sides.
+
+    The completion is spelled with the one unified ``(low) + trips * step``
+    form (``trips`` never negative), whatever the step: a unit step is
+    ``increment`` 1, so this reads ``(1) + max(0, ((n) - (1) + (1)) // (1))
+    * (1)`` -- the same value as ``max(1, n + 1)`` and the same shape as the
+    stepped loops below (see the ``do i = 1, m, 2`` case)."""
+    statements, nodes = build(sources["emit_mod"], "pseudorank")
+    first = statements.render(pick(nodes, f03.Block_Nonlabel_Do_Construct), 1)
+    assert first[0] == "    for j in range(1, n + 1):"
+    assert first[-2:] == [
+        "    else:",
+        "        j = (1) + max(0, ((n) - (1) + (1)) // (1)) * (1)",
+    ]
+
+
+def test_a_do_index_redefined_before_any_read_needs_no_completion_value(
+    sources: dict[str, Path],
+) -> None:
+    """The next ``do i`` redefines ``i`` before anything reads it, so the
+    loop renders as it always did."""
+    statements, nodes = build(sources["emit_mod"], "pseudorank")
+    second = statements.render(pick(nodes, f03.Block_Nonlabel_Do_Construct, 1), 1)
+    assert second == ["    for i in range(1, n + 1):", "        kp1 = (kp1 + i)"]
+
+
+def test_a_do_whose_body_writes_a_bound_holds_the_bounds_it_started_with(
+    sources: dict[str, Path],
+) -> None:
+    """Fortran evaluates the bounds once, at entry. The body writes ``m``,
+    which the upper bound names, so the completion value ``k = k + i`` reads
+    would be wrong recomputed from ``m`` afterwards: the bounds are held in
+    temporaries and both the range and the completion read those."""
+    statements, nodes = build(sources["emit_mod"], "pseudorank")
+    third = statements.render(pick(nodes, f03.Block_Nonlabel_Do_Construct, 2), 1)
+    assert third[:4] == [
+        "    _dolo_i = 1",
+        "    _dohi_i = m",
+        "    _dost_i = 2",
+        "    for i in range(_dolo_i, _dohi_i + 1, _dost_i):",
+    ]
+    assert third[-2:] == [
+        "    else:",
+        "        i = (_dolo_i) + max(0, ((_dohi_i) - (_dolo_i) + (_dost_i)) // (_dost_i))"
+        " * (_dost_i)",
+    ]
+
+
+def test_a_division_in_a_declared_bound_is_integer_division(sources: dict[str, Path]) -> None:
+    """``(n+1)*(n+2)/2`` -- the packed triangle SLSQP hands ``slsqpb`` -- is
+    an integer expression in Fortran; rendered with Python's ``/`` it was a
+    float, and the slice it sized refused it."""
+    statements, _ = build(sources["emit_mod"], "pseudorank")
+    assert statements.expressions.bound("(n+1)*(n+2)/2") == "_f_int_div((n + 1) * (n + 2), 2)"
+    assert statements.expressions.bound("n+1") == "n+1"
+
+
+def test_a_function_hands_its_inout_dummies_back_beside_its_result(
+    sources: dict[str, Path],
+) -> None:
+    """SLSQP's ``linmin`` drives a line search through ``mode`` and eighteen
+    INOUT scalars; a translation returning the result alone kept them at
+    zero on every call. The function returns ``(result, *outputs)`` and a
+    whole-statement reference unpacks the tuple the way a CALL's is."""
+    statements, nodes = build(sources["emit_mod"], "bump")
+    assert statements.returned_value() == "y, cnt"
+    statements, nodes = build(sources["emit_mod"], "search")
+    assert statements.render(nodes[0], 1) == ["    alpha, cnt = bump(x, cnt)"]
+
+
+def test_a_function_with_inout_dummies_inside_an_expression_is_refused(
+    sources: dict[str, Path],
+) -> None:
+    """``1 + bump(x, cnt)`` has nowhere to put ``cnt``; refused by name
+    rather than rendered as an expression that drops the write."""
+    statements, nodes = build(sources["emit_mod"], "search")
+    with pytest.raises(REFUSED, match="bump has OUT/INOUT dummy argument"):
+        statements.render(nodes[1], 1)
 
 
 def test_cycle_and_a_do_while_translate_directly(sources: dict[str, Path]) -> None:
@@ -974,11 +1127,14 @@ def test_a_registered_external_reads_its_out_positions(sources: dict[str, Path])
 
 def test_sequence_association_takes_leading_axes_whole(sources: dict[str, Path]) -> None:
     """``w(1, j)`` to a rank-1 formal is the whole column at ``j``, and a
-    rank-1 actual to a rank-2 formal refills it in column-major order."""
+    rank-1 actual to a rank-2 formal refills it in column-major order --
+    the first ``n*j`` cells of it, which is all the dummy spans: SLSQP's
+    ``nnls(w, n1, n1, m, ...)`` hands ``a(mda, n)`` the head of a longer
+    workspace, and reshaping the whole of ``w`` raised on the size."""
     statements, nodes = build(sources["emit_mod"], "calls")
     assert statements.render(pick(nodes, f03.Call_Stmt, 8), 1) == ["    vec2(w[:, j - 1])"]
     assert statements.render(pick(nodes, f03.Call_Stmt, 9), 1) == [
-        "    consume(n, j, np.reshape(flat, (n, j,), order='F'))"
+        "    consume(n, j, np.reshape(flat[:(n) * (j)], (n, j,), order='F'))"
     ]
 
 
@@ -996,18 +1152,49 @@ def test_an_element_for_an_assumed_size_dummy_is_the_tail_of_the_actual(
         "    _f_copy_out(a[(n - 1):], np.ravel(tailv(a[(n - 1):]), order='F'))"
     ]
     assignments = [n for n in nodes if isinstance(n, f03.Assignment_Stmt)]
-    assert statements.render(assignments[-1], 1) == ["    s = tail_norm(a[(n - 1):])"]
+    assert statements.render(assignments[-2], 1) == ["    s = tail_norm(a[(n - 1):])"]
 
 
-def test_an_element_for_a_rank_2_assumed_size_dummy_is_refused(
+def test_an_element_for_a_rank_2_assumed_size_dummy_folds_the_tail(
     sources: dict[str, Path],
 ) -> None:
-    """``x(2, *)`` has no extent to reshape the tail to, so there is no
-    view for the callee's writes to land in; refused, not rendered as a
-    reshape to ``None``."""
+    """``x(2, *)`` handed ``a(n)``: the tail from the element on, folded onto
+    the leading extent with the last axis taking the whole columns left --
+    the runtime's ``_f_seq_tail`` -- and written back through
+    ``_f_seq_tail_out`` onto the same storage. It used to be refused for
+    having no extent to reshape to."""
     statements, nodes = build(sources["emit_mod"], "calls")
-    with pytest.raises(REFUSED, match="assumed-size dummy"):
-        statements.render(pick(nodes, f03.Call_Stmt, 15), 1)
+    assert statements.render(pick(nodes, f03.Call_Stmt, 15), 1) == [
+        "    _f_seq_tail_out(a, (n - 1), tailm(_f_seq_tail(a, (n - 1), 2)))"
+    ]
+
+
+def test_an_element_of_a_matrix_for_an_assumed_size_dummy_is_its_column_major_tail(
+    sources: dict[str, Path],
+) -> None:
+    """SLSQP's ``dcopy(n, a(i, 1), la, ...)`` and ``h12(..., c(i, 1), lc,
+    ...)``: an element of a rank-2 actual for ``x(*)`` or ``x(2, *)`` is the
+    storage from that element to the end in column-major order. There is no
+    slice of a rank-2 array that spells it, so the runtime hands the callee
+    ``_f_seq_tail`` -- a view of a Fortran-contiguous actual -- and hands
+    the callee's array back whole to ``_f_seq_tail_out``, which writes it
+    onto the storage unless it is that view already; the whole matrix to
+    ``x(*)`` is the same thing from position 0. Every such call was refused
+    as "only a view when both are rank-1", which deferred every block that
+    recovers a matrix row."""
+    statements, nodes = build(sources["emit_mod"], "calls")
+    start = "(2 - 1) + (j - 1) * 1 * np.size(m2, 0)"
+    assert statements.render(pick(nodes, f03.Call_Stmt, 16), 1) == [
+        f"    _f_seq_tail_out(m2, {start}, tailv(_f_seq_tail(m2, {start})))"
+    ]
+    assert statements.render(pick(nodes, f03.Call_Stmt, 17), 1) == [
+        f"    _f_seq_tail_out(m2, {start}, tailm(_f_seq_tail(m2, {start}, 2)))"
+    ]
+    assert statements.render(pick(nodes, f03.Call_Stmt, 18), 1) == [
+        "    _f_seq_tail_out(m2, 0, tailv(_f_seq_tail(m2, 0)))"
+    ]
+    assignments = [n for n in nodes if isinstance(n, f03.Assignment_Stmt)]
+    assert statements.render(assignments[-1], 1) == [f"    s = tail_norm(_f_seq_tail(m2, {start}))"]
 
 
 def test_a_reshape_reads_the_callee_s_bound_in_whatever_case_it_was_written(
@@ -1019,7 +1206,7 @@ def test_a_reshape_reads_the_callee_s_bound_in_whatever_case_it_was_written(
     actual it passed."""
     statements, nodes = build(sources["emit_mod"], "calls")
     assert statements.render(pick(nodes, f03.Call_Stmt, 10), 1) == [
-        "    spread_it(2, j, np.reshape(flat, (2, j,), order='F'))"
+        "    spread_it(2, j, np.reshape(flat[:(2) * (j)], (2, j,), order='F'))"
     ]
 
 
@@ -1051,17 +1238,58 @@ def test_a_companion_generic_dispatches_to_its_specific(sources: dict[str, Path]
     assert statements.render(nodes[1], 1) == ["    s = _sib.rise(s)"]
 
 
+def test_a_companion_function_reference_binds_its_actuals_by_formal(
+    sources: dict[str, Path],
+) -> None:
+    """Sequence association reaches a sibling's function too: ``ddot(n,
+    w(i4), 1, w(iff), 1)`` into a translated BLAS is bound to ``dx(*)`` and
+    ``dy(*)`` the way a call to a procedure of this file is, so the callee
+    gets the tail of the array and not two scalars to subscript."""
+    sibling = interface.extract(sources["sibling_mod"], kind_assumptions=KINDS)
+    remotes = {s["name"]: Remote("_sib", s["name"]) for s in sibling["subprograms"]}
+    statements, nodes = build(
+        sources["caller_mod"], "drive", companions=(sibling,), remotes=remotes
+    )
+    assert statements.render(nodes[2], 1) == ["    s = _sib.tail_sum(2, a[(I_3 - 1):])"]
+
+
 # --- I/O and control ---------------------------------------------------------
 
 
-def test_writes_split_on_whether_dataflow_survives(sources: dict[str, Path]) -> None:
-    """A log write carries nothing a differential can compare; an internal
-    write assigns to a character variable, which is real dataflow."""
+def test_writes_split_on_where_the_records_go(sources: dict[str, Path]) -> None:
+    """Three destinations, three translations. ``write(*, ...)`` is a log and
+    stays the stub it has always been; an INTERNAL write assigns a character
+    variable; a write to a unit an OPEN here connected to a file puts records
+    in that file, which for a subprogram whose only product is the file is the
+    whole translation (see the ADVANCE= test below)."""
     statements, nodes = build(sources["emit_mod"], "io")
-    assert statements.render(nodes[0], 1) == ["    pass  # write(*,...) log — no dataflow"]
-    assert statements.render(nodes[1], 1) == ["    line = _f_list_write(s, a[0])"]
+    assert statements.render(nodes[1], 1) == ["    pass  # write(*,...) log — no dataflow"]
+    assert statements.render(nodes[2], 1) == ["    line = _f_list_write(s, a[0])"]
     with pytest.raises(REFUSED):
-        statements.render(nodes[2], 1)  # iostat= is control flow, not logging
+        statements.render(nodes[3], 1)  # iostat= is control flow, not logging
+
+
+def test_a_read_with_pos_seeks_before_it_reads(sources: dict[str, Path]) -> None:
+    """POS= is stream access: where in the file the values start, counted in
+    bytes from one. Refusing it deferred the one statement that says where a
+    program's header ended and its binary payload began."""
+    statements, nodes = build(sources["emit_mod"], "io")
+    assert statements.render(nodes[4], 1) == [
+        "    _, ccode = _f_read(u, None, [('str', None, 1)], pos=(offset - 1))"
+    ]
+
+
+def test_a_non_advancing_write_carries_advance_to_the_runtime(
+    sources: dict[str, Path],
+) -> None:
+    """ADVANCE='no' says the record does not end here, which is a property of
+    the file the statement writes -- so it is carried to ``_f_write`` rather
+    than refused. An *internal* write has one record and nowhere to put it,
+    so ADVANCE= is refused there instead."""
+    statements, nodes = build(sources["emit_mod"], "io")
+    assert statements.render(nodes[5], 1) == ["    _f_write(u, '(a1)', [ccode], advance='no')"]
+    with pytest.raises(REFUSED):
+        statements.render(nodes[6], 1)
 
 
 def test_return_carries_the_out_arguments(sources: dict[str, Path]) -> None:
@@ -1230,25 +1458,55 @@ def test_error_stop_ends_the_program_the_way_stop_does(sources: dict[str, Path])
     assert statements.render(node, 1) == ["    raise SystemExit(\"'nothing to do'\")  # ERROR STOP"]
 
 
-def test_file_positioning_carries_no_dataflow(sources: dict[str, Path]) -> None:
-    """REWIND and BACKSPACE move a file pointer and write no variable, so
-    there is nothing for a read/write gate to compare and nothing lost by
-    dropping them -- the same reading OPEN and CLOSE already get."""
+def test_file_positioning_moves_the_position_a_later_read_reads(
+    sources: dict[str, Path],
+) -> None:
+    """REWIND and BACKSPACE write no variable, but the position they move is
+    what the next READ reads from -- a stub left the loop that rewinds and
+    re-reads a file reading the same records twice -- and the unit they name
+    is a read the gate compares."""
     statements, nodes = build(sources["emit_mod"], "io_edges")
-    assert statements.render(pick(nodes, f03.Rewind_Stmt), 1) == ["    pass  # REWIND (I/O stub)"]
-    assert statements.render(pick(nodes, f03.Backspace_Stmt), 1) == [
-        "    pass  # BACKSPACE (I/O stub)"
+    assert statements.render(pick(nodes, f03.Rewind_Stmt), 1) == ["    _f_rewind(u)"]
+    assert statements.render(pick(nodes, f03.Backspace_Stmt), 1) == ["    _f_backspace(u)"]
+
+
+def test_the_connection_statements_carry_their_writes(sources: dict[str, Path]) -> None:
+    """``newunit=`` is where OPEN puts the unit it allocated, and a stub left
+    it at whatever it held; CLOSE names a unit and nothing else."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    assert statements.render(pick(nodes, f03.Open_Stmt), 1) == [
+        "    _, u2 = _f_open(None, name, status='old')"
+    ]
+    assert statements.render(pick(nodes, f03.Close_Stmt), 1) == ["    _f_close(u)"]
+
+
+def test_inquire_assigns_every_specifier_it_can_answer(sources: dict[str, Path]) -> None:
+    """Where the pipeline this was migrated from renders INQUIRE as ``pass``:
+    ``opened=ok`` writes ``ok``, and a ``pass`` leaves it at whatever it held
+    while the read/write gate is told nothing happened. A specifier the
+    runtime cannot answer is still refused, by name."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    inquires = [n for n in nodes if isinstance(n, f03.Inquire_Stmt)]
+    assert statements.render(inquires[0], 1) == ["    ok = _f_inquire(u, None, 'opened')"]
+    with pytest.raises(REFUSED, match="ENCODING="):
+        statements.render(inquires[1], 1)
+
+
+def test_read_unpacks_its_item_list_and_its_iostat(sources: dict[str, Path]) -> None:
+    """A READ writes every item in its list, so the translation is the
+    assignment those writes make -- with IOSTAT= in front of them, because a
+    statement that asks for the status does not abort on a bad record."""
+    statements, nodes = build(sources["emit_mod"], "io_edges")
+    assert statements.render(pick(nodes, f03.Read_Stmt), 1) == [
+        "    ios, x = _f_read(u, None, [('float64', None, None)], strict=False)"
     ]
 
 
-def test_inquire_is_refused_because_its_specifiers_are_writes(sources: dict[str, Path]) -> None:
-    """The one I/O statement in this group that is not a stub, and where the
-    pipeline this was migrated from differs: it renders INQUIRE as ``pass``.
-    ``opened=ok`` writes ``ok``, and a ``pass`` leaves it at whatever it held
-    while the read/write gate is told nothing happened."""
+def test_print_reads_its_item_list(sources: dict[str, Path]) -> None:
+    """A ``pass`` told the read/write gate that a statement reading ``x`` read
+    nothing."""
     statements, nodes = build(sources["emit_mod"], "io_edges")
-    with pytest.raises(REFUSED, match="OPENED="):
-        statements.render(pick(nodes, f03.Inquire_Stmt), 1)
+    assert statements.render(pick(nodes, f03.Print_Stmt), 1) == ["    _f_print(None, x)"]
 
 
 def test_a_data_implied_do_is_expanded_in_definition_order(sources: dict[str, Path]) -> None:
