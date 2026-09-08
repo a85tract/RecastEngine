@@ -401,12 +401,16 @@
   },
   "fftpack": {
    "bare_files": 50,
-   "blocks": 24,
-   "deferred": 12,
+   "blocks": 20,
+   "deferred": 16,
    "refusals": [
     [
+     "array of declared type 'X': no NumPy dtype spells it",
+     8
+    ],
+    [
      "call to external subroutine 'X'",
-     12
+     8
     ]
    ],
    "status": "failed",
@@ -465,7 +469,7 @@
      }
     },
     "fortran:fftpack_fft": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -478,11 +482,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/3 blocks disagree: fft_rk/B001",
+       "detail": "1/2 blocks disagree: fft_rk/B001",
        "metrics": {
-        "blocks_checked": 3,
-        "blocks_deferred": 2,
-        "blocks_matched": 2,
+        "blocks_checked": 2,
+        "blocks_deferred": 3,
+        "blocks_matched": 1,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -518,7 +522,7 @@
      }
     },
     "fortran:fftpack_ifft": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -531,11 +535,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/3 blocks disagree: ifft_rk/B001",
+       "detail": "1/2 blocks disagree: ifft_rk/B001",
        "metrics": {
-        "blocks_checked": 3,
-        "blocks_deferred": 2,
-        "blocks_matched": 2,
+        "blocks_checked": 2,
+        "blocks_deferred": 3,
+        "blocks_matched": 1,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -571,7 +575,7 @@
      }
     },
     "fortran:fftpack_irfft": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -584,11 +588,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/3 blocks disagree: irfft_rk/B001",
+       "detail": "1/2 blocks disagree: irfft_rk/B001",
        "metrics": {
-        "blocks_checked": 3,
-        "blocks_deferred": 2,
-        "blocks_matched": 2,
+        "blocks_checked": 2,
+        "blocks_deferred": 3,
+        "blocks_matched": 1,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -597,7 +601,7 @@
      }
     },
     "fortran:fftpack_rfft": {
-     "deferred": 2,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -610,11 +614,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/3 blocks disagree: rfft_rk/B001",
+       "detail": "1/2 blocks disagree: rfft_rk/B001",
        "metrics": {
-        "blocks_checked": 3,
-        "blocks_deferred": 2,
-        "blocks_matched": 2,
+        "blocks_checked": 2,
+        "blocks_deferred": 3,
+        "blocks_matched": 1,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -653,8 +657,8 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 497,
-   "deferred": 105,
+   "blocks": 494,
+   "deferred": 108,
    "refusals": [
     [
      "call to external subroutine 'X'",
@@ -667,6 +671,10 @@
     [
      "READ writes its item list; an I/O stub would drop the writes",
      8
+    ],
+    [
+     "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
+     3
     ],
     [
      "goto N is not a loop-exit pattern",
@@ -885,7 +893,7 @@
      }
     },
     "fortran:special": {
-     "deferred": 16,
+     "deferred": 19,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -898,11 +906,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/95 blocks disagree: bessel_j0_zeros/B001, spherical_bessel_jn_zeros/B001",
+       "detail": "2/92 blocks disagree: bessel_j0_zeros/B001, spherical_bessel_jn_zeros/B001",
        "metrics": {
-        "blocks_checked": 95,
-        "blocks_deferred": 16,
-        "blocks_matched": 93,
+        "blocks_checked": 92,
+        "blocks_deferred": 19,
+        "blocks_matched": 90,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -2508,9 +2516,13 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 436,
-   "deferred": 9,
+   "blocks": 416,
+   "deferred": 31,
    "refusals": [
+    [
+     "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
+     20
+    ],
     [
      "call to external subroutine 'X'",
      2
@@ -2521,6 +2533,14 @@
     ],
     [
      "rpoly/P002: local parameter sinr (literal 'X' was never hoisted, so it has no name to emit",
+     1
+    ],
+    [
+     "cmplx_roots_gen/P001: local parameter zero (cmplx(x, y): the two-part form is not spelled;",
+     1
+    ],
+    [
+     "cmplx_roots_gen/P002: local parameter c_one (cmplx(x, y): the two-part form is not spelled",
      1
     ],
     [
@@ -2547,7 +2567,7 @@
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 9,
+     "deferred": 31,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2560,11 +2580,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "37/436 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
+       "detail": "37/416 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
        "metrics": {
-        "blocks_checked": 436,
-        "blocks_deferred": 9,
-        "blocks_matched": 399,
+        "blocks_checked": 416,
+        "blocks_deferred": 31,
+        "blocks_matched": 379,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -2870,12 +2890,16 @@
   },
   "specfun": {
    "bare_files": 0,
-   "blocks": 1588,
-   "deferred": 21,
+   "blocks": 1576,
+   "deferred": 33,
    "refusals": [
     [
      "goto N is not a loop-exit pattern",
      20
+    ],
+    [
+     "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
+     12
     ],
     [
      "DATA value Name: gamma",
@@ -2885,7 +2909,7 @@
    "status": "failed",
    "units": {
     "fortran:specfun_module": {
-     "deferred": 21,
+     "deferred": 33,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2898,11 +2922,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "27/1588 blocks disagree: jy01a/B004, jynbh/B004, chgm/B011, itairy/B005, cjynb/B006 (+22 more)",
+       "detail": "26/1576 blocks disagree: jy01a/B004, jynbh/B004, itairy/B005, cjynb/B006, cy01/B008 (+21 more)",
        "metrics": {
-        "blocks_checked": 1588,
-        "blocks_deferred": 21,
-        "blocks_matched": 1561,
+        "blocks_checked": 1576,
+        "blocks_deferred": 33,
+        "blocks_matched": 1550,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
