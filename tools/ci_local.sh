@@ -286,13 +286,15 @@ case " $WANTED " in
     *" test "*) echo "note: the test matrix is [$MATRIX_ALL]; only $MATRIX_PYTHON ran here." ;;
 esac
 
-# The port summary is committed but deliberately not gated on, so a change in
-# it must be visible without being fatal. See ci.yml's port-spine job.
-if ! git diff --quiet -- examples/toy_physics/port-verification.json 2>/dev/null; then
-    echo "note: examples/toy_physics/port-verification.json changed in the working tree."
-    echo "      ULP counts are not device-independent, so this is a question rather"
-    echo "      than a failure. git diff it, and decide."
-fi
+# The port summaries are committed but deliberately not gated on, so a change
+# in one must be visible without being fatal. See ci.yml's port-spine job.
+for summary in corpus/*/port-verification.json; do
+    if ! git diff --quiet -- "$summary" 2>/dev/null; then
+        echo "note: $summary changed in the working tree."
+        echo "      ULP counts are not device-independent, so this is a question rather"
+        echo "      than a failure. git diff it, and decide."
+    fi
+done
 
 if [ -n "$failed" ]; then
     echo "FAILED:$failed"
