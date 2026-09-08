@@ -1,0 +1,51 @@
+{
+  "target": "tree",
+  "units": [
+    "fortran:xp2_solve"
+  ],
+  "stages": {
+    "fortran": {
+      "buffer_out_arrays": "all"
+    },
+    "differential.bitexact": {
+      "trials": 5,
+      "dims": {
+        "nzm": 7,
+        "ngrdcol": 3,
+        "sclr_dim": 2
+      },
+      "ranges": {
+        "dt": [
+          1.0,
+          60.0
+        ],
+        "invrs_tau": [
+          0.001,
+          0.05
+        ],
+        "rtm": [
+          0.001,
+          0.02
+        ],
+        "rtp2": [
+          0.0,
+          0.0001
+        ],
+        "c2rt": [
+          0.5,
+          2.0
+        ],
+        "sclrp2": [
+          0.0,
+          0.0001
+        ]
+      }
+    },
+    "translate.tree": {
+      "constant_modules": [
+        "clubb_precision",
+        "constants_clubb"
+      ]
+    }
+  }
+}

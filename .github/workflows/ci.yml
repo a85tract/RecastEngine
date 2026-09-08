@@ -134,6 +134,11 @@ jobs:
       # engine's own suite stayed green.
       - run: uv run --extra fortran --extra translate --extra verify recast run translate corpus/elm_leaf --config corpus/elm_leaf/recast.json --summary corpus/elm_leaf/verification.json
       - run: git diff --exit-code corpus/elm_leaf/verification.json
+      # The shapes CLUBB's variance step hands its solver: a rank-2 array to
+      # a rank-3 dummy by sequence association, and an OUT array sized by a
+      # module constant.
+      - run: uv run --extra fortran --extra translate --extra verify recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json --summary corpus/clubb_solve/verification.json
+      - run: git diff --exit-code corpus/clubb_solve/verification.json
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.

@@ -142,12 +142,13 @@ static check passes, and for most cases it does not yet.
 
 ## The trees shipped in-tree
 
-Beside the submodules, three source trees live here directly, small enough
+Beside the submodules, four source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
 config beside it; `elm_leaf/`, four modules written the way the E3SM Land
-Model writes its biogeophysics and the framework modules under it; and
-`probe_kernel/`,
+Model writes its biogeophysics and the framework modules under it;
+`clubb_solve/`, three modules in the shape of CLUBB's variance step and
+the tridiagonal solver under it; and `probe_kernel/`,
 two scripts standing in for an instrumented C kernel (its own README says
 how). They are the public form of the check the roadmap names: the recipe
 has to work *here*, on sources anyone can read, not only on the private
@@ -171,6 +172,26 @@ the way the ELM extension's conventions declare them:
         --summary corpus/elm_leaf/verification.json
     recast run port corpus/elm_leaf --config corpus/elm_leaf/port.json \
         --summary corpus/elm_leaf/port-verification.json
+
+`clubb_solve/` exists for the same reason, on the cloud side. Its
+`xp2_solve` is written the way CLUBB's `advance_xp2_xpyp_module` is: a
+public driver, a private routine that assembles a tridiagonal system into
+`(ngrdcol, nzm)` locals, and a solver whose dummies are one rank higher --
+`rhs(ngrdcol, nzm, nrhs)`, the solution likewise -- so the call hands a
+rank-2 array to a rank-3 dummy by sequence association, INOUT in and OUT
+back, with the band layout (`ndiags3`, the diagonal positions) read from a
+constants module and sizing an OUT array. The NumPy translation spells the
+actual as the first `ngrdcol * nzm * nrhs` cells of the array flattened in
+column-major order; the port to JAX once could not read that spelling
+back, dropped the private routine's kernel without a note, left its caller
+calling a host function that does not exist, and sized the OUT array by
+its own unbound shape -- each while the engine's suite and the ELM tree
+stayed green. Both recipes run over it in CI:
+
+    recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json \
+        --summary corpus/clubb_solve/verification.json
+    recast run port corpus/clubb_solve --config corpus/clubb_solve/port.json \
+        --summary corpus/clubb_solve/port-verification.json
 
     recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
         --summary corpus/toy_physics/verification.json
