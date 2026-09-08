@@ -1839,7 +1839,10 @@ def _written_or_escaping(
 
     A name is here if it is assigned to, if it controls a DO, if a READ fills
     it or a WRITE takes it as the internal unit, if an ALLOCATE, DEALLOCATE,
-    NULLIFY or INQUIRE names it, if an ASSOCIATE takes it as a selector -- or
+    NULLIFY or INQUIRE names it, if an ASSOCIATE takes it as a selector and
+    the associate-name is itself here (the alias is the selector: a body that
+    only reads ``a`` in ``associate (a => x%c)`` reads ``x``; one that assigns
+    ``a`` or hands it to a writer changes ``x``, #49) -- or
     if it is handed to something that might write it: a CALL, a function
     reference, or a parenthesised reference whose base is not a variable this
     scope declares. An intrinsic never writes its argument and a subscript of
@@ -1905,6 +1908,15 @@ def _written_or_escaping(
             return leftmost(item)
         return None
 
+    # (associate-name, the variable its selector is rooted in): the alias is
+    # a variable of the construct, and the selector escapes with it.
+    aliases = [
+        (str(association.children[0]).lower(), leftmost(association.children[2]))
+        for association in walk(exec_part, f03.Association)
+    ]
+    if variables is not None and aliases:
+        variables = variables | {alias for alias, _ in aliases}
+
     for assignment in walk(exec_part, (f03.Assignment_Stmt, f03.Pointer_Assignment_Stmt)):
         name = leftmost(assignment.children[0])
         if name:
@@ -1932,10 +1944,6 @@ def _written_or_escaping(
             key, value = spec.children
             if key in (None, "UNIT") and isinstance(value, f03.Name):
                 escaping.add(str(value).lower())
-    for association in walk(exec_part, f03.Association):
-        name = leftmost(association.children[2])
-        if name:
-            escaping.add(name)
     for call in walk(exec_part, f03.Call_Stmt):
         callee = leftmost(call.children[0]) or ""
         arguments = call.children[1]
@@ -1969,6 +1977,16 @@ def _written_or_escaping(
             continue
         for name in walk(reference.children[1], f03.Name):
             escaping.add(str(name).lower())
+    # A selector escapes exactly when its associate-name does; a selector
+    # that is itself an alias (``associate (b => a(1:2))`` under
+    # ``associate (a => x)``) carries it one association further.
+    changed = True
+    while changed:
+        changed = False
+        for alias, root in aliases:
+            if root is not None and alias in escaping and root not in escaping:
+                escaping.add(root)
+                changed = True
     return escaping
 
 

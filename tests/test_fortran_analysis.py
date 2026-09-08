@@ -1762,6 +1762,52 @@ def test_an_associate_binds_its_aliases_and_analyses_its_body(tmp_path: Path) ->
     assert "cp" not in block["reads"]
 
 
+def test_an_associate_that_only_reads_its_selector_reads_it(tmp_path: Path) -> None:
+    """numfor's ``csplint`` has an internal function whose whole use of the
+    host's ``csp`` is ``associate (A => csp%S(4, :))`` and a read of ``A``;
+    the selector counted as a write of ``csp``, and a function reference
+    cannot carry a host write back, so the block was refused (#49). The
+    alias is the selector: a body that only reads the alias reads the
+    variable, and the read-only pass can prove ``intent(in)``; one that
+    assigns the alias, or hands it to a dummy the callee writes, changes it,
+    through as many associations as the alias is passed through."""
+    from recast.fortran import interface
+
+    source = """\
+module assoc_intent
+  implicit none
+  type :: table
+    real :: s(4, 8)
+  end type table
+contains
+  subroutine bump(v)
+    real, intent(inout) :: v(:)
+    v = v + 1.0
+  end subroutine bump
+  function total(csp, i, seen, edited, handed, twice) result(y)
+    type(table), intent(in) :: csp
+    integer, intent(in) :: i
+    real :: seen(8), edited(8), handed(8), twice(8)
+    real :: y
+    associate (a => csp%s(4, :), b => seen, c => edited, d => handed, e => twice)
+      y = a(i) + b(i)
+      c(i) = y
+      call bump(d)
+      associate (f => e(1:2))
+        f(1) = y
+      end associate
+    end associate
+  end function total
+end module assoc_intent
+"""
+    record = interface.extract(_write(tmp_path, "assoc_intent.f90", source), kind_assumptions=KINDS)
+    intents = {a["name"]: a["intent"] for a in record["subprograms"][1]["args"]}
+    assert intents["seen"] == "IN"  # only read, through its alias
+    assert intents["edited"] != "IN"  # assigned through its alias
+    assert intents["handed"] != "IN"  # handed through its alias to an intent(inout) dummy
+    assert intents["twice"] != "IN"  # assigned through an alias of its alias
+
+
 REBASED_COMPONENT = """\
 module con_mod
   use precision_mod, only: r8 => wp_r8
