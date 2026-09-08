@@ -1,0 +1,31 @@
+{
+  "target": "tree",
+  "units": [
+    "fortran:leaf_layers"
+  ],
+  "stages": {
+    "differential.bitexact": {
+      "trials": 5,
+      "dims": {
+        "np": 6
+      },
+      "ranges": {
+        "t_veg": [
+          250.0,
+          310.0
+        ],
+        "nrad": [
+          0.5,
+          4.5
+        ]
+      }
+    },
+    "translate.tree": {
+      "constant_modules": [
+        "shr_kind_mod",
+        "shr_const_mod",
+        "elm_varcon"
+      ]
+    }
+  }
+}

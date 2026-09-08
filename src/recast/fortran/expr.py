@@ -20,6 +20,7 @@ raises ``UnsupportedExpression`` rather than being approximated.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -193,6 +194,45 @@ def build(
     raise UnsupportedExpression(f"unsupported initializer node {type(node).__name__}: {node}")
 
 
+def _kind_value(fname: str, spec: Any, kinds: Mapping[str, str] | None) -> Expr:
+    """A kind inquiry as the integer it is: ``selected_real_kind(12)`` (or
+    ``p=12``) is gfortran's 8 for ``p >= 10`` and 4 otherwise,
+    ``selected_int_kind(n)`` the smallest of 2/4/8 holding ``10**n``, and
+    ``kind(literal)`` the literal's. The value is referenceable at runtime
+    (``if (kind(x) /= r8)``) and is what the in-tree classifier has always
+    folded it to; a kinds module resolved as a constants module reaches
+    here, and refusing it refused every constant downstream.
+    """
+    items = list(spec.items) if spec is not None else []
+    if len(items) != 1:
+        raise UnsupportedExpression(f"{fname} with {len(items)} arguments in an initializer")
+    item = items[0]
+    text = str(item).strip()
+    keyword: str | None = None
+    if isinstance(item, f03.Actual_Arg_Spec):
+        keyword = str(item.children[0]).lower()
+        text = str(item.children[1]).strip()
+    if fname == "selected_real_kind":
+        if keyword not in (None, "p") or not re.fullmatch(r"\d+", text):
+            raise UnsupportedExpression(f"selected_real_kind({spec}) is not a precision")
+        return Expr("int", "8" if int(text) >= 10 else "4", dtype="int")
+    if fname == "selected_int_kind":
+        if keyword not in (None, "r") or not re.fullmatch(r"\d+", text):
+            raise UnsupportedExpression(f"selected_int_kind({spec}) is not a range")
+        n = int(text)
+        return Expr("int", "2" if n <= 4 else ("4" if n <= 9 else "8"), dtype="int")
+    if keyword is not None:
+        raise UnsupportedExpression(f"kind({spec}) with a keyword")
+    if re.fullmatch(r"[-+]?\d+", text):
+        return Expr("int", "4", dtype="int")
+    if re.match(r"[-+]?(\d+\.\d*|\.\d+|\d+)", text):
+        width = {"float64": "8", "float32": "4"}.get(literal_kind(text, kinds) or "")
+        if width is None:
+            raise UnsupportedExpression(f"kind({text}): the literal's kind is not known")
+        return Expr("int", width, dtype="int")
+    raise UnsupportedExpression(f"kind({text}) of a name is not a value this fold knows")
+
+
 def _call(
     node: Any,
     kinds: Mapping[str, str] | None = None,
@@ -206,6 +246,8 @@ def _call(
     intrinsics listed take positional arguments in every initializer seen.
     """
     fname = str(node.children[0]).lower()
+    if fname in ("selected_real_kind", "selected_int_kind", "kind"):
+        return _kind_value(fname, node.children[1], kinds)
     if fname not in INTRINSICS:
         raise UnsupportedExpression(f"unsupported intrinsic in initializer: {node}")
     spec = node.children[1]
@@ -403,9 +445,18 @@ def fold_check(expr: Expr, declared: str | None) -> str:
             )
     reals32 = sum(1 for leaf in leaves if leaf.dtype == "float32")
     ints = sum(1 for leaf in leaves if leaf.dtype == "int")
-    lone = len(leaves) == 1 and expr.kind in REAL_LEAVES
+    bare = expr
+    while bare.kind in ("unary", "paren") and len(bare.args) == 1:
+        # ``-6.0`` and ``(0.7)``: a sign or parentheses around one value
+        # change no bits, so the value is as lone as the literal itself.
+        bare = bare.args[0]
+    lone = len(leaves) == 1 and bare.kind in REAL_LEAVES
     if declared == "int" or str(declared).startswith("complex"):
         return "int"  # no real storage rounding to apply; spelled as before
+    if declared == "str" or (leaves and all(leaf.kind == "str" for leaf in leaves)):
+        # A character constant -- ``namep = 'pft'`` -- is its text: there is
+        # no real width the compiler stores it at, so nothing to round.
+        return "as-is"
     if declared == "float64":
         if expr.dtype == "int":
             return "int"

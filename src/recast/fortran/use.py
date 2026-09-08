@@ -36,7 +36,8 @@ class UnresolvedConstant(RecastError):
 def harvest(path: Path) -> dict[str, tuple[Any, int | None, str | None, str | None]]:
     """``name -> (initializer node, line, declared base type, kind spelling)``
     for module-level initialized entities; the base type is ``real``, ``int``
-    or ``None``, the kind spelling ``r8`` / ``8`` / ``None`` for the default.
+    ``str`` or ``None``, the kind spelling ``r8`` / ``8`` / ``None`` for the
+    default.
 
     Covers parameters and initialized ``save``/``protected`` variables alike: a
     constant that a physics module reads is a constant whether or not the
@@ -65,6 +66,7 @@ def harvest(path: Path) -> dict[str, tuple[Any, int | None, str | None, str | No
                 "DOUBLE PRECISION": "real",
                 "INTEGER": "int",
                 "COMPLEX": "complex",
+                "CHARACTER": "str",
             }.get(base)
             kind_spelling_ = kind_spelling(type_text, base)
             for ent in walk(decl, f03.Entity_Decl):
@@ -148,7 +150,9 @@ def declared_dtype(
     A complex is two reals of one kind and reads as ``complex128`` or
     ``complex64`` by that kind; the default complex is single, like the
     default real."""
-    if declared == "int":
+    if declared in ("int", "str"):
+        # No real width to place: an integer's storage is exact, and a
+        # character constant is its text.
         return declared
     if declared not in ("real", "complex"):
         return None
@@ -171,9 +175,9 @@ def resolve(
 
     Returns one record per constant: ``name``, its ``expr`` tree (every node
     typed by kind), the ``source`` it was found in, its ``line``, its
-    declared base type (``dtype``: ``real`` / ``int``), the dtype of its
-    declared kind (``kind_dtype``: ``float64`` / ``float32`` / ``int`` /
-    ``None``), and whether it was ``requested`` or pulled in transitively.
+    declared base type (``dtype``: ``real`` / ``int`` / ``str``), the dtype
+    of its declared kind (``kind_dtype``: ``float64`` / ``float32`` / ``int``
+    / ``str`` / ``None``), and whether it was ``requested`` or pulled in transitively.
     Order is safe to emit or evaluate top to bottom. ``kind_assumptions``
     names the kinds the sources use but do not define.
 
