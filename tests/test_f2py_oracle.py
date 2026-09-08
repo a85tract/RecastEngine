@@ -1982,7 +1982,7 @@ end module cplx_mod
 """
 
 
-@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+@pytest.mark.skipif(GFORTRAN is None or not MESON, reason="needs gfortran and meson")
 def test_a_complex_valued_subprogram_is_compared_on_both_parts(tmp_path: Path) -> None:
     """A complex result or argument was ``unsupported declared dtype(s)`` and
     left uncompared, while the emitter built it as float64 (#20). Complex
