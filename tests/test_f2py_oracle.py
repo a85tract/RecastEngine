@@ -1982,7 +1982,7 @@ end module cplx_mod
 """
 
 
-@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+@pytest.mark.skipif(GFORTRAN is None or not MESON, reason="needs gfortran and meson")
 def test_a_complex_valued_subprogram_is_compared_on_both_parts(tmp_path: Path) -> None:
     """A complex result or argument was ``unsupported declared dtype(s)`` and
     left uncompared, while the emitter built it as float64 (#20). Complex
@@ -2031,7 +2031,7 @@ end module below_mod
 """
 
 
-@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+@pytest.mark.skipif(GFORTRAN is None or not MESON, reason="needs gfortran and meson")
 def test_a_reference_reading_outside_its_array_declines_the_draw_by_name(tmp_path: Path) -> None:
     """A subscript outside the array is not a value the source computes: the
     reference reads whatever memory sits beside the buffer in its process,
@@ -2076,7 +2076,7 @@ end module stopper_mod
 """
 
 
-@pytest.mark.skipif(GFORTRAN is None, reason="needs gfortran")
+@pytest.mark.skipif(GFORTRAN is None or not MESON, reason="needs gfortran and meson")
 def test_an_error_stop_in_the_reference_is_a_report_not_a_dead_run(tmp_path: Path) -> None:
     """``error stop`` in the compiled reference is ``exit()`` in whatever
     process imported it: no report, no summary, every other unit's verdict

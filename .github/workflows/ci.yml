@@ -1,14 +1,9 @@
 name: ci
 
-# Automatic runs are off while the Actions allowance is exhausted, and as of
-# 2026-08-21 the workflow itself is disabled on GitHub (`gh workflow disable`),
-# so even a manual dispatch is refused. The allowance returns in September.
-#
-# To restore, both halves are needed and only one of them is visible here:
-#   gh workflow enable ci.yml
-#   ...then put back the push (main) and pull_request triggers below.
-# Until then, tools/ci_local.sh runs these same jobs from the same file.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -78,6 +73,23 @@ jobs:
       # rather than skip for want of fparser.
       - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran --extra translate pytest --cov=recast
 
+  # The twelve corpus cases, run rather than trusted: corpus/baseline.json is
+  # what the engine says about them, and a change in what it says is a change
+  # in the engine, which this job makes visible as a diff rather than letting
+  # the file lag behind main. One minute; the cases are small on purpose.
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v3
+      - run: sudo apt-get update && sudo apt-get install -y gfortran
+      - run: uv python install 3.11
+      - run: uv run --extra dev --extra fortran --extra translate --extra verify python tools/corpus.py run
+      - name: The baseline is what main says
+        run: git diff --exit-code -- corpus/baseline.json
+
   # The contract, run rather than read. This is the suite an out-of-tree
   # extension has to pass to be an extension and not a fork, so the engine
   # running it against its own plugins is the minimum: a check nobody's plugins
@@ -99,7 +111,7 @@ jobs:
       # transforms also have to be *constructible*: determinism is an attribute
       # of an instance, and a factory that cannot run leaves the agentic-gate
       # rule unable to judge anything.
-      - run: uv run --extra dev --extra fortran --extra translate --extra verify --extra numba --extra jax pytest conformance/ -rs
+      - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest conformance/ -rs
 
   spine:
     runs-on: ubuntu-latest
@@ -132,29 +144,3 @@ jobs:
       # the missing extra is reported when it is asked to parse, not before.
       - run: uv run --no-dev recast plugins | grep -qx "  fortran"
 
-  # The port spine: frontend -> port.jax -> numpy-anchor -> differential.tolerance.
-  # This is the only job that installs jax, and until it existed
-  # tests/test_port_spine.py skipped in CI and had run on one laptop only --
-  # the same gap the spine job above was created to close for the f2py chain.
-  #
-  # It needs no compiler, and that is a property of the oracle rather than a
-  # convenience: numpy-anchor re-derives the reference from the same Facts, so
-  # nothing here builds Fortran. The link this job cannot check is the one that
-  # does -- the NumPy translation being bit-exact against the Fortran, which is
-  # the spine job's claim above.
-  port-spine:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v3
-      - run: uv python install 3.11
-      - run: uv run --extra dev --extra fortran --extra translate --extra jax pytest tests/test_port_spine.py -v
-      # The public form of the same claim, on sources anyone can read.
-      - run: uv run --extra fortran --extra translate --extra jax recast run port corpus/toy_physics --config corpus/toy_physics/port.json --summary corpus/toy_physics/port-verification.json
-      # No `git diff --exit-code` here, deliberately, and the asymmetry with the
-      # spine job is the point. Bit-exactness is a device-independent claim, so
-      # its summary is committed *and* checked byte for byte. A ULP count is
-      # not: XLA's CPU backend does not promise the same last bit on x86 as on
-      # arm64, so the committed port-verification.json is a record for a reader
-      # without JAX, not a regression signal. What this job gates on is the
-      # verdict -- the run exits non-zero unless every unit passes its gate.

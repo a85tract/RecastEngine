@@ -2,7 +2,7 @@
 
 ```console
 $ recast doctor
-recast 0.0.1.dev0  python 3.11.16
+recast 0.0.1  python 3.11.16
 ```
 
 `doctor` then prints the live plugin count and registry inventory. The count is
