@@ -17,7 +17,10 @@
 ! result into a rank-2 slab. The anchor holds the scalar loop's bounds in
 ! temporaries set beside the loop, and the kernel read them before the
 ! branch. An OUT array whose leading extent is a module constant was sized
-! by its own shape, a name the kernel never receives.
+! by its own shape, a name the kernel never receives. The gate handed the
+! driver's OUT array (the tendency, every OUT array being the caller's
+! buffer under CLUBB's convention) to the f2py reference, whose wrapper
+! sizes and returns it, as one keyword argument more than it takes.
 !
 ! The solver reads its solution back to flip it, as CLUBB's does, so the
 ! caller's storage is what it writes; and the tree is read under CLUBB's
@@ -35,7 +38,7 @@ module xp2_solve
 contains
 
   subroutine advance_xp2( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, invrs_tau, rtm, &
-                          rtp2, sclrp2, n_solved )
+                          rtp2, sclrp2, n_solved, rtp2_tndcy )
     integer, intent(in) :: nzm, ngrdcol, sclr_dim
     integer, intent(out) :: n_solved
     real( kind = core_rknd ), intent(in) :: dt
@@ -45,8 +48,22 @@ contains
     real( kind = core_rknd ), dimension(ngrdcol,nzm), intent(in) :: rtm
     real( kind = core_rknd ), dimension(ngrdcol,nzm), intent(inout) :: rtp2
     real( kind = core_rknd ), dimension(ngrdcol,nzm,sclr_dim), intent(inout) :: sclrp2
+    ! The step's tendency, a diagnostic the way CLUBB hands its own back.
+    real( kind = core_rknd ), dimension(ngrdcol,nzm), intent(out) :: rtp2_tndcy
+    real( kind = core_rknd ), dimension(ngrdcol,nzm) :: rtp2_old
+    integer :: i, k
+    do k = 1, nzm
+      do i = 1, ngrdcol
+        rtp2_old(i,k) = rtp2(i,k)
+      end do
+    end do
     call solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, invrs_tau, &
                                       rtm, rtp2, sclrp2, n_solved )
+    do k = 1, nzm
+      do i = 1, ngrdcol
+        rtp2_tndcy(i,k) = ( rtp2(i,k) - rtp2_old(i,k) ) / dt
+      end do
+    end do
   end subroutine advance_xp2
 
   subroutine solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, &
