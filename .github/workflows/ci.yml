@@ -128,6 +128,12 @@ jobs:
       # run on a clean machine concludes something else, the claim is stale --
       # which is exactly the failure the file exists to make visible.
       - run: git diff --exit-code corpus/toy_physics/verification.json
+      # The CESM-family shapes -- the kinds, constants and conventions the
+      # land and cloud extensions' trees are written in -- on a tree anyone
+      # can read. Every shape in it refused or misfolded once while the
+      # engine's own suite stayed green.
+      - run: uv run --extra fortran --extra translate --extra verify recast run translate corpus/elm_leaf --config corpus/elm_leaf/recast.json --summary corpus/elm_leaf/verification.json
+      - run: git diff --exit-code corpus/elm_leaf/verification.json
 
   # The core must stay importable and usable with zero optional dependencies.
   # If this breaks, a domain package has leaked into the engine.

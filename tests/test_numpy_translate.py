@@ -256,6 +256,26 @@ def test_an_integer_parameter_divides_the_way_fortran_does(tmp_path: Path) -> No
     assert namespace["HALF"] == 0.5
 
 
+def test_a_character_parameter_is_its_text(tmp_path: Path) -> None:
+    """``character(len=16), parameter :: namep = 'pft'`` -- ELM's
+    ``elm_varcon`` -- has no real width, and the fold check that learned to
+    refuse an unknown kind (3ba13ea) refused it: "declared kind None is not
+    one this fold knows the width of", failing every ELM unit."""
+    from recast.transform.numpy.constants import use_constants_module
+
+    (tmp_path / "ctl.f90").write_text(
+        "module ctl\n  implicit none\n  character(len=16), parameter :: namep = 'pft'\n"
+        "  real(8), parameter :: spval = 1.e36_8\nend module ctl\n"
+    )
+    resolved = resolve(["namep", "spval"], [tmp_path / "ctl.f90"])
+    assert next(r for r in resolved if r["name"] == "namep")["kind_dtype"] == "str"
+    text = use_constants_module(resolved, "ctl")
+    namespace: dict[str, object] = {}
+    exec(text, namespace)
+    assert namespace["NAMEP"] == "pft"
+    assert namespace["SPVAL"] == 1.0e36
+
+
 LOGICAL_ARRAYS = """\
 module valid_mod
   implicit none

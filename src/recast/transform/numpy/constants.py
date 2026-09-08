@@ -402,6 +402,10 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
         if storage == "single":
             single = value if value.startswith("np.float32(") else f"np.float32({value})"
             value = f"np.float64({single})"
+        if entry.get("dtype") == "int" and typed(entry["expr"], env) == "real":
+            # ``integer, parameter :: isecspday = secspday`` over a real:
+            # the assignment converts, truncating toward zero, as ``int`` does.
+            value = f"int({value})"
         env[entry["name"]] = entry.get("dtype") or typed(entry["expr"], env)
         where = f"{PurePath(entry['source']).name}:{entry['line']}"
         lines.append(f"{entry['name'].upper()} = {value}  # {where}")

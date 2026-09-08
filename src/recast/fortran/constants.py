@@ -401,6 +401,8 @@ def _kind_selector_dtype(stripped: list[str], kinds: Kinds) -> str | None:
     """
     head = stripped[0].lower()
     inner = [token for token in stripped[2:-1] if token.strip()]
+    if head == "selected_real_kind" and len(inner) == 3 and inner[0].lower() == "p":
+        inner = inner[2:]  # the keyword form, ``selected_real_kind( p=12 )``
     if head == "selected_real_kind" and len(inner) == 1 and re.fullmatch(r"\d+", inner[0]):
         return "float64" if int(inner[0]) >= 10 else "float32"
     if head == "kind" and len(inner) == 1:
@@ -836,7 +838,7 @@ def classify_init(
     arrays = set(array_names or ())
     e = init_expr.strip()
 
-    m = re.search(r"selected_real_kind\s*\(\s*(\d+)", e, re.I)
+    m = re.search(r"selected_real_kind\s*\(\s*(?:p\s*=\s*)?(\d+)", e, re.I)
     if m:
         # The kind value itself is referenceable at runtime (`if (kind /= r8)`).
         # gfortran: selected_real_kind(p >= 10) -> 8, otherwise 4.

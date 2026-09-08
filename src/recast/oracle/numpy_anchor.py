@@ -87,10 +87,15 @@ class NumpyAnchorOracle(Oracle):
         executor: Executor,
         config: dict[str, Any],
     ) -> OracleRef:
-        transform = REGISTRY.get("transform", ANCHOR_TRANSFORM)()
+        # ``anchor_transform`` names the translation the port was made from:
+        # the per-module one by default, ``translate.tree`` for a tree port.
+        # A port anchored on a translation other than its own would be judged
+        # against a module it never delegated to.
+        name = str(config.get("anchor_transform") or ANCHOR_TRANSFORM)
+        transform = REGISTRY.get("transform", name)()
         if not transform.applicable(unit, facts):
             raise OracleUnavailable(
-                f"{ANCHOR_TRANSFORM!r} cannot translate {unit.uid}, so there is no "
+                f"{name!r} cannot translate {unit.uid}, so there is no "
                 "validated NumPy module to anchor a port on"
             )
         anchor = transform.apply(unit, facts, config)

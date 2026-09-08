@@ -56,7 +56,7 @@ class UnknownOverride(RecastError):
     """
 
 
-KIND_FN_RE = re.compile(r"selected_real_kind\s*\(\s*(\d+)", re.I)
+KIND_FN_RE = re.compile(r"selected_real_kind\s*\(\s*(?:p\s*=\s*)?(\d+)", re.I)
 INT_KIND_FN_RE = re.compile(r"selected_int_kind\s*\(\s*(\d+)", re.I)
 KIND_OF_RE = re.compile(r"^kind\(([^)]*)\)$", re.I)
 INT_LITERAL_RE = re.compile(r"^[-+]?\d+$")

@@ -140,15 +140,37 @@ translation. The numbers that would say a translation is *right* -- the
 bit-exact gate against an f2py build of the same source -- come after the
 static check passes, and for most cases it does not yet.
 
-## The two trees shipped in-tree
+## The trees shipped in-tree
 
-Beside the submodules, two source trees live here directly, small enough
+Beside the submodules, three source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
-config beside it, and `probe_kernel/`, two scripts standing in for an
-instrumented C kernel (its own README says how). They are the public form
-of the check the roadmap names: the recipe has to work *here*, on sources
-anyone can read, not only on the private corpus it was migrated against.
+config beside it; `elm_leaf/`, four modules written the way the E3SM Land
+Model writes its biogeophysics and the framework modules under it; and
+`probe_kernel/`,
+two scripts standing in for an instrumented C kernel (its own README says
+how). They are the public form of the check the roadmap names: the recipe
+has to work *here*, on sources anyone can read, not only on the private
+corpus it was migrated against.
+
+`elm_leaf/` exists because the engine was green while every ELM unit was
+red. Its `shr_kind_mod`, `shr_const_mod` and `elm_varcon` carry the
+constant shapes ELM's tree has -- `selected_real_kind(12)` and the `p=12`
+form, a kind renamed through an integer parameter, a default-real literal
+stored in a double, a negative one, an integer parameter set from a real,
+character names -- and `leaf_layers` reads them the way a biogeophysics
+routine does, truncates a REAL into an INTEGER scalar, takes a log and an
+integer power inside its loop, and takes its extent from a dummy called
+`np`. Each of those refused, misfolded or reached the emitted kernel
+unresolved at some engine commit that passed its own suite. Both recipes
+run over it (`target: tree`, `backend: tree-jax`, the engines the
+extensions stand on), with the constants modules declared in the config
+the way the ELM extension's conventions declare them:
+
+    recast run translate corpus/elm_leaf --config corpus/elm_leaf/recast.json \
+        --summary corpus/elm_leaf/verification.json
+    recast run port corpus/elm_leaf --config corpus/elm_leaf/port.json \
+        --summary corpus/elm_leaf/port-verification.json
 
     recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
         --summary corpus/toy_physics/verification.json
