@@ -909,3 +909,26 @@ def test_a_shape_guard_that_resolves_to_nothing_leaves_the_default_alone() -> No
         {"arg": "a", "axis": 0, "extent": "0"},
     ]
     assert _guarded_shapes(required, guards, {}) == {"a": [DEFAULT_DIMENSION]}
+
+
+def test_the_reference_is_handed_only_the_buffers_its_wrapper_takes() -> None:
+    """The f2py wrapper spells an OUT buffer ``inout`` only where it cannot
+    size it -- an axis of no declared extent, or an allocatable -- and
+    sizes and returns every other OUT array. The gate once handed every
+    buffer, and under CLUBB's convention (every OUT array the caller's)
+    each of its explicit-shape outputs was one keyword argument more than
+    the wrapper took."""
+    from recast.verify.bitexact import _reference_takes
+
+    explicit = {"intent": "OUT", "buffer": True, "dims": [{"ub": "ngrdcol"}, {"ub": "nzm"}]}
+    assumed = {"intent": "OUT", "buffer": True, "dims": [{"ub": None}]}
+    star = {"intent": "OUT", "buffer": True, "dims": [{"ub": "n"}, {"assumed_size": True}]}
+    allocatable = {"intent": "OUT", "allocatable": True, "dims": [{"ub": None}]}
+    scalar = {"intent": "OUT", "buffer": True, "dims": None}
+    inout = {"intent": "INOUT", "dims": [{"ub": "n"}]}
+    assert not _reference_takes(explicit)
+    assert _reference_takes(assumed)
+    assert _reference_takes(star)
+    assert _reference_takes(allocatable)
+    assert not _reference_takes(scalar)
+    assert not _reference_takes(inout)  # not an OUT: handed as an input anyway

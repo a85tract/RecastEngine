@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "b553ad63cb28a4c8634dd6272cd5945eddaa5b481d6679d0a9db630c8ac544d0",
+      "candidate": "da14ce278b413bb817f229202b401ed08910063d11edcc3faf75d7e94a6ded34",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,
@@ -12,11 +12,11 @@
       "verdicts": [
         {
           "confidence": "sampled",
-          "detail": "13 blocks match",
+          "detail": "15 blocks match",
           "metrics": {
-            "blocks_checked": 13,
+            "blocks_checked": 15,
             "blocks_deferred": 0,
-            "blocks_matched": 13,
+            "blocks_matched": 15,
             "blocks_waived": 0,
             "reads_excused_by_stubs": 0
           },
@@ -25,15 +25,15 @@
         },
         {
           "confidence": "bit_exact",
-          "detail": "320 points across 1 subprogram(s), all bit-exact",
+          "detail": "425 points across 1 subprogram(s), all bit-exact",
           "metrics": {
-            "bit_exact": 320,
+            "bit_exact": 425,
             "integer_mismatch": 0,
             "integer_points": 5,
             "max_rel": 0.0,
             "max_ulp": 0,
             "nan_mismatch": 0,
-            "points": 320,
+            "points": 425,
             "redrawn": 0,
             "reference_isolation": "process",
             "trials": 5

@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "c82dfad22b9f3fed6ca5b36bb2c1c2351d6d531f773b8555b9f079cc94df73f1",
+      "candidate": "acefec333d49083d847a53cf3877286ed5c08f5b44f1010038e78baef56ffedf",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,
@@ -12,18 +12,18 @@
       "verdicts": [
         {
           "confidence": "ulp_bounded",
-          "detail": "every one of 320 points within 4 ULP (gate 32)",
+          "detail": "every one of 425 points within 5 ULP (gate 32)",
           "metrics": {
-            "bit_exact": 187,
+            "bit_exact": 256,
             "candidate_device": "cpu:0",
-            "dominant_points": 315,
+            "dominant_points": 420,
             "integer_mismatch": 0,
             "integer_points": 5,
-            "max_rel": 5.578080658519771e-16,
-            "max_ulp": 4,
-            "max_ulp_dominant": 4,
+            "max_rel": 5.601424038042312e-16,
+            "max_ulp": 5,
+            "max_ulp_dominant": 5,
             "nan_mismatch": 0,
-            "points": 320,
+            "points": 425,
             "redrawn": 0,
             "reference_device": "cpu",
             "rel_gate": 1e-12,

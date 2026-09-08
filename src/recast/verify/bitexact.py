@@ -256,6 +256,28 @@ def _file_bytes(path: Any) -> bytes | None:
         return None
 
 
+def _reference_takes(argument: dict[str, Any]) -> bool:
+    """Whether the reference's wrapper takes this OUT array as an argument.
+
+    An OUT array that is the caller's buffer with an axis of no declared
+    extent, or an allocatable one: the wrapper cannot size a result for it
+    and spells it ``inout``, so the reference takes it in, writes it in
+    place, and it is read back from what was passed (the f2py oracle's
+    ``_passed_buffer`` and its allocatable shim). Every other OUT array --
+    a buffer with declared extents included, which is every OUT array of a
+    tree read under ``buffer_out_arrays="all"`` (CLUBB's) -- the wrapper
+    allocates and returns, and handing it would be one keyword argument
+    more than the wrapper takes. The candidate takes every buffer either
+    way, and so does a reference emitted the way the candidate was (a NumPy
+    anchor); that side is ``buffer`` alone. This is the f2py wrapper's
+    rule."""
+    if argument.get("intent") != "OUT" or not argument.get("dims"):
+        return False
+    if argument.get("allocatable"):
+        return True
+    return bool(argument.get("buffer")) and any(not d.get("ub") for d in argument.get("dims") or ())
+
+
 class _CallTimedOut(Exception):
     """The candidate did not return from a draw within its bound.
 
@@ -1588,15 +1610,20 @@ class BitexactVerifier(Verifier):
                 # emitted way instead, because both sides of that comparison came
                 # out of the same emitter.
                 #
-                # A caller-buffer OUT array is handed to the reference as well:
-                # it is the caller's storage on both sides, and the reference
-                # cannot allocate what its wrapper never sized. The copy
-                # ``_truth_input`` makes keeps the two sides independent.
+                # A caller-buffer OUT array the wrapper cannot size is handed
+                # to the reference as well: it is the caller's storage on
+                # both sides. One the wrapper sizes and returns is not -- see
+                # ``_reference_takes``. The copy ``_truth_input`` makes keeps
+                # the two sides independent.
                 spell = pysafe if arg_naming == "pysafe" else _f2py_name
                 handed = [
                     a
                     for a in required
-                    if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
+                    if a["intent"] != "OUT"
+                    or (
+                        (_reference_takes(a) if convention == "f2py" else a.get("buffer"))
+                        and a["name"] in inputs
+                    )
                 ]
                 try:
                     truth_kwargs = {
@@ -2497,19 +2524,20 @@ class BitexactVerifier(Verifier):
             if isinstance(truth_out, tuple)
             else ([truth_out] if truth_out is not None else [])
         )
-        # A caller-buffer OUT array is not among them: the wrapper spells it
-        # ``intent(in out)``, because the caller owns the storage on both
-        # sides, so it is read back from the array that was passed exactly as
-        # an INOUT is.
-        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not a.get("buffer")]
+        # A caller-buffer OUT array the wrapper cannot size is not among
+        # them: the wrapper spells it ``intent(in out)``, because the caller
+        # owns the storage on both sides, so it is read back from the array
+        # that was passed exactly as an INOUT is. One with declared extents
+        # the wrapper sizes and returns like any OUT.
+        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not _reference_takes(a)]
         if len(theirs_out) != len(pure_out):
             return (
                 f"oracle returned {len(theirs_out)} value(s) for "
                 f"{len(pure_out)} intent(out) argument(s)"
             )
         theirs = dict(zip([a["name"] for a in pure_out], theirs_out, strict=True))
-        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or a.get("buffer")]
-        read_back = [a for a in outs_required if a["intent"] == "INOUT" or a.get("buffer")]
+        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or _reference_takes(a)]
+        read_back = [a for a in outs_required if a["intent"] == "INOUT" or _reference_takes(a)]
         if read_back and len(truth_args) != len(passed_in):
             return (
                 f"the reference was handed {len(truth_args)} argument(s) for "
