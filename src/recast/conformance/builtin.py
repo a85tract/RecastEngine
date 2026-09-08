@@ -356,18 +356,21 @@ contains
   subroutine refused(x, y)
     real(r8), intent(in)  :: x
     real(r8), intent(out) :: y
-    ! A formatted internal write whose format is a variable is refused on
-    ! purpose -- an edit descriptor is a rounding rule, and one the rules
-    ! cannot read at translation time cannot be rendered -- so this block
+    ! A SELECT TYPE over an unlimited polymorphic is refused on purpose --
+    ! which branch runs is decided by the dynamic type at run time, and the
+    ! translation has no value whose type is decided then -- so this block
     ! goes to the agent queue while the one above still translates. The
     ! point of the case is the mixture: a Candidate that is partial rather
-    ! than absent. (A literal format used to stand here; the rules grew a
-    ! rendering for it, and a defers-case is a claim about the rules.)
-    character(len=32) :: buffer
-    character(len=8) :: fmt
+    ! than absent. (A literal format stood here first, then a format held in
+    ! a variable; the rules grew a rendering for each, and a defers-case is
+    ! a claim about the rules.)
+    class(*), allocatable :: held
     y = x
-    fmt = '(F8.2)'
-    write(buffer, fmt) y
+    allocate(held, source=y)
+    select type (held)
+    type is (real(r8))
+      y = held
+    end select
   end subroutine refused
 
 end module conformance_defers
