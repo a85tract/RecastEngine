@@ -81,7 +81,7 @@ Now check the installation:
 
 ```console
 $ recast doctor
-recast 0.0.1.dev0  python 3.11.16
+recast 0.0.1  python 3.11.16
 24 plugin(s) registered across 10 kinds
 ```
 

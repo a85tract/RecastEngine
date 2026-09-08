@@ -11,7 +11,7 @@ which plugin fills each slot; the spine does not change.
 
 from __future__ import annotations
 
-__version__ = "0.0.1.dev0"
+__version__ = "0.0.1"
 
 from recast.engines import (
     ArtifactContract,

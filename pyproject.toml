@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "recast-engine"
-version = "0.0.1.dev0"
+version = "0.0.1"
 description = "An agentic engine for modernizing legacy scientific software"
 readme = "README.md"
 requires-python = ">=3.11"
