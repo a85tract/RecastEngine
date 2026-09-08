@@ -1741,8 +1741,8 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 891,
-   "deferred": 58,
+   "blocks": 898,
+   "deferred": 51,
    "refusals": [
     [
      "generic 'X': no match",
@@ -1761,16 +1761,8 @@
      4
     ],
     [
-     "internal function int_single writes host variable(s) csp, which a function reference canno",
-     4
-    ],
-    [
      "function rng_rand64 has OUT/INOUT dummy argument(s) state, which only a whole-statement re",
      4
-    ],
-    [
-     "internal function int_single_a writes host variable(s) csp, which a function reference can",
-     3
     ],
     [
      "generic 'X': ambiguous between ['X', 'X']",
@@ -1954,7 +1946,7 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 17,
+     "deferred": 10,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1968,11 +1960,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "60 blocks match",
+       "detail": "67 blocks match",
        "metrics": {
-        "blocks_checked": 60,
-        "blocks_deferred": 17,
-        "blocks_matched": 60,
+        "blocks_checked": 67,
+        "blocks_deferred": 10,
+        "blocks_matched": 67,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
