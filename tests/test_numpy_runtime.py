@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import math
+from typing import Any
 
 import pytest
 
@@ -214,31 +215,37 @@ def test_sqrt_of_a_non_negative_is_the_hardware_root_to_the_bit() -> None:
     assert math.copysign(1.0, runtime._f_sqrt(-0.0)) == -1.0
 
 
-def test_min_and_max_absorb_a_nan_on_the_left_and_propagate_one_on_the_right() -> None:
-    """Not a tidy rule, and not a choice: it is what gfortran's SSE ``minsd``
-    fold does, measured. ``min(NaN, 0)`` is 0 and ``min(0, NaN)`` is NaN.
-
-    Python's builtin ``min`` returns its first argument on a NaN, which is the
-    opposite of this on one side and the same on the other -- so a translation
-    using it agrees on half the cases and silently disagrees on the rest.
+def test_min_and_max_absorb_a_nan_operand_wherever_it_falls() -> None:
+    """Measured against the f2py-built reference, not a standalone toy:
+    gfortran's MIN/MAX at the golden ``-O1 -fno-fast-math`` flags absorb a
+    NaN operand in *either* position -- ``min(NaN, x)`` and ``min(x, NaN)``
+    are both ``x`` -- and yield NaN only when every operand is NaN. This is
+    ``fmin``/``fmax`` order. A ``quadpack`` body reaching ``min(1.0_wp, x)``
+    with ``x`` gone NaN keeps the 1.0, so a "propagate on the right" model
+    would mismatch the reference (``dqk15i`` did). Python's builtin ``min``
+    returns its first argument on a NaN, a different trap again.
     """
     assert runtime._f_min(np.nan, 1.0) == 1.0
-    assert np.isnan(runtime._f_min(1.0, np.nan))
+    assert runtime._f_min(1.0, np.nan) == 1.0
     assert runtime._f_max(np.nan, 1.0) == 1.0
-    assert np.isnan(runtime._f_max(1.0, np.nan))
+    assert runtime._f_max(1.0, np.nan) == 1.0
+    assert np.isnan(runtime._f_min(np.nan, np.nan))
+    assert np.isnan(runtime._f_max(np.nan, np.nan))
     assert runtime._f_min(2.0, 1.0) == 1.0
+    assert runtime._f_max(2.0, 1.0) == 2.0
 
 
-def test_the_vectorised_min_and_max_keep_the_same_asymmetry() -> None:
+def test_the_vectorised_min_and_max_keep_the_same_nan_absorption() -> None:
     """Elementwise, and each element behaves like the scalar fold -- otherwise
     a loop and its vectorised form would disagree on NaN alone."""
     a = np.array([np.nan, 2.0, 3.0])
     b = np.array([1.0, np.nan, 1.0])
-    vector = list(runtime._f_vmin(a, b))
-    scalar = [runtime._f_min(x, y) for x, y in zip(a, b, strict=True)]
-    assert vector[0] == scalar[0] == 1.0
-    assert np.isnan(vector[1]) and np.isnan(scalar[1])
-    assert vector[2] == scalar[2] == 1.0
+    vmin = list(runtime._f_vmin(a, b))
+    vmax = list(runtime._f_vmax(a, b))
+    scalar_min = [runtime._f_min(x, y) for x, y in zip(a, b, strict=True)]
+    scalar_max = [runtime._f_max(x, y) for x, y in zip(a, b, strict=True)]
+    assert vmin == scalar_min == [1.0, 2.0, 1.0]
+    assert vmax == scalar_max == [1.0, 2.0, 3.0]
 
 
 def test_strict_libm_matches_the_c_library_elementwise() -> None:
@@ -332,12 +339,28 @@ def test_a_derived_type_local_is_an_attribute_container() -> None:
     assert obj.q[0] == 0.0, "copying a derived type copies its components"
 
 
-def test_list_directed_write_starts_with_a_blank_and_pads_to_width() -> None:
-    """The output of this is compared against gfortran's byte for byte, so its
-    leading blank and column widths are the answer, not formatting taste."""
-    record = runtime._f_list_write(np.int32(42))
-    assert record.startswith(" ")
-    assert record == " " + "42".rjust(12) + " "
+def test_list_directed_write_uses_gfortrans_own_column_widths() -> None:
+    """The output of this is compared against gfortran's byte for byte, so the
+    column widths are the answer, not formatting taste. Every string below was
+    read off gfortran's own ``write(u,*)``.
+
+    The leading blank a list-directed record starts with is the first field's
+    padding rather than a separate prefix. Prepending one as well put every
+    record a column out -- invisible until a subprogram whose only product is
+    the file it writes was compared against the compiler.
+    """
+    assert runtime._f_list_write(np.int32(5)) == "           5"
+    assert runtime._f_list_write(np.int32(-12345)) == "      -12345"
+    assert runtime._f_list_write("abc") == " abc"
+    assert runtime._f_list_write("abc", np.int32(7)) == " abc           7"
+    assert runtime._f_list_write(np.bool_(True), np.bool_(False)) == " T F"
+    # A real(8) is a G25.17E3 field and the blank that follows it: seventeen
+    # significant figures, and zero counts as one digit before the point.
+    assert runtime._f_list_write(0.0) == "   0.0000000000000000     "
+    assert runtime._f_list_write(0.5) == "  0.50000000000000000     "
+    assert runtime._f_list_write(10.5) == "   10.500000000000000     "
+    assert runtime._f_list_write(-1.0e-12) == "  -9.9999999999999998E-013"
+    assert runtime._f_list_write(1.0, np.int32(2)) == "   1.0000000000000000                2"
 
 
 # --- copy-out ----------------------------------------------------------------
@@ -395,3 +418,282 @@ def test_sum_accumulates_in_fortran_element_order() -> None:
         along = along + a[i, :]
     assert np.array_equal(runtime._f_vsum(a, axis=0), along)
     assert runtime._f_vsum(np.array([1, 2, 3], dtype=np.int32)) == 6
+
+
+# --- external files ----------------------------------------------------------
+
+
+def test_a_list_directed_read_takes_the_values_the_item_list_asks_for(
+    tmp_path: Any,
+) -> None:
+    """One record per READ, however many records the values are spread over,
+    and the rest of the last record discarded -- which is what makes counting
+    the rows of a file by reading one value per record work."""
+    path = tmp_path / "grid.txt"
+    path.write_text("1 2 3\n4 5 6\n")
+    _, unit = runtime._f_open(None, str(path), status="old")
+    ios, first = runtime._f_read(unit, None, [("float64", None, None)])
+    assert (ios, first) == (0, 1.0), "the rest of the record is discarded"
+    ios, row = runtime._f_read(unit, None, [("float64", 3, None)])
+    assert ios == 0 and list(row) == [4.0, 5.0, 6.0]
+    ios, _ = runtime._f_read(unit, None, [("float64", None, None)], strict=False)
+    assert ios == -1, "end of file is IOSTAT_END, not an exception, when asked for"
+    runtime._f_close(unit)
+
+
+def test_a_non_advancing_read_stops_at_the_end_of_its_record(tmp_path: Any) -> None:
+    """``read(u, '(a)', advance='no')`` walks one record a character at a
+    time and reports IOSTAT_EOR at its end. Counting the columns of a text
+    file is written this way, and a shim that ran on into the next record
+    would count every column in the file."""
+    path = tmp_path / "row.txt"
+    path.write_text("ab\ncd\n")
+    _, unit = runtime._f_open(None, str(path), status="old")
+    read = []
+    while True:
+        ios, char = runtime._f_read(unit, "(a)", [("str", None, 1)], advance="no", strict=False)
+        if ios != 0:
+            break
+        read.append(char)
+    assert read == ["a", "b"] and ios == -2
+    ios, char = runtime._f_read(unit, "(a)", [("str", None, 1)], advance="no", strict=False)
+    assert (ios, char) == (0, "c"), "EOR left the file positioned at the next record"
+    runtime._f_rewind(unit)
+    ios, char = runtime._f_read(unit, "(a)", [("str", None, 1)], advance="no", strict=False)
+    assert (ios, char) == (0, "a")
+    runtime._f_close(unit)
+
+
+def test_inquire_answers_for_the_units_that_are_connected(tmp_path: Any) -> None:
+    """``inquire(unit=n, opened=inuse)`` is how a program picks a free unit,
+    so NEWUNIT= hands out negative numbers the way gfortran does and leaves
+    every number such a scan walks free."""
+    path = tmp_path / "f.txt"
+    path.write_text("x\n")
+    _, unit = runtime._f_open(None, str(path), status="old")
+    assert int(unit) < 0
+    assert runtime._f_inquire(unit, None, "opened") is True
+    assert runtime._f_inquire(10, None, "opened") is False
+    assert runtime._f_inquire(6, None, "opened") is True, "stdout is preconnected"
+    assert runtime._f_inquire(None, str(path), "exist") is True
+    assert runtime._f_inquire(None, str(tmp_path / "no.txt"), "exist") is False
+    runtime._f_close(unit)
+    assert runtime._f_inquire(unit, None, "opened") is False
+
+
+def test_an_open_that_cannot_connect_raises_unless_iostat_was_asked_for(
+    tmp_path: Any,
+) -> None:
+    """A statement without IOSTAT= aborts the program in Fortran; one with it
+    carries on with the status in a variable."""
+    missing = str(tmp_path / "absent.txt")
+    with pytest.raises(OSError, match="does not exist"):
+        runtime._f_open(None, missing, status="old")
+    ios, _ = runtime._f_open(None, missing, status="old", strict=False)
+    assert int(ios) == 2
+
+
+def test_a_zero_width_field_is_as_wide_as_its_value(tmp_path: Any) -> None:
+    """``(i0)`` and ``(f0.6)`` are how the corpus converts a number to a
+    string. A zero width is not an overflow: it asks for the shortest field
+    the value fits in, and treating it as one wrote asterisks -- or, worse,
+    nothing at all."""
+    assert runtime._f_fmt_write("(i0)", np.int32(42)) == "42"
+    assert runtime._f_fmt_write("(f0.6)", 1.5) == "1.500000"
+
+
+def test_a_stream_connection_is_unformatted_and_pos_counts_bytes(tmp_path: Any) -> None:
+    """``access='stream'`` with no FORM= is an UNFORMATTED connection --
+    gfortran reports it as one -- and it is how a program reads a file byte
+    by byte. A PPM is the case: the header is read as text through one
+    connection, INQUIRE(POS=) says where it ended, and the pixels come back
+    through a second one positioned there with POS=. Reading those bytes as
+    text records takes a pixel of value 10 for the end of a record.
+    """
+    path = tmp_path / "img.ppm"
+    path.write_bytes(b"P6\n2 1\n255\n" + bytes([7, 8, 9, 250, 251, 252]) + b"\n")
+
+    _, unit = runtime._f_open(None, str(path), access="stream", form="formatted", status="old")
+    ios, signature = runtime._f_read(unit, "(a2)", [("str", None, 2)])
+    assert (int(ios), signature) == (0, "P6")
+    _, w, h = runtime._f_read(unit, None, [("int32", None, None), ("int32", None, None)])
+    _, ncol = runtime._f_read(unit, None, [("int32", None, None)])
+    assert (int(w), int(h), int(ncol)) == (2, 1, 255)
+    offset = runtime._f_inquire(unit, None, "pos")
+    assert int(offset) == 12, "the byte after the header, counted from one"
+    runtime._f_close(unit)
+
+    _, unit = runtime._f_open(None, str(path), access="stream", status="old")
+    assert runtime._f_inquire(unit, None, "form") == "UNFORMATTED"
+    ios, ccode = runtime._f_read(unit, None, [("str", None, 1)], pos=int(offset) - 1)
+    assert (int(ios), ccode) == (0, "\n"), "POS= is where the read starts, not where it ends"
+    pixels = [ord(runtime._f_read(unit, None, [("str", None, 1)])[1]) for _ in range(6)]
+    assert pixels == [7, 8, 9, 250, 251, 252]
+    ios, _ = runtime._f_read(unit, None, [("str", None, 1)], strict=False)
+    assert int(ios) == 0, "the record terminator the file ends with"
+    ios, _ = runtime._f_read(unit, None, [("str", None, 1)], strict=False)
+    assert int(ios) == -1, "a short read is end of file"
+    runtime._f_close(unit)
+
+
+def test_an_unformatted_sequential_read_is_still_refused(tmp_path: Any) -> None:
+    """A stream has no records to guess at; an unformatted *sequential* file
+    is wrapped in length markers only its compiler can spell, and reading it
+    here would put wrong numbers in the right variables."""
+    path = tmp_path / "raw.dat"
+    path.write_bytes(b"\x04\x00\x00\x00")
+    _, unit = runtime._f_open(None, str(path), form="unformatted", status="old")
+    with pytest.raises(OSError, match="unformatted unit"):
+        runtime._f_read(unit, None, [("int32", None, None)])
+    runtime._f_close(unit)
+
+
+def test_a_format_shorter_than_its_item_list_reverts_and_ends_the_record() -> None:
+    """``write(u, '(3a1)') achar(pixel)`` on more than three components writes
+    more than one record: Fortran reverts to the start of the format and, in
+    doing so, ends the record. Stopping at the first pass instead dropped
+    every value after the third."""
+    assert runtime._f_fmt_records("(3a1)", list("abcdefgh")) == ["abc", "def", "gh"]
+    assert runtime._f_fmt_records("(i0,' ',i0)", [8, 8]) == ["8 8"]
+    assert runtime._f_fmt_records("(a2)", ["P6"]) == ["P6"]
+    # ``/`` ends a record the same way, and a data descriptor with no value
+    # left ends the transfer where it stands.
+    assert runtime._f_fmt_records("(i0,/,i0)", [1, 2]) == ["1", "2"]
+    assert runtime._f_fmt_records("(i0,i0)", [1]) == ["1"]
+
+
+def test_an_external_write_puts_its_records_in_the_file(tmp_path: Any) -> None:
+    """The bytes below are what gfortran's own ``saveppm`` writes for a
+    three-component pixel: a header, then non-advancing pixel writes that
+    continue one record, and the record terminator CLOSE puts on the
+    incomplete record the last of them left open."""
+    path = tmp_path / "out.ppm"
+    _, unit = runtime._f_open(None, str(path), status="replace")
+    runtime._f_write(unit, "(a2)", ["P6"])
+    runtime._f_write(unit, "(i0,' ',i0)", [2, 1])
+    runtime._f_write(unit, "(i0)", [255])
+    for pixel in ([1, 2, 3], [4, 5, 6]):
+        runtime._f_write(unit, "(3a1)", [runtime._f_vachar(np.array(pixel))], advance="no")
+    runtime._f_close(unit)
+    assert path.read_bytes() == b"P6\n2 1\n255\n" + bytes([1, 2, 3, 4, 5, 6]) + b"\n"
+
+
+def test_a_write_to_a_unit_nothing_connected_is_a_log(capsys: Any, tmp_path: Any) -> None:
+    """A unit no OPEN in the translation connected is the log destination it
+    always was: the records go where PRINT's go, and no file is invented for
+    a connection this translation does not hold."""
+    runtime._f_write(6, None, ["hello"])
+    assert capsys.readouterr().out == " hello\n"
+    assert not list(tmp_path.iterdir())
+
+
+def test_achar_over_an_array_is_one_character_per_element() -> None:
+    """A fixed-width NumPy string array would pad every element; the item list
+    a WRITE formats one value at a time must not be padded."""
+    rendered = runtime._f_vachar(np.array([[65, 10], [13, 250]], dtype=np.int32))
+    assert rendered.tolist() == [["A", "\n"], ["\r", "\xfa"]]
+
+
+def test_log_outside_its_domain_is_an_ieee_value_not_an_exception() -> None:
+    """``math.log`` raises where the compiled reference carries on with
+    ``-Infinity`` and ``NaN``. Raising turns a number both sides agree on into
+    "the candidate raised", which the differential gate reports as no
+    comparison at all."""
+    assert runtime._f_log(math.e) == 1.0
+    assert runtime._f_log(0.0) == float("-inf")
+    assert math.isnan(runtime._f_log(-1.0))
+    assert runtime._f_log10(100.0) == 2.0
+    assert math.isnan(runtime._f_log10(-1.0))
+
+
+def test_int_of_a_value_no_integer_holds_is_the_conversion_the_compiler_emits() -> None:
+    """Python's ``int`` raises on a NaN and grows without bound past the range
+    of an INTEGER; gfortran emits the hardware conversion, which answers every
+    value it cannot represent with the most negative integer of the kind."""
+    assert runtime._f_int(2.9) == 2
+    assert runtime._f_int(-2.9) == -2
+    assert runtime._f_int(float("nan")) == -(2**31)
+    assert runtime._f_int(1e30) == -(2**31)
+    assert runtime._f_int(1e30, 8) == -(2**63)
+    assert runtime._f_int(7) == 7
+
+
+@pytest.mark.parametrize("exponent", [0, 1, 2, 3, 4, 5, 7, 12, -1, -3])
+def test_a_runtime_integer_power_is_the_expansion_a_literal_one_gets(exponent: int) -> None:
+    """``(xe(i)-x0)**(j-1)`` has no literal for ``expand_power`` to expand, so
+    what was left was Python's ``**`` -- a libm ``pow`` call gfortran never
+    makes for an integer exponent. libgcc squares and multiplies, LSB first,
+    which is exactly what ``expand_power`` writes out when it can, so the two
+    routes have to reach the same bits or a subprogram is bit-exact or not
+    depending on whether its exponent happened to be a literal."""
+    from recast.transform.numpy.expressions import expand_power
+
+    for x in (0.31672977626795387, -3.25, 1.0000000001, 7.5e-8):
+        spelled = eval(expand_power("x", exponent), {"x": x}) if exponent else 1.0
+        assert runtime._f_powi(x, exponent) == spelled, f"{x}**{exponent}"
+
+
+def test_a_runtime_integer_power_is_not_the_pow_call_python_would_make() -> None:
+    """The point of the helper, stated as the difference it exists for: one
+    ULP, on an ordinary value, in a direction nothing structural can see."""
+    x = 0.31672977626795387
+    assert runtime._f_powi(x, 3) != x**3
+    assert runtime._f_powi(x, 3) == x * (x * x)
+
+
+def test_seq_tail_is_the_column_major_storage_from_the_element_on() -> None:
+    """``a(i, 1)`` for ``dx(*)``: Fortran hands the callee the memory from
+    that element to the end of the array in column-major order. A view of a
+    Fortran-contiguous actual, so the callee's writes land in the caller's
+    array; ``x(2, *)`` folds it onto the leading extent with the last axis
+    taking the whole columns left."""
+    a = np.asfortranarray(np.arange(1.0, 13.0).reshape(3, 4, order="F"))
+    tail = runtime._f_seq_tail(a, 1)  # a(2, 1) onward: 2, 3, 4, ..., 12
+    assert tail.tolist() == list(range(2, 13))
+    assert np.shares_memory(tail, a)
+    tail[0] = -1.0
+    assert a[1, 0] == -1.0
+    folded = runtime._f_seq_tail(a, 1, 2)  # 11 elements: five whole columns of 2
+    assert folded.shape == (2, 5)
+    assert folded[:, 0].tolist() == [-1.0, 3.0]
+    assert np.shares_memory(folded, a)
+    assert runtime._f_seq_tail(a, 0).tolist() == [-1.0 if v == 2.0 else v for v in range(1, 13)]
+
+
+def test_seq_tail_with_the_matrix_s_own_leading_extent_is_the_matrix_from_that_row() -> None:
+    """``h12(..., a(i, 1), mda, ...)`` walks row ``i`` with the matrix's own
+    leading extent: ``u(1, j)`` is ``a(i, j)`` for every column, the last
+    one included though the storage from ``a(i, 1)`` holds only part of it.
+    That is the slice ``a[i-1:, :]``, a view in either memory order, where
+    folding onto whole columns lost the last column altogether (SLSQP's
+    ``hfti``)."""
+    for order in ("F", "C"):
+        a = np.array(np.arange(1.0, 13.0).reshape(3, 4, order="F"), order=order)
+        u = runtime._f_seq_tail(a, 1, 3)  # a(2, 1) with iue = mda = 3
+        assert u.shape == (2, 4)
+        assert u[0].tolist() == a[1].tolist()
+        assert np.shares_memory(u, a)
+        u[0, 3] = -4.0
+        assert a[1, 3] == -4.0
+        c = runtime._f_seq_tail(a, 1, 3)
+        c[0, 0] = 0.0
+        runtime._f_seq_tail_out(a, 1, c)  # a view already: nothing to redo
+        assert a[1, 0] == 0.0 and a[1, 3] == -4.0
+
+
+def test_seq_tail_out_reaches_a_c_ordered_matrix() -> None:
+    """Where the actual is not Fortran-contiguous and no slice spells the
+    tail, it was a copy, and the callee's writes reach the caller only
+    through the write-back: the values land at the same column-major
+    positions, and nothing is written for an empty result."""
+    c_ordered = np.arange(1.0, 13.0).reshape(3, 4)
+    tail = runtime._f_seq_tail(c_ordered, 4)  # (2, 2) onward, a copy
+    assert not np.shares_memory(tail, c_ordered)
+    tail[:] = -tail
+    runtime._f_seq_tail_out(c_ordered, 4, tail)
+    expected = np.arange(1.0, 13.0).reshape(3, 4)
+    flat = expected.ravel(order="F")
+    flat[4:] = -flat[4:]
+    assert np.array_equal(c_ordered, flat.reshape(3, 4, order="F"))
+    runtime._f_seq_tail_out(c_ordered, 4, np.zeros(0))
+    assert np.array_equal(c_ordered, flat.reshape(3, 4, order="F"))

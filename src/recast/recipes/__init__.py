@@ -10,9 +10,19 @@ becomes checkable: they differ only in which plugin fills each slot.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from recast.plugins.recipe import Recipe, Stage
+from recast.transform.profiles import PROFILES
+
+GOLDEN_ORACLES = ("f2py-golden", "f2py-golden-flat")
+"""The shipped oracles that compile the reference with ``config["fc"]``."""
+
+GOLDEN_DEFAULT_FC = "gfortran"
+"""The compiler those oracles build with when ``fc`` is not configured; the
+oracle's own default, repeated here because the recipe has to know which
+compiler its transform is matching before either plugin is instantiated."""
 
 
 class TranslateRecipe(Recipe):
@@ -56,12 +66,13 @@ class TranslateRecipe(Recipe):
 
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         target = config.get("target", "numpy")
+        oracle = config.get("oracle", "f2py-golden")
         return [
             Stage("executor", config.get("executor", "local")),
             Stage("frontend", config.get("frontend", "fortran")),
-            Stage("transform", f"translate.{target}"),
+            Stage("transform", f"translate.{target}", config=_lowering_of(config, oracle)),
             Stage("verifier", "static.rwset", gate=True),
-            Stage("oracle", config.get("oracle", "f2py-golden")),
+            Stage("oracle", oracle),
             Stage("verifier", "differential.bitexact", gate=True),
             Stage("verifier", "symbolic.notary", optional=True),
             Stage("store", "fs-evidence"),
@@ -71,6 +82,32 @@ class TranslateRecipe(Recipe):
         target = config.get("target", "numpy")
         known = {"numpy", "numba", "cuda", "tree"}
         return [] if target in known else [f"unknown target {target!r}; expected {sorted(known)}"]
+
+
+def _lowering_of(config: dict[str, Any], oracle: str) -> dict[str, Any]:
+    """The transform's compiler profile, when the operator has not chosen one.
+
+    The gate compares the translation with a binary the oracle compiles, and
+    the profile says how that compiler lowers what it lowers observably --
+    ``x**2`` as ``x*x`` under gfortran, a ``pow`` call under the transform's
+    own default. Left to the two plugins' separate defaults the recipe
+    compared an ``ifx`` lowering against a gfortran build, and a squared real
+    was one to two ULP from bit-exact with nothing in the source to blame.
+    So the recipe binds them: the oracle's ``fc`` (its default when unset),
+    when it names a known profile. An operator's word wins either way --
+    ``compiler_semantics`` binds both stages itself and must not meet a
+    second, contradicting declaration here, and an explicit
+    ``stages.<transform>.profile`` is merged over this declaration by the
+    runner. An oracle that is not one of the golden pair compiles with
+    something this recipe cannot see, and the transform keeps its default.
+    """
+    if config.get("compiler_semantics") is not None or oracle not in GOLDEN_ORACLES:
+        return {}
+    stages = config.get("stages")
+    oracle_config = stages.get(oracle) if isinstance(stages, Mapping) else None
+    fc = oracle_config.get("fc") if isinstance(oracle_config, Mapping) else None
+    compiler = fc if fc is not None else GOLDEN_DEFAULT_FC
+    return {"profile": compiler} if compiler in PROFILES else {}
 
 
 class RefactorRecipe(Recipe):

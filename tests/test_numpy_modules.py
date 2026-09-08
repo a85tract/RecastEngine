@@ -187,3 +187,64 @@ def test_py_lines_point_at_the_markers_of_the_finished_file(
             continue
         assert lines[first - 1].startswith(f"    # {entry['block']} <- ")
         assert last >= first
+
+
+# --- procedures declared here and defined nowhere ----------------------------
+
+
+INTERFACE_ONLY = """\
+module libwrap
+  implicit none
+  interface
+    subroutine dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+      integer :: info, lda, ldb, n, nrhs
+      integer :: ipiv(*)
+      double precision :: a(lda,*), b(ldb,*)
+    end subroutine
+    subroutine dsyevd(jobz, uplo, n, a, lda, w, info)
+      character :: jobz, uplo
+      integer :: info, lda, n
+      double precision :: a(lda,*), w(*)
+    end subroutine
+    subroutine touch(x)
+      double precision :: x
+    end subroutine
+  end interface
+end module libwrap
+"""
+
+
+@pytest.fixture(scope="module")
+def libwrap(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("libwrap") / "libwrap.f90"
+    path.write_text(INTERFACE_ONLY)
+    return path
+
+
+def test_a_declared_procedure_recast_can_supply_is_defined_here(
+    libwrap: Path, source: Path
+) -> None:
+    """``use lapack, only: dgesv`` binds an interface-only declaration like a
+    module procedure, so a caller is emitted as ``_lapack.dgesv(...)`` -- into
+    a file that had nothing of the name in it, because the bodies are in a
+    library this build does not link. ``recast.references`` supplies one, and
+    the reference build compiles its Fortran twin, so the call means the same
+    thing on both sides.
+
+    Only the names it has an implementation for: ``dsyevd`` is still
+    declared, still undefined, and still disclaims its callers in the oracle.
+    ``touch`` is defined by a sibling in this build, so nothing is missing.
+    """
+    renderer = Modules(
+        subprograms=Subprograms(
+            record=interface.extract(libwrap, kind_assumptions=KINDS),
+            constants=constants.extract(libwrap),
+            profile=PROFILES["gfortran"],
+            companions=(interface.extract(source, kind_assumptions=KINDS),),
+        ),
+    )
+    text, _ = renderer.render(libwrap)
+    compile(text, "libwrap_numpy.py", "exec")
+    assert "\ndef dgesv(" in text
+    assert "\ndef dsyevd(" not in text
+    assert "\ndef touch(" not in text

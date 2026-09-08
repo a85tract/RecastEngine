@@ -20,9 +20,19 @@ than its Python lookalike:
 * An ``intent(out)`` argument does not exist on the target side: the callee
   returns it, and the call site assigns it back -- into the buffer, for an
   array, because the caller may be aliasing it.
+* An I/O statement that writes a variable -- READ into its item list, INQUIRE
+  into its specifiers, OPEN into NEWUNIT= -- is translated through the
+  runtime's unit table rather than stubbed: a ``pass`` drops those writes and
+  tells the read/write gate that nothing happened. So is a WRITE to a unit an
+  OPEN in the same body connected to a file: what it writes is a file rather
+  than a variable, but for a subprogram whose only product is that file the
+  stub is not a lossy translation, it is an empty one. A WRITE anywhere else
+  -- ``*``, a bare unit number, a unit the caller connected -- is a log, and
+  is the stub it always was.
 
-Anything else -- a computed goto, a formatted internal write, an ELSEWHERE
-with its own mask -- raises ``NoRule`` and becomes a deferred site.
+Anything else -- a computed goto, an edit descriptor the runtime does not
+implement, an ELSEWHERE with its own mask -- raises ``NoRule`` and becomes a
+deferred site.
 
 Refusal here has two spellings, ``NoRule`` from this layer and its rules, and
 ``Unanalyzable`` out of ``semantics``; ``REFUSED`` is both, and is what the
@@ -40,7 +50,7 @@ from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.calls import CallSite
-from recast.transform.numpy.expressions import REFUSED, Expressions
+from recast.transform.numpy.expressions import REFUSED, Expressions, function_outputs
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
@@ -163,8 +173,44 @@ FORMAT_SUPPORTED = re.compile(
     r"|'[^']*'|\"[^\"]*\"))\s*(?:,\s*)?)*\)",
     re.I,
 )
-"""The edit descriptors ``_f_fmt_write`` implements. A formatted internal
-write using anything else is refused rather than silently list-directed."""
+"""The edit descriptors ``_f_fmt_write`` and ``_f_read`` implement. A
+formatted transfer using anything else is refused rather than silently
+list-directed."""
+
+READ_DTYPES = frozenset({"float64", "float32", "int32", "int64", "bool", "str"})
+"""Item types ``_f_read`` can parse a field into. A derived type or a
+complex is refused: guessing at its input form would put wrong numbers in
+the right variables."""
+
+OPEN_SPECS = frozenset({"FILE", "STATUS", "ACCESS", "FORM", "POSITION", "ACTION", "RECL"})
+"""OPEN specifiers the runtime honours. Anything else -- ERR=, ASYNCHRONOUS=,
+a CONVERT= the connection would have to reinterpret every record through --
+is refused by name."""
+
+INQUIRE_SPECS = frozenset(
+    {
+        "OPENED",
+        "EXIST",
+        "NAMED",
+        "NAME",
+        "NUMBER",
+        "SIZE",
+        "POS",
+        "IOSTAT",
+        "IOMSG",
+        "FORM",
+        "ACCESS",
+        "ACTION",
+        "POSITION",
+        "SEQUENTIAL",
+        "DIRECT",
+        "FORMATTED",
+        "UNFORMATTED",
+        "RECL",
+        "NEXTREC",
+    }
+)
+"""INQUIRE output specifiers ``_f_inquire`` can answer."""
 
 
 def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
@@ -263,11 +309,19 @@ def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
             certain = nesting(statement) <= depth
             if isinstance(statement, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt)):
                 if index_of(statement) == variable:
-                    if certain:
+                    # A later ``do`` over the same variable is judged by its
+                    # *construct*'s nesting, not the header statement's: the
+                    # header always sits one level inside its own construct, so
+                    # ``nesting(statement)`` would read a sibling loop as deep
+                    # and never let it close the question. The construct at this
+                    # loop's level or above certainly redefines the index before
+                    # the read; one inside an IF arm does not.
+                    construct = getattr(statement, "parent", statement)
+                    if nesting(construct) <= depth:
                         break  # redefined by the next loop over it
                     # A deeper loop over the same variable: what its body
                     # reads is its own index. Resume after it.
-                    _, inner_end = node_span(getattr(statement, "parent", statement))
+                    _, inner_end = node_span(construct)
                     skip_until = inner_end or span[0]
                     continue
                 # Another loop's header may still read it in its bounds
@@ -343,8 +397,7 @@ class Statements:
     """DO constructs (by node id) whose index a later statement reads.
     Filled by ``scan``. Fortran leaves a completed loop's index one step past
     the end; Python's ``for`` leaves the last value, so these loops get an
-    ``else`` that sets the completion value (an EXIT, a ``break``, skips it,
-    as Fortran keeps the exit value)."""
+    ``else`` that sets the completion value."""
 
     exit_labels: dict[int, str] = field(default_factory=dict)
     """``id(do-construct)`` -> the label that means ``exit`` inside it."""
@@ -505,7 +558,7 @@ class Statements:
         if isinstance(node, f03.Format_Stmt):
             return [f"{pad}pass  # FORMAT statement (declarative)"]
         if isinstance(node, f03.Print_Stmt):
-            return [f"{pad}pass  # PRINT (diagnostic only, no dataflow)"]
+            return self._print(node, pad)
         if isinstance(node, (f03.Stop_Stmt, f08.Error_Stop_Stmt)):
             # ERROR STOP differs from STOP only in the exit status a compiler
             # is asked to produce; both end the program with the same message,
@@ -521,37 +574,18 @@ class Statements:
             # statement itself does nothing where it stands.
             return [f"{pad}pass  # ENTRY (legacy)"]
         if isinstance(node, f03.Read_Stmt):
-            # READ writes every item in its list; a pass drops those writes
-            # silently -- the exact hazard the INQUIRE branch below refuses
-            # over. Same statement class, same answer.
-            raise NoRule("READ writes its item list; an I/O stub would drop the writes")
-        if isinstance(node, (f03.Open_Stmt, f03.Close_Stmt)):
-            return [f"{pad}pass  # OPEN/CLOSE (I/O stub)"]
+            return self._read(node, pad)
+        if isinstance(node, f03.Open_Stmt):
+            return self._open(node, pad)
+        if isinstance(node, f03.Close_Stmt):
+            return self._close(node, pad)
         if isinstance(
             node,
             (f03.Rewind_Stmt, f03.Backspace_Stmt, f03.Endfile_Stmt, f03.Flush_Stmt),
         ):
-            # File positioning. Unlike INQUIRE below, none of these writes a
-            # variable, so there is nothing for a read/write gate to compare
-            # and nothing to lose by dropping them.
-            return [f"{pad}pass  # {type(node).__name__[:-5].upper()} (I/O stub)"]
+            return self._position(node, pad)
         if isinstance(node, f03.Inquire_Stmt):
-            # Not a stub, on purpose, and this is where the pipeline this was
-            # migrated from differs: it stubs INQUIRE to ``pass``. Every
-            # output specifier -- ``opened=``, ``pos=``, ``iostat=`` -- is a
-            # write, and a ``pass`` drops it silently, leaving the variable at
-            # whatever it held.
-            written = sorted(
-                str(spec.children[0]).upper()
-                for spec in walk(node, f03.Connect_Spec | f03.Inquire_Spec)
-                if spec.children[0] is not None
-                and str(spec.children[0]).upper() not in ("UNIT", "FILE")
-            )
-            raise NoRule(
-                "inquire writes " + ", ".join(f"{k}=" for k in written)
-                if written
-                else "inquire with no output specifier"
-            )
+            return self._inquire(node, pad)
         if isinstance(node, (f03.Forall_Construct, f03.Forall_Stmt)):
             return self._forall(node, indent)
         if isinstance(node, f03.Data_Stmt):
@@ -694,6 +728,11 @@ class Statements:
                     f"{pad}def {pysafe(root)}({formals}):  # statement function",
                     f"{pad}    return {self.expressions.render(value)}",
                 ]
+        if self._function_with_outputs(value) is not None:
+            # ``alpha = linmin(mode, ..., ldat%a, ...)``: the callee hands its
+            # OUT/INOUT dummies back beside its result, so the statement is
+            # a call whose first output is the target (``_call``).
+            return self._call(value, indent, result=target)
         rendered = self.expressions.render(value)
         if (
             self.semantics.is_scalar_integer_target(target)
@@ -710,8 +749,29 @@ class Statements:
             except Unanalyzable:
                 rank = 0
             if rank == 0 and not self.semantics.is_logical_or_character(value):
-                rendered = f"int({rendered})"
+                rendered = f"_f_int({rendered})"
         return [f"{pad}{self.target(target)} = {rendered}"]
+
+    def _function_with_outputs(self, node: Any) -> dict[str, Any] | None:
+        """The record of a function with source whose OUT/INOUT dummies the
+        reference ``node`` has to carry back, or ``None`` for any other
+        right-hand side (``function_outputs``)."""
+        if not isinstance(node, (f03.Part_Ref, f03.Function_Reference)):
+            return None
+        name = str(node.children[0]).lower()
+        if (
+            self.semantics.is_array(name)
+            or name in self.expressions.function_transforms
+            or name in self.expressions.stubs
+            or name in self.expressions.statement_functions
+        ):
+            return None
+        record = self.semantics.procedures.get(name)
+        if record is None and name in self.expressions.remotes:
+            record = self.semantics.procedures.get(self.expressions.remotes[name].name)
+        if record is None or not function_outputs(record):
+            return None
+        return record
 
     def _rhs_is_opaque(self, node: Any) -> bool:
         """Whether a stub, a domain transform or a foreign module decides the
@@ -1037,20 +1097,38 @@ class Statements:
     # -- I/O ------------------------------------------------------------------
 
     def _write(self, node: Any, indent: int) -> list[str]:
-        """Log writes (``*``, unit numbers, use-imported units) carry no
-        comparable dataflow and become ``pass``; a list-directed INTERNAL
-        write -- the unit is a local character variable -- carries real
-        dataflow and becomes ``_f_list_write``."""
+        """An INTERNAL write -- the unit is a character variable -- assigns
+        that variable. An external one is split by which unit it writes to:
+        a unit an OPEN in this body connected to a file gets ``_f_write``,
+        which puts the records in the file the translated OPEN created;
+        everything else (``*``, a bare unit number, a unit the caller
+        connected) is a log and stays the ``pass`` it has always been.
+
+        The split is what a subprogram whose only product is its file needs.
+        Stubbing ``saveppm``'s writes did not lose detail from the
+        translation, it lost the translation: the emitted routine opened a
+        file, wrote nothing to it and returned, and no differential can
+        compare that against anything."""
         pad = "    " * indent
         control, items = node.children
         specifiers = list(control.children) if hasattr(control, "children") else []
         unit = format_ = None
+        advance = None
+        record_bound = True
         position = 0
         for specifier in specifiers:
             keyword, value = specifier.children
             key = str(keyword).upper() if keyword is not None else None
-            if key in ("IOSTAT", "ERR", "ADVANCE", "REC"):
+            if key in ("IOSTAT", "ERR", "REC"):
                 raise NoRule(f"write with {key}= control")
+            if key == "ADVANCE":
+                # ADVANCE='no' says the record does not end here, which is a
+                # property of the file the statement writes: it is carried to
+                # ``_f_write``. An *internal* write has one record and nowhere
+                # to carry it, so it is refused further down rather than
+                # quietly ignored.
+                advance = self.expressions.render(value)
+                record_bound = str(value).strip("'\"").lower() != "no"
             if key == "UNIT" or (key is None and position == 0):
                 unit = value
             elif key == "FMT" or (key is None and position == 1):
@@ -1058,7 +1136,17 @@ class Statements:
             position += 1
         name = str(unit).strip().lower() if unit is not None else "*"
         declaration = self.semantics.declaration(name) if UNIT_NAME.fullmatch(name) else None
-        if declaration is not None and declaration.get("dtype") == "str":
+        subprogram = self.semantics.subprogram
+        # A character function's result is an internal unit too: ``write(str,
+        # '(i0)') i`` is how ``str`` returns anything at all, and the result
+        # variable is declared by the function statement rather than by a
+        # declaration ``Semantics`` has a record for.
+        internal = (declaration is not None and declaration.get("dtype") == "str") or (
+            name == subprogram.get("result") and subprogram.get("result_dtype") == "str"
+        )
+        if internal:
+            if not record_bound:
+                raise NoRule("internal write with ADVANCE= control")
             arguments = ", ".join(
                 self.expressions.render(item)
                 for item in (items.children if hasattr(items, "children") else [items])
@@ -1067,16 +1155,253 @@ class Statements:
             if spelled == "*":
                 return [f"{pad}{pysafe(name)} = _f_list_write({arguments})"]
             # A formatted internal write: the FMT decides the layout, so the
-            # list-directed shim would be a silently wrong string (#16).
-            if isinstance(format_, f03.Char_Literal_Constant):
-                text = str(format_)[1:-1]
-                if not FORMAT_SUPPORTED.fullmatch(text.strip()):
-                    raise NoRule(
-                        f"formatted internal write: unsupported edit descriptor in {text!r}"
-                    )
-                return [f"{pad}{pysafe(name)} = _f_fmt_write({text!r}, {arguments})"]
-            raise NoRule("formatted internal write with a non-literal format")
-        return [f"{pad}pass  # write({name},...) log — no dataflow"]
+            # list-directed shim would be a silently wrong string (#16). The
+            # format need not be a literal -- ``_f_fmt_write`` parses it where
+            # it stands, which is where a dummy argument carrying one is
+            # known -- but a literal is checked here, while the descriptors
+            # are still in front of the emitter.
+            fmt = self._io_format(format_, "formatted internal write")
+            return [f"{pad}{pysafe(name)} = _f_fmt_write({fmt}, {arguments})"]
+        if name not in set(subprogram.get("file_units") or ()):
+            return [f"{pad}pass  # write({name},...) log — no dataflow"]
+        rendered_items = [
+            self.expressions.render(item)
+            for item in (items.children if hasattr(items, "children") else [items])
+            if item is not None
+        ]
+        settings = "" if advance is None else f", advance={advance}"
+        return [
+            f"{pad}_f_write({self.expressions.render(unit)}, "
+            f"{self._io_format(format_, 'WRITE')}, [{', '.join(rendered_items)}]{settings})"
+        ]
+
+    def _print(self, node: Any, pad: str) -> list[str]:
+        """PRINT writes a record to standard output and *reads* its item
+        list. The stub this replaces told a read/write gate that nothing was
+        read, which is the same silent drop READ and INQUIRE refuse over."""
+        format_, items = node.children
+        arguments = [self._io_format(format_, "PRINT")]
+        arguments += [
+            self.expressions.render(item)
+            for item in (items.children if hasattr(items, "children") else [items])
+            if item is not None
+        ]
+        return [f"{pad}_f_print({', '.join(arguments)})"]
+
+    def _io_format(self, format_: Any, statement: str) -> str:
+        """The FMT= of an I/O statement, as the runtime takes it: ``None``
+        for list-directed, a checked literal, or an expression evaluated
+        where it stands."""
+        if format_ is None:
+            return "None"
+        spelled = str(format_).strip()
+        if spelled == "*":
+            return "None"
+        if isinstance(format_, f03.Char_Literal_Constant):
+            text = str(format_)[1:-1]
+            if not FORMAT_SUPPORTED.fullmatch(text.strip()):
+                raise NoRule(f"{statement}: unsupported edit descriptor in {text!r}")
+            return repr(text)
+        if spelled.isdigit():
+            # A statement label naming a FORMAT statement elsewhere. The
+            # emitter renders FORMAT as a declarative pass, so there is
+            # nothing here to point at.
+            raise NoRule(f"{statement} with a labelled FORMAT ({spelled})")
+        return self.expressions.render(format_)
+
+    @staticmethod
+    def _io_specifiers(container: Any) -> list[tuple[str | None, Any]]:
+        """``[(KEYWORD or None, value), ...]`` of one specifier list."""
+        if container is None:
+            return []
+        children = container.children if hasattr(container, "children") else [container]
+        specs = []
+        for child in children:
+            keyword, value = child.children
+            specs.append((str(keyword).upper() if keyword is not None else None, value))
+        return specs
+
+    def _io_target(self, value: Any) -> str:
+        """A specifier that writes: rendered as an assignment target."""
+        if isinstance(value, f03.Name):
+            return self.names.symbol(str(value))
+        return self.expressions.render(value)
+
+    def _read(self, node: Any, pad: str) -> list[str]:
+        """READ: one call that returns the iostat and every item it read.
+
+        Translated rather than stubbed because every item in the list is a
+        write, and the values have to come from the file the Fortran reads.
+        """
+        control, _label, items = node.children
+        if control is None:
+            raise NoRule("READ from the standard input")
+        unit = format_ = None
+        advance = None
+        position_ = None
+        iostat = None
+        for position, (key, value) in enumerate(self._io_specifiers(control)):
+            if key == "UNIT" or (key is None and position == 0):
+                unit = value
+            elif key == "FMT" or (key is None and position == 1):
+                format_ = value
+            elif key == "ADVANCE":
+                advance = self.expressions.render(value)
+            elif key == "POS":
+                # Stream access: where in the file to read from, counted in
+                # bytes from one. The runtime seeks there first, so this is
+                # the statement's own read of whatever computed the offset.
+                position_ = self.expressions.render(value)
+            elif key == "IOSTAT":
+                iostat = self._io_target(value)
+            else:
+                raise NoRule(f"READ with {key}= control")
+        if unit is None:
+            raise NoRule("READ with no unit")
+        name = str(unit).strip().lower()
+        declared = self.semantics.declaration(name) if UNIT_NAME.fullmatch(name) else None
+        if declared is not None and declared.get("dtype") == "str":
+            raise NoRule("internal READ: the unit is a character variable")
+        targets, specs = [], []
+        for item in items.children if hasattr(items, "children") else [items]:
+            target, spec = self._read_item(item)
+            targets.append(target)
+            specs.append(spec)
+        if not targets:
+            raise NoRule("READ with no item list")
+        settings = "" if advance is None else f", advance={advance}"
+        settings += "" if position_ is None else f", pos={position_}"
+        settings += "" if iostat is None else ", strict=False"
+        call = (
+            f"_f_read({self.expressions.render(unit)}, {self._io_format(format_, 'READ')}, "
+            f"[{', '.join(specs)}]{settings})"
+        )
+        return [f"{pad}{', '.join([iostat or '_', *targets])} = {call}"]
+
+    def _read_item(self, item: Any) -> tuple[str, str]:
+        """``(assignment target, item spec)`` for one input item.
+
+        The spec is ``(dtype, count, width)``: how the runtime parses the
+        field, how many values the item takes, and the declared character
+        length an ``A`` descriptor needs. An array item reads its own extent
+        to know the count, which is what the source side records too.
+        """
+        if isinstance(item, f03.Name):
+            name = str(item).lower()
+        elif isinstance(item, f03.Part_Ref):
+            name = str(item.children[0]).lower()
+        else:
+            raise NoRule(f"READ item {str(item)!r} is not a variable")
+        declared = self.semantics.declaration(name)
+        if declared is None:
+            raise NoRule(f"READ into {name!r}, which is not declared here")
+        dtype = str(declared.get("dtype"))
+        if dtype not in READ_DTYPES:
+            raise NoRule(f"READ into {name!r}, of type {dtype}")
+        length = str(declared.get("char_len") or "").strip()
+        width = length if length.isdigit() else ("1" if dtype == "str" and not length else "None")
+        rendered = (
+            self.names.symbol(name) if isinstance(item, f03.Name) else self.expressions.render(item)
+        )
+        if self.semantics.rank(item) == 0:
+            return rendered, f"({dtype!r}, None, {width})"
+        target = f"{rendered}[...]" if isinstance(item, f03.Name) else rendered
+        return target, f"({dtype!r}, np.size({rendered}), {width})"
+
+    def _open(self, node: Any, pad: str) -> list[str]:
+        """OPEN: a connection the READs below it read through.
+
+        ``newunit=`` and ``iostat=`` are writes, so this is not a stub; the
+        rest of the specifiers are passed to the runtime as they stand.
+        """
+        arguments: dict[str, str] = {}
+        unit = "None"
+        newunit = iostat = None
+        for position, (key, value) in enumerate(self._io_specifiers(node.children[1])):
+            if key == "UNIT" or (key is None and position == 0):
+                unit = self.expressions.render(value)
+            elif key == "NEWUNIT":
+                newunit = self._io_target(value)
+            elif key == "IOSTAT":
+                iostat = self._io_target(value)
+            elif key in OPEN_SPECS:
+                if key == "STATUS" and str(value).strip("'\"").lower() == "scratch":
+                    raise NoRule("OPEN with STATUS='SCRATCH'")
+                arguments[key.lower()] = self.expressions.render(value)
+            else:
+                raise NoRule(f"OPEN with {key}= specifier")
+        spelled = ", ".join(
+            [unit, arguments.pop("file", "None")]
+            + [f"{key}={value}" for key, value in sorted(arguments.items())]
+            + ([] if iostat is None else ["strict=False"])
+        )
+        if newunit is None and iostat is None:
+            return [f"{pad}_f_open({spelled})"]
+        return [f"{pad}{iostat or '_'}, {newunit or '_'} = _f_open({spelled})"]
+
+    def _close(self, node: Any, pad: str) -> list[str]:
+        arguments, iostat = self._unit_and_iostat(node.children[1], "CLOSE", {"STATUS"})
+        return self._unit_call("_f_close", arguments, iostat, pad)
+
+    def _position(self, node: Any, pad: str) -> list[str]:
+        """REWIND, BACKSPACE, ENDFILE, FLUSH: the file position is state the
+        READs around them read, so each one moves it for real."""
+        shim = f"_f_{type(node).__name__[:-5].lower()}"
+        if node.children[0] is not None and not hasattr(node.children[0], "items"):
+            return [f"{pad}{shim}({self.expressions.render(node.children[0])})"]
+        arguments, iostat = self._unit_and_iostat(node.children[1], type(node).__name__[:-5], set())
+        return self._unit_call(shim, arguments, iostat, pad)
+
+    def _unit_and_iostat(
+        self, container: Any, statement: str, allowed: set[str]
+    ) -> tuple[list[str], str | None]:
+        """The unit, the specifiers ``allowed``, and the IOSTAT= target."""
+        arguments: list[str] = []
+        iostat = None
+        for position, (key, value) in enumerate(self._io_specifiers(container)):
+            if key == "UNIT" or (key is None and position == 0):
+                arguments.insert(0, self.expressions.render(value))
+            elif key == "IOSTAT":
+                iostat = self._io_target(value)
+            elif key in allowed:
+                arguments.append(f"{key.lower()}={self.expressions.render(value)}")
+            else:
+                raise NoRule(f"{statement} with {key}= specifier")
+        if not arguments:
+            raise NoRule(f"{statement} with no unit")
+        return arguments, iostat
+
+    @staticmethod
+    def _unit_call(shim: str, arguments: list[str], iostat: str | None, pad: str) -> list[str]:
+        if iostat is not None:
+            arguments.append("strict=False")
+            return [f"{pad}{iostat} = {shim}({', '.join(arguments)})"]
+        return [f"{pad}{shim}({', '.join(arguments)})"]
+
+    def _inquire(self, node: Any, pad: str) -> list[str]:
+        """INQUIRE: one assignment per output specifier.
+
+        Every specifier but UNIT= and FILE= is a write, which is why this was
+        refused rather than stubbed; a specifier the runtime can answer is
+        now translated, and one it cannot is still refused by name.
+        """
+        if node.children[1] is not None or node.children[2] is not None:
+            raise NoRule("INQUIRE(IOLENGTH=...)")
+        unit = "None"
+        file = "None"
+        outputs: list[tuple[str, str]] = []
+        for position, (key, value) in enumerate(self._io_specifiers(node.children[0])):
+            if key == "UNIT" or (key is None and position == 0):
+                unit = self.expressions.render(value)
+            elif key == "FILE":
+                file = self.expressions.render(value)
+            elif key in INQUIRE_SPECS:
+                outputs.append((key.lower(), self._io_target(value)))
+            else:
+                raise NoRule(f"inquire writes {key}=")
+        if not outputs:
+            raise NoRule("inquire with no output specifier")
+        return [f"{pad}{target} = _f_inquire({unit}, {file}, {key!r})" for key, target in outputs]
 
     # -- control flow ---------------------------------------------------------
 
@@ -1570,10 +1895,40 @@ class Statements:
         high = self.expressions.render(bounds[1])
         step = self.expressions.render(bounds[2]) if len(bounds) > 2 else None
         name = pysafe(str(variable).lower())
+        # Fortran leaves the index one step past the last iteration when the
+        # loop runs to completion (and at its start value when it never
+        # runs); Python leaves it at the last iteration. Where the body
+        # reads the index afterwards -- ``do j=1,n; if (...) exit; end do;
+        # k = j-1``, hfti's pseudorank -- the loop gets an ``else`` that sets
+        # the completion value. The bounds are evaluated once, at entry: a
+        # body that writes a name they use gets them held in temporaries.
+        hoisted: list[str] = []
+        # The step's spelling decides the range's stop edge below, so it is
+        # judged as written even when its value is held in a temporary.
+        spelled_step = step
+        if id(node) in self.index_read_after:
+            written = self._written_in_body(node)
+            if any(str(n).lower() in written for b in bounds for n in walk(b, f03.Name)):
+                held = {"lo": low, "hi": high, "st": step}
+                for key, text in held.items():
+                    if text is not None:
+                        hoisted.append(f"{pad}_do{key}_{name} = {text}")
+                low, high = f"_dolo_{name}", f"_dohi_{name}"
+                step = f"_dost_{name}" if step is not None else None
+            # One unified completion, whatever the step: the trip count times
+            # the step, past the low bound. ``increment`` is the step or 1, so
+            # a unit-step loop is ``(low) + max(0, high - low + 1) * (1)`` --
+            # the same ``max(0, ...)`` form as a stepped one, never negative.
+            increment = step if step is not None else "1"
+            trips = f"max(0, (({high}) - ({low}) + ({increment})) // ({increment}))"
+            completion = f"({low}) + {trips} * ({increment})"
+            tail = [f"{pad}else:", f"{pad}    {name} = {completion}"]
+        else:
+            tail = []
         if step is None:
             head = f"{pad}for {name} in range({low}, {high} + 1):"
         else:
-            text = step.lstrip("(").lstrip()
+            text = (spelled_step or step).lstrip("(").lstrip()
             if text.startswith("-") and not any(c.isalpha() or c == "_" for c in text[1:2]):
                 # A literal negative step: the stop edge is known at compile time.
                 head = f"{pad}for {name} in range({low}, {high} - 1, {step}):"
@@ -1587,18 +1942,27 @@ class Statements:
                     f"{pad}for {name} in range({low}, "
                     f"({high}) + (1 if ({step}) > 0 else -1), {step}):"
                 )
-        lines = [head, *self._loop_body(node, indent, cycle_name)]
-        if id(node) in self.index_read_after:
-            # CLUBB's lscale_width_vert_avg searches with ``do k_avg_upper =
-            # k, ...; if (...) exit; end do`` and then integrates up to
-            # k_avg_upper: on completion Fortran's index is the first value
-            # past the end, m1 + n * m3, and ``for``'s is the last one.
-            # ``else`` runs exactly when no ``break`` did.
-            increment = step if step is not None else "1"
-            trips = f"max(0, (({high}) - ({low}) + ({increment})) // ({increment}))"
-            lines.append(f"{pad}else:")
-            lines.append(f"{pad}    {name} = ({low}) + {trips} * ({increment})")
-        return lines
+        return [*hoisted, head, *self._loop_body(node, indent, cycle_name), *tail]
+
+    @staticmethod
+    def _written_in_body(node: Any) -> set[str]:
+        """Names a DO body may assign: assignment targets and call actuals."""
+        written: set[str] = set()
+        for child in node.children:
+            if isinstance(child, (f03.Nonlabel_Do_Stmt, f03.Label_Do_Stmt, f03.End_Do_Stmt)):
+                continue
+            for statement in walk(child, f03.Assignment_Stmt):
+                target = statement.children[0]
+                base = (
+                    target
+                    if isinstance(target, f03.Name)
+                    else next(iter(walk(target, f03.Name)), None)
+                )
+                if base is not None:
+                    written.add(str(base).lower())
+            for call in walk(child, f03.Call_Stmt):
+                written.update(str(n).lower() for n in walk(call, f03.Name))
+        return written
 
     def _caught_cycle(self, body: list[str], indent: int, cycle_name: str | None) -> list[str]:
         """A loop body, wrapped so a CYCLE naming *this* loop reaches its header."""
@@ -1785,7 +2149,11 @@ class Statements:
             return None
         return {**interface, "name": name}
 
-    def _call(self, node: Any, indent: int) -> list[str]:
+    def _call(self, node: Any, indent: int, result: Any = None) -> list[str]:
+        """A CALL statement -- or, with ``result``, an assignment whose
+        right-hand side is a reference to a function that hands OUT/INOUT
+        dummies back beside its result (``function_outputs``): ``result`` is
+        the assignment's target, unpacked first, the dummies after it."""
         pad = "    " * indent
         items = list(node.children[1].children) if node.children[1] is not None else []
         designator = node.children[0]
@@ -1843,7 +2211,12 @@ class Statements:
         if name in self.semantics.generics:
             name = self.semantics.dispatch(name, items)
         record = self.semantics.procedures.get(name)
-        if record is not None and record not in self.semantics.module["subprograms"]:
+        declared_here = (self.semantics.module.get("interfaces") or {}).values()
+        if (
+            record is not None
+            and record not in self.semantics.module["subprograms"]
+            and not any(record is declared for declared in declared_here)
+        ):
             record = None  # a companion's; resolved below through remotes
         prefix = ""
         if record is None and name in self.semantics.companion_generics:
@@ -1965,9 +2338,27 @@ class Statements:
                 except REFUSED:
                     pass
         # Host association: an internal callee takes the host variables it
-        # touches as extra trailing actuals.
+        # touches as extra trailing actuals, and hands back the ones it
+        # changes after its declared outputs (``Statements.returned_value``).
+        # A bare name as the target, an array included: the callee mutated
+        # the caller's array in place and returns that same object, or
+        # rebound its parameter to a new one, and rebinding here is right
+        # either way.
         for host_var in record.get("host_vars") or ():
             inputs.append(self.names.symbol(host_var))
+        for host_var in record.get("host_writes") or ():
+            outputs.append(self.names.symbol(host_var))
+        if result is not None:
+            if record.get("host_writes"):
+                raise NoRule(
+                    f"internal function {name} writes host variable(s) "
+                    f"{', '.join(record['host_writes'])}, which a function reference "
+                    "cannot carry back"
+                )
+            # The result comes first in the callee's tuple; the outputs
+            # bound above follow it, so their positions move up by one.
+            outputs.insert(0, self.target(result))
+            flattened = {position + 1 for position in flattened}
         # Python takes no positional argument after a keyword one, and
         # Fortran's optionals can leave a gap anywhere in the list.
         inputs = [a for a in inputs if "=" not in a] + [a for a in inputs if "=" in a]
@@ -1983,18 +2374,25 @@ class Statements:
             def value(index: int, text: str) -> str:
                 return f"np.ravel({text}, order='F')" if index in flattened else text
 
-            has_array = any("[...]" in target for target in outputs) or flattened
+            def copy_out(target: str, text: str) -> str:
+                # A target spelled with ``{}`` is a runtime write-back --
+                # ``_f_seq_tail_out(a, start, {})`` -- that takes the value
+                # itself, where a buffer target takes it through ``_f_copy_out``.
+                if "{}" in target:
+                    return f"{pad}{target.format(text)}"
+                return f"{pad}_f_copy_out({target.replace('[...]', '')}, {text})"
+
+            def copied(index: int, target: str) -> bool:
+                return "[...]" in target or "{}" in target or index in flattened
+
+            has_array = any(copied(i, target) for i, target in enumerate(outputs))
             if has_array and len(outputs) == 1:
-                base = outputs[0].replace("[...]", "")
-                return [f"{pad}_f_copy_out({base}, {value(0, call)})"]
+                return [copy_out(outputs[0], value(0, call))]
             if has_array:
                 lines = [f"{pad}_out = {call}"]
                 for i, target in enumerate(outputs):
-                    if "[...]" in target or i in flattened:
-                        lines.append(
-                            f"{pad}_f_copy_out({target.replace('[...]', '')}, "
-                            f"{value(i, f'_out[{i}]')})"
-                        )
+                    if copied(i, target):
+                        lines.append(copy_out(target, value(i, f"_out[{i}]")))
                     else:
                         lines.append(f"{pad}{target} = _out[{i}]")
                 return lines
@@ -2017,6 +2415,18 @@ class Statements:
             # A whole-array out actual: assign INTO the buffer, preserving
             # Fortran's aliasing semantics.
             if self.semantics.is_array(name):
+                formal_dims = formal.get("dims") or []
+                try:
+                    rank = self.semantics.rank(actual)
+                except REFUSED:
+                    rank = None
+                if formal_dims and rank is not None and rank != len(formal_dims):
+                    # A whole array of another rank -- a matrix to ``c(*)``,
+                    # a workspace to ``a(mda, n)``: the callee's array is the
+                    # storage in column-major order, and lands back the same
+                    # way, from the first cell -- not through ``_f_copy_out``,
+                    # whose rank-mismatch path walks the buffer in C order.
+                    return f"_f_seq_tail_out({self.names.symbol(name)}, 0, {{}})", False
                 return f"{self.names.symbol(name)}[...]", False
             return self.names.symbol(name), False
         if isinstance(actual, f03.Part_Ref):
@@ -2112,8 +2522,17 @@ class Statements:
     def returned_value(self) -> str:
         subprogram = self.semantics.subprogram
         if subprogram["kind"] == "function":
-            return pysafe(subprogram["result"])
+            # A function with a mandatory OUT/INOUT dummy hands it back
+            # beside its result (``function_outputs``); the reference site
+            # unpacks the tuple the way a CALL's is unpacked.
+            carried = [pysafe(a["name"]) for a in function_outputs(subprogram)]
+            return ", ".join([pysafe(subprogram["result"]), *carried])
         outputs = [pysafe(a["name"]) for a in subprogram["args"] if a["intent"] in ("OUT", "INOUT")]
+        # Host association: a host variable this internal procedure changes
+        # goes back the way an INOUT dummy does, after the declared outputs.
+        # It arrived as a trailing parameter under its own name (see
+        # ``Names.symbol``), so that is the name returned.
+        outputs.extend(pysafe(hw) for hw in subprogram.get("host_writes") or ())
         if not outputs:
             return ""
         return ", ".join(outputs) if len(outputs) > 1 else outputs[0]

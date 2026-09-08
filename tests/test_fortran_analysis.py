@@ -158,6 +158,51 @@ def test_derived_type_components_report_allocatable_and_pointer(tmp_path: Path) 
     assert (grid["dx"]["allocatable"], grid["dx"]["pointer"]) == (False, False)
 
 
+def test_public_types_follow_the_type_statement_and_the_module_default(tmp_path: Path) -> None:
+    """A reference wrapper that spells a derived-type dummy component by
+    component has to ``use`` the type, so which types the module exports is
+    a fact the record carries. ``type, public :: t`` decides on the type
+    statement, which the ``Access_Stmt`` walk behind ``public`` never sees;
+    a type saying nothing follows the module's default and its lists."""
+    hidden = _write(
+        tmp_path,
+        "hidden.f90",
+        """\
+module hidden_mod
+  implicit none
+  private
+  public :: listed_t
+  type, public :: marked_t
+    real :: a
+  end type marked_t
+  type :: listed_t
+    real :: b
+  end type listed_t
+  type :: quiet_t
+    real :: c
+  end type quiet_t
+end module hidden_mod
+""",
+    )
+    assert interface.extract(hidden)["public_types"] == ["listed_t", "marked_t"]
+    open_ = _write(
+        tmp_path,
+        "open.f90",
+        """\
+module open_mod
+  implicit none
+  type :: shown_t
+    real :: a
+  end type shown_t
+  type, private :: kept_t
+    real :: b
+  end type kept_t
+end module open_mod
+""",
+    )
+    assert interface.extract(open_)["public_types"] == ["shown_t"]
+
+
 def test_a_component_carries_a_shape_spelled_on_the_dimension_attribute(tmp_path: Path) -> None:
     """``real, dimension(4) :: edge`` says what ``real :: edge(4)`` says, and
     reading only the second reported the component as a scalar -- not a
@@ -425,6 +470,43 @@ def test_declaration_bounds_are_hoisted_too(tmp_path: Path) -> None:
     got = constants.extract(_write(tmp_path, "lit.f90", LITERALS))
     assert "I_5" in got["hoisted_literals"]
     assert any(loc.endswith(":decl") for loc in got["hoisted_literals"]["I_5"]["locations"])
+
+
+def test_local_parameter_initializers_are_hoisted_too(tmp_path: Path) -> None:
+    """``cos(94.0_wp*deg2rad)`` sits in the specification part, where the
+    execution-part sweep never looks. The prologue re-renders it as a local
+    assignment and needs a name for the 94.0 the way any statement would;
+    a bare or whitelisted literal is still left alone."""
+    src = """\
+module rot_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+  real(wp), parameter :: deg2rad = acos(-1.0_wp) / 180.0_wp
+contains
+  subroutine rot(x)
+    real(wp), intent(inout) :: x
+    real(wp), parameter :: cosr = cos(94.0_wp * deg2rad)
+    real(wp), parameter :: small = 10.0_wp**int(log(epsilon(1.0_wp)))
+    real(wp), parameter :: half = 0.5_wp
+    real(wp), parameter :: plain = 3.5_wp
+    parameter (twist = sin(86.0_wp * deg2rad))
+    real(wp) :: twist
+    x = x * cosr + small + half + plain + twist
+  end subroutine rot
+end module rot_mod
+"""
+    got = constants.extract(_write(tmp_path, "rot.f90", src))
+    hoisted = got["hoisted_literals"]
+    assert got["literal_map"]["rot"]["94.0_wp"] == "F_94P0"
+    assert got["literal_map"]["rot"]["10.0_wp"] == "F_10P0"
+    assert got["literal_map"]["rot"]["86.0_wp"] == "F_86P0"
+    for name in ("F_94P0", "F_10P0", "F_86P0"):
+        assert hoisted[name]["locations"] == ["rot:param"]
+    # The module-level initializer is the constants file's alone: not hoisted.
+    assert "F_180P0" not in hoisted
+    # Whitelisted values keep being written out where they are read.
+    assert "0.5_wp" not in got["literal_map"]["rot"]
+    assert "1.0_wp" not in got["literal_map"]["rot"]
 
 
 def test_an_unclassifiable_initializer_refuses(tmp_path: Path) -> None:
@@ -756,6 +838,19 @@ contains
     real, intent(out) :: y(:)
     y = x
   end subroutine sink
+  function bump(x, cnt) result(y)
+    real, intent(in) :: x
+    integer, intent(inout) :: cnt
+    real :: y
+    cnt = cnt + 1
+    y = x * 2.0
+  end function bump
+  subroutine search(x, cnt, alpha)
+    real, intent(in) :: x
+    integer, intent(inout) :: cnt
+    real, intent(out) :: alpha
+    alpha = bump(x, cnt)
+  end subroutine search
 end module rw_mod
 """
 
@@ -803,6 +898,15 @@ def test_allocate_and_deallocate_are_writes(tmp_path: Path) -> None:
     assert blocks["B005"] == {"id": "B005", "reads": [], "writes": ["pool"]}
 
 
+def test_a_function_reference_writes_its_inout_actuals(tmp_path: Path) -> None:
+    """``alpha = bump(x, cnt)`` changes ``cnt`` as surely as a CALL would;
+    the translation hands it back beside the result and unpacks it, so this
+    side counts the write too, or the two disagreed on every line search."""
+    block = _blocks(tmp_path, "search")["B001"]
+    assert block["reads"] == ["cnt", "x"]
+    assert block["writes"] == ["alpha", "cnt"]
+
+
 def test_a_call_splits_its_arguments_by_declared_intent(tmp_path: Path) -> None:
     call = _blocks(tmp_path)["B006"]
     # ``y(:)`` is an intent(out) the callee cannot size, so it is the
@@ -845,7 +949,8 @@ def test_a_component_name_is_not_a_read_on_the_out_argument_path(tmp_path: Path)
     answer: CLUBB's pdf_closure passes ``pdf_params%chi_1`` and six more
     components as OUT actuals, the candidate spells attributes and reads no
     variable of those names, and the gate scored six blocks as disagreeing
-    over reads of variables the scope does not have.
+    over reads of variables the scope does not have. SLSQP's
+    ``slsqpb(..., sdat%t, sdat%f0, ...)`` is the same shape.
     """
     from recast.fortran import rwset
 
@@ -858,7 +963,7 @@ def test_a_component_name_is_not_a_read_on_the_out_argument_path(tmp_path: Path)
     )
     blocks = {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, "drive"))}
     # ``slot(:)`` is a caller-buffer OUT (#36), so ``b`` is read as well as
-    # written on the call (#38); ``q`` is an attribute on both paths.
+    # written on the call (#38); ``q`` is an attribute on both paths, not a read.
     assert blocks["B001"] == {"id": "B001", "reads": ["b", "n"], "writes": ["b"]}, "out-argument"
     assert blocks["B002"] == {"id": "B002", "reads": ["n"], "writes": ["b"]}, "assignment"
 
@@ -884,6 +989,55 @@ def test_a_local_shadows_an_intrinsic_of_the_same_name(tmp_path: Path) -> None:
     node = walk(parse(src), f03.Subroutine_Subprogram)[0]
     blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
     assert blocks[1] == {"id": "B002", "reads": ["sum"], "writes": ["out"]}
+
+
+def test_locating_an_extreme_value_is_a_call_and_not_a_read(tmp_path: Path) -> None:
+    """``imin = minloc(a2(i:), 1) + i - 1`` reads ``a2`` and ``i``. Reading a
+    variable called ``minloc`` too is a read the translation -- ``np.argmin``
+    -- does not make, and it failed the only two blocks of the corpus's
+    sorting module that the static rwset gate rejected."""
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "locate.f90",
+        "module l_mod\ncontains\n"
+        "  subroutine go(a2, i, imin)\n"
+        "    real, intent(in) :: a2(:)\n"
+        "    integer, intent(in) :: i\n"
+        "    integer, intent(out) :: imin\n"
+        "    imin = minloc(a2(i:), 1) + i - 1\n"
+        "  end subroutine go\n"
+        "end module l_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = walk(parse(src), f03.Subroutine_Subprogram)[0]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
+    assert blocks[0] == {"id": "B001", "reads": ["a2", "i"], "writes": ["imin"]}
+
+
+def test_replicating_an_array_is_a_call_and_not_a_read(tmp_path: Path) -> None:
+    """``x2 = spread(x, 1, size(y))`` reads ``x`` and ``y``. Reading a variable
+    called ``spread`` too is a read the translation -- ``np.repeat`` -- does
+    not make, and it failed both blocks of ``meshgrid`` in the corpus's mesh
+    module."""
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "grid.f90",
+        "module g_mod\ncontains\n"
+        "  subroutine go(x, y, x2)\n"
+        "    real, intent(in) :: x(:), y(:)\n"
+        "    real, intent(out) :: x2(:, :)\n"
+        "    x2 = spread(x, 1, size(y))\n"
+        "  end subroutine go\n"
+        "end module g_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = walk(parse(src), f03.Subroutine_Subprogram)[0]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
+    assert blocks[0] == {"id": "B001", "reads": ["x", "y"], "writes": ["x2"]}
 
 
 def test_the_intrinsic_table_carries_names_not_translations(tmp_path: Path) -> None:
@@ -1069,6 +1223,85 @@ def test_companion_externals_carry_the_siblings_intents(tmp_path: Path) -> None:
     informed_blocks = {b["id"]: b for b in rwset.block_rwsets(node, informed)}
     assert "gamma" in informed_blocks["B002"]["writes"]
     assert "wv_sat_svp_water" not in informed_blocks["B003"]["reads"]
+
+
+def test_a_siblings_inout_position_is_read_as_well_as_written(tmp_path: Path) -> None:
+    """``dscal(n, alpha, s, 1)`` into a translated BLAS sibling: the callee's
+    ``dx`` is intent(inout), and the emitted call passes ``s`` in and unpacks
+    it, so the target side reads it. With the sibling's table saying only
+    which positions are written, this side recorded the write alone, and
+    every INOUT call into a sibling disagreed (SLSQP's line searches)."""
+    from recast.fortran import rwset
+
+    record = interface.extract(_write(tmp_path, "shadow.f90", SHADOWED), kind_assumptions=KINDS)
+    node = _sub_node(tmp_path, "interpolate")
+    written_only = rwset.scope_for(
+        record,
+        "interpolate",
+        externals={"qsat_water": {"kind": "subroutine", "out_positions": [2, 3]}},
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, written_only)}
+    assert "gamma" in blocks["B002"]["writes"] and "gamma" not in blocks["B002"]["reads"]
+
+    # A position the caller reads as well as writes -- an INOUT dummy -- is
+    # named in ``read_positions`` (upstream's encoding of what the lab spelled
+    # as a separate ``inout_positions``: the written positions that are also
+    # read are exactly ``out_positions & read_positions``). Position 2 is that
+    # position here.
+    inout = rwset.scope_for(
+        record,
+        "interpolate",
+        externals={
+            "qsat_water": {
+                "kind": "subroutine",
+                "out_positions": [2, 3],
+                "read_positions": [2],
+            }
+        },
+    )
+    blocks = {b["id"]: b for b in rwset.block_rwsets(node, inout)}
+    assert "gamma" in blocks["B002"]["writes"] and "gamma" in blocks["B002"]["reads"]
+
+
+def test_companion_externals_carry_the_siblings_inout_and_buffer_positions(
+    tmp_path: Path,
+) -> None:
+    """An INOUT dummy and a caller-buffer OUT (``dy(*)``) are positions the
+    caller reads as well as writes; a plain OUT is written alone."""
+    sibling = """\
+module blas_mod
+  use precision_mod, only: r8 => wp_r8
+  implicit none
+contains
+  subroutine dcopy(n, dx, incx, dy, incy)
+    integer, intent(in) :: n, incx, incy
+    real(r8), intent(in) :: dx(*)
+    real(r8), intent(out) :: dy(*)
+    dy(1) = dx(1)
+  end subroutine dcopy
+  subroutine dscal(n, da, dx, incx, flag)
+    integer, intent(in) :: n, incx
+    real(r8), intent(in) :: da
+    real(r8), intent(inout) :: dx(*)
+    integer, intent(out) :: flag
+    dx(1) = da * dx(1)
+    flag = 0
+  end subroutine dscal
+end module blas_mod
+"""
+    record = interface.extract(_write(tmp_path, "blas.f90", sibling), kind_assumptions=KINDS)
+    table = interface.companion_externals(record)
+    # Upstream names every read position in ``read_positions`` and flags a
+    # caller-buffer OUT in ``buffer_positions``; what the lab spelled as a
+    # separate ``inout_positions`` is the written positions that are also read
+    # -- ``out_positions & read_positions``. A buffer OUT (``dy(*)``) and an
+    # INOUT dummy (``dx``) are read as well as written; a plain OUT is not.
+    assert table["dcopy"]["out_positions"] == [3]
+    assert table["dcopy"]["buffer_positions"] == [3]
+    assert 3 in table["dcopy"]["read_positions"]  # the buffer OUT is read too
+    assert table["dscal"]["out_positions"] == [2, 4]
+    assert 2 in table["dscal"]["read_positions"]  # the INOUT dummy is read too
+    assert 4 not in table["dscal"]["read_positions"]  # a plain OUT is written alone
 
 
 def test_companion_externals_derive_from_the_siblings_record(tmp_path: Path) -> None:
@@ -1397,6 +1630,13 @@ def test_a_write_only_f77_dummy_is_given_the_intent_its_use_shows(tmp_path: Path
     intent(inout), because Fortran passes by reference and the update is the
     caller's to see. Without either attribute the return convention drops the
     dummy from the signature and from the return, and the value is lost.
+
+    An array the body writes is intent(inout) -- the caller's buffer, handed
+    back -- and one only handed to a callee's ``intent(in)`` dummy is read
+    there, so it is intent(in) here. Left UNKNOWN, the differential gate
+    refused the whole subprogram: SLATEC's ``dqtcrt(a, zr, zi)`` declares no
+    intents, reads ``a`` through ``dcbcrt(a(2), ...)`` and writes the other
+    two, and lost its reference over that.
     """
     from recast.fortran import interface
 
@@ -1404,15 +1644,22 @@ def test_a_write_only_f77_dummy_is_given_the_intent_its_use_shows(tmp_path: Path
 module f77ish
   implicit none
 contains
-  subroutine rates(x, made, used, buf, n, onward)
-    real :: x, made, used, buf(4), onward
+  subroutine rates(x, made, used, buf, n, onward, given, filled, away)
+    real :: x, made, used, buf(4), onward, given(3), filled(3), away(2)
     integer :: n
     made = x * 2.0
     used = x + used
     buf(1) = x
     n = 3
     call elsewhere(onward)
+    call reads(given(2), filled)
+    call elsewhere_too(away)
   end subroutine rates
+  subroutine reads(v, w)
+    real, intent(in) :: v(*)
+    real, intent(out) :: w(3)
+    w = v(1)
+  end subroutine reads
 end module f77ish
 """
     record = interface.extract(_write(tmp_path, "f77ish.f90", source), kind_assumptions=KINDS)
@@ -1422,7 +1669,21 @@ end module f77ish
     assert intents["used"] == "INOUT"  # read on its own right-hand side
     assert intents["x"] == "IN"  # only read
     assert intents["buf"] == "INOUT"  # one element written: the rest is the caller's (#23)
-    assert intents["onward"] == "UNKNOWN"  # only passed on; its fate is the callee's
+    assert intents["onward"] == "UNKNOWN"  # a scalar only passed on; its fate is the callee's
+    assert intents["given"] == "IN"  # handed to a dummy the callee declares intent(in)
+    # Handed whole to a dummy the callee fully writes: OUT, not INOUT -- the
+    # array write-only rule (#23) is more precise than the read-only pass's
+    # conservative INOUT for a settled array, and it settles this one first.
+    assert intents["filled"] == "OUT"
+    # An array only *passed on* to a procedure this file does not describe
+    # stays UNKNOWN, the same as the scalar ``onward`` and as
+    # ``elsewhere_bound`` in ``test_an_array_dummy_without_intent...``: its
+    # fate is the callee's. Upstream's array-aware write-only pass settles the
+    # arrays this file *does* write (``filled`` above), which is what the
+    # lab's blanket "escaping array is INOUT" read-only rule stood in for
+    # before; with that precision in place, guessing INOUT for one handed off
+    # to an unseen callee would be a read/write the gate cannot stand behind.
+    assert intents["away"] == "UNKNOWN"  # an array handed to a procedure with no body here
 
 
 def test_an_array_dummy_without_intent_is_given_the_intent_its_use_shows(tmp_path: Path) -> None:
@@ -1760,6 +2021,52 @@ def test_an_associate_binds_its_aliases_and_analyses_its_body(tmp_path: Path) ->
     assert {"dpai", "cp", "fp", "p", "w"} <= set(block["writes"])
     assert {"inst", "n", "filter", "dpai", "w"} <= set(block["reads"])
     assert "cp" not in block["reads"]
+
+
+def test_an_associate_that_only_reads_its_selector_reads_it(tmp_path: Path) -> None:
+    """numfor's ``csplint`` has an internal function whose whole use of the
+    host's ``csp`` is ``associate (A => csp%S(4, :))`` and a read of ``A``;
+    the selector counted as a write of ``csp``, and a function reference
+    cannot carry a host write back, so the block was refused (#49). The
+    alias is the selector: a body that only reads the alias reads the
+    variable, and the read-only pass can prove ``intent(in)``; one that
+    assigns the alias, or hands it to a dummy the callee writes, changes it,
+    through as many associations as the alias is passed through."""
+    from recast.fortran import interface
+
+    source = """\
+module assoc_intent
+  implicit none
+  type :: table
+    real :: s(4, 8)
+  end type table
+contains
+  subroutine bump(v)
+    real, intent(inout) :: v(:)
+    v = v + 1.0
+  end subroutine bump
+  function total(csp, i, seen, edited, handed, twice) result(y)
+    type(table), intent(in) :: csp
+    integer, intent(in) :: i
+    real :: seen(8), edited(8), handed(8), twice(8)
+    real :: y
+    associate (a => csp%s(4, :), b => seen, c => edited, d => handed, e => twice)
+      y = a(i) + b(i)
+      c(i) = y
+      call bump(d)
+      associate (f => e(1:2))
+        f(1) = y
+      end associate
+    end associate
+  end function total
+end module assoc_intent
+"""
+    record = interface.extract(_write(tmp_path, "assoc_intent.f90", source), kind_assumptions=KINDS)
+    intents = {a["name"]: a["intent"] for a in record["subprograms"][1]["args"]}
+    assert intents["seen"] == "IN"  # only read, through its alias
+    assert intents["edited"] != "IN"  # assigned through its alias
+    assert intents["handed"] != "IN"  # handed through its alias to an intent(inout) dummy
+    assert intents["twice"] != "IN"  # assigned through an alias of its alias
 
 
 REBASED_COMPONENT = """\
@@ -2719,3 +3026,516 @@ def test_a_select_case_with_a_stopping_default_is_the_dummys_domain(tmp_path: Pa
     assert by_name["mode"]["domain"] == [1, 2]
     assert "domain" not in by_name["k"]
     assert "domain" not in by_name["x"]
+
+
+def test_an_io_statement_reports_where_it_puts_what_it_read(tmp_path: Path) -> None:
+    """A READ writes its item list, INQUIRE writes its output specifiers, and
+    OPEN's NEWUNIT= writes the unit it allocated. The conservative fallback
+    called all three reads and no writes, which is the one direction this
+    analysis is not allowed to be wrong in -- and it disagreed with a
+    translation that makes the writes.
+
+    An array item is a read of itself as well: its extent is what decides how
+    many values the statement consumes, and the translation spells that.
+    """
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "io.f90",
+        "module io_mod\ncontains\n"
+        "  subroutine go(fname, row, n, ok)\n"
+        "    character(len=*), intent(in) :: fname\n"
+        "    real, intent(out) :: row(:)\n"
+        "    integer, intent(out) :: n\n"
+        "    logical, intent(out) :: ok\n"
+        "    integer :: u, ios\n"
+        "    open(newunit=u, file=fname, status='old')\n"
+        "    inquire(unit=u, opened=ok)\n"
+        "    read(u, *, iostat=ios) n\n"
+        "    read(u, *) row\n"
+        "    rewind(u)\n"
+        "    close(u)\n"
+        "  end subroutine go\n"
+        "end module io_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = walk(parse(src), f03.Subroutine_Subprogram)[0]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
+    assert blocks[0] == {"id": "B001", "reads": ["fname"], "writes": ["u"]}
+    assert blocks[1] == {"id": "B002", "reads": ["u"], "writes": ["ok"]}
+    assert blocks[2] == {"id": "B003", "reads": ["u"], "writes": ["ios", "n"]}
+    assert blocks[3] == {"id": "B004", "reads": ["row", "u"], "writes": ["row"]}
+    assert blocks[4] == {"id": "B005", "reads": ["u"], "writes": []}
+    assert blocks[5] == {"id": "B006", "reads": ["u"], "writes": []}
+
+
+def test_a_branch_specifier_is_control_flow_and_not_a_write(tmp_path: Path) -> None:
+    """``err=100`` names a statement label. Treating an output specifier as a
+    variable without asking what it is crashed the analysis on the first I/O
+    statement that took a branch."""
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "branch.f90",
+        "module b_mod\ncontains\n"
+        "  subroutine go(u, x)\n"
+        "    integer, intent(in) :: u\n"
+        "    real, intent(out) :: x\n"
+        "    read(u, *, err=100) x\n"
+        "100 continue\n"
+        "  end subroutine go\n"
+        "end module b_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = walk(parse(src), f03.Subroutine_Subprogram)[0]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "go"))
+    assert blocks[0] == {"id": "B001", "reads": ["u"], "writes": ["x"]}
+
+
+def test_an_internal_write_reads_its_format_and_not_the_function_it_calls(
+    tmp_path: Path,
+) -> None:
+    """``write(s, "(f0." // str_int(n) // ")") r`` reads ``n`` and ``r``.
+
+    ``str_int`` is a call, which is control flow -- the same distinction
+    ``expr_reads`` draws everywhere else -- and the emitted line makes the
+    call without reading a variable of that name. Taking every remaining name
+    in the control list instead reported the callee as a read the translation
+    does not make, and failed the block on a format nobody could spell
+    differently.
+    """
+    from recast.fortran import rwset
+
+    src = _write(
+        tmp_path,
+        "fmt.f90",
+        "module fmt_mod\ncontains\n"
+        "  pure function str_int(i) result(t)\n"
+        "    integer, intent(in) :: i\n"
+        "    character(len=8) :: t\n"
+        "    write(t, '(i0)') i\n"
+        "  end function str_int\n"
+        "  pure function show(r, n, fmt) result(s)\n"
+        "    real, intent(in) :: r\n"
+        "    integer, intent(in) :: n\n"
+        "    character(len=*), intent(in) :: fmt\n"
+        "    character(len=32) :: s\n"
+        '    write(s, "(f0." // str_int(n) // ")") r\n'
+        "    write(s, fmt) r\n"
+        "  end function show\n"
+        "end module fmt_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = walk(parse(src), f03.Function_Subprogram)[1]
+    blocks = rwset.block_rwsets(node, rwset.scope_for(record, "show"))
+    assert blocks[0] == {"id": "B001", "reads": ["n", "r"], "writes": ["s"]}
+    assert blocks[1] == {"id": "B002", "reads": ["fmt", "r"], "writes": ["s"]}
+
+
+def test_an_allocatable_dummy_says_so(tmp_path: Path) -> None:
+    """An ALLOCATABLE dummy and an assumed-shape one are both spelled with
+    deferred upper bounds, and only the first is sized by the callee. Whoever
+    has to pass one -- the f2py wrapper -- cannot tell them apart without
+    this."""
+    src = _write(
+        tmp_path,
+        "alloc.f90",
+        "module a_mod\ncontains\n"
+        "  subroutine go(fresh, given)\n"
+        "    real, allocatable, intent(out) :: fresh(:, :)\n"
+        "    real, intent(in) :: given(:)\n"
+        "    allocate(fresh(size(given), 1))\n"
+        "    fresh = 0.0\n"
+        "  end subroutine go\n"
+        "end module a_mod\n",
+    )
+    record = interface.extract(src, kind_assumptions=KINDS)
+    args = {a["name"]: a for a in record["subprograms"][0]["args"]}
+    assert args["fresh"].get("allocatable") is True
+    assert "allocatable" not in args["given"]
+
+
+# --- files a subprogram opens ------------------------------------------------
+
+FILES = """\
+module files_mod
+  implicit none
+contains
+  subroutine save_it(filename, d)
+    character(len=*), intent(in) :: filename
+    real(8), intent(in) :: d(:)
+    integer :: u
+    open(newunit=u, file=filename, status="replace")
+    write(u,*) d
+    write(*,*) size(d)
+    close(u)
+  end subroutine save_it
+
+  subroutine load_it(filename, n)
+    character(len=*), intent(in) :: filename
+    integer, intent(out) :: n
+    integer :: u
+    open(newunit=u, file=filename, access="stream", status="old")
+    read(u,*) n
+    close(u)
+  end subroutine load_it
+
+  subroutine complain(msg)
+    character(len=*), intent(in) :: msg
+    print *, msg
+  end subroutine complain
+end module files_mod
+"""
+
+
+def test_a_character_dummy_an_open_names_is_marked_a_path(tmp_path: Path) -> None:
+    """``character(len=*) :: filename`` and ``character(len=*) :: msg`` are
+    declared identically; only the body tells a path from a message. What the
+    OPEN asks of the file is the other half: a path the subprogram *creates*
+    is a scratch name any caller may choose, and one it opens ``STATUS='OLD'``
+    has to already hold something no caller wrote."""
+    record = interface.extract(_write(tmp_path, "files.f90", FILES), kind_assumptions=KINDS)
+    subs = {s["name"]: s for s in record["subprograms"]}
+    assert subs["save_it"]["args"][0]["path"] == "created"
+    assert subs["load_it"]["args"][0]["path"] == "existing"
+    assert "path" not in subs["complain"]["args"][0]
+    assert "path" not in subs["save_it"]["args"][1], "only a character dummy names a file"
+
+
+def test_the_unit_an_open_connects_is_recorded_for_the_writes_to_it(tmp_path: Path) -> None:
+    """A WRITE to a unit this body connected to a file puts records in that
+    file; a WRITE anywhere else is a log. Both sides of the read/write gate
+    have to draw that line in the same place, so the line is a fact the
+    interface record carries rather than one each side re-derives."""
+    record = interface.extract(_write(tmp_path, "files.f90", FILES), kind_assumptions=KINDS)
+    subs = {s["name"]: s for s in record["subprograms"]}
+    assert subs["save_it"]["file_units"] == ["u"]
+    assert subs["complain"]["file_units"] == []
+
+
+def test_a_write_to_a_file_unit_reads_its_item_list(tmp_path: Path) -> None:
+    """The stub a log write becomes reads nothing, and the source side has to
+    say so too or every such block disagrees. A write that is translated does
+    read its items -- the record is built out of them."""
+    from recast.fortran import rwset as rw
+
+    record = interface.extract(_write(tmp_path, "files.f90", FILES), kind_assumptions=KINDS)
+    scope = rw.scope_for(record, "save_it")
+    node = _write(tmp_path, "files.f90", FILES)
+    unit = parse(node)
+    writes = walk(unit, f03.Write_Stmt)
+    to_file = rw.rwset(writes[0], scope)
+    assert to_file[0] == {"d", "u"} and to_file[1] == set()
+    assert rw.rwset(writes[1], scope) == (set(), set()), "write(*,...) is a log"
+
+
+GUARDED = """\
+module guarded_mod
+  implicit none
+contains
+  subroutine evaluate(xi, c, val)
+    real, intent(in) :: xi(:)
+    real, intent(in) :: c(0:,:)
+    real, intent(out) :: val
+    if (size(c,1) /= 5) call stop_error("size(c,1) /= 5")
+    if (size(c,2) /= size(xi)-1) call stop_error("size(c,2) /= size(xi)-1")
+    if (size(xi) < 2) call stop_error("too short")
+    if (size(c,1) /= 9) call stop_error("a second word on the same extent")
+    val = c(1,1) + xi(1)
+  end subroutine evaluate
+end module guarded_mod
+"""
+
+
+def test_an_entry_check_on_a_shape_is_read_as_the_shape_it_requires(tmp_path: Path) -> None:
+    """``c(0:,:)`` is assumed-shape, so the interface says nothing about
+    either extent, and the two lines under it say the first is five and the
+    second one less than the length of ``xi``. A harness that has to *supply*
+    a shape has no other source for that, and every shape it invents is one
+    the subprogram stops on before computing anything.
+
+    ``<`` bounds a range with no single answer in it and is not a guard; a
+    second guard on an extent already spoken for is not one either -- the
+    first is the one the body reaches."""
+    record = interface.extract(_write(tmp_path, "guarded.f90", GUARDED))
+    guards = record["subprograms"][0]["shape_guards"]
+    assert guards == [
+        {"arg": "c", "axis": 0, "extent": "5"},
+        {"arg": "c", "axis": 1, "extent": "size(xi,0) - 1"},
+    ]
+
+
+LIBRARY_MODULE = """\
+module libwrap_mod
+  implicit none
+  interface
+    function block_size(n)
+      integer :: block_size, n
+    end function block_size
+    subroutine solve_it(n, a)
+      integer :: n
+      real :: a(n)
+    end subroutine solve_it
+  end interface
+contains
+  subroutine local_one(x)
+    real, intent(out) :: x
+    x = 1.0
+  end subroutine local_one
+end module libwrap_mod
+"""
+
+
+def test_a_procedure_a_sibling_only_declares_is_still_a_procedure(tmp_path: Path) -> None:
+    """The externals table is what tells a reader that ``nb = block_size(n)``
+    is a call and not an array being subscripted. An interface module over a
+    compiled library declares its procedures and defines none, so a table
+    built from the definitions alone left every one of them looking like
+    data. No position is known to be written: an interface block carries no
+    INTENT, which is exactly what the translation can say about the call."""
+    record = interface.extract(_write(tmp_path, "libwrap.f90", LIBRARY_MODULE))
+    table = interface.companion_externals(record)
+    # An interface block carries no INTENT, so no position is known to be
+    # written: ``out_positions`` is empty (and with it the written-and-read
+    # subset the lab spelled as ``inout_positions``). What matters is that the
+    # declared-only names are in the table as procedures at all.
+    assert table["block_size"]["kind"] == "function"
+    assert table["block_size"]["out_positions"] == []
+    assert table["solve_it"]["kind"] == "subroutine"
+    assert table["solve_it"]["out_positions"] == []
+    assert table["local_one"]["out_positions"] == [0]
+
+
+GENERIC_OVER_A_DECLARED_ONLY = """\
+module fft_wrap_mod
+  implicit none
+  interface
+    subroutine dcosti(n, wsave)
+      integer :: n
+      real :: wsave(*)
+    end subroutine dcosti
+  end interface
+  interface dct_t1i
+    procedure :: dcosti
+  end interface dct_t1i
+contains
+  subroutine local_one(x)
+    real, intent(out) :: x
+    x = 1.0
+  end subroutine local_one
+end module fft_wrap_mod
+"""
+
+
+def test_a_generic_over_a_declared_only_specific_has_an_entry(tmp_path: Path) -> None:
+    """fftpack's wrapper module names bare subprograms through generics
+    (``dct_t1i`` over ``dcosti``), and defines none of them: each specific is
+    in the table by its interface declaration alone. The generic's entry is
+    built from that declaration, where a lookup among the definitions found
+    nothing and ended the whole run."""
+    record = interface.extract(_write(tmp_path, "fft_wrap.f90", GENERIC_OVER_A_DECLARED_ONLY))
+    table = interface.companion_externals(record)
+    assert table["dcosti"]["kind"] == "subroutine"
+    assert table["dct_t1i"]["kind"] == "subroutine"
+    assert table["dct_t1i"]["out_positions"] == []
+
+
+VALUE_GUARDED = """\
+module bounded_mod
+  implicit none
+contains
+  subroutine solve(mode, weight, order, n)
+    integer, intent(in) :: mode(2)
+    real, intent(in) :: weight
+    integer, intent(in) :: order
+    integer, intent(inout) :: n
+    if (mode(1) < 1 .or. mode(1) > 2) call stop_error("mode /= 1 or 2")
+    if (weight < 0 .or. weight > 1) call stop_error("a real is not a mode")
+    if (order <= 0 .or. order >= 5) call stop_error("order outside 1..4")
+    if (n < 4) call stop_error("one-sided, so no range")
+    if (n < 1 .or. n > 3) n = 1
+  end subroutine solve
+end module bounded_mod
+"""
+
+
+def test_an_entry_check_on_a_value_is_read_as_the_range_it_requires(tmp_path: Path) -> None:
+    """``mode`` is a plain ``integer`` dummy, and nothing in the interface
+    says it selects between two modes -- the body's own first line does. A
+    harness drawing integers from a default range takes one draw in sixteen
+    for a pair of them, which is how a subprogram runs out of attempts having
+    compared nothing.
+
+    ``<=``/``>=`` move the bound by one, a real is left alone (its range is
+    not a mode and the operator's table is where it belongs), and a one-sided
+    check says nothing about the other end, so it is not a range. Nor is a
+    check the body *answers*: ``if (n < 1 .or. n > 3) n = 1`` says the
+    subprogram takes any ``n``, and reading it as a range would narrow every
+    draw to the branch that does nothing."""
+    record = interface.extract(_write(tmp_path, "bounded.f90", VALUE_GUARDED))
+    assert record["subprograms"][0]["value_guards"] == [
+        {"arg": "mode", "low": 1, "high": 2},
+        {"arg": "order", "low": 1, "high": 4},
+    ]
+
+
+# --- what the polyroots corpus module taught the read/write analysis ----------
+
+
+def _rw(tmp_path: Path, name: str, src: str, sub_name: str) -> dict[str, dict[str, Any]]:
+    from recast.fortran import rwset
+
+    path = _write(tmp_path, name, src)
+    record = interface.extract(path)
+    node = next(
+        s
+        for s in walk(parse(path), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == sub_name
+    )
+    return {b["id"]: b for b in rwset.block_rwsets(node, rwset.scope_for(record, sub_name))}
+
+
+SHADOWED_PARAMETER = """\
+module shadow_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+  real(wp), parameter :: pi = acos(-1.0_wp)
+contains
+  subroutine cshape(opi, n, out)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: opi(n)
+    real(wp), intent(out) :: out(n)
+    real(wp), dimension(n) :: pi
+    integer :: i
+    do i = 1, n
+      pi(i) = opi(i)
+    end do
+    out = pi
+  end subroutine cshape
+end module shadow_mod
+"""
+
+
+def test_a_local_array_shadowing_a_module_parameter_is_still_written(tmp_path: Path) -> None:
+    """cpoly declares an array ``pi`` beside the module's constant ``pi``.
+    The module's rank-0 entry used to overwrite the local's, so ``pi(i) =
+    opi(i)`` matched the statement-function heuristic and the whole
+    assignment -- its write and its read -- was dropped from the block."""
+    loop = _rw(tmp_path, "shadow.f90", SHADOWED_PARAMETER, "cshape")["B001"]
+    assert "pi" in loop["writes"]
+    assert "opi" in loop["reads"]
+
+
+IMPLIED_DO = """\
+module fill_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+contains
+  subroutine fill(deg, conv, alpha)
+    integer, intent(in) :: deg
+    integer, intent(out) :: conv(deg)
+    real(wp), intent(inout) :: alpha(deg+1)
+    integer :: i
+    conv = [(0, i=1,deg)]
+    alpha = [(alpha(i)*(3.8_wp*(i-1)+1),i=1,deg+1)]
+  end subroutine fill
+end module fill_mod
+"""
+
+
+def test_an_implied_do_constructor_writes_its_counter_and_reads_its_bounds(
+    tmp_path: Path,
+) -> None:
+    """``[(0, i=1,deg)]`` becomes ``[0 for i in range(1, deg + 1)]``: ``i`` is
+    bound by the constructor and ``deg`` is read. The generic descent read
+    ``i`` and nothing else, and every such block disagreed."""
+    blocks = _rw(tmp_path, "fill.f90", IMPLIED_DO, "fill")
+    first, second = blocks["B001"], blocks["B002"]
+    assert first["writes"] == ["conv", "i"] and first["reads"] == ["deg"]
+    assert "i" in second["writes"] and "deg" in second["reads"]
+    assert "i" in second["reads"], "the value expression reads the counter"
+
+
+HOST_VARS = """\
+module host_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+contains
+  subroutine rot(x, y, z)
+    real(wp), intent(in) :: x
+    real(wp), intent(out) :: y, z
+    real(wp) :: a, b
+    a = x
+    b = 2.0_wp * x
+    call helper(y)
+    z = func(y)
+  contains
+    subroutine helper(r)
+      real(wp), intent(out) :: r
+      r = a + b
+    end subroutine helper
+    function func(q) result(res)
+      real(wp), intent(in) :: q
+      real(wp) :: res
+      res = q * a
+    end function func
+  end subroutine rot
+end module host_mod
+"""
+
+
+def test_a_call_to_an_internal_procedure_reads_the_host_variables_it_uses(
+    tmp_path: Path,
+) -> None:
+    """The translation passes ``helper``'s host variables as trailing actuals
+    (``host_vars``), so on that side the call reads ``a`` and ``b``; without
+    the same reads here every block of rpoly that called one of its helpers
+    disagreed. A function reference counts them the same way."""
+    blocks = _rw(tmp_path, "host.f90", HOST_VARS, "rot")
+    call = blocks["B003"]
+    assert call["writes"] == ["y"] and call["reads"] == ["a", "b"]
+    reference = blocks["B004"]
+    assert reference["writes"] == ["z"] and reference["reads"] == ["a", "y"]
+
+
+DECLARED_IN_A_SUBPROGRAM = """\
+module eig_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+contains
+  subroutine eig(n, a, wr, wi, info)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: a(n, n)
+    real(wp), intent(out) :: wr(n), wi(n)
+    integer, intent(out) :: info
+    real(wp), dimension(1) :: vl, vr
+    real(wp) :: work(3*n)
+    interface
+      subroutine xgeev(jobvl, jobvr, n, a, lda, wr, wi, vl, ldvl, vr, ldvr, work, lwork, info)
+        implicit none
+        character :: jobvl, jobvr
+        integer :: info, lda, ldvl, ldvr, lwork, n
+        double precision :: a(lda, *), vl(ldvl, *), vr(ldvr, *), wi(*), work(*), wr(*)
+      end subroutine xgeev
+    end interface
+    call xgeev('N', 'N', n, a, n, wr, wi, vl, 1, vr, 1, work, 3*n, info)
+  end subroutine eig
+end module eig_mod
+"""
+
+
+def test_an_interface_declared_inside_a_subprogram_is_extracted(tmp_path: Path) -> None:
+    """polyroots declares LAPACK's ``dgeev`` in the subroutine that calls it.
+    Collected only from the module's specification part, the declaration was
+    invisible: the call was refused as an unknown external, and the reference
+    build had nothing to stub the undefined symbol with."""
+    record = interface.extract(_write(tmp_path, "eig.f90", DECLARED_IN_A_SUBPROGRAM))
+    declared = record["interfaces"]["xgeev"]
+    assert declared["kind"] == "subroutine"
+    assert [a["name"] for a in declared["args"]][:3] == ["jobvl", "jobvr", "n"]
+    assert declared["args"][7]["dims"][-1].get("assumed_size"), "vl(ldvl, *)"
+    assert "xgeev" not in {s["name"] for s in record["subprograms"]}, "declared, not defined"
+    eig = next(s for s in record["subprograms"] if s["name"] == "eig")
+    assert "xgeev" in eig["external_calls"], "still an external for the reference build"

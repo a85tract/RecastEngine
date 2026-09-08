@@ -2,39 +2,15 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 647,
-   "deferred": 43,
+   "blocks": 685,
+   "deferred": 4,
    "refusals": [
-    [
-     "seq-assoc: element of w for an assumed-size dummy is only a view when both are rank-N",
-     25
-    ],
-    [
-     "seq-assoc: element of a for an assumed-size dummy is only a view when both are rank-N",
-     6
-    ],
-    [
-     "seq-assoc: element of g for an assumed-size dummy is only a view when both are rank-N",
-     4
-    ],
-    [
-     "seq-assoc: element of vnikx for an assumed-size dummy is only a view when both are rank-N",
-     2
-    ],
     [
      "size with a dim= or mask= keyword",
      2
     ],
     [
-     "seq-assoc: element of u for an assumed-size dummy is only a view when both are rank-N",
-     1
-    ],
-    [
      "seq-assoc target: w is not rank-N and not at a lower bound",
-     1
-    ],
-    [
-     "dbfqad/P001: local parameter min_tol (literal 'X' was never hoisted, so it has no name to ",
      1
     ],
     [
@@ -60,7 +36,7 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "8 subprogram(s) could not be compared: daxpy: 7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s",
+       "detail": "8 subprogram(s) could not be compared: daxpy: 19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of ",
        "metrics": {
         "bit_exact": 160,
         "declined": {
@@ -77,22 +53,22 @@
         "reference_isolation": "process",
         "subprograms": {
          "dasum": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "17 draw(s) were declined (17 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "daxpy": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dcopy": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "ddot": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "18 draw(s) were declined (18 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dnrm2": {
-          "error": "candidate raised: NameError: name 'radix' is not defined"
+          "error": "candidate raised: NameError: name 'minexponent' is not defined"
          },
          "drotm": {
-          "error": "9 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 160 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "31 draw(s) were declined (31 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "drotmg": {
           "bit_exact": 80,
@@ -119,14 +95,14 @@
           "nan_mismatch": 0,
           "points": 80,
           "redrawn": 9,
-          "reshaped": 4,
+          "reshaped": 0,
           "shaped": 0
          },
          "dswap": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 160 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "22 draw(s) were declined (22 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "idamax": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "26 draw(s) were declined (26 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          }
         },
         "trials": 10
@@ -147,28 +123,59 @@
      }
     },
     "fortran:bspline_defc_module": {
-     "deferred": 38,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
-      "static.rwset": {
-       "detail": "1/290 blocks disagree: sort_ascending/B002",
+      "differential.bitexact": {
+       "detail": "3 subprogram(s) could not be compared: defc: candidate raised: ValueError: cannot reshape array of size 0 into shape (0,newaxis); dfc: candidate raised: ValueEr",
        "metrics": {
-        "blocks_checked": 290,
-        "blocks_deferred": 38,
-        "blocks_matched": 289,
+        "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 0,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "dcv": {
+          "error": "argument(s) w have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
+         },
+         "defc": {
+          "error": "candidate raised: ValueError: cannot reshape array of size 0 into shape (0,newaxis)"
+         },
+         "dfc": {
+          "error": "candidate raised: ValueError: can only specify one unknown dimension"
+         }
+        },
+        "trials": 10
+       },
+       "passed": false
+      },
+      "static.rwset": {
+       "detail": "328 blocks match",
+       "metrics": {
+        "blocks_checked": 328,
+        "blocks_deferred": 0,
+        "blocks_matched": 328,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -200,28 +207,29 @@
      }
     },
     "fortran:bspline_sub_module": {
-     "deferred": 5,
+     "deferred": 4,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "3/313 blocks disagree: check/B001, dbsgq8/B009, dbsgq8/B010",
+       "detail": "313 blocks match",
        "metrics": {
         "blocks_checked": 313,
-        "blocks_deferred": 5,
-        "blocks_matched": 310,
+        "blocks_deferred": 4,
+        "blocks_matched": 313,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     }
@@ -401,15 +409,11 @@
   },
   "fftpack": {
    "bare_files": 50,
-   "blocks": 20,
-   "deferred": 16,
+   "blocks": 28,
+   "deferred": 8,
    "refusals": [
     [
      "array of declared type 'X': no NumPy dtype spells it",
-     8
-    ],
-    [
-     "call to external subroutine 'X'",
      8
     ]
    ],
@@ -449,48 +453,50 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/2 blocks disagree: dct_rk/B001, idct_rk/B001",
+       "detail": "2 blocks match",
        "metrics": {
         "blocks_checked": 2,
         "blocks_deferred": 4,
-        "blocks_matched": 0,
+        "blocks_matched": 2,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
     "fortran:fftpack_fft": {
-     "deferred": 3,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/2 blocks disagree: fft_rk/B001",
+       "detail": "4 blocks match",
        "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 3,
-        "blocks_matched": 1,
+        "blocks_checked": 4,
+        "blocks_deferred": 1,
+        "blocks_matched": 4,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -522,28 +528,29 @@
      }
     },
     "fortran:fftpack_ifft": {
-     "deferred": 3,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/2 blocks disagree: ifft_rk/B001",
+       "detail": "4 blocks match",
        "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 3,
-        "blocks_matched": 1,
+        "blocks_checked": 4,
+        "blocks_deferred": 1,
+        "blocks_matched": 4,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -575,54 +582,56 @@
      }
     },
     "fortran:fftpack_irfft": {
-     "deferred": 3,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/2 blocks disagree: irfft_rk/B001",
+       "detail": "4 blocks match",
        "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 3,
-        "blocks_matched": 1,
+        "blocks_checked": 4,
+        "blocks_deferred": 1,
+        "blocks_matched": 4,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
     "fortran:fftpack_rfft": {
-     "deferred": 3,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/2 blocks disagree: rfft_rk/B001",
+       "detail": "4 blocks match",
        "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 3,
-        "blocks_matched": 1,
+        "blocks_checked": 4,
+        "blocks_deferred": 1,
+        "blocks_matched": 4,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -657,20 +666,12 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 494,
-   "deferred": 108,
+   "blocks": 540,
+   "deferred": 54,
    "refusals": [
     [
      "call to external subroutine 'X'",
      48
-    ],
-    [
-     "generic 'X': ambiguous between ['X', 'X']",
-     34
-    ],
-    [
-     "READ writes its item list; an I/O stub would drop the writes",
-     8
     ],
     [
      "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
@@ -679,54 +680,6 @@
     [
      "goto N is not a loop-exit pattern",
      3
-    ],
-    [
-     "inquire writes OPENED=",
-     1
-    ],
-    [
-     "formatted internal write with a non-literal format",
-     1
-    ],
-    [
-     "qr_fact/P001: local array tau: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "inquire writes POS=",
-     1
-    ],
-    [
-     "write with ADVANCE= control",
-     1
-    ],
-    [
-     "spline3/P001: local array c: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3ders/P001: local array c: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3pars/P001: local array as: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3pars/P002: local array bs: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3pars/P003: local array cs: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3pars/P004: local array ipiv2: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "spline3pars/P005: local array bmat: extent not resolvable (dim expr 'X')",
-     1
     ]
    ],
    "status": "failed",
@@ -759,9 +712,8 @@
      }
     },
     "fortran:linalg": {
-     "deferred": 66,
-     "import_error": "ModuleNotFoundError: No module named 'lapack_numpy'",
-     "imports": false,
+     "deferred": 35,
+     "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
@@ -773,11 +725,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "13/229 blocks disagree: deig/B011, zeig/B012, deigvals/B010, zeigvals/B011, deigh_simple/B009 (+8 more)",
+       "detail": "5/259 blocks disagree: ddiag/B004, zdiag/B004, qr_fact/B001, qr_fact/B006, qr_fact/B015",
        "metrics": {
-        "blocks_checked": 229,
-        "blocks_deferred": 66,
-        "blocks_matched": 216,
+        "blocks_checked": 259,
+        "blocks_deferred": 35,
+        "blocks_matched": 254,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -792,13 +744,99 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "2 subprogram(s) could not be compared: meshexp: 16 draw(s) were declined (16 error stop) to compare 10 trial(s); the trials compared are a minority of what the ",
+       "metrics": {
+        "bit_exact": 1434,
+        "declined": {
+         "NaN on both sides": 1,
+         "error stop": 8
+        },
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 10,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 1434,
+        "redrawn": 9,
+        "reference_isolation": "process",
+        "subprograms": {
+         "get_meshexp_pars": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "linspace": {
+          "bit_exact": 57,
+          "declined": {
+           "NaN on both sides": 1
+          },
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 57,
+          "redrawn": 1,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "meshexp": {
+          "error": "16 draw(s) were declined (16 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+         },
+         "meshexp_der": {
+          "bit_exact": 57,
+          "declined": {
+           "error stop": 8
+          },
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 57,
+          "redrawn": 8,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "meshexp_der2": {
+          "error": "16 draw(s) were declined (16 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+         },
+         "meshgrid": {
+          "bit_exact": 1280,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1280,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": false
+      },
       "static.rwset": {
        "detail": "10 blocks match",
        "metrics": {
@@ -819,13 +857,40 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "2 subprogram(s) could not be compared: bisect: 24 draw(s) were declined (18 error stop) to compare 10 trial(s); the trials compared are a minority of what the c",
+       "metrics": {
+        "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 0,
+        "redrawn": 0,
+        "reference_isolation": "in-process (call-back arguments: bisect, secant)",
+        "subprograms": {
+         "bisect": {
+          "error": "24 draw(s) were declined (18 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+         },
+         "secant": {
+          "error": "11 draw(s) were declined (11 error stop) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+         }
+        },
+        "trials": 10
+       },
+       "passed": false
+      },
       "static.rwset": {
        "detail": "16 blocks match",
        "metrics": {
@@ -840,60 +905,291 @@
      }
     },
     "fortran:ppm": {
-     "deferred": 7,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": null,
      "verdicts": {
-      "static.rwset": {
-       "detail": "6/14 blocks disagree: loadppm/B001, loadppm/B008, loadppm/B009, loadppm/B013, saveppm/B001 (+1 more)",
+      "differential.bitexact": {
+       "detail": "6520 points across 1 subprogram(s), all bit-exact; 1 subprogram(s) ungated, no reference: loadppm (character argument filename: no generated draw for one)",
        "metrics": {
-        "blocks_checked": 14,
-        "blocks_deferred": 7,
-        "blocks_matched": 8,
+        "bit_exact": 6520,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 6520,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 6520,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "saveppm": {
+          "bit_exact": 6520,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 6520,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 6520,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "loadppm": "character argument filename: no generated draw for one"
+        }
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "21 blocks match",
+       "metrics": {
+        "blocks_checked": 21,
+        "blocks_deferred": 0,
+        "blocks_matched": 21,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     },
     "fortran:sorting": {
-     "deferred": 1,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": null,
      "verdicts": {
-      "static.rwset": {
-       "detail": "39 blocks match",
+      "differential.bitexact": {
+       "detail": "14560 points across 12 subprogram(s), all bit-exact",
        "metrics": {
-        "blocks_checked": 39,
-        "blocks_deferred": 1,
-        "blocks_matched": 39,
+        "bit_exact": 14560,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 480,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 14560,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "iargsort": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "rargsort": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortinumcnumpairs": {
+          "bit_exact": 240,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 240,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortinummatpairs": {
+          "bit_exact": 5200,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 5200,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortinums": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortinumvecpairs": {
+          "bit_exact": 720,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 720,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortnumcvecpairs": {
+          "bit_exact": 1360,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1360,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortnummatpairs": {
+          "bit_exact": 5200,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 5200,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortnumnumpairs": {
+          "bit_exact": 160,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 160,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortnums": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortnumvecpairs": {
+          "bit_exact": 720,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 720,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "sortvecs": {
+          "bit_exact": 640,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 640,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "40 blocks match",
+       "metrics": {
+        "blocks_checked": 40,
+        "blocks_deferred": 0,
+        "blocks_matched": 40,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
      }
     },
     "fortran:special": {
-     "deferred": 19,
+     "deferred": 16,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -906,11 +1202,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/92 blocks disagree: bessel_j0_zeros/B001, spherical_bessel_jn_zeros/B001",
+       "detail": "1/95 blocks disagree: sphj/B007",
        "metrics": {
-        "blocks_checked": 92,
-        "blocks_deferred": 19,
-        "blocks_matched": 90,
+        "blocks_checked": 95,
+        "blocks_deferred": 16,
+        "blocks_matched": 94,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -919,7 +1215,7 @@
      }
     },
     "fortran:splines": {
-     "deferred": 10,
+     "deferred": 3,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -936,7 +1232,7 @@
        "detail": "51 blocks match",
        "metrics": {
         "blocks_checked": 51,
-        "blocks_deferred": 10,
+        "blocks_deferred": 3,
         "blocks_matched": 51,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
@@ -973,28 +1269,116 @@
      }
     },
     "fortran:utils": {
-     "deferred": 5,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": null,
      "verdicts": {
-      "static.rwset": {
-       "detail": "7/43 blocks disagree: stop_error/B001, loadtxt/B001, loadtxt/B005, loadtxt/B008, loadtxt/B011 (+2 more)",
+      "differential.bitexact": {
+       "detail": "16730 points across 3 subprogram(s), all bit-exact; 7 draw(s) declined and drawn again (7 error stop); 13 subprogram(s) ungated, no reference: arange (u: alloca",
        "metrics": {
-        "blocks_checked": 43,
-        "blocks_deferred": 5,
-        "blocks_matched": 36,
+        "bit_exact": 16730,
+        "declined": {
+         "error stop": 7
+        },
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 16730,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 16730,
+        "redrawn": 7,
+        "reference_isolation": "process",
+        "subprograms": {
+         "assert": {
+          "bit_exact": 0,
+          "declined": {
+           "error stop": 7
+          },
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 0,
+          "redrawn": 7,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "newunit": {
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "savetxt": {
+          "bit_exact": 16720,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 16720,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 16720,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "arange": "u: allocatable array the callee sizes",
+         "blank": "character argument string: no generated draw for one",
+         "getstring": "character argument s: no generated draw for one",
+         "loadtxt": "character argument filename: no generated draw for one",
+         "lowcase": "character argument s: no generated draw for one",
+         "numstrings": "character argument s: no generated draw for one",
+         "stop_error": "character argument msg: no generated draw for one",
+         "str_int": "character result, fixed at len=128 by the wrapper",
+         "str_real": "character result, fixed at len=128 by the wrapper",
+         "str_real_len": "character argument fmt: no generated draw for one",
+         "str_real_n": "character result, fixed at len=128 by the wrapper",
+         "upcase": "character argument s: no generated draw for one",
+         "whitechar": "character argument char: no generated draw for one"
+        }
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "48 blocks match",
+       "metrics": {
+        "blocks_checked": 48,
+        "blocks_deferred": 0,
+        "blocks_matched": 48,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     }
@@ -1357,8 +1741,8 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 897,
-   "deferred": 56,
+   "blocks": 898,
+   "deferred": 51,
    "refusals": [
     [
      "generic 'X': no match",
@@ -1373,19 +1757,19 @@
      8
     ],
     [
-     "generic 'X': ambiguous between ['X', 'X']",
-     7
-    ],
-    [
-     "READ writes its item list; an I/O stub would drop the writes",
-     4
-    ],
-    [
      "do with a loop control that is neither a count nor a condition",
      4
     ],
     [
-     "generic 'X': ambiguous between ['X', 'X', 'X', 'X']",
+     "function rng_rand64 has OUT/INOUT dummy argument(s) state, which only a whole-statement re",
+     4
+    ],
+    [
+     "generic 'X': ambiguous between ['X', 'X']",
+     2
+    ],
+    [
+     "READ into 'X', which is not declared here",
      2
     ],
     [
@@ -1393,7 +1777,7 @@
      1
     ],
     [
-     "merge_sorted/P001: local array xo: extent not resolvable (dim expr 'X')",
+     "internal READ: the unit is a character variable",
      1
     ],
     [
@@ -1405,19 +1789,11 @@
      1
     ],
     [
+     "READ with IOMSG= control",
+     1
+    ],
+    [
      "cspl_interpdev_tab/P001: local array tofill: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "cspleps/P001: local array r: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "cspleps/P002: local array f: extent not resolvable (dim expr 'X')",
-     1
-    ],
-    [
-     "cspleps/P003: local array s: extent not resolvable (dim expr 'X')",
      1
     ],
     [
@@ -1431,33 +1807,42 @@
     [
      "rng_init_by_array/P001: out-arg state: INTENT(OUT) derived-type dummy not materialized at ",
      1
+    ],
+    [
+     "function rng_rand_real2 has OUT/INOUT dummy argument(s) state, which only a whole-statemen",
+     1
+    ],
+    [
+     "OPEN with ERR= specifier",
+     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:array_utils": {
-     "deferred": 2,
+     "deferred": 1,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/69 blocks disagree: save_array1d/B021, save_array2d/B016",
+       "detail": "69 blocks match",
        "metrics": {
         "blocks_checked": 69,
-        "blocks_deferred": 2,
-        "blocks_matched": 67,
+        "blocks_deferred": 1,
+        "blocks_matched": 69,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1561,28 +1946,29 @@
      }
     },
     "fortran:csplines": {
-     "deferred": 13,
+     "deferred": 10,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/67 blocks disagree: csplint/B006, csplint/B012, csplint/B016, csplint_square/B011, csplint_square/B015",
+       "detail": "67 blocks match",
        "metrics": {
         "blocks_checked": 67,
-        "blocks_deferred": 13,
-        "blocks_matched": 62,
+        "blocks_deferred": 10,
+        "blocks_matched": 67,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1620,22 +2006,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/124 blocks disagree: splrep_msg/B002",
+       "detail": "124 blocks match",
        "metrics": {
         "blocks_checked": 124,
         "blocks_deferred": 8,
-        "blocks_matched": 123,
+        "blocks_matched": 124,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1727,13 +2114,46 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "failed",
       "verifier/static.rwset": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "3 subprogram(s) could not be compared: logspace: candidate raised: NotImplementedError: do with a loop control that is neither a count nor a condition; geomspac",
+       "metrics": {
+        "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 0,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "geomspace": {
+          "error": "candidate raised: NotImplementedError: do with a loop control that is neither a count nor a condition"
+         },
+         "loglinspace": {
+          "error": "18 draw(s) were declined (no reason recorded) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
+         },
+         "logspace": {
+          "error": "candidate raised: NotImplementedError: do with a loop control that is neither a count nor a condition"
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "arange": "array-valued result with a deferred/assumed extent is not wrappable; wrap it by hand or drop the subprogram from the gate"
+        }
+       },
+       "passed": false
+      },
       "static.rwset": {
        "detail": "41 blocks match",
        "metrics": {
@@ -1754,22 +2174,23 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "2/34 blocks disagree: histogram/B005, get_bins/B001",
+       "detail": "34 blocks match",
        "metrics": {
         "blocks_checked": 34,
         "blocks_deferred": 1,
-        "blocks_matched": 32,
+        "blocks_matched": 34,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1861,48 +2282,249 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "49 subprogram(s) could not be compared: init_by_type: unsupported declared dtype(s) argument 'put'='UNKNOWN(TYPE(GENRAND_STATE))', argument 'get'='UNKNOWN(TYPE(",
+       "metrics": {
+        "bit_exact": 0,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 90,
+        "integer_points": 90,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 90,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "genrand_int31_0d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_1d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int31_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_0d": {
+          "bit_exact": 0,
+          "declined": {},
+          "integer_mismatch": 10,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "genrand_int32_1d": {
+          "bit_exact": 0,
+          "declined": {},
+          "integer_mismatch": 80,
+          "integer_points": 80,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "genrand_int32_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_int32_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_0d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_1d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real1_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_0d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_1d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real2_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_0d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_1d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_real3_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_0d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_1d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_2d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_3d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_4d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_5d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_6d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "genrand_res53_7d": {
+          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+         },
+         "init_by_array": {
+          "error": "candidate raised: NameError: name 'ibits' is not defined"
+         },
+         "init_by_scalar": {
+          "error": "candidate raised: NameError: name 'ibits' is not defined"
+         },
+         "init_by_type": {
+          "error": "unsupported declared dtype(s) argument 'put'='UNKNOWN(TYPE(GENRAND_STATE))', argument 'get'='UNKNOWN(TYPE(GENRAND_STATE))'; supported dtypes are bool, complex128, complex64, float32, float64, int32, int64"
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "genrand_decode": "character argument chr: no generated draw for one",
+         "genrand_dump_state": "argument 'rpr' has dtype 'UNKNOWN(TYPE(GENRAND_SREPR))', which this wrapper cannot spell (component genrand_srepr%repr has dtype 'str'); wrap it by hand or drop the subprogram from the gate",
+         "genrand_load_state": "argument 'stt' has dtype 'UNKNOWN(TYPE(GENRAND_STATE))', which this wrapper cannot spell (component genrand_state%val is not a scalar); wrap it by hand or drop the subprogram from the gate"
+        }
+       },
+       "passed": false
+      },
       "static.rwset": {
-       "detail": "3/187 blocks disagree: genrand_encode/B002, genrand_encode/B003, genrand_decode/B002",
+       "detail": "187 blocks match",
        "metrics": {
         "blocks_checked": 187,
         "blocks_deferred": 3,
-        "blocks_matched": 184,
+        "blocks_matched": 187,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
     "fortran:mtrandom": {
-     "deferred": 4,
+     "deferred": 10,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/32 blocks disagree: read_urandom/B001",
+       "detail": "26 blocks match",
        "metrics": {
-        "blocks_checked": 32,
-        "blocks_deferred": 4,
-        "blocks_matched": 31,
+        "blocks_checked": 26,
+        "blocks_deferred": 10,
+        "blocks_matched": 26,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     },
@@ -1940,13 +2562,78 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "f2py-golden",
+     "stopped_by": null,
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "110 points across 3 subprogram(s), all bit-exact; 2 draw(s) declined and drawn again (no reason recorded); 2 subprogram(s) ungated, no reference: polyder (array",
+       "metrics": {
+        "bit_exact": 110,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 110,
+        "redrawn": 2,
+        "reference_isolation": "process",
+        "subprograms": {
+         "bisect_pol": {
+          "bit_exact": 20,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 20,
+          "redrawn": 2,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "polyval_1": {
+          "bit_exact": 10,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 10,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "polyval_v": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "polyder": "array-valued result with a deferred/assumed extent is not wrappable; wrap it by hand or drop the subprogram from the gate",
+         "polyint": "array-valued result with a deferred/assumed extent is not wrappable; wrap it by hand or drop the subprogram from the gate"
+        }
+       },
+       "passed": true
+      },
       "static.rwset": {
        "detail": "30 blocks match",
        "metrics": {
@@ -1955,6 +2642,13 @@
         "blocks_matched": 30,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
@@ -2244,7 +2938,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 9,
+     "deferred": 2,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2257,11 +2951,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/100 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
+       "detail": "5/107 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
        "metrics": {
-        "blocks_checked": 100,
-        "blocks_deferred": 9,
-        "blocks_matched": 95,
+        "blocks_checked": 107,
+        "blocks_deferred": 2,
+        "blocks_matched": 102,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -2330,7 +3024,7 @@
    "blocks": 158,
    "deferred": 0,
    "refusals": [],
-   "status": "failed",
+   "status": "passed",
    "units": {
     "fortran:pchip_module": {
      "deferred": 0,
@@ -2342,13 +3036,14 @@
       "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/differential.bitexact": "failed",
-      "verifier/static.rwset": "ok"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "differential.bitexact",
+     "stopped_by": null,
      "verdicts": {
       "differential.bitexact": {
-       "detail": "2 subprogram(s) could not be compared: dpchia: function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and ",
+       "detail": "3070 points across 9 subprogram(s), all bit-exact; 6 draw(s) declined and drawn again (1 reference subscript out of bounds, 5 subscript past extent); 3 subprogr",
        "metrics": {
         "bit_exact": 3070,
         "declined": {
@@ -2446,9 +3141,6 @@
           "reshaped": 0,
           "shaped": 0
          },
-         "dpchia": {
-          "error": "function 'dpchia' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
-         },
          "dpchic": {
           "bit_exact": 730,
           "declined": {},
@@ -2461,9 +3153,6 @@
           "redrawn": 0,
           "reshaped": 0,
           "shaped": 0
-         },
-         "dpchid": {
-          "error": "function 'dpchid' declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects"
          },
          "dpchim": {
           "bit_exact": 650,
@@ -2494,10 +3183,12 @@
         },
         "trials": 10,
         "ungated": {
+         "dpchia": "declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects",
+         "dpchid": "declares OUT/INOUT dummy argument(s) skip, ierr; this verifier cannot pair both its result and side effects",
          "xermsg": "character argument librar: no generated draw for one"
         }
        },
-       "passed": false
+       "passed": true
       },
       "static.rwset": {
        "detail": "158 blocks match",
@@ -2509,6 +3200,13 @@
         "reads_excused_by_stubs": 0
        },
        "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     }
@@ -2516,24 +3214,12 @@
   },
   "polyroots": {
    "bare_files": 0,
-   "blocks": 416,
-   "deferred": 31,
+   "blocks": 418,
+   "deferred": 22,
    "refusals": [
     [
      "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
      20
-    ],
-    [
-     "call to external subroutine 'X'",
-     2
-    ],
-    [
-     "rpoly/P001: local parameter cosr (literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "rpoly/P002: local parameter sinr (literal 'X' was never hoisted, so it has no name to emit",
-     1
     ],
     [
      "cmplx_roots_gen/P001: local parameter zero (cmplx(x, y): the two-part form is not spelled;",
@@ -2542,53 +3228,34 @@
     [
      "cmplx_roots_gen/P002: local parameter c_one (cmplx(x, y): the two-part form is not spelled",
      1
-    ],
-    [
-     "cpoly/P001: local parameter cosr (literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "cpoly/P002: local parameter sinr (literal 'X' was never hoisted, so it has no name to emit",
-     1
-    ],
-    [
-     "cpoly/P003: local parameter mre (literal 'X' was never hoisted, so it has no name to emit)",
-     1
-    ],
-    [
-     "cpoly/P004: local parameter cos45 (literal 'X' was never hoisted, so it has no name to emi",
-     1
-    ],
-    [
-     "rroots_chebyshev_cubic/P001: local parameter small (literal 'X' was never hoisted, so it h",
-     1
     ]
    ],
    "status": "failed",
    "units": {
     "fortran:polyroots_module": {
-     "deferred": 31,
+     "deferred": 22,
      "imports": true,
      "mechanical": false,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "37/416 blocks disagree: rpoly/B011, fxshfr/B007, fxshfr/B008, quadit/B006, rpqr79/B012 (+32 more)",
+       "detail": "418 blocks match",
        "metrics": {
-        "blocks_checked": 416,
-        "blocks_deferred": 31,
-        "blocks_matched": 379,
+        "blocks_checked": 418,
+        "blocks_deferred": 22,
+        "blocks_matched": 418,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     }
@@ -2597,58 +3264,520 @@
   "quadpack": {
    "bare_files": 0,
    "blocks": 628,
-   "deferred": 6,
-   "refusals": [
-    [
-     "dqc25c/P001: local parameter x (literal 'X' was never hoisted, so it has no name to emit):",
-     1
-    ],
-    [
-     "dqc25s/P001: local parameter x (literal 'X' was never hoisted, so it has no name to emit):",
-     1
-    ],
-    [
-     "dqnc79/P001: local parameter nbits (literal 'X' was never hoisted, so it has no name to em",
-     1
-    ],
-    [
-     "dqnc79/P002: local parameter nlmx (literal 'X' was never hoisted, so it has no name to emi",
-     1
-    ],
-    [
-     "dgauss8/P001: local parameter nlmx (literal 'X' was never hoisted, so it has no name to em",
-     1
-    ],
-    [
-     "dlobatto/P001: local parameter alpha (literal 'X' was never hoisted, so it has no name to ",
-     1
-    ]
-   ],
+   "deferred": 0,
+   "refusals": [],
    "status": "failed",
    "units": {
     "fortran:quadpack_double": {
-     "deferred": 6,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "failed",
+      "verifier/static.rwset": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": "differential.bitexact",
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "1 subprogram(s) could not be compared: dqc25s: no draw this harness could compare in 24 attempt(s) (45 NaN on both sides): resasc: a NaN in the compared values ",
+       "metrics": {
+        "bit_exact": 14170,
+        "declined": {
+         "NaN on both sides": 1
+        },
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 2310,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 14170,
+        "redrawn": 1,
+        "reference_isolation": "in-process (call-back arguments: dgauss8, dlobatto, dqag, dqage, dqagi, dqagie, dqagp, dqagpe, dqags, dqagse, dqawc, dqawce, dqawf, dqawfe, dqawo, dqawoe, dqaws, dqawse, dqc25c, dqc25f, dqc25s, dqk15, dqk15i, dqk15w, dqk21, dqk31, dqk41, dqk51, dqk61, dqnc79, dqng, dquad, dsimpson)",
+        "subprograms": {
+         "davint": {
+          "bit_exact": 20,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 20,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dgauss8": {
+          "bit_exact": 30,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 30,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dlobatto": {
+          "bit_exact": 20,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 20,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqag": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqage": {
+          "bit_exact": 450,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 450,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqagi": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqagie": {
+          "bit_exact": 450,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 450,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqagp": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqagpe": {
+          "bit_exact": 690,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 270,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 690,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqags": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqagse": {
+          "bit_exact": 450,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 450,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawc": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawce": {
+          "bit_exact": 450,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 450,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawf": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawfe": {
+          "bit_exact": 2770,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 270,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 2770,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawo": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawoe": {
+          "bit_exact": 2540,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 200,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 2540,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqaws": {
+          "bit_exact": 210,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 210,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqawse": {
+          "bit_exact": 450,
+          "declined": {
+           "NaN on both sides": 1
+          },
+          "integer_mismatch": 0,
+          "integer_points": 110,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 450,
+          "redrawn": 1,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqc25c": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqc25f": {
+          "bit_exact": 2060,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 2060,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqc25s": {
+          "error": "no draw this harness could compare in 24 attempt(s) (45 NaN on both sides): resasc: a NaN in the compared values on both sides"
+         },
+         "dqcheb": {
+          "bit_exact": 630,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 630,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk15": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk15i": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk15w": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk21": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk31": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk41": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk51": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqk61": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqmomo": {
+          "bit_exact": 1000,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 1000,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqnc79": {
+          "bit_exact": 30,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 30,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dqng": {
+          "bit_exact": 40,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 40,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dquad": {
+          "bit_exact": 30,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 20,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 30,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "dsimpson": {
+          "bit_exact": 20,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 20,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10,
+        "ungated": {
+         "xerror": "character argument messg: no generated draw for one"
+        }
+       },
+       "passed": false
+      },
       "static.rwset": {
-       "detail": "7/628 blocks disagree: dqnc79/B023, dgauss8/B019, dgauss8/B024, dsimpson/B016, adaptive_simpson_step/B010 (+2 more)",
+       "detail": "628 blocks match",
        "metrics": {
         "blocks_checked": 628,
-        "blocks_deferred": 6,
-        "blocks_matched": 621,
+        "blocks_deferred": 0,
+        "blocks_matched": 628,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
       }
      }
     }
@@ -2708,26 +3837,9 @@
   },
   "slsqp": {
    "bare_files": 0,
-   "blocks": 186,
-   "deferred": 8,
-   "refusals": [
-    [
-     "seq-assoc: element of a for an assumed-size dummy is only a view when both are rank-N",
-     5
-    ],
-    [
-     "seq-assoc: element of c for an assumed-size dummy is only a view when both are rank-N",
-     1
-    ],
-    [
-     "seq-assoc: element of e for an assumed-size dummy is only a view when both are rank-N",
-     1
-    ],
-    [
-     "linmin/P001: local parameter c (literal 'X' was never hoisted, so it has no name to emit):",
-     1
-    ]
-   ],
+   "blocks": 193,
+   "deferred": 0,
+   "refusals": [],
    "status": "failed",
    "units": {
     "fortran:bvls_module": {
@@ -2737,48 +3849,147 @@
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": null,
      "verdicts": {
+      "differential.bitexact": {
+       "detail": "1970 points across 2 subprogram(s), all bit-exact",
+       "metrics": {
+        "bit_exact": 1970,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 110,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 1970,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "bvls": {
+          "bit_exact": 990,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 100,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 990,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "bvls_wrapper": {
+          "bit_exact": 980,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 980,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
       "static.rwset": {
-       "detail": "12/68 blocks disagree: bvls/B001, bvls/B002, bvls/B003, initialize/B019, select_another_coeff_to_solve_for/B002 (+7 more)",
+       "detail": "68 blocks match",
        "metrics": {
         "blocks_checked": 68,
         "blocks_deferred": 0,
-        "blocks_matched": 56,
+        "blocks_matched": 68,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     },
     "fortran:slsqp_core": {
-     "deferred": 8,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
       "store/fs-evidence": "ok",
       "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "failed"
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
      },
-     "stopped_by": "static.rwset",
+     "stopped_by": null,
      "verdicts": {
-      "static.rwset": {
-       "detail": "7/106 blocks disagree: slsqpb/B002, slsqpb/B003, slsqpb/B006, reset_bfgs_matrix/B002, lsq/B026 (+2 more)",
+      "differential.bitexact": {
+       "detail": "550 points across 1 subprogram(s), all bit-exact",
        "metrics": {
-        "blocks_checked": 106,
-        "blocks_deferred": 8,
-        "blocks_matched": 99,
+        "bit_exact": 550,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 100,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 550,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "slsqp": {
+          "bit_exact": 550,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 100,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 550,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "113 blocks match",
+       "metrics": {
+        "blocks_checked": 113,
+        "blocks_deferred": 0,
+        "blocks_matched": 113,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
-       "passed": false
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
       }
      }
     },
@@ -2825,7 +4036,7 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "4 subprogram(s) could not be compared: daxpy: 7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s",
+       "detail": "4 subprogram(s) could not be compared: daxpy: 19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of ",
        "metrics": {
         "bit_exact": 80,
         "declined": {
@@ -2842,16 +4053,16 @@
         "reference_isolation": "process",
         "subprograms": {
          "daxpy": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dcopy": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 80 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "19 draw(s) were declined (19 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "ddot": {
-          "error": "7 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "18 draw(s) were declined (18 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dnrm2": {
-          "error": "8 of 10 trial(s) were compared only after the free extent(s)  were moved off the configured values; the 10 point(s) that fit are not evidence at those extents. Pin `dims` to extents the subprogram takes"
+          "error": "24 draw(s) were declined (24 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dscal": {
           "bit_exact": 80,
@@ -2865,7 +4076,7 @@
           "nan_mismatch": 0,
           "points": 80,
           "redrawn": 9,
-          "reshaped": 4,
+          "reshaped": 0,
           "shaped": 0
          }
         },
@@ -2922,11 +4133,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "26/1576 blocks disagree: jy01a/B004, jynbh/B004, itairy/B005, cjynb/B006, cy01/B008 (+21 more)",
+       "detail": "9/1576 blocks disagree: jy01a/B004, jynbh/B004, itairy/B005, cjynb/B006, cy01/B008 (+4 more)",
        "metrics": {
         "blocks_checked": 1576,
         "blocks_deferred": 33,
-        "blocks_matched": 1550,
+        "blocks_matched": 1567,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },

@@ -35,6 +35,7 @@ from typing import Any
 
 from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
+from recast.fortran.constants import is_default_real
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name, node_span, subprogram_key
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
@@ -68,6 +69,44 @@ INTEGER_TEXT = re.compile(r"-?\s*\d+")
 BOZ_TEXT = re.compile(r"[zboZBO]'([0-9a-fA-F]+)'")
 IDENTIFIER = re.compile(r"[a-zA-Z_]\w*")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
+NEWFORM_ARRAY = re.compile(r"\[\s*(.*?)\s*\]", re.S)
+
+
+def _literal_array(inner: str) -> str | None:
+    """A ``[ ... ]`` constructor of nothing but literals, rendered element by
+    element at the precision the compiler evaluated each in, or ``None``.
+
+    The token pass otherwise wrote the constructor text out verbatim, which
+    turns an unsuffixed real -- Fortran default (single) kind -- into a full
+    float64: a lookup table like ``dqk61``'s ``wgk = [1.389...e-3, ...]`` then
+    carries eight digits the reference never had, and the differential gate
+    sees every point differ. This mirrors the constants module's own
+    per-element rendering so the two agree; a non-literal element (a name, an
+    implied do) returns ``None`` and the caller falls back to the token pass.
+    """
+    items = [item.strip() for item in inner.split(",")]
+    if not items or items == [""]:
+        return None
+    rendered: list[str] = []
+    integral = True
+    for item in items:
+        compact = item.replace(" ", "")
+        if re.fullmatch(r"'[^']*'", item):
+            rendered.append(item)
+            integral = False
+        elif INTEGER_TEXT.fullmatch(item):
+            rendered.append(str(int(compact)))
+        elif REAL_TEXT.fullmatch(item):
+            base = compact.split("_")[0].replace("d", "e").replace("D", "e")
+            if is_default_real(compact):
+                rendered.append(f"np.float64(np.float32('{base}'))")
+            else:
+                rendered.append(f"np.float64('{base}')")
+            integral = False
+        else:
+            return None
+    dtype = ", dtype=np.int32" if integral else ""
+    return f"np.array([{', '.join(rendered)}]{dtype})"
 
 
 UPPERCASED_CALL = re.compile(r"\b[A-Z_][A-Z0-9_]*\s*\(")
@@ -669,6 +708,13 @@ class Subprograms:
             shape = ", ".join(
                 statements.bound(d["ub"]) if d.get("ub") else "1" for d in subprogram["result_dims"]
             )
+            # In the result's own dtype, and returned instead of falling
+            # through to the scalar initializers below. Both halves were wrong
+            # for ``integer :: b(size(a))``: the buffer came back float64, and
+            # the ``b = 0`` that the separate int branch below then appended
+            # rebound the name to a scalar, so the first store into the result
+            # raised TypeError. allocated_dtype carries the kind through and
+            # refuses a dtype it cannot map rather than defaulting to float64.
             try:
                 dtype = allocated_dtype(subprogram["result_dtype"])
             except REFUSED as refusal:
@@ -677,8 +723,8 @@ class Subprograms:
                     f"    # AGENT_QUEUE: {reason}",
                     f"    raise NotImplementedError({reason!r})",
                 ]
-            lines.append(f"    {result} = np.zeros(({shape},), dtype={dtype})")
-        elif subprogram["result_dtype"] in ("float64", "float32"):
+            return [f"    {result} = np.zeros(({shape},), dtype={dtype})"]
+        if subprogram["result_dtype"] in ("float64", "float32"):
             lines.append(f"    {result} = 0.0")
         elif subprogram["result_dtype"] in ("complex128", "complex64"):
             lines.append(f"    {result} = {SCALAR_ZEROS[subprogram['result_dtype']]}")
@@ -992,6 +1038,23 @@ class Subprograms:
                 )
                 if filled is not None:
                     return [f"    {name} = {filled}"]
+            initializer = local.get("init_expr")
+            if (
+                initializer
+                and local["dtype"] in ("float64", "float32", "int32", "int64")
+                and str(initializer).strip().startswith("[")
+            ):
+                # ``real(wp),dimension(7) :: c = [ ... ]``: a declared array
+                # whose value is a lookup table, not the UB-guard zeros the
+                # bare-array branch would leave. Rendered like a local
+                # parameter so its literals carry the compiler's precision.
+                own = frozenset(p["name"].lower() for p in semantics.subprogram["local_parameters"])
+                try:
+                    value = self._parameter_value(str(initializer).strip(), own, statements)
+                except REFUSED:
+                    value = None
+                if value is not None and value.startswith("np.array("):
+                    return [f"    {name} = {value}  # declared initializer"]
             try:
                 dtype = allocated_dtype(local["dtype"])
             except REFUSED as refusal:
@@ -1125,6 +1188,12 @@ class Subprograms:
             if all(re.fullmatch(r"-?\d+", item.strip()) for item in items):
                 return f"np.array([{', '.join(items)}], dtype=np.int32)"
             return f"np.array([{', '.join(items)}])"
+
+        bracketed = NEWFORM_ARRAY.fullmatch(text.strip())
+        if bracketed:
+            literal = _literal_array(bracketed.group(1))
+            if literal is not None:
+                return literal
 
         # A module constant is spelled upper case in the emitted source, and a
         # reference to one of this subprogram's own parameters is not -- that

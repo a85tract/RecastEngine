@@ -214,6 +214,39 @@ def test_recipe_stages_are_reproducible() -> None:
         assert first == second
 
 
+def test_translate_lowers_under_the_golden_oracles_compiler_unless_told() -> None:
+    """The bit-exact gate compares the translation with a binary the oracle
+    compiles, so the transform has to lower the way that compiler does --
+    ``x**2`` is ``x*x`` under gfortran and a ``pow`` call under the transform's
+    own default, one to two ULP apart. The recipe binds the transform's profile
+    to the oracle's ``fc`` (gfortran when unset) whenever that names a known
+    profile. The operator's word wins: ``compiler_semantics`` binds both stages
+    itself and must not meet a second declaration here, and an explicit
+    ``stages.<transform>.profile`` is merged over the recipe's by the runner.
+    An oracle that is not one of the golden pair, or a compiler spelled as a
+    path, leaves the transform its default rather than guessing."""
+    from recast.phases import _resolved_stage_config
+
+    translate = BUILTIN["translate"]()
+
+    def lowering(config: dict[str, object]) -> dict[str, object]:
+        (stage,) = [s for s in translate.stages(config) if s.kind == "transform"]
+        return stage.config
+
+    assert lowering({}) == {"profile": "gfortran"}
+    assert lowering({"oracle": "f2py-golden-flat"}) == {"profile": "gfortran"}
+    assert lowering({"stages": {"f2py-golden": {"fc": "ifx"}}}) == {"profile": "ifx"}
+    assert lowering({"stages": {"f2py-golden": {"fc": "/opt/bin/gfortran-13"}}}) == {}
+    assert lowering({"oracle": "numpy-anchor"}) == {}
+    assert lowering({"compiler_semantics": "gfortran"}) == {}
+    assert lowering({"compiler_semantics": "ifx"}) == {}
+
+    (stage,) = [s for s in translate.stages({}) if s.kind == "transform"]
+    explicit = {"stages": {"translate.numpy": {"profile": "ifx"}}}
+    assert _resolved_stage_config(stage, explicit) == {"profile": "ifx"}
+    assert _resolved_stage_config(stage, {}) == {"profile": "gfortran"}
+
+
 # --- access control is enforced, not documented ------------------------------
 
 

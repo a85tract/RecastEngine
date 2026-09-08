@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "92695cfbd3eb22ad496fe5b0d7062e55f54d82b923d5871904691d6eabed7f50",
+      "candidate": "67ae16e8b62ac9ec14eeed62d24d2530254a24f7c158cb8d5b0a3b073244aac5",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,

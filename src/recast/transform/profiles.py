@@ -50,4 +50,7 @@ PROFILES: dict[str, Profile] = {
 
 DEFAULT = "ifx"
 """What the reference builds this grew up on use. An operator comparing against a gfortran
-build has to say so; there is no way to detect it from the source."""
+build has to say so; there is no way to detect it from the source. The ``translate``
+recipe says so on their behalf when it can: it declares the profile of the compiler its
+golden oracle builds with (``recast.recipes``), and this default is what a transform run
+outside that recipe, or against an oracle whose compiler no profile names, falls back to."""

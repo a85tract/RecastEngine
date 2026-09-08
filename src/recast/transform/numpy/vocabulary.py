@@ -38,12 +38,13 @@ __all__ = [
 
 ELEMENTAL_SCALAR: dict[str, str] = {
     "abs": "abs",
+    "achar": "chr",
     "acos": "math.acos",
     "adjustl": "_f_adjustl",
     "aimag": "np.imag",
     "aint": "np.trunc",
-    "alog": "math.log",
-    "alog10": "math.log10",
+    "alog": "_f_log",
+    "alog10": "_f_log10",
     "amax0": "max",
     "amin0": "min",
     "anint": "np.round",
@@ -63,8 +64,8 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "dcos": "math.cos",
     "dexp": "math.exp",
     "dim": "_f_dim",
-    "dlog": "math.log",
-    "dlog10": "math.log10",
+    "dlog": "_f_log",
+    "dlog10": "_f_log10",
     "dmax1": "max",
     "dmin1": "min",
     "dsin": "math.sin",
@@ -83,7 +84,7 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "ichar": "ord",
     "ieor": "_f_ieor",
     "index": "_f_index",
-    "int": "int",
+    "int": "_f_int",
     "ior": "_f_ior",
     "is_iostat_end": "_f_is_iostat_end",
     "isign": "_f_sign",
@@ -94,8 +95,8 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "lbound": "_f_lbound",
     "len": "len",
     "len_trim": "_f_len_trim",
-    "log": "math.log",
-    "log10": "math.log10",
+    "log": "_f_log",
+    "log10": "_f_log10",
     "max": "_f_max",
     "max0": "max",
     "min": "_f_min",
@@ -105,6 +106,7 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "mvbits": "_f_mvbits",
     "nint": "_f_nint",
     "precision": "_f_precision",
+    "radix": "_f_radix",
     "real": "np.float64",
     "scan": "_f_scan",
     "shape": "np.shape",
@@ -127,6 +129,7 @@ is not ``%``, ``nint`` is not ``round``, ``sign`` is not ``copysign``. See
 
 ELEMENTAL_ARRAY: dict[str, str] = {
     "abs": "np.abs",
+    "achar": "_f_vachar",
     "aint": "np.trunc",
     "anint": "np.round",
     "ceiling": "_f_vceil",
@@ -210,8 +213,32 @@ ARITH_OPS: dict[str, str] = {"+": "+", "-": "-", "*": "*", "/": "/", "**": "**"}
 """Spelled identically, and listed anyway: an operator absent from this table
 is one the emitter has no rule for, which is the answer it needs."""
 
-RESERVED: frozenset[str] = frozenset({"_re", "copy", "math", "mp", "np", "os"})
-"""Module aliases the emitted file uses itself.
+RESERVED: frozenset[str] = frozenset(
+    {
+        # Module aliases the emitted file imports.
+        "_re",
+        "copy",
+        "math",
+        "mp",
+        "np",
+        "os",
+        # Python builtins the emitter spells bare: ``max(a, b)`` for MAX,
+        # ``range`` for every DO loop. A Fortran local called ``max`` -- the
+        # Jenkins-Traub ``scale`` has one -- emitted under its own name would
+        # shadow the builtin the same function's other lines call, and the
+        # read/write check, which knows the builtin as the backend's, saw no
+        # variable at all.
+        "abs",
+        "chr",
+        "complex",
+        "len",
+        "max",
+        "min",
+        "ord",
+        "range",
+    }
+)
+"""Names the emitted file uses itself: its module aliases and its builtins.
 
 A Fortran dummy argument named ``np`` would shadow NumPy in the translation,
 so it is renamed. Declared here rather than assumed by the verifier: the

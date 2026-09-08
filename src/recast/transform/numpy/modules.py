@@ -30,10 +30,12 @@ Below the first factory, the output is byte-for-byte the pipeline's, and
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from recast import references
 from recast.errors import ConfigError
 from recast.fortran._parse import f03, parse, walk
 from recast.fortran.interface import emit_name, subprogram_key
@@ -167,11 +169,28 @@ class Modules:
     def _stub_imports(self, body: list[str] | None) -> list[str]:
         """The auto-stub imports the file needs: every one when told to keep
         them, otherwise only those whose alias the body binds to."""
-        imports = list(self.subprograms.stub_imports)
+        return self._bound_imports(self.subprograms.stub_imports, body)
+
+    def _companion_imports(self, body: list[str] | None) -> list[str]:
+        """The companions' imports the file needs.
+
+        The same rule as the auto-stubs, and for the same reason (#18): a
+        ``use`` that brought nothing but a kind parameter binds no alias, and
+        the file that imports its sibling's translation anyway raises
+        ``ModuleNotFoundError`` before running a line -- whether that sibling
+        rides along in the candidate or not. Naming only what it calls is what
+        lets the candidate be self-contained without carrying the tree.
+        """
+        return self._bound_imports(self.companion_imports, body)
+
+    def _bound_imports(self, imports: Iterable[str], body: list[str] | None) -> list[str]:
+        """Every one when told to keep them, otherwise only those whose alias
+        the body binds to."""
+        lines = list(imports)
         if self.keep_unbound_stub_imports or body is None:
-            return imports
+            return lines
         text = "\n".join(body)
-        return [line for line in imports if f"{line.rsplit(' as ', 1)[1]}." in text]
+        return [line for line in lines if f"{line.rsplit(' as ', 1)[1]}." in text]
 
     def header(self, body: list[str] | None = None) -> str:
         record = self.subprograms.record
@@ -202,7 +221,7 @@ class Modules:
             shims = self.externals_module or (record["module"] + "_externals")
             pieces.append(f"import {shims} as _ext")
         extra = sorted(
-            set(self.companion_imports)
+            set(self._companion_imports(body))
             | set(self._stub_imports(body))
             | {
                 imported
@@ -232,6 +251,10 @@ class Modules:
         for state in self.subprograms.record["module_state"]:
             lines.extend(self._state(state, report))
         lines.append("")
+        # Ahead of the subprograms, the way the source declares a procedure
+        # ahead of the code that calls it -- and so the last subprogram's span
+        # still ends at the end of the file (``_rebase``).
+        lines.extend(references.python_for(self._reference_externals()))
         for record in self.subprograms.record["subprograms"]:
             node = nodes.get(subprogram_key(record))
             if node is None:
@@ -248,6 +271,42 @@ class Modules:
             lines.extend(rendered)
             report.extend(entries)
         return lines, report
+
+    # -- procedures declared here and defined nowhere --------------------------
+
+    def _reference_externals(self) -> list[str]:
+        """Names this module declares, nothing defines, and recast can supply.
+
+        ``use lapack, only: dgesv, dgbsv`` names a module whose whole content
+        is interface blocks; the bodies are in a compiled library.  Those
+        declarations bind like module procedures (``semantics.for_subprogram``
+        merges them in), so a caller is translated to ``_lapack.dgbsv(...)`` --
+        and this file, which *is* the ``lapack`` translation, had nothing of
+        that name in it.  ``recast.references`` holds an implementation for a
+        few of them, and the reference build compiles the Fortran twin of the
+        same one, so the call means the same thing on both sides.
+
+        Three kinds of name are left alone, each because something else
+        already defines it: one this module or a companion has a body for; one
+        a submodule of this module defines, which ``_submodule_exports``
+        re-exports (#29); and one the operator gave an audited shim in the
+        externals module.  Everything else recast has no implementation for
+        stays as it was -- declared here, defined nowhere, and disclaiming its
+        callers in the oracle.
+        """
+        record = self.subprograms.record
+        defined = {s["name"] for s in record["subprograms"]}
+        for names in (record.get("submodules") or {}).values():
+            defined |= set(names)
+        for companion in self.subprograms.companions:
+            defined |= {s["name"] for s in companion.get("subprograms") or ()}
+        return references.supported(
+            declared["name"]
+            for declared in (record.get("interfaces") or {}).values()
+            if declared.get("kind") in ("subroutine", "function")
+            and declared["name"] not in defined
+            and declared["name"] not in self.subprograms.externals
+        )
 
     # -- derived-type factories -----------------------------------------------
 
@@ -486,6 +545,11 @@ class Modules:
                     entry["dims"] = [
                         {"lb": d.get("lb", "1"), "ub": d.get("ub")} for d in argument["dims"]
                     ]
+                if argument.get("path"):
+                    # A character dummy the body opens as a file, and what its
+                    # OPEN asks of it. The harness that supplies arguments has
+                    # to know a scratch path from a message.
+                    entry["path"] = argument["path"]
                 if argument.get("buffer") and self.subprograms.buffer_out_arrays:
                     # The caller's storage: a harness has to pass one in.
                     entry["buffer"] = True
@@ -502,6 +566,23 @@ class Modules:
                 "args": arguments,
                 "result": subprogram.get("result"),
                 "result_dtype": subprogram.get("result_dtype"),
+                # What the body's own entry checks say its dummies' shapes
+                # must be. An assumed-shape dummy declares neither extent, so
+                # for a harness that has to supply one this is the only
+                # statement of it there is.
+                **(
+                    {"shape_guards": subprogram["shape_guards"]}
+                    if subprogram.get("shape_guards")
+                    else {}
+                ),
+                # ... and what they say about their values. An integer
+                # dummy the body will only take two values of is a mode
+                # selector nothing else declares as one.
+                **(
+                    {"value_guards": subprogram["value_guards"]}
+                    if subprogram.get("value_guards")
+                    else {}
+                ),
             }
         return table
 

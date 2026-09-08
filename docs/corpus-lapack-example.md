@@ -144,21 +144,32 @@ had produced output. The rule is deliberately not that clever.
 
 `splines`, in the same case, shows the other side of the same rule, and it
 is easy to read it wrongly. Its source also says `use lapack, only: dgesv,
-dgbsv`, and its emitted header has no `lapack` import at all:
+dgbsv`, and with `lapack.f90` staged beside it those declarations are in
+scope exactly as module procedures are, so its three LAPACK sites are
+emitted as calls rather than refused:
 
 ```python
-from splines_constants import *  # noqa: F401,F403
-import types_numpy as _types
-import utils_numpy as _utils
+    _lapack.dgbsv((2 * ((n - 1))), 1, 2, 1, as_, I_5, ipiv2, bmat, (2 * ((n - 1))), info)
 ```
 
-That is not because `splines` needs LAPACK any less. Its three LAPACK sites
-are `call` statements, all three refused as external subroutines, so nothing
-in the emitted body ever spells `_lapack.` -- and an import nothing binds to
-is dropped. `splines` imports, its 51 blocks match the source's, and it
-still cannot solve a spline system: the three blocks that would are the
-three it deferred, standing in the output as raises. The import column
-says "the file loads", and for a library over LAPACK that is all it says.
+That is what `dgesv` and `dgbsv` are in `recast.references` for. Neither
+build can link LAPACK, so recast defines those two itself -- Gaussian
+elimination with partial pivoting, written once as the Fortran the oracle
+compiles and once as the Python `lapack_numpy` carries, so the call means the
+same thing and rounds the same way on both sides. `spline3` and `spline3pars`
+are then compared like any other subprogram, and the verdict says what stood
+in for the library:
+
+```text
+520 points across 11 subprogram(s), all bit-exact; 2 external(s) stood in for
+by recast's own reference implementation, on both sides: dgbsv, dgesv
+```
+
+The alternative was worse than it looks. Without a definition on either side
+the oracle gives the symbol a body that error-stops, `reaching` lists every
+caller as one the differential holds no reference for, and the unit passes
+with its two headline subprograms never compared -- which is what it did until
+`verify_recipe_candidates` learned to read the ungated list.
 
 ### The read/write check, and what it is actually reporting
 
@@ -191,3 +202,12 @@ It is a case decision, not an engine one, and it is deliberately not made
 here: the corpus measures libraries as they arrive, and a shim written for
 one of them is the beginning of a domain package. When it is made, this
 page is the before.
+
+`recast.references` is not that shim and does not grow into one. It holds
+two dense solvers, and it holds them because their contract is small enough
+to state exactly and because the differential needs *the same* stand-in on
+both sides -- a Python shim over `scipy.linalg.lapack` would give the
+candidate the real library and leave the reference build with nothing to
+link. Everything else `linalg` names -- `dgeev`, `zheevd`, `ilaenv`, thirty
+more -- is still declared, still undefined, and still disclaims its callers,
+and no amount of adding to that file is the right way to change it.

@@ -13,3 +13,4 @@ before signing.
 | Name | E-mail(s) | GitHub | Signed | CLA version | Covers from |
 |---|---|---|---|---|---|
 | Yueqi Chen | yueqi.chen@colorado.edu, yueqichen.0x0@gmail.com | lewisychen | 2026-09-07 | 1.0 | first commit |
+| Qinrun Dai | mouseisnotalwaysmouse@outlook.com, dai@derecho2.hsn.de.hpc.ucar.edu | second5t | 2026-09-08 | 1.0 | 2aa9a82 |

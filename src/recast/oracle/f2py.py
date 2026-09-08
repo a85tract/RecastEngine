@@ -40,12 +40,21 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from recast import references
 from recast.errors import ConfigError, OracleUnavailable, RecastError
+from recast.fortran.intrinsics import ALL as INTRINSICS
 from recast.model import Facts, OracleRef, Unit
 from recast.plugins.executor import Executor, Job
 from recast.plugins.oracle import Oracle
 
-__all__ = ["F2pyGoldenOracle", "factory", "wrappers_for"]
+__all__ = [
+    "F2pyGoldenOracle",
+    "derived_components",
+    "factory",
+    "flattened_dummies",
+    "unspellable",
+    "wrappers_for",
+]
 
 FORTRAN_TYPES = {
     "float64": "real(8)",
@@ -62,6 +71,17 @@ FORTRAN_TYPES = {
 }
 """Raw type spellings, no kind parameters: nothing here needs f2py's
 crackfortran to resolve a use-imported kind, which it cannot."""
+
+DERIVED = re.compile(r"UNKNOWN\(TYPE\((\w+)\)\)", re.I)
+"""How the frontend spells a dummy of derived type: ``UNKNOWN(TYPE(name))``."""
+
+DEFINED_ZERO = {"bool": ".false.", "str": "''"}
+"""What an intent(out) dummy is set to before the call, by dtype.
+
+A character dummy given ``0`` is a type error the compiler rejects
+("Cannot convert INTEGER(4) to CHARACTER(128)"), which cost every module
+with a character output its whole reference.
+"""
 
 DEFAULT_FLAGS = "-O1 -fno-fast-math -ffp-contract=off -fcheck=bounds"
 """Conservative by default. The reference must round the way the production
@@ -241,6 +261,10 @@ def _callback_declarations(
     dimensions, so an extent naming one of them is renamed with it; an extent
     naming anything else is refused rather than resolved against the
     wrapper's scope, where it would mean a different variable.
+
+    A subroutine call-back is written as a CALL and a function call-back as an
+    assignment, because that is how crackfortran tells the two apart, and the
+    dummy carries the result's type so the ``implicit none`` wrapper compiles.
     """
     name = argument["name"]
     # An interface record names its interface; a signature entry carries the
@@ -254,11 +278,33 @@ def _callback_declarations(
             f"procedure argument {name!r} carries no interface; this wrapper cannot say "
             "what calling it means -- wrap it by hand or drop the subprogram from the gate"
         )
-    if interface["kind"] != "subroutine":
-        raise ConfigError(
-            f"procedure argument {name!r} is a function; this wrapper spells subroutine "
-            "call-backs only"
-        )
+    result_type = None
+    if interface["kind"] == "function":
+        # A function call-back answers through its result, so there is a type
+        # to spell twice: on the dummy itself, because the wrapper is
+        # ``implicit none`` and an EXTERNAL alone leaves it untyped, and on
+        # the variable f2py's own call takes the result in.
+        result_type = FORTRAN_TYPES.get(interface.get("result_dtype"))
+        if result_type is None:
+            raise ConfigError(
+                f"call-back {name!r} returns dtype {interface.get('result_dtype')!r}, "
+                "which this wrapper cannot spell"
+            )
+        if interface.get("result_dims"):
+            raise ConfigError(
+                f"call-back {name!r} returns an array; this wrapper spells scalar function "
+                "call-backs only"
+            )
+        written = [a["name"] for a in interface["args"] if a["intent"] != "IN"]
+        if written:
+            # f2py hands a function call-back's written arguments back beside
+            # its result, and which comes first is a convention this wrapper
+            # would be inventing rather than sharing with the translation.
+            raise ConfigError(
+                f"call-back {name!r} is a function that writes argument(s) "
+                f"{', '.join(written)}; this wrapper spells function call-backs that only "
+                "read theirs"
+            )
     spelled = {a["name"].lower(): f"cb_{name}_{a['name']}" for a in interface["args"]}
     sized = {
         token.lower()
@@ -298,6 +344,15 @@ def _callback_declarations(
             f"!f2py  {base}{dims}, {', '.join(attributes)} :: {spelled[a['name'].lower()]}"
         )
     arguments = ", ".join(spelled[a["name"].lower()] for a in interface["args"])
+    if result_type is not None:
+        # f2py reads a *function* call-back off an assignment whose right-hand
+        # side calls it -- a bare call is a subroutine to crackfortran -- and
+        # takes the result's type from the assigned variable, which therefore
+        # has to be declared before the line that assigns it.
+        assigned = f"cb_{name}_res"
+        lines.append(f"!f2py  {result_type} :: {assigned}")
+        lines.append(f"!f2py  {assigned} = {name}({arguments})")
+        return lines, f"  {result_type}, external :: {name}"
     lines.append(f"!f2py  call {name}({arguments})")
     return lines, f"  external {name}"
 
@@ -369,11 +424,472 @@ def _hide(
     extents: str, argument_names: list[str], parameters: dict[str, int] | None, hidden: list[str]
 ) -> None:
     """An extent naming neither an argument nor a local parameter is a hidden
-    integer dummy the caller supplies; recorded once, in order of first use."""
-    for token in re.findall(r"[A-Za-z_]\w*", extents):
-        if token not in argument_names and token not in (parameters or {}):
-            if token not in hidden:
+    integer dummy the caller supplies; recorded once, in order of first use.
+
+    An intrinsic call is not such a name. ``b(size(a))`` computes its extent
+    from an argument already being passed, and hiding ``size`` declared a
+    dummy of that name beside it -- ``integer, intent(in) :: size`` next to
+    ``res(size(a))`` -- which gfortran rejects twice over, as a PROCEDURE
+    attribute conflicting with INTENT and as a call to something not PURE.
+
+    Neither is a name the argument list already carries in another case.
+    Fortran does not distinguish ``N`` from ``n``, and the extent keeps the
+    source's spelling while the argument names arrive lowercased from the
+    frontend: ``real(dp) :: mesh(N+1)`` over ``integer, intent(in) :: N``
+    hid an ``N`` beside the wrapper's own ``n``, which gfortran rejects as a
+    duplicate formal argument -- the mesh module's three exponential-mesh
+    functions, and every array-valued function whose extent names an
+    argument in capitals.
+    """
+    known = {name.lower() for name in argument_names} | {
+        name.lower() for name in (parameters or {})
+    }
+    for token, call in re.findall(r"([A-Za-z_]\w*)\s*(\(?)", extents):
+        lowered = token.lower()
+        if call and lowered in INTRINSICS:
+            continue
+        if lowered not in known:
+            if lowered not in {name.lower() for name in hidden}:
                 hidden.append(token)
+
+
+def _allocatable_shim(
+    argument: dict[str, Any], spelled: str
+) -> tuple[str, list[str], list[str], list[str]]:
+    """Pass an ALLOCATABLE dummy the allocatable actual Fortran requires.
+
+    ``call loadtxt(filename, d)`` does not compile with ``d`` a plain
+    assumed-shape dummy -- "Actual argument for 'd' must be ALLOCATABLE" --
+    and f2py has no allocatable of its own to offer, because the extent the
+    callee chooses is not known when it builds the array it hands back. So
+    the wrapper keeps its caller-side buffer and calls through a local
+    allocatable: the buffer's values go in, the callee's array comes back as
+    far as the buffer reaches, and the rest of the buffer is left defined.
+
+    Returns ``(actual, declarations, before, after)``: what to pass at the
+    call site, the locals to declare, and the copies either side of the call.
+    Truncation is why the differential harness does not call one of these --
+    an array the callee sized is not the caller's buffer, and comparing the
+    two would be comparing shapes nobody chose (see ``BitexactVerifier``).
+    """
+    name = argument["name"]
+    local = f"{name}_alloc"
+    rank = len(argument.get("dims") or ())
+    hands_in = argument["intent"] in ("IN", "INOUT", "UNKNOWN")
+    hands_back = argument["intent"] != "IN"
+    if not rank:
+        # A scalar allocatable dummy: no extent to reconcile, so the local is
+        # allocated from the buffer and read back whole.
+        declarations = [f"  {spelled}, allocatable :: {local}"]
+        before = [f"  allocate({local}, source={name})"] if hands_in else []
+        after = [f"  if (allocated({local})) {name} = {local}"] if hands_back else []
+        return local, declarations, before, after
+    colons = ", ".join([":"] * rank)
+    fits = f"{name}_n"
+    declarations = [f"  {spelled}, allocatable :: {local}({colons})"]
+    before = [f"  allocate({local}, source={name})"] if hands_in else []
+    if not hands_back:
+        return local, declarations, before, []
+    declarations.append(f"  integer :: {fits}({rank})")
+    section = ", ".join(f":{fits}({axis})" for axis in range(1, rank + 1))
+    after = [
+        f"  {fits} = 0",
+        f"  if (allocated({local})) {fits} = min(shape({name}), shape({local}))",
+        f"  {name} = {DEFINED_ZERO.get(argument['dtype'], '0')}",
+        f"  if (allocated({local})) {name}({section}) = {local}({section})",
+    ]
+    return local, declarations, before, after
+
+
+def derived_components(
+    record: dict[str, Any], argument: dict[str, Any], taken: set[str] | None = None
+) -> list[dict[str, Any]] | str:
+    """One flat scalar dummy per component of a derived-type argument, or why not.
+
+    f2py cannot marshal a derived type, and a module whose only public
+    subprogram takes one -- SLSQP's ``slsqp`` carries its reverse-communication
+    state in ``type(slsqpb_data)`` and ``type(linmin_data)`` -- had no
+    reference at all, so its gate never ran. A type made of scalar
+    components *can* be spelled: the wrapper takes each component as a
+    dummy of its own, ``<argument>_<component>``, copies them into a local
+    of the type before the call and back out after it, and the candidate
+    side does the same with the object it takes (``BitexactVerifier``,
+    through the plan ``flattened_dummies`` puts on the oracle's handle).
+
+    Returned entries carry ``name`` (the flat dummy), ``component``,
+    ``dtype`` and ``spelled`` (the Fortran declaration type). A string is the
+    reason there is no such spelling: a type the record does not define, one
+    the module does not export (the wrapper has to ``use`` it), a component
+    that is an array, allocatable or pointer, or one of a dtype this wrapper
+    cannot spell either -- and a flat name that collides with another dummy.
+    """
+    derived = DERIVED.match(str(argument["dtype"]))
+    if derived is None:
+        return f"dtype {argument['dtype']!r} is not a derived type"
+    type_name = derived.group(1).lower()
+    components = (record.get("types") or {}).get(type_name)
+    if components is None:
+        return f"type {type_name!r} is not defined in this module's record"
+    exported = {str(name).lower() for name in record.get("public_types") or ()}
+    if type_name not in exported:
+        return f"type {type_name!r} is not public, so a wrapper cannot use it"
+    if not components:
+        return f"type {type_name!r} has no components"
+    flat: list[dict[str, Any]] = []
+    names = set(taken or ())
+    for component, spec in components.items():
+        if spec.get("dims") or spec.get("allocatable") or spec.get("pointer"):
+            return f"component {type_name}%{component} is not a scalar"
+        spelled = FORTRAN_TYPES.get(str(spec.get("dtype")))
+        if spelled is None or spec.get("dtype") == "str":
+            return f"component {type_name}%{component} has dtype {spec.get('dtype')!r}"
+        name = f"{argument['name']}_{component}".lower()
+        if name in names:
+            return f"flat name {name!r} for {type_name}%{component} collides with another dummy"
+        names.add(name)
+        flat.append(
+            {
+                "name": name,
+                "component": str(component).lower(),
+                "dtype": str(spec["dtype"]),
+                "spelled": spelled,
+            }
+        )
+    return flat
+
+
+def flattened_dummies(
+    record: dict[str, Any], subprograms: list[str]
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """``{subprogram: {argument: {"type": name, "components": [...]}}}`` for
+    every derived-type dummy ``wrappers_for`` spells component by component.
+
+    The verifier reads this off the oracle's handle to split the candidate's
+    own derived-type argument the same way: same flat names, same order.
+    Only subprograms with at least one flattened dummy appear.
+    """
+    table = {s["name"]: s for s in record["subprograms"]}
+    plan: dict[str, dict[str, dict[str, Any]]] = {}
+    for name in subprograms:
+        sub = table.get(name)
+        if sub is None:
+            continue
+        arguments = [a for a in sub["args"] if not a.get("optional")]
+        taken = {str(a["name"]).lower() for a in arguments}
+        entries: dict[str, dict[str, Any]] = {}
+        for argument in arguments:
+            derived = DERIVED.match(str(argument["dtype"]))
+            if derived is None:
+                continue
+            components = derived_components(record, argument, taken)
+            if isinstance(components, str):
+                continue
+            taken.update(c["name"] for c in components)
+            entries[argument["name"]] = {
+                "type": derived.group(1).lower(),
+                "components": [{k: v for k, v in c.items() if k != "spelled"} for c in components],
+            }
+        if entries:
+            plan[name] = entries
+    return plan
+
+
+def unexercisable(subprogram: dict[str, Any]) -> str | None:
+    """Why the differential cannot exercise this reference, or ``None``.
+
+    The wrapper compiles either way; what this answers is whether calling it
+    means anything. Four shapes it does not:
+
+    *A character value.* ``FORTRAN_TYPES`` spells every character dummy
+    ``character(len=128)`` because f2py cannot size a ``len=*`` one, so the
+    reference's interface is not the source's, and the harness has no draw
+    for a string in the first place. One character dummy is exercisable
+    anyway: a path an OPEN in the body *creates* (``path: "created"``). Any
+    name works there -- the subprogram makes the file rather than finding one
+    -- so the harness draws a scratch path per side and compares the files,
+    and the wrapper passes ``trim()`` of its padded dummy so the callee's
+    ``len=*`` is the length the caller chose. A path the body opens
+    ``STATUS='OLD'`` stays ungated: the draw would have to be a file that
+    already holds something, which nothing here can produce.
+
+    *An array the callee allocates.* An ALLOCATABLE intent(out) dummy is
+    sized by the callee; f2py can only hand back the buffer the caller
+    passed, and comparing a buffer against an allocation compares two shapes
+    nobody chose (see ``_allocatable_shim``).
+
+    *A LOGICAL INOUT array dummy.* f2py exposes a scalar LOGICAL INOUT as a
+    writable rank-0 array and marshals it through its own Python-object
+    conversion, so writing 0/1 for false/true is enough -- Fortran's own
+    truthiness test is "nonzero", the same convention already relied on when
+    reading a LOGICAL OUT back (see ``BitexactVerifier``'s bool comparison).
+    That is not true of a LOGICAL INOUT *array*: f2py hands one back as an
+    in-place buffer whose element size must match the compiler's native
+    LOGICAL storage exactly (4 bytes for the default kind), while this
+    harness draws LOGICAL arrays with NumPy's 1-byte ``bool_`` dtype, which
+    f2py rejects (``failed to initialize intent(inout) array``). Left
+    ungated here instead of reaching that refusal (``BitexactVerifier``'s
+    ``logical_inouts`` check, which draws the same scalar/array line) blocks
+    every other subprogram in the same unit's differential gate along with
+    it.
+
+    *A function with OUT/INOUT dummies.* f2py returns a FUNCTION's result
+    and its OUT/INOUT dummies in one tuple, the same as a SUBROUTINE's, but
+    ``BitexactVerifier._paired_outputs`` only ever pairs a function's single
+    result -- it has no side-effect leg for a function to fall into the way
+    a subroutine's OUT/INOUT dummies do. Left ungated here instead of
+    reaching that refusal (``BitexactVerifier._compare_subprogram``'s own,
+    matching check) blocks every other subprogram in the same unit's
+    differential gate along with it.
+
+    Named rather than silently skipped: the verifier counts an uncompared
+    public subprogram as silence unless the oracle says why, which is what
+    ``OracleRef.handle["ungated"]`` carries. The flat oracle answers the same
+    question in ``recast.oracle.flat.unspellable``; the two differ because
+    what each can build differs.
+    """
+    for argument in subprogram["args"]:
+        if argument.get("optional"):
+            continue  # dropped from both calls, so it decides nothing here
+        if str(argument["dtype"]) == "str":
+            if argument.get("path") == "created":
+                continue
+            if argument.get("path") == "existing":
+                return (
+                    f"{argument['name']}: names a file the body opens STATUS='OLD', "
+                    "which no generated draw can put there"
+                )
+            return f"{argument['name']}: character dummy, fixed at len=128 by the wrapper"
+        if (
+            argument.get("allocatable")
+            and argument.get("dims")
+            and argument["intent"] in ("OUT", "INOUT")
+        ):
+            return f"{argument['name']}: allocatable array the callee sizes"
+        if (
+            argument["intent"] == "INOUT"
+            and str(argument["dtype"]) == "bool"
+            and argument.get("dims")
+        ):
+            return (
+                f"{argument['name']}: LOGICAL INOUT array dummy, f2py's in-place buffer "
+                "requires the compiler's native LOGICAL element size, which this harness's "
+                "1-byte bool draw does not provide"
+            )
+    if subprogram["kind"] == "function" and str(subprogram.get("result_dtype")) == "str":
+        return "character result, fixed at len=128 by the wrapper"
+    if subprogram["kind"] == "function":
+        outs_required = [
+            argument["name"]
+            for argument in subprogram["args"]
+            if argument["intent"] in ("OUT", "INOUT") and not argument.get("optional")
+        ]
+        if outs_required:
+            return (
+                "declares OUT/INOUT dummy argument(s) "
+                f"{', '.join(outs_required)}; this verifier cannot pair both its "
+                "result and side effects"
+            )
+    return None
+
+
+INTERFACE_BLOCK = re.compile(
+    r"^[ \t]*interface\b.*?^[ \t]*end[ \t]*interface\b", re.I | re.M | re.S
+)
+"""An INTERFACE block, for the text scan below: what it holds is declared,
+not defined, which is the whole distinction ``undefined_externals`` draws."""
+
+SUBPROGRAM_DEFINITION = re.compile(
+    r"^[^!\n]*?\b(?:subroutine|function)\s+([A-Za-z_]\w*)", re.I | re.M
+)
+"""A line that opens (or closes) a subprogram definition. Deliberately loose:
+this only ever *suppresses* a stub, so a name too many costs a build the
+diagnosis it already gives today, and a name too few costs a duplicate symbol."""
+
+
+def build_records(facts: Facts) -> list[dict[str, Any]]:
+    """Every interface record the reference build compiles from source.
+
+    The unit's own, its companions', and the companions' own dependencies --
+    the same three groups ``companion_sources`` hands the compiler, because
+    the question here is what that build defines.
+    """
+    records = [facts.interface]
+    for group in ("companions", "companion_dependencies"):
+        for entry in facts.provenance.get(group) or []:
+            record = entry.get("record") if isinstance(entry, dict) else None
+            if isinstance(record, dict) and record.get("subprograms") is not None:
+                records.append(record)
+    return records
+
+
+def undefined_externals(records: list[dict[str, Any]], extras: list[Path]) -> list[str]:
+    """Procedures the build declares an INTERFACE for and defines nowhere.
+
+    ``use lapack, only: dgesv`` names a module whose whole content is
+    interface blocks: the bodies are in a compiled library the original
+    program linked, and the reference build links nothing but the sources
+    staged for it. The declarations are real -- they are what the compiler
+    checked the call against -- and the definitions are absent, so the
+    extension links with ``dgesv_`` undefined and the *import* fails, taking
+    every subprogram in the module with it, including the ones that never go
+    near LAPACK.
+
+    Named here so the build can answer for them. ``recast.references`` holds a
+    reference implementation for a few, and those get a body that computes --
+    the same one the translation gets, so the call rounds alike on both sides.
+    For the rest ``unresolved_stubs`` gives a body that refuses, and
+    ``reaching`` says which subprograms must not be exercised because they
+    would reach one.
+
+    ``extras`` are scanned as text rather than as records: a source the
+    operator added from outside the tree may be the very definition this is
+    looking for, and stubbing a name that build already defines is a
+    duplicate symbol where there was a working reference.
+    """
+    declared: set[str] = set()
+    defined: set[str] = set()
+    for record in records:
+        defined |= {str(s["name"]).lower() for s in record["subprograms"]}
+        for entry in (record.get("interfaces") or {}).values():
+            if isinstance(entry, dict) and entry.get("kind") in ("subroutine", "function"):
+                declared.add(str(entry["name"]).lower())
+    for extra in extras:
+        try:
+            text = extra.read_text(errors="replace")
+        except OSError:
+            continue
+        defined |= {
+            match.group(1).lower()
+            for match in SUBPROGRAM_DEFINITION.finditer(INTERFACE_BLOCK.sub("", text))
+        }
+    return sorted(declared - defined)
+
+
+def reaching(records: list[dict[str, Any]], targets: set[str]) -> dict[str, str]:
+    """Subprogram name -> the undefined procedure it reaches, directly or not.
+
+    ``spline3`` calls ``spline3pars``, which calls ``dgesv``; neither can be
+    run against a reference whose ``dgesv`` is a refusal, and only this
+    closure says so about the first one.
+    """
+    edges: dict[str, set[str]] = {}
+    for record in records:
+        for subprogram in record["subprograms"]:
+            name = str(subprogram["name"]).lower()
+            edges.setdefault(name, set()).update(
+                str(callee).lower()
+                for callee in (*subprogram["calls"], *subprogram.get("external_calls", ()))
+            )
+    found: dict[str, str] = {}
+    for name in edges:
+        seen: set[str] = set()
+        pending = [name]
+        while pending:
+            current = pending.pop()
+            for callee in sorted(edges.get(current, ())):
+                if callee in targets:
+                    found.setdefault(name, callee)
+                    pending = []
+                    break
+                if callee not in seen:
+                    seen.add(callee)
+                    pending.append(callee)
+    return found
+
+
+def unresolved_stubs(names: list[str]) -> str:
+    """A definition for each undefined external: one that refuses.
+
+    The reference exists to say what the original program computes, and for a
+    call into a library this build does not have it cannot say. A body that
+    stops is the honest form of that: the symbol resolves, so the extension
+    loads and the subprograms that never reach the library are compared as
+    usual, and anything that does reach it stops where the missing library is
+    rather than returning a number nobody computed. Nothing should reach one
+    -- ``reaching`` leaves every caller ungated -- and if something does, this
+    says which name was missing.
+
+    No argument list: a Fortran external is resolved by name, and the callers
+    were compiled against the interface the tree declared, not against this.
+    """
+    lines = [
+        "! Machine-generated by recast for the reference build.",
+        "! Procedures this build declares an INTERFACE for and defines nowhere:",
+        "! the library the original program linked is not part of it.",
+    ]
+    for name in names:
+        lines.extend(
+            [
+                f"subroutine {name}()",
+                f'  error stop "recast reference build: {name} has no definition in this build"',
+                f"end subroutine {name}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _generic_reach(record: dict[str, Any]) -> set[str]:
+    """The specific procedures a public generic name reaches.
+
+    ``record["public"]`` names the module's public entities and
+    ``record["generics"]`` maps each generic to its specifics; a specific of a
+    public generic is callable from outside the module even though its own
+    name is private, which is the whole reason ``wrappers_for`` calls one
+    through the generic.
+    """
+    public = {str(name).lower() for name in record.get("public") or ()}
+    return {
+        specific
+        for generic, specifics in (record.get("generics") or {}).items()
+        if str(generic).lower() in public
+        for specific in specifics
+    }
+
+
+def unspellable(
+    record: dict[str, Any],
+    names: list[str],
+    *,
+    parameters: dict[str, Any] | None = None,
+    dims_override: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Subprogram name -> why ``wrappers_for`` cannot write its wrapper.
+
+    Answered by writing each one alone. What cannot be spelled -- a dtype with
+    no Fortran form (COMPLEX has none here), a call-back whose interface the
+    frontend did not resolve, an array result of deferred extent -- is decided
+    in ``wrappers_for``, and a second copy of those rules here would be a
+    second implementation to disagree with the first. The reason is the
+    wrapper's own refusal, less the name it already prefixes.
+
+    A public subprogram in this table is left *ungated* rather than failing
+    the build: the reference is compiled for the rest of the module, and the
+    verdict carries the name and the reason (``OracleRef.handle["ungated"]``),
+    which is what the flat oracle already does (``recast.oracle.flat.unspellable``)
+    and what ``unexercisable`` does for a wrapper that compiles but cannot be
+    called. Failing instead cost every real-valued subprogram of a module its
+    reference for the sake of one COMPLEX overload nobody required, and the
+    coverage policy still refuses to count an ungated subprogram verified.
+    """
+    refused: dict[str, str] = {}
+    for name in names:
+        try:
+            wrappers_for(record, [name], parameters=parameters, dims_override=dims_override)
+        except ConfigError as error:
+            reason = str(error)
+            prefix = f"{name}: "
+            refused[name] = reason[len(prefix) :] if reason.startswith(prefix) else reason
+    return refused
+
+
+def _wrappable(record: dict[str, Any], name: str) -> bool:
+    """Whether ``wrappers_for`` can write this subprogram's wrapper; see
+    ``unspellable`` for what decides it."""
+    try:
+        wrappers_for(record, [name])
+    except ConfigError:
+        return False
+    return True
 
 
 def wrappers_for(
@@ -420,11 +936,23 @@ def wrappers_for(
         call_name = generic_of.get(name, name)
         arguments = [a for a in sub["args"] if not a.get("optional")]
         argument_names = [a["name"] for a in arguments]
+        # What the call passes, which is the dummy's own name except where an
+        # ALLOCATABLE dummy forces a local allocatable actual.
+        actuals = list(argument_names)
+        before: list[str] = []
+        after: list[str] = []
         declarations = []
         hidden: list[str] = []
         converted: list[str] = []  # scalar LOGICAL INOUTs, through an integer
+        # A derived-type dummy is spelled component by component: the
+        # wrapper's dummies are the flat scalars, in the argument's place,
+        # and the call passes a local of the type they were copied into.
+        dummies: list[str] = []
+        used_types: list[str] = []
+        taken = {str(a["name"]).lower() for a in arguments}
         for argument in arguments:
             if argument["dtype"] == "PROCEDURE":
+                dummies.append(argument["name"])
                 try:
                     directives, external = _callback_declarations(argument, interfaces)
                 except ConfigError as error:
@@ -433,6 +961,42 @@ def wrappers_for(
                 declarations.extend(directives)
                 continue
             spelled = FORTRAN_TYPES.get(argument["dtype"])
+            derived = DERIVED.match(str(argument["dtype"])) if spelled is None else None
+            if derived is not None:
+                components = (
+                    derived_components(record, argument, taken)
+                    if is_module
+                    else "a derived type of a file of bare subprograms cannot be used"
+                )
+                if isinstance(components, str):
+                    raise ConfigError(
+                        f"{name}: argument {argument['name']!r} has dtype "
+                        f"{argument['dtype']!r}, which this wrapper cannot spell "
+                        f"({components}); wrap it by hand or drop the subprogram from the gate"
+                    )
+                type_name = derived.group(1).lower()
+                if type_name not in used_types:
+                    used_types.append(type_name)
+                taken.update(c["name"] for c in components)
+                hands_in = argument["intent"] in ("IN", "INOUT", "UNKNOWN")
+                hands_back = argument["intent"] != "IN"
+                intent = "in" if not hands_back else "in out"
+                declarations.append(f"  type({type_name}) :: {argument['name']}")
+                for component in components:
+                    dummies.append(component["name"])
+                    declarations.append(
+                        f"  {component['spelled']}, intent({intent}) :: {component['name']}"
+                    )
+                    if hands_in:
+                        before.append(
+                            f"  {argument['name']}%{component['component']} = {component['name']}"
+                        )
+                    if hands_back:
+                        after.append(
+                            f"  {component['name']} = {argument['name']}%{component['component']}"
+                        )
+                continue
+            dummies.append(argument["name"])
             if spelled is None:
                 raise ConfigError(
                     f"{name}: argument {argument['name']!r} has dtype "
@@ -449,13 +1013,24 @@ def wrappers_for(
                 declarations.append(f"  logical :: {argument['name']}_l")
                 converted.append(argument["name"])
                 continue
-            if _passed_buffer(argument):
+            if _passed_buffer(argument) or (
+                argument["intent"] == "OUT" and argument.get("allocatable") and argument.get("dims")
+            ):
                 # A caller-buffer OUT array of no declared extent (``fe(*)``,
-                # PCHIP's evaluators): f2py cannot allocate what it cannot
-                # size, so the caller's storage goes in and is written in
-                # place, on both sides -- the gate hands the same buffer to
-                # the candidate and reads this one back after the call.
-                intent = "inout"
+                # PCHIP's evaluators), or an OUT allocatable array: the array
+                # is the caller's storage on both sides, so the reference takes
+                # it the way the candidate does -- an argument, updated in
+                # place. Spelling it intent(out) asks f2py to allocate a result
+                # whose extent the wrapper never states -- ``dy(*)``,
+                # ``x2(:, :)`` -- and every call died on "must have defined
+                # dimensions but got (-1, -1)" (``meshgrid`` of the mesh
+                # module, ``dcopy`` of SLSQP).
+                #
+                # An allocatable OUT array is shimmed through a local
+                # allocatable (see ``_allocatable_shim``); its own dummy is the
+                # caller's buffer, spelled ``in out`` as the shimmed dummies
+                # are. A plain caller buffer (``dy(*)``) keeps ``inout``.
+                intent = "in out" if argument.get("allocatable") else "inout"
             dims = ""
             override = (dims_override or {}).get(argument["name"])
             if override and argument.get("dims"):
@@ -471,6 +1046,21 @@ def wrappers_for(
                 # is the mix ``(incfd, :)`` that spelling ``*`` as ``:`` made.
                 dims = "(" + ", ".join(_extent(d) for d in argument["dims"]) + ")"
             declarations.append(f"  {spelled}, intent({intent}) :: {argument['name']}{dims}")
+            if argument["dtype"] == "str" and argument.get("path"):
+                # The wrapper's dummy is a fixed width and the callee's is
+                # ``len=*``: passed straight through, the callee would see 128
+                # characters whatever the caller wrote. TRIM restores the
+                # caller's own length, which is what the source's callers pass.
+                # Only where the harness supplies the value -- a path it draws
+                # -- because everywhere else the subprogram is ungated and the
+                # actual would be changing a wrapper nothing calls.
+                actuals[argument_names.index(argument["name"])] = f"trim({argument['name']})"
+            if argument.get("allocatable"):
+                actual, locals_, opening, closing = _allocatable_shim(argument, spelled)
+                actuals[argument_names.index(argument["name"])] = actual
+                declarations.extend(locals_)
+                before.extend(opening)
+                after.extend(closing)
         # An intent(out) dummy is undefined on entry, and a subprogram that
         # returns early -- a guard rejecting its own arguments -- never
         # assigns it. What f2py then hands back is whatever the buffer it
@@ -487,18 +1077,23 @@ def wrappers_for(
         # 0 against the candidate's generated value. An assumed-size dummy,
         # which is always a buffer, cannot be assigned whole anyway.
         defined = [
-            f"  {a['name']} = {'.false.' if a['dtype'] == 'bool' else '0'}"
+            f"  {a['name']} = {DEFINED_ZERO.get(a['dtype'], '0')}"
             for a in arguments
             if a["intent"] == "OUT" and a["dtype"] != "PROCEDURE" and not a.get("buffer")
         ]
         wrapper = f"w_{name}"
         names.append(wrapper)
         # A scalar LOGICAL INOUT: the integer in, the logical to the callee,
-        # the integer out again.
-        actuals = [f"{a}_l" if a in converted else a for a in argument_names]
-        before = [f"  {a}_l = ({a} /= 0)" for a in converted]
-        after = [f"  {a} = merge(1, 0, {a}_l)" for a in converted]
-        use_line = [f"  use {module}, only: {call_name}"] if is_module else []
+        # the integer out again. The conversions join the copies the
+        # derived-type and allocatable dummies already queued either side of
+        # the call, and a converted argument's actual is its logical local.
+        for a in converted:
+            actuals[argument_names.index(a)] = f"{a}_l"
+        before += [f"  {a}_l = ({a} /= 0)" for a in converted]
+        after += [f"  {a} = merge(1, 0, {a}_l)" for a in converted]
+        use_line = (
+            [f"  use {module}, only: {', '.join([call_name, *used_types])}"] if is_module else []
+        )
         external_line = [] if is_module else [f"  external {call_name}"]
         result_dims = sub.get("result_dims") or [] if sub["kind"] == "function" else []
         if result_dims:
@@ -518,7 +1113,7 @@ def wrappers_for(
                 _hide(extent, argument_names, parameters, hidden)
             declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
-                f"subroutine {wrapper}({', '.join([*argument_names, *hidden, 'res'])})",
+                f"subroutine {wrapper}({', '.join([*dummies, *hidden, 'res'])})",
                 *use_line,
                 "  implicit none",
                 *parameter_lines,
@@ -535,7 +1130,7 @@ def wrappers_for(
             result = FORTRAN_TYPES.get(sub["result_dtype"], "real(8)")
             declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
-                f"function {wrapper}({', '.join([*argument_names, *hidden])}) result(res)",
+                f"function {wrapper}({', '.join([*dummies, *hidden])}) result(res)",
                 *use_line,
                 "  implicit none",
                 *parameter_lines,
@@ -551,7 +1146,7 @@ def wrappers_for(
         else:
             declarations += [f"  integer, intent(in) :: {token}" for token in hidden]
             pieces += [
-                f"subroutine {wrapper}({', '.join([*argument_names, *hidden])})",
+                f"subroutine {wrapper}({', '.join([*dummies, *hidden])})",
                 *use_line,
                 "  implicit none",
                 *parameter_lines,
@@ -576,6 +1171,12 @@ def companion_sources(facts: Facts, root: Path) -> list[Path]:
     resolved those siblings -- ``Facts.provenance['companions']`` names them
     -- so the reference build asks the facts rather than the operator.
 
+    ``provenance['companion_dependencies']`` is the rest of that closure: what
+    the companions themselves ``use``. None of it is visible in this unit, so
+    none of it is a companion, but a companion is compiled from source here
+    and a compiler wants the ``.mod`` under it too -- without them the build
+    stops at "cannot open module file" on a file the unit never named.
+
     ``config['extra_sources']`` stays what it always was: files from outside
     the tree, which nothing in the tree can name. Ordering is a topological
     sort over the companions' own ``use`` statements, because a Fortran
@@ -586,8 +1187,11 @@ def companion_sources(facts: Facts, root: Path) -> list[Path]:
     companions = facts.provenance.get("companions") or []
     if not isinstance(companions, list):
         raise ConfigError("Facts.provenance['companions'] must be a list")
+    dependencies = facts.provenance.get("companion_dependencies") or []
+    if not isinstance(dependencies, list):
+        raise ConfigError("Facts.provenance['companion_dependencies'] must be a list")
     by_module: dict[str, tuple[dict[str, Any], Path]] = {}
-    for index, companion in enumerate(companions):
+    for index, companion in enumerate([*companions, *dependencies]):
         if not isinstance(companion, dict):
             raise ConfigError(f"companion {index} must be an object")
         module = str(companion.get("module", "")).lower()
@@ -721,6 +1325,25 @@ class F2pyGoldenOracle(Oracle):
             raise OracleUnavailable(
                 f"{unit.uid}: no public subprogram to wrap; there is no reference to build"
             )
+        # A public subprogram the wrapper cannot spell is left ungated, name
+        # and reason on the handle, and the reference is built for the rest.
+        # An operator's explicit list is different: a name they wrote is a
+        # name they meant, and refusing it loudly is the answer to "wrap it
+        # by hand or drop the subprogram from the gate".
+        refused: dict[str, str] = {}
+        if not config.get("subprograms"):
+            refused = unspellable(
+                facts.interface,
+                subprograms,
+                parameters=config.get("wrapper_parameters"),
+                dims_override=config.get("wrapper_dims"),
+            )
+            subprograms = [name for name in subprograms if name not in refused]
+            if not subprograms:
+                raise OracleUnavailable(
+                    f"{unit.uid}: no public subprogram this wrapper can spell; "
+                    + "; ".join(f"{n} ({why})" for n, why in sorted(refused.items()))
+                )
         wrapper_text, wrapper_names = wrappers_for(
             facts.interface,
             subprograms,
@@ -742,6 +1365,29 @@ class F2pyGoldenOracle(Oracle):
         original_sources = [*companions, *extras, source]
         stage = Path(tempfile.mkdtemp(prefix="f2py-stage-", dir=build))
         sources, wrapper, include_args = _stage_build_inputs(stage, original_sources, wrapper_text)
+        # A procedure the tree declares an interface for and defines nowhere
+        # is a call into a library this build does not link. Left alone, the
+        # extension links with the symbol undefined and *importing* it fails,
+        # which costs the module's every other subprogram its reference too.
+        records = build_records(facts)
+        unresolved = undefined_externals(records, extras)
+        # A few of them recast can define rather than refuse, and defines the
+        # same way on the other side (``recast.references``): those are not
+        # blocked, because there *is* a reference for a subprogram that
+        # reaches one -- one that stood in for the library, which the verdict
+        # says. The rest keep the body that refuses, and keep disclaiming
+        # their callers.
+        substituted = references.supported(unresolved)
+        missing = [name for name in unresolved if name not in set(substituted)]
+        blocked = reaching(records, set(missing)) if missing else {}
+        if substituted:
+            supplied = Path("sources") / "recast_references.f90"
+            (stage / supplied).write_text(references.fortran_for(substituted))
+            sources.append(supplied.as_posix())
+        if missing:
+            stub = Path("sources") / "unresolved.f90"
+            (stage / stub).write_text(unresolved_stubs(missing))
+            sources.append(stub.as_posix())
         # fflags remains the operator's compiler-flags string.  Source/include
         # paths never join it: NumPy splits this value internally, so appending
         # an original directory here would let whitespace and flag-looking
@@ -847,6 +1493,35 @@ class F2pyGoldenOracle(Oracle):
             handle={
                 "module": module,
                 "wrappers": dict(zip(subprograms, wrapper_names, strict=True)),
+                # Derived-type dummies the wrappers spell component by
+                # component; the verifier splits the candidate's the same way.
+                "flattened": flattened_dummies(facts.interface, subprograms),
+                "ungated": {
+                    **{
+                        s["name"]: reason
+                        for s in facts.interface["subprograms"]
+                        if s["name"] in set(subprograms)
+                        and (
+                            reason := (
+                                unexercisable(s)
+                                or (
+                                    f"reaches {blocked[s['name']]}, which no source in this "
+                                    "build defines"
+                                    if s["name"] in blocked
+                                    else None
+                                )
+                            )
+                        )
+                        is not None
+                    },
+                    **refused,
+                },
+                # What this build stood in for rather than linked. Not a
+                # narrowing of the comparison -- both sides ran it -- but a
+                # condition on it, and one the evidence has to carry: the
+                # numbers a subprogram reaching one of these was compared at
+                # are not the numbers the library would have produced.
+                "substituted": {name: references.reason(name) for name in substituted},
                 "build_dir": stage,
                 "isolation": isolation,
             },
@@ -930,9 +1605,29 @@ class F2pyGoldenOracle(Oracle):
         named = config.get("subprograms")
         if named:
             return list(named)
+        record = facts.interface
         # Public only, because the wrappers `use` the module: a private
         # symbol is not importable and the build fails on the whole file.
-        return [s["name"] for s in facts.interface["subprograms"] if s.get("public", True)]
+        # A specific procedure of a public generic is the exception
+        # ``wrappers_for`` already makes -- it calls one through the generic
+        # name, which *is* importable -- so it is reachable too. Without it a
+        # module that publishes nothing but generics has no public subprogram
+        # at all and gets no reference: the corpus's sorting module declares
+        # `public sort, sortpairs, argsort` over twelve private specifics, and
+        # every one of them was skipped here while the wrapper stood ready to
+        # write it.
+        reached = _generic_reach(record)
+        return [
+            s["name"]
+            for s in record["subprograms"]
+            # Reached, not exported: a public name whose interface this
+            # wrapper cannot spell stays in the list, because the module says
+            # it is part of its surface -- ``materialize`` then leaves it
+            # ungated by name and reason (``unspellable``) -- but one that is
+            # merely reachable is dropped instead: a complex-valued overload
+            # of a generic must not cost its ten siblings their reference.
+            if s.get("public", True) or (s["name"] in reached and _wrappable(record, s["name"]))
+        ]
 
 
 def factory(**_config: Any) -> F2pyGoldenOracle:

@@ -52,10 +52,12 @@ HOISTED_LITERAL = re.compile(r"(?:F32|[FI])_[0-9EMP]+")
 a variable read; ``F32_`` marks one written in Fortran's default real kind,
 which is a different value from the same digits suffixed."""
 
-DISCARD = re.compile(r"_wm\d*|_wn\d*|_we\d+_\d+|_|_g")
+DISCARD = re.compile(r"_wm\d*|_wn\d*|_we\d+_\d+|_do(?:lo|hi|st)_\w+|_|_g")
 """Scaffolding targets: a discarded value, the where-construct's masks (the
 branch mask ``_wm``, what no branch has claimed ``_wn``, a masked
-elsewhere's own ``_we<depth>_<n>``), a region label."""
+elsewhere's own ``_we<depth>_<n>``), the bounds a DO loop holds for its
+index's completion value (``_dolo_i``, ``_dohi_i``, ``_dost_i``), a region
+label."""
 
 PRESENT_SENTINEL = re.compile(r"want_(\w+)")
 """``want_x`` is how an optional output argument is spelled on the target side;
@@ -152,13 +154,24 @@ class Protocol:
 class _Visitor(ast.NodeVisitor):
     """Read and write sets of emitted Python, in source-side vocabulary."""
 
-    def __init__(self, protocol: Protocol, own: str = "") -> None:
+    def __init__(
+        self, protocol: Protocol, own: str = "", bound: frozenset[str] = frozenset()
+    ) -> None:
         self.reads: set[str] = set()
         self.writes: set[str] = set()
         self.protocol = protocol
         self.own = own
         """The subprogram this block belongs to: a load of this name is its
         result variable, not a call."""
+        self.bound = bound
+        """Names the enclosing emitted function binds itself -- its parameters
+        and every assignment target in it. Python resolves such a name to the
+        local wherever it appears in the function, whatever a module-level
+        ``def`` of the same name says, and so does Fortran: ``rpqr79``'s local
+        ``scale`` is data even though ``cpoly`` contains a function ``scale``.
+        A procedure name in this set is therefore a variable where it is
+        loaded as a value; at callee position it stays a call, which keeps
+        the result-variable convention and recursion as they were."""
 
     # -- name mapping ---------------------------------------------------------
 
@@ -179,7 +192,12 @@ class _Visitor(ast.NodeVisitor):
         # A *store* to a procedure name is the Fortran result-variable
         # convention (`function f(...)` assigning to `f`), not a call; so is
         # a *load* of the block's own name.
-        if name in self.protocol.procedures and not store and name != self.own:
+        if (
+            name in self.protocol.procedures
+            and not store
+            and name != self.own
+            and name not in self.bound
+        ):
             return None
         if HOISTED_LITERAL.fullmatch(name):
             return None
@@ -203,10 +221,16 @@ class _Visitor(ast.NodeVisitor):
         if not (isinstance(callee, ast.Name) and callee.id in self.protocol.procedures):
             self.visit(callee)
         arguments = list(node.args)
-        if isinstance(callee, ast.Name) and callee.id == "_f_copy_out" and arguments:
-            # ``_f_copy_out(dst, src)`` writes into ``dst``. The AST has it in
-            # Load context, so visiting it would record a read, and the
-            # source side marks the intent(OUT) actual a write (#20).
+        if (
+            isinstance(callee, ast.Name)
+            and callee.id in ("_f_copy_out", "_f_seq_tail_out")
+            and arguments
+        ):
+            # ``_f_copy_out(dst, src)`` writes into ``dst``, and so does
+            # ``_f_seq_tail_out(dst, start, src)``, the write-back of an
+            # assumed-size dummy's storage. The AST has ``dst`` in Load
+            # context, so visiting it would record a read, and the source
+            # side marks the intent(OUT) actual a write (#20).
             self._store(arguments.pop(0))
         for argument in arguments:
             self.visit(argument)
@@ -352,11 +376,27 @@ def span_rwset(
 
     for top in tree.body:
         if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # The function's own bindings, computed only for the one the span
+            # falls in: a file of hundreds of blocks is walked once per block.
+            end = getattr(top, "end_lineno", None)
+            overlaps = end is None or (top.lineno <= hi and lo <= end)
+            visitor.bound = bound_names(top) if overlaps else frozenset()
             for stmt in top.body:
                 walk_stmt(stmt)
         else:
+            visitor.bound = frozenset()
             walk_stmt(top)
     return visitor.reads, visitor.writes
+
+
+def bound_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """Every name an emitted function binds: its parameters and its assignment,
+    loop and comprehension targets. What Python treats as local to it."""
+    names = {a.arg for a in function.args.args + function.args.kwonlyargs}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+    return frozenset(names)
 
 
 STUB_LINE = re.compile(r"^\s*(?:[^#]*#.*\(infra stub\)|#.*)$")

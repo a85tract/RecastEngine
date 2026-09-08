@@ -962,3 +962,176 @@ def test_an_absent_optional_inout_leaves_its_slot_in_the_return(tmp_path: Path) 
         sys.path.remove(str(out))
         for suffix in ("_numpy", "_constants", "_use_constants"):
             sys.modules.pop(f"optinout_mod{suffix}", None)
+
+
+# --- the shapes the polyroots corpus module put in front of the gate ----------
+
+POLYROOTS_SHAPES = """\
+module shapes_mod
+  implicit none
+  integer, parameter :: wp = kind(1.0d0)
+  real(wp), parameter :: pi = acos(-1.0_wp)
+contains
+
+  subroutine cshape(opi, n, out)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: opi(n)
+    real(wp), intent(out) :: out(n)
+    real(wp), dimension(n) :: pi
+    integer :: i
+    do i = 1, n
+      pi(i) = opi(i)
+    end do
+    call use_pi(out(1))
+    out(2:n) = pi(2:n)
+  contains
+    subroutine use_pi(r)
+      real(wp), intent(out) :: r
+      r = pi(1)
+    end subroutine use_pi
+  end subroutine cshape
+
+  subroutine rot(x, y, z)
+    real(wp), intent(in) :: x
+    real(wp), intent(out) :: y, z
+    real(wp) :: a, b
+    a = x
+    b = 2.0_wp * x
+    call helper(y)
+    z = func(y)
+  contains
+    subroutine helper(r)
+      real(wp), intent(out) :: r
+      r = a + b
+    end subroutine helper
+    function func(q) result(res)
+      real(wp), intent(in) :: q
+      real(wp) :: res
+      res = q * a
+    end function func
+  end subroutine rot
+
+  subroutine spin(x, y)
+    real(wp), intent(in) :: x
+    real(wp), intent(out) :: y
+    y = func(x)
+  contains
+    function func(q) result(res)
+      real(wp), intent(in) :: q
+      real(wp) :: res
+      res = q + scale(q, 2)
+    end function func
+    function scale(q, k) result(s)
+      real(wp), intent(in) :: q
+      integer, intent(in) :: k
+      real(wp) :: s
+      s = k * q
+    end function scale
+  end subroutine spin
+
+  subroutine rescale(coeff, n, work)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: coeff(n)
+    real(wp), intent(out) :: work(n)
+    real(wp) :: scale
+    integer :: k
+    scale = 1.0_wp / coeff(1)
+    do k = 1, n
+      work(k) = -coeff(k) * scale
+    end do
+  end subroutine rescale
+
+  function spread(nn, pt) result(width)
+    integer, intent(in) :: nn
+    real(wp), intent(in) :: pt(nn)
+    real(wp) :: width
+    real(wp) :: max, min, x
+    integer :: i
+    max = 0.0_wp
+    min = huge(1.0_wp)
+    do i = 1, nn
+      x = pt(i)
+      if (x > max) max = x
+      if (x < min) min = x
+    end do
+    width = max - min
+  end function spread
+
+  subroutine fill(deg, conv, alpha)
+    integer, intent(in) :: deg
+    integer, intent(out) :: conv(deg)
+    real(wp), intent(inout) :: alpha(deg+1)
+    integer :: i
+    conv = [(0, i=1,deg)]
+    alpha = [(alpha(i)*(3.8_wp*(i-1)+1),i=1,deg+1)]
+  end subroutine fill
+
+  subroutine eig(n, a, wr, wi, info)
+    integer, intent(in) :: n
+    real(wp), intent(in) :: a(n, n)
+    real(wp), intent(out) :: wr(n), wi(n)
+    integer, intent(out) :: info
+    real(wp), dimension(1) :: vl, vr
+    real(wp) :: work(3*n)
+    interface
+      subroutine xgeev(jobvl, jobvr, n, a, lda, wr, wi, vl, ldvl, vr, ldvr, work, lwork, info)
+        implicit none
+        character :: jobvl, jobvr
+        integer :: info, lda, ldvl, ldvr, lwork, n
+        double precision :: a(lda, *), vl(ldvl, *), vr(ldvr, *), wi(*), work(*), wr(*)
+      end subroutine xgeev
+    end interface
+    call xgeev('N', 'N', n, a, n, wr, wi, vl, 1, vr, 1, work, 3*n, info)
+  end subroutine eig
+end module shapes_mod
+"""
+
+
+@pytest.fixture(scope="module")
+def shapes(tmp_path_factory: pytest.TempPathFactory):
+    from recast.executors.local import LocalExecutor
+    from recast.verify.rwset import ReadWriteSetVerifier
+
+    tree = tmp_path_factory.mktemp("shapes")
+    (tree / "shapes_mod.f90").write_text(POLYROOTS_SHAPES)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tree) if u.uid == "fortran:shapes_mod")
+    facts = frontend.analyze(unit, tree)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tree})
+    verdict = ReadWriteSetVerifier().check(unit, candidate, tree, LocalExecutor(), {})
+    return candidate, verdict
+
+
+def test_every_polyroots_shape_translates_and_passes_the_read_write_gate(shapes) -> None:
+    """One module of the shapes ``polyroots_module`` failed the gate on -- 37
+    of its 446 blocks disagreed and four were deferred: host variables handed
+    to internal procedures, a local array shadowing the module's ``pi``,
+    locals called ``max``, ``min`` and ``scale``, two hosts each with a
+    ``func``, implied-do constructors, and LAPACK declared in an interface
+    block inside the caller. Nothing deferred, every block agreeing."""
+    candidate, verdict = shapes
+    assert candidate.deferred == []
+    assert verdict.confidence.value == "sampled", verdict.metrics.get("failures")
+    assert verdict.metrics["blocks_matched"] == verdict.metrics["blocks_checked"] > 20
+
+
+def test_the_protocol_names_renamed_internals_and_declared_externals(shapes) -> None:
+    """Two hosts' ``func`` come out as ``rot__func`` and ``spin__func``, and
+    ``xgeev`` is called by name with no body anywhere; each is a call, not a
+    read of the callee, only if the protocol lists it."""
+    candidate, _ = shapes
+    procedures = set(candidate.notes["rwset"]["procedures"])
+    assert {"rot__func", "spin__func", "func", "xgeev", "scale"} <= procedures
+
+
+def test_spellings_the_gate_depends_on(shapes) -> None:
+    candidate, _ = shapes
+    text = candidate.files[Path("shapes_mod_numpy.py")].decode()
+    # A local called ``max`` is renamed around the builtin the same file calls.
+    assert "    max_ = 0.0" in text and "width = (max_ - min_)" in text
+    # The host's array ``pi`` reaches ``use_pi`` as a parameter, not as the constant PI.
+    body = text.split("def use_pi(")[1].split("\ndef ")[0]
+    assert "PI" not in body and "pi[0]" in body
+    # A rank-1 actual for ``vl(ldvl, *)`` fills the dummy in column-major order.
+    assert "np.reshape(vl, (1, -1), order='F')" in text
+    assert "xgeev('N', 'N', n, a, n, wr, wi, " in text

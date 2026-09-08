@@ -330,6 +330,25 @@ def test_a_module_that_answers_for_its_only_list_is_not_walked_past(reexport_tre
     assert {c["module"] for c in facts.provenance["companions"]} == {"helper"}
 
 
+def test_what_a_companion_uses_is_named_for_the_build_but_not_put_in_scope(
+    reexport_tree: Path,
+) -> None:
+    """``direct`` cannot see ``mykinds`` -- ``helper`` answers for its own
+    only-list, so the walk stops there -- but a reference build compiles
+    ``helper.f90`` from source, and gfortran cannot read ``use mykinds``
+    without ``mykinds.mod``. The closure the compiler needs is recorded
+    beside the companions rather than among them: a name here must not
+    resolve through a module this unit cannot name."""
+    (reexport_tree / "direct.f90").write_text(DIRECT)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(reexport_tree) if u.uid == "fortran:direct")
+    provenance = frontend.analyze(unit, reexport_tree).provenance
+    dependencies = {c["module"]: c for c in provenance["companion_dependencies"]}
+    assert set(dependencies) == {"mykinds"}
+    assert dependencies["mykinds"]["source"] == "mykinds.f90"
+    assert "mykinds" not in {c["module"] for c in provenance["companions"]}
+
+
 ELSEWHERE = """\
 module needs_outside
   use mykinds, only: wp
@@ -423,3 +442,119 @@ def test_a_slice_origin_is_spelled_through_the_use_bindings(tmp_path: Path) -> N
     body = next(line for line in text.splitlines() if line.strip().startswith("v["))
     assert "_elsewhere_mod.lo" in body, body
     assert "(1 - lo)" not in body, body
+
+
+def test_the_candidate_carries_the_companion_it_calls(tree: Path) -> None:
+    """A resolved companion is a sibling *source*, not a deployed module.
+
+    The header imports ``helper_numpy``, and ``differential.bitexact`` stages
+    a candidate's own files and nothing else -- so a candidate that names a
+    file it does not carry raises ``ModuleNotFoundError`` before a number is
+    compared. The sibling's translation rides along; ``mykinds``, which binds
+    no alias, has its import dropped instead of a file nothing reads.
+    """
+    import re
+
+    from recast.model import Unit
+    from recast.transform.numpy.translate import NumpyTranslation
+
+    unit = Unit(uid="fortran:main_mod", kind="module", sources=(Path("main_mod.f90"),))
+    candidate = NumpyTranslation().apply(unit, _facts(tree), {"root": str(tree)})
+
+    carried = {p.name for p in candidate.files}
+    assert "helper_numpy.py" in carried
+    assert "mykinds_numpy.py" not in carried
+    assert candidate.notes["bundled"] == ["helper"]
+
+    # Nothing the candidate imports is missing from the candidate.
+    for content in candidate.files.values():
+        for module in re.findall(r"^import (\w+_numpy)", content.decode(), re.MULTILINE):
+            assert f"{module}.py" in carried, module
+
+
+def test_a_companion_the_operator_deploys_is_left_alone(tree: Path) -> None:
+    """``module_py`` is the operator saying where the sibling's translation
+    already lives. Overwriting it with one of ours would put a second
+    spelling of the same module in the candidate."""
+    from recast.model import Unit
+    from recast.transform.numpy.translate import NumpyTranslation
+
+    facts = _facts(tree)
+    declared = [
+        {**c, "alias": "_helper", "module_py": "deployed_helper"}
+        for c in facts.provenance["companions"]
+        if c["module"] == "helper"
+    ]
+    unit = Unit(uid="fortran:main_mod", kind="module", sources=(Path("main_mod.f90"),))
+    candidate = NumpyTranslation().apply(unit, facts, {"root": str(tree), "companions": declared})
+    text = candidate.files[Path("main_mod_numpy.py")].decode()
+    assert "import deployed_helper as _helper" in text
+    assert "bundled" not in candidate.notes
+    assert {p.name for p in candidate.files} == {"main_mod_numpy.py", "main_mod_constants.py"}
+
+
+LIBRARY_INTERFACE = """\
+module libwrap
+  use mykinds, only: wp
+  implicit none
+  interface
+    subroutine solve_it(n, a, info)
+      import :: wp
+      integer :: n, info
+      real(wp) :: a(n)
+    end subroutine solve_it
+  end interface
+end module libwrap
+"""
+
+CALLS_LIBRARY = """\
+module uses_library
+  use mykinds, only: wp
+  use libwrap, only: solve_it
+  implicit none
+contains
+  subroutine go(a, n)
+    real(wp), intent(inout) :: a(:)
+    integer, intent(in) :: n
+    integer :: info
+    call solve_it(n, a, info)
+  end subroutine go
+end module uses_library
+"""
+
+
+def test_a_call_into_a_companions_interface_block_is_spelled_through_it(tmp_path: Path) -> None:
+    """``use lapack, only: dgesv`` names a module whose whole content is
+    interface blocks -- the bodies are in a library the original program
+    linked. The name is in scope exactly as a module procedure would be, and
+    the interface is the whole statement of what calling it means, so the call
+    is bound against it and spelled through the sibling's alias. Refusing it
+    instead left the module's every automatic array and every other block
+    deferred behind one name."""
+    from recast.transform.numpy.translate import NumpyTranslation
+
+    (tmp_path / "mykinds.f90").write_text(KINDS)
+    (tmp_path / "libwrap.f90").write_text(LIBRARY_INTERFACE)
+    (tmp_path / "uses_library.f90").write_text(CALLS_LIBRARY)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:uses_library")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": str(tmp_path)})
+    text = candidate.files[Path("uses_library_numpy.py")].decode()
+    assert "_libwrap.solve_it(n, a, info)" in text
+    assert "import libwrap_numpy as _libwrap" in text
+    assert candidate.deferred == []
+
+
+def test_a_body_reports_the_names_it_reaches_outside_its_own_module(tmp_path: Path) -> None:
+    """``calls`` records only this module's own procedures, so nothing in the
+    record said ``go`` reaches ``solve_it`` -- and a consumer that has to know
+    which subprograms depend on a library the build does not have (the f2py
+    oracle) had no way to ask."""
+    (tmp_path / "mykinds.f90").write_text(KINDS)
+    (tmp_path / "libwrap.f90").write_text(LIBRARY_INTERFACE)
+    (tmp_path / "uses_library.f90").write_text(CALLS_LIBRARY)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:uses_library")
+    record = frontend.analyze(unit, tmp_path).interface
+    assert record["subprograms"][0]["external_calls"] == ["solve_it"]

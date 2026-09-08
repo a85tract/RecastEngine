@@ -22,24 +22,41 @@ from the interface's dimensions resolved against the operator's ``dims``
 table, values from per-name ``ranges``. The physical ranges that make a model
 kernels behave -- temperatures in kelvin, pressures in pascals -- are domain
 knowledge and arrive in config; the engine's defaults are only wide, not
-wise. Structure that no per-name range can express -- a packed workspace
-whose extent is ``n(n+1)/2``, a mode the source stops on, a column that must
-be monotone -- comes from the project itself: a ``recast_inputs.py`` at the
-root, whose ``prepare(unit, subprogram, inputs, rng)`` shapes each generated
-draw before both sides receive it. Subprograms with deferred blocks are
-skipped and said so: their translation raises ``NotImplementedError`` by
-construction, and the gate's job is to judge translations, not queues.
+wise. An extent nobody pinned is the harness's own to choose, so a shape the
+body will not take -- a packed workspace whose ``lr`` must be ``n(n+1)/2``
+for the order it goes with -- is grown until the subscripts fit rather than
+left to the operator. Structure in the *values* that no per-name range can
+express -- a mode the source stops on, a column that must be monotone --
+comes from the project itself: a ``recast_inputs.py`` at the root, whose
+``prepare(unit, subprogram, inputs, rng)`` shapes each generated draw before
+both sides receive it. Subprograms with deferred blocks are skipped and said
+so: their translation raises ``NotImplementedError`` by construction, and the
+gate's job is to judge translations, not queues.
+
+Not every output is an argument. A subprogram whose only product is the file
+it writes -- ``saveppm(filename, img)``, which declares two inputs and
+nothing else -- has nothing for the comparison to pair, and comparing it on
+its arguments would be comparing what the caller already knew. So a character
+dummy the source hands to an OPEN that *creates* a file is drawn as a scratch
+path, one per side, and the bytes each side left there are compared like any
+other declared-integer output (``drawable_path``, ``_file_outputs``).
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
+import keyword
 import operator
 import re
+import shutil
+import signal
 import sys
+import tempfile
+import threading
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +67,7 @@ from recast.plugins.executor import Executor
 from recast.plugins.verifier import Verifier
 from recast.verify.ulp import ulp_audit
 
-__all__ = ["BitexactVerifier", "factory"]
+__all__ = ["BitexactVerifier", "factory", "flatten_derived"]
 
 DEFAULT_RANGE = (-1000.0, 1000.0)
 DEFAULT_INTEGER_RANGE = (1, 8)
@@ -68,17 +85,6 @@ def _f2py_name(name: str) -> str:
     except Exception:  # numpy without f2py, or no numpy: the reference is not f2py's
         return lowered
     return str(dict(crackfortran.badnames).get(lowered, lowered))
-
-
-def _passed_buffer(argument: dict[str, Any]) -> bool:
-    """An OUT array that is the caller's buffer with an axis of no declared
-    extent: the reference takes it in and writes it in place (the f2py
-    wrapper spells it ``inout``), so it is read back from what was passed."""
-    return bool(
-        argument.get("intent") == "OUT"
-        and argument.get("buffer")
-        and any(not d.get("ub") for d in argument.get("dims") or ())
-    )
 
 
 def _bounds_violation(runtime_error: str | None) -> bool:
@@ -112,6 +118,17 @@ def _redrawn_note(totals: dict[str, Any]) -> str:
 
 
 DEFAULT_DIMENSION = 8
+GROWTH_FACTORS = (2, 4, 8, 16, 32, 64)
+"""What an unpinned extent is multiplied by while a shape is being fitted.
+
+Multiples of the default rather than a walk upward: the extent a packed
+workspace wants grows with the square of the order it goes with, so a search
+that adds one at a time never arrives. Sixty-four times the default of eight
+covers an order-eight triangle (36) with room over.
+"""
+MAX_FITTED_EXTENT = 1024
+"""Ceiling on a grown extent, so a subprogram no shape fits costs a bounded
+amount of memory rather than the machine's."""
 SUPPORTED_DTYPES = frozenset(
     {"float32", "float64", "int32", "int64", "bool", "complex64", "complex128"}
 )
@@ -120,6 +137,83 @@ COMPLEX_DTYPES = frozenset({"complex64", "complex128"})
 both parts are, and an ULP distance is a part's. Draws give both parts the
 argument's range."""
 PROCEDURE_DTYPE = "PROCEDURE"
+
+
+class _NegativeSubscript(IndexError):
+    """A translated subscript computed below a dummy's declared lower bound.
+
+    A positive overrun (``IndexError`` from a plain ndarray) is a shape the
+    harness's own default got wrong, and growing an unpinned extent can fix
+    it (see ``_fit_extents``). A negative one is not a shape at all -- no
+    extent, grown or not, changes whether an index is negative -- it is a
+    value outside the domain the source itself takes (PCHIP's ``dpchkt``
+    forms ``x(n-1)`` and is only ever called with N>=2), so it is drawn
+    again exactly like an ``ERROR STOP`` or a NaN-inducing value, and left
+    out of the ``reshaped`` accounting a shape refusal earns.
+    """
+
+
+def _reject_negative_subscript(key: Any) -> None:
+    """Refuse a negative integer subscript; leave slices and arrays alone.
+
+    A translated subscript is always ``expr - lb``: a body that reads a
+    dummy below its declared lower bound -- PCHIP's ``dpchkt`` forms
+    ``x(n-1)`` and is only ever called with N>=2, so ``x(0)`` is a draw
+    outside the source's own domain, not a shape this harness chose --
+    computes a negative Python index. Plain ndarray wraps that to the
+    *other* end of the array instead of refusing it the way a positive
+    overrun already does (an ``IndexError`` the redraw loop below already
+    knows how to answer without ever calling the reference on it), so the
+    candidate would silently read the wrong element instead of raising.
+    """
+    indices = key if isinstance(key, tuple) else (key,)
+    for index in indices:
+        try:
+            value = operator.index(index)
+        except TypeError:
+            continue  # a slice, a mask, a fancy index -- not a bare subscript
+        if value < 0:
+            raise _NegativeSubscript(
+                f"index {value} is out of bounds for a Fortran dummy "
+                "(subscript below its declared lower bound)"
+            )
+
+
+_NO_WRAP_ARRAY_TYPES: dict[int, type] = {}
+"""One ``_NoWrapArray`` class per ``np`` module handed in, built lazily.
+
+``numpy`` is imported lazily throughout this file, so nothing here can
+subclass ``np.ndarray`` at module scope; a subclass is built once per
+``np`` (keyed by ``id()``, since a project's own ``np`` and any test
+double share nothing else stable) and reused after that.
+"""
+
+
+def _no_wrap_array_type(np: Any) -> type:
+    """The ``_NoWrapArray`` class for this ``np`` module, built on first use.
+
+    Only single-index (or all-integer tuple) access is guarded: a slice,
+    a boolean mask, or a fancy index is the harness's or the translation's
+    own choice of view, not a subscript the source computed, and is left
+    to ndarray's ordinary rules.
+    """
+    cached = _NO_WRAP_ARRAY_TYPES.get(id(np))
+    if cached is not None:
+        return cached
+
+    class _NoWrapArray(np.ndarray):  # type: ignore[misc]  # ``np`` is a parameter, not the typed module
+        def __getitem__(self, key: Any) -> Any:
+            _reject_negative_subscript(key)
+            return super().__getitem__(key)
+
+        def __setitem__(self, key: Any, value: Any) -> None:
+            _reject_negative_subscript(key)
+            super().__setitem__(key, value)
+
+    _NO_WRAP_ARRAY_TYPES[id(np)] = _NoWrapArray
+    return _NoWrapArray
+
+
 INPUT_PROFILE = "recast_inputs.py"
 """The project's input profile, looked for at the root the run was given.
 
@@ -137,6 +231,79 @@ sides need is the same callable. See :func:`callback_for`.
 """
 
 
+def drawable_path(argument: dict[str, Any]) -> bool:
+    """Whether this dummy is a scratch path the harness may draw.
+
+    A character dummy has no sampling story in general -- an init routine's
+    ``errstring`` is a message, and a default that drew one would fail the
+    whole gate on it. One shape does: a dummy the source hands to an OPEN
+    that *creates* the file (``path: "created"``, from the frontend's
+    ``opened_files``). Any name works there, because the subprogram makes the
+    file rather than finding it, so the harness can give each side a scratch
+    path of its own and compare the two files afterwards. A path the source
+    opens ``STATUS='OLD'`` is the opposite case: the draw would have to be a
+    file that already holds something, which is not a value anything here can
+    produce, and the oracle leaves that subprogram ungated.
+    """
+    return argument.get("dtype") == "str" and argument.get("path") == "created"
+
+
+def _file_bytes(path: Any) -> bytes | None:
+    """What a side left at a path argument, or ``None`` if it left nothing."""
+    try:
+        return Path(str(path)).read_bytes()
+    except OSError:
+        return None
+
+
+class _CallTimedOut(Exception):
+    """The candidate did not return from a draw within its bound.
+
+    Not an error in the translation: a draw can put a subprogram in a loop
+    the source itself never leaves -- ``bisect``'s ``do while (b - a > tol)``
+    with a negative tolerance halves the interval to zero and keeps going --
+    and the reference, being the same algorithm, would not leave it either.
+    So it is one more way a draw is refused, beside the ERROR STOP and the
+    out-of-bounds subscript below it, and it is answered the same way: draw
+    again.
+    """
+
+
+@contextlib.contextmanager
+def _bounded(seconds: float) -> Iterator[None]:
+    """Run the block under a wall-clock bound, or unbounded where none can be.
+
+    An interval timer, because the thing to bound is a call inside this
+    process and the point is to *get back*: a subprocess would need the
+    candidate module and the same call-back object, and a thread cannot be
+    stopped. The bound therefore lands where Python next checks for signals,
+    which is between bytecodes -- a translated loop, which is what runs long
+    here. It is not a way to interrupt a long call inside a C extension, and
+    it does not claim to be one.
+
+    Unavailable off the main thread and on platforms without an interval
+    timer; there the block runs as it always did rather than not at all.
+    """
+    if (
+        seconds <= 0
+        or not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        yield
+        return
+
+    def expire(_signum: int, _frame: Any) -> None:
+        raise _CallTimedOut(f"did not return within {seconds:g}s")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def _callback_split(interface: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """A call-back interface's arguments, split the way a call to it is made.
 
@@ -144,9 +311,21 @@ def _callback_split(interface: dict[str, Any]) -> tuple[list[dict[str, Any]], li
     Fortran side supplies are passed in, in declaration order, and the ones it
     reads back come out of the return, in declaration order. An ``intent(inout)``
     argument is in both.
+
+    A function call-back answers through its result, which both sides read off
+    the return the same way, so the result stands in the outputs as the one
+    thing the call produces.
     """
     inputs = [a for a in interface["args"] if a["intent"] in ("IN", "INOUT")]
     outputs = [a for a in interface["args"] if a["intent"] in ("OUT", "INOUT")]
+    if interface["kind"] == "function":
+        outputs = [
+            {
+                "name": interface.get("result") or "result",
+                "dtype": interface.get("result_dtype"),
+                "intent": "OUT",
+            }
+        ]
     return inputs, outputs
 
 
@@ -178,8 +357,23 @@ def callback_for(np: Any, name: str, interface: dict[str, Any]) -> Any:
             f"call-back {name!r} takes argument(s) {', '.join(unsupported)}, which this "
             "harness cannot supply"
         )
-    if interface["kind"] != "subroutine":
-        raise ValueError(f"call-back {name!r} is a function; this harness supplies subroutines")
+    if interface["kind"] == "function":
+        # The reference reads the result off the return and so does the
+        # translation, which is the whole convention -- but only when the
+        # result is the one thing the call produces. A function that also
+        # writes an argument hands two things back in an order this harness
+        # would be inventing, and the reference wrapper refuses it too.
+        if interface.get("result_dtype") not in SUPPORTED_DTYPES:
+            raise ValueError(
+                f"call-back {name!r} returns {interface.get('result_dtype')!r}, which this "
+                "harness cannot supply"
+            )
+        written = [a["name"] for a in interface["args"] if a["intent"] != "IN"]
+        if written:
+            raise ValueError(
+                f"call-back {name!r} is a function that writes argument(s) "
+                f"{', '.join(written)}; this harness supplies functions that only read theirs"
+            )
 
     def shape_of(argument: dict[str, Any], bound: dict[str, Any]) -> tuple[int, ...]:
         axes = []
@@ -265,19 +459,87 @@ def _extent(dim: dict[str, Any], dims: dict[str, int]) -> int:
 
 
 def _resolve_extent(text: str | None, dims: dict[str, int]) -> int:
-    """A declared dimension's extent under the operator's table."""
+    """A declared dimension's extent under the operator's table.
+
+    A name the table does not pin is the default dimension -- which is also
+    what the harness draws the scalar of that name as (``_generated_inputs``)
+    -- so ``g(n + 1)`` over an unpinned ``n`` is nine cells beside an ``n`` of
+    eight, not eight beside eight. Left as a name, the arithmetic failed and
+    the whole bound fell back to the default, and the reference refused the
+    array ("0-th dimension must be fixed to 9 but got 8").
+    """
+    default = int(dims.get("default_dim", DEFAULT_DIMENSION))
     if text is None:
-        return int(dims.get("default_dim", DEFAULT_DIMENSION))
+        return default
     spelled = str(text).strip().lower()
     if spelled.isdigit():
         return int(spelled)
     resolved = spelled
     for name, value in dims.items():
         resolved = re.sub(rf"\b{re.escape(name.lower())}\b", str(value), resolved)
+    resolved = re.sub(r"\b[a-z_]\w*\b", str(default), resolved)
     try:
         return int(_arithmetic(resolved))
     except Exception:
-        return int(dims.get("default_dim", DEFAULT_DIMENSION))
+        return default
+
+
+_SIZE_TERM = re.compile(r"size\(\s*(\w+)\s*,\s*(\d+)\s*\)", re.I)
+"""A ``size(name, axis)`` term of a shape guard's extent (axis from zero)."""
+
+
+def _guarded_shapes(
+    required: list[dict[str, Any]],
+    guards: Sequence[dict[str, Any]],
+    dims: dict[str, int],
+) -> dict[str, list[int]]:
+    """The shape to draw each array argument at, under the body's own checks.
+
+    Every extent starts where it always did -- the declared bound under the
+    operator's table, ``default_dim`` for an assumed-shape one -- and a guard
+    then says what one of them has to be. ``size(c,1) /= 5`` makes ``c``'s
+    first extent five; ``size(c,2) /= size(xi)-1`` makes its second one less
+    than the length of ``xi``, which is a *relation*, so the guards are
+    applied until they stop changing anything rather than in one pass.
+
+    A guard whose extent does not resolve, or resolves to nothing an array
+    can have, is left alone: the draw it would make is worse than the default
+    it replaces, and the subprogram refusing it says so where a shape nobody
+    can name would not.
+    """
+    shapes = {
+        str(argument["name"]).lower(): [
+            _resolve_extent(dim.get("ub"), dims) for dim in argument["dims"]
+        ]
+        for argument in required
+        if argument.get("dims")
+    }
+    for _ in range(len(guards) + 1):
+        settled = True
+        for guard in guards:
+            extent = shapes.get(str(guard.get("arg", "")).lower())
+            axis = int(guard.get("axis", 0))
+            if extent is None or not 0 <= axis < len(extent):
+                continue
+            spelled = _SIZE_TERM.sub(
+                lambda m: str(
+                    (shapes.get(m.group(1).lower()) or [0])[int(m.group(2))]
+                    if int(m.group(2)) < len(shapes.get(m.group(1).lower()) or [])
+                    else 0
+                ),
+                str(guard.get("extent", "")),
+            )
+            try:
+                wanted = int(_arithmetic(spelled))
+            except Exception:  # noqa: S112 - an extent this cannot resolve keeps its default
+                continue
+            if wanted < 1 or wanted > MAX_FITTED_EXTENT or wanted == extent[axis]:
+                continue
+            extent[axis] = wanted
+            settled = False
+        if settled:
+            break
+    return shapes
 
 
 # Split by arity rather than kept in one table. A single dict of both is a
@@ -343,6 +605,92 @@ def _delegation_chain(name: str, delegated: dict[str, str]) -> str:
     return f" ({' <- '.join(parts)})" if parts else ""
 
 
+def flatten_derived(
+    sub: dict[str, Any],
+    translated_fn: Any,
+    plan: dict[str, dict[str, Any]],
+    translated: Any = None,
+) -> tuple[dict[str, Any], Any]:
+    """The candidate's signature and function with derived-type dummies split
+    into the flat scalars the reference wrapper takes.
+
+    f2py cannot marshal a derived type, so the oracle spells a dummy of a
+    type made of scalar components as one dummy per component
+    (``recast.oracle.f2py.derived_components``) and puts the plan on its
+    handle: ``{argument: {"type": name, "components": [{"name", "component",
+    "dtype"}, ...]}}``. This is the same split on the candidate's side. The
+    returned signature carries the components in the argument's place, with
+    its intent, so the harness draws, passes and pairs them like any other
+    scalar; the returned function assembles the object from those draws --
+    through the emitted ``_make_<type>()`` factory where the module has one
+    -- calls the translation, and hands back the object's components where
+    the translation handed back the object. Nothing about the comparison
+    changes: every component is a point, an integer one compared exactly.
+    """
+    from types import SimpleNamespace
+
+    from recast.transform.numpy.vocabulary import pysafe
+
+    flat_args: list[dict[str, Any]] = []
+    split: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for argument in sub["args"]:
+        entry = plan.get(argument["name"])
+        if entry is None or argument.get("optional"):
+            flat_args.append(argument)
+            continue
+        components = list(entry.get("components") or [])
+        for component in components:
+            flat_args.append(
+                {
+                    "name": component["name"],
+                    "dtype": component["dtype"],
+                    "intent": argument["intent"],
+                    "optional": False,
+                }
+            )
+        split.append((argument["name"], str(entry.get("type", "")), components))
+    if not split:
+        return sub, translated_fn
+    flat_sub = {**sub, "args": flat_args}
+    outs = [a for a in sub["args"] if a["intent"] in ("OUT", "INOUT")]
+    by_name = {name: (type_name, components) for name, type_name, components in split}
+
+    def assemble(type_name: str) -> Any:
+        factory = getattr(translated, f"_make_{type_name}", None) if translated else None
+        return factory() if callable(factory) else SimpleNamespace()
+
+    def flat_fn(**kwargs: Any) -> Any:
+        objects: dict[str, Any] = {}
+        for name, type_name, components in split:
+            obj = assemble(type_name)
+            for component in components:
+                key = pysafe(component["name"])
+                if key in kwargs:
+                    setattr(obj, pysafe(component["component"]), kwargs.pop(key))
+            objects[name] = obj
+            kwargs[pysafe(name)] = obj
+        result = translated_fn(**kwargs)
+        if sub["kind"] == "function":
+            return result
+        values = (
+            list(result) if isinstance(result, tuple) else ([result] if result is not None else [])
+        )
+        if len(values) != len(outs):
+            return result  # the harness reports the count mismatch itself
+        expanded: list[Any] = []
+        for argument, value in zip(outs, values, strict=True):
+            if argument["name"] in by_name:
+                _type_name, components = by_name[argument["name"]]
+                expanded.extend(
+                    getattr(value, pysafe(component["component"])) for component in components
+                )
+            else:
+                expanded.append(value)
+        return tuple(expanded)
+
+    return flat_sub, flat_fn
+
+
 class BitexactVerifier(Verifier):
     """Call both sides on the same inputs; count the bits that disagree."""
 
@@ -355,11 +703,13 @@ class BitexactVerifier(Verifier):
     A generated draw is not always one the subprogram accepts: an argument
     outside the domain the source itself declares (``error stop 'invalid
     mode'``), an extent too small for the subscripts the body forms, a value
-    that drives the arithmetic into NaN. None of those is a difference
-    between the two sides -- the reference cannot even be *called* on the
-    first two without ending the process or reading memory it does not own --
-    so the trial is drawn again, with a fresh seed and fresh unpinned
-    extents, rather than reported as a comparison that failed.
+    that drives the arithmetic into NaN, a value the source's own loop never
+    leaves (``call_seconds``). None of those is a difference between the two
+    sides -- the reference cannot even be *called* on the first two without
+    ending the process or reading memory it does not own, and would not come
+    back from the last one either -- so the trial is drawn again, with a
+    fresh seed and fresh unpinned extents, rather than reported as a
+    comparison that failed.
 
     Bounded, and the bound is the point: a subprogram whose every draw is
     refused is reported as one that could not be compared, which is what
@@ -379,12 +729,29 @@ class BitexactVerifier(Verifier):
     subprogram that passes mostly that way fails by name, with the number of
     such trials recorded as ``reshaped``.
 
+    A shape refusal is answered before that, and not by a redraw: the extents
+    nobody pinned are this harness's own choice, so the first one refused is
+    *grown* until the body's subscripts fit, and the subprogram is compared
+    again from its first trial at that one shape, which the outcome records
+    as ``extents`` (:meth:`_fit_extents`). The redraw and the ``reshaped``
+    floor are what remains for a body no growth fits.
+
     None of this applies to a draw the project's ``recast_inputs.py`` shaped.
     That draw is the project saying the source takes it, so there is nothing
     to draw again: the reference is called first, and if it refuses, the
     profile is wrong and the verification stops there
     (``InputProfileError``); if it answers and the candidate refuses, the
     candidate has failed on inputs the source takes.
+    """
+
+    call_seconds: float = 5.0
+    """How long one generated draw may keep the candidate before it is refused.
+
+    Generous by three orders of magnitude: the gate's draws are small -- a
+    default extent of eight -- and a subprogram that has not answered one in
+    five seconds is not answering it. What the bound buys is that a draw the
+    source does not terminate on is a redraw rather than a run that never
+    ends, and the reference is never called on it. ``0`` turns it off.
     """
 
     dominant_at: float | None = None
@@ -405,7 +772,17 @@ class BitexactVerifier(Verifier):
         executor: Executor,
         config: dict[str, Any],
     ) -> Verdict:
-        verdict = self._compare_all(unit, candidate, oracle, workspace, executor, config)
+        # Where a subprogram that writes a file writes it. Outside the run's
+        # workspace on purpose: the reference takes a path through a
+        # ``character(len=128)`` wrapper dummy, and a workspace path is
+        # already most of that budget before a file name is added to it.
+        scratch = Path(tempfile.mkdtemp(prefix="recast-gate-io-"))
+        try:
+            verdict = self._compare_all(
+                unit, candidate, oracle, workspace, executor, config, scratch
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
         # An oracle that could not spell every subprogram lists the rest on
         # its handle; a module that passes with three of its eleven
         # subprograms compared must say so where the evidence is read. This
@@ -418,16 +795,35 @@ class BitexactVerifier(Verifier):
             **dict(handle.get("ungated") or {}),
             **dict(verdict.metrics.get("ungated") or {}),
         }
-        if not ungated:
+        # A procedure the build could not link and recast defined instead, on
+        # both sides (``recast.references``). Every point a subprogram
+        # reaching one was compared at was computed with that stand-in, not
+        # with the library the source names, and a reader of this verdict has
+        # no other way to know it.
+        substituted = dict(handle.get("substituted") or {})
+        if not ungated and not substituted:
             return verdict
+        detail = verdict.detail
+        if substituted:
+            detail += (
+                f"; {len(substituted)} external(s) stood in for by recast's own "
+                "reference implementation, on both sides: " + ", ".join(sorted(substituted))
+            )
+        if ungated:
+            detail += f"; {len(ungated)} subprogram(s) ungated, no reference: " + ", ".join(
+                f"{name} ({why})" for name, why in sorted(ungated.items())
+            )
         return Verdict(
             unit=verdict.unit,
             candidate=verdict.candidate,
             verifier=verdict.verifier,
             confidence=verdict.confidence,
-            metrics={**verdict.metrics, "ungated": ungated},
-            detail=f"{verdict.detail}; {len(ungated)} subprogram(s) ungated, no reference: "
-            + ", ".join(f"{name} ({why})" for name, why in sorted(ungated.items())),
+            metrics={
+                **verdict.metrics,
+                **({"ungated": ungated} if ungated else {}),
+                **({"substituted": substituted} if substituted else {}),
+            },
+            detail=detail,
         )
 
     def _compare_all(
@@ -438,6 +834,7 @@ class BitexactVerifier(Verifier):
         workspace: Path,
         executor: Executor,
         config: dict[str, Any],
+        scratch: Path | None = None,
     ) -> Verdict:
         try:
             import numpy as np
@@ -515,16 +912,17 @@ class BitexactVerifier(Verifier):
         def not_generable(name: str) -> str | None:
             """Why this harness cannot produce every required input, or None.
 
-            Character arguments have no sampling story yet; a default that
-            tried would fail the whole gate on an init routine's errstring.
-            Explicit config still wins -- and then fails loudly. The reason
-            goes on the verdict by name (numfor's ``print_msg``, a message
-            to stderr): not compared, and not silent about it.
+            Character arguments have no sampling story yet, beyond the one
+            shape ``drawable_path`` names; a default that tried would fail the
+            whole gate on an init routine's errstring. Explicit config still
+            wins -- and then fails loudly. The reason goes on the verdict by
+            name (numfor's ``print_msg``, a message to stderr): not compared,
+            and not silent about it.
             """
             for a in table[name]["args"]:
                 if a["intent"] == "OUT" or a.get("optional"):
                     continue
-                if a["dtype"] == "str":
+                if a["dtype"] == "str" and not drawable_path(a):
                     return f"character argument {a['name']}: no generated draw for one"
                 if a["dtype"] == PROCEDURE_DTYPE and not isinstance(a.get("interface"), dict):
                     # A procedure argument the frontend could not resolve an
@@ -561,13 +959,15 @@ class BitexactVerifier(Verifier):
             skipped = sorted(set(offered) - set(wanted))
         else:
             by_subprogram = {}
+            # A subprogram the oracle listed as ungated has no reference to
+            # compare against -- it says so, and says why, and the reason
+            # lands on the verdict below. Comparing one anyway compares the
+            # candidate against a wrapper the oracle has already disclaimed.
+            disclaimed = set(handle.get("ungated") or {}) | set(config.get("ungated") or {})
             wanted = config.get("subprograms") or [
                 name
                 for name in wrappers
-                if name in table
-                and judged(name)
-                and generable(name)
-                and name not in declared_ungated
+                if name in table and judged(name) and generable(name) and name not in disclaimed
             ]
             skipped = sorted(set(wrappers) - set(wanted))
             # A translated subprogram the harness has no draw for is named
@@ -622,6 +1022,8 @@ class BitexactVerifier(Verifier):
         # reason, unless declared ungated like any other silence.
         lowered = getattr(translated, "_JAX_KERNELS", None)
         delegated = (candidate.notes.get("jax") or {}).get("delegated") or {}
+        declared_flat = handle.get("flattened")
+        flattened: dict[str, Any] = declared_flat if isinstance(declared_flat, dict) else {}
         for name in wanted:
             sub = table[name]
             if isinstance(lowered, (list, tuple, set)) and name not in lowered:
@@ -630,12 +1032,19 @@ class BitexactVerifier(Verifier):
                     + _delegation_chain(name, delegated)
                 )
                 continue
-            translated_fn = getattr(translated, name, None)
+            translated_fn = self._candidate_function(translated, name)
             truth_fn = None if recorded else getattr(truth, wrappers.get(name, f"w_{name}"), None)
             if translated_fn is None or (truth_fn is None and not recorded):
                 side = "candidate" if translated_fn is None else "oracle"
                 failures.append(f"{name}: missing on the {side} side")
                 continue
+            if isinstance(flattened.get(name), dict):
+                # The reference takes this subprogram's derived-type dummies
+                # component by component; so, for this comparison, does the
+                # candidate.
+                sub, translated_fn = flatten_derived(
+                    sub, translated_fn, flattened[name], translated
+                )
             outcome = self._compare_subprogram(
                 np,
                 name,
@@ -651,9 +1060,12 @@ class BitexactVerifier(Verifier):
                 dominant_axis=config.get("dominant_axis", -1),
                 rel_scale=str(config.get("rel_scale", "element")),
                 draws=int(config.get("draws", self.draws_per_trial)),
+                call_seconds=float(config.get("call_seconds", self.call_seconds)),
                 arg_naming=str(handle.get("arg_naming", "lower")),
                 convention=str(handle.get("return_convention", "f2py")),
                 samples=by_subprogram.get(name) if recorded else None,
+                scratch=None if scratch is None else scratch / name,
+                reference_isolated=handle.get("isolation") == "process",
             )
             per_subprogram[name] = outcome
             if "error" in outcome:
@@ -877,10 +1289,22 @@ class BitexactVerifier(Verifier):
         dominant_axis: Any = -1,
         rel_scale: str = "element",
         draws: int = 1,
+        call_seconds: float = 0.0,
         arg_naming: str = "lower",
         convention: str = "f2py",
         samples: list[dict[str, Any]] | None = None,
+        fitted: dict[str, int] | None = None,
+        scratch: Path | None = None,
+        reference_isolated: bool = False,
     ) -> dict[str, Any]:
+        """Compare one subprogram over ``trials`` draws.
+
+        ``fitted`` is what a first pass grew an unpinned extent to
+        (:meth:`_fit_extents`): those extents arrive pinned in ``dims``, and
+        the comparison starts again from the first trial so that every trial
+        is compared at one shape. It is recorded on the outcome, because the
+        shape the points were bit-exact at is part of what they say.
+        """
         from recast.transform.numpy.vocabulary import pysafe
 
         if convention not in {"f2py", "emitted", "recorded"}:
@@ -889,7 +1313,7 @@ class BitexactVerifier(Verifier):
         declared_dtypes = [
             (f"argument {a.get('name', '<unnamed>')!r}", a.get("dtype"))
             for a in sub["args"]
-            if a.get("dtype") != PROCEDURE_DTYPE
+            if a.get("dtype") != PROCEDURE_DTYPE and not drawable_path(a)
         ]
         if sub["kind"] == "function":
             declared_dtypes.append(("function result", sub.get("result_dtype")))
@@ -910,17 +1334,43 @@ class BitexactVerifier(Verifier):
             }
 
         required = [a for a in sub["args"] if not a.get("optional")]
+        # Character dummies the source opens as files it creates. Not values
+        # to compare -- both sides get a scratch path of their own, and what
+        # is compared is the file each one left there. None of that applies to
+        # a replay: its inputs are the recorded run's, including the path it
+        # actually wrote to, and there is no second side to write a file.
+        path_arguments = [] if samples is not None else [a for a in required if drawable_path(a)]
+        if path_arguments and scratch is None:
+            return {
+                "error": "argument(s) "
+                + ", ".join(a["name"] for a in path_arguments)
+                + " name files the subprogram writes, and this comparison has "
+                "nowhere to let the two sides write them"
+            }
         outs_all = [a for a in sub["args"] if a["intent"] in ("OUT", "INOUT")]
         outs_required = [a for a in outs_all if not a.get("optional")]
-        unknown_intents = [a["name"] for a in sub["args"] if a["intent"] == "UNKNOWN"]
+        # Over the arguments the comparison passes, not every argument the
+        # subprogram declares. An optional one is dropped from both calls --
+        # the wrapper does not take it and the translation spells it as a
+        # keyword sentinel -- so neither side reads or writes it and its
+        # intent decides nothing here. ``integer, optional :: maxiter``, which
+        # is how the corpus's ``secant`` declares its iteration cap, states no
+        # intent and cost that subprogram its comparison over an argument no
+        # call made.
+        unknown_intents = [a["name"] for a in required if a["intent"] == "UNKNOWN"]
         if unknown_intents:
             return {
                 "error": "argument(s) "
                 f"{', '.join(unknown_intents)} have UNKNOWN intent; this verifier cannot "
                 "know whether their post-call values are outputs"
             }
-        if sub["kind"] == "function" and outs_all:
-            names = ", ".join(a["name"] for a in outs_all)
+        if sub["kind"] == "function" and outs_required:
+            # Required ones only, for the reason the comment above gives: an
+            # optional dummy is dropped from both calls, so a function with
+            # an optional intent(out) argument -- ``newunit(unit)``, whose
+            # argument exists for callers that want the number twice -- has
+            # no side effect to pair with its result on the call being made.
+            names = ", ".join(a["name"] for a in outs_required)
             return {
                 "error": f"function {name!r} declares OUT/INOUT dummy argument(s) "
                 f"{names}; this verifier cannot pair both its result and side effects"
@@ -951,6 +1401,25 @@ class BitexactVerifier(Verifier):
                 r"[a-z_]\w*", f"{dim.get('lb') or ''} {dim.get('ub') or ''}".lower()
             )
         }
+        # What the body's own entry checks say its dummies' shapes must be.
+        # An assumed-shape dummy declares neither extent, and a subprogram
+        # that stops unless ``size(c,1)`` is five has said the one thing this
+        # harness could otherwise only guess -- and guess wrongly on every
+        # draw it makes.
+        guards = list(sub.get("shape_guards") or [])
+        # ... and what they say about their values. ``bctype`` is a plain
+        # integer dummy that the body stops on unless it is 1 or 2, so a draw
+        # from this harness's default integer range is refused fifteen times
+        # in sixteen and the subprogram runs out of attempts having compared
+        # nothing. The operator's own range still wins: a project that has
+        # said what it wants drawn has said it about this argument too.
+        ranges = {
+            **{
+                str(guard["arg"]).lower(): (float(guard["low"]), float(guard["high"]))
+                for guard in sub.get("value_guards") or []
+            },
+            **ranges,
+        }
 
         points = bit_exact = nan_mismatch = 0
         integer_points = integer_mismatch = 0
@@ -971,7 +1440,15 @@ class BitexactVerifier(Verifier):
         # *shape*: a packed triangular workspace wants an extent that is a
         # function of the order it goes with, and one drawn independently of
         # that order is a subscript past the end rather than a comparison.
+        # An extent this harness already grew is pinned, and is in ``dims``
+        # rather than here.
         free_extents = sorted(dimension_names - {str(k).lower() for k in dims})
+        # Whether a shape refusal is still answered by growing the extents.
+        # Off once a growth has been fitted, once a search has found none --
+        # a second search over the same shapes would find the same nothing --
+        # and for a replay or a profiled draw, whose extents are not this
+        # harness's to choose.
+        fitting = samples is None and profile is None and not fitted
         attempts = 1 if samples is not None else max(1, int(draws))
         # Replayed samples are the trials, and there are as many as were
         # recorded. ``trials`` is a sampling parameter and does not apply: a
@@ -1004,43 +1481,42 @@ class BitexactVerifier(Verifier):
                     for extent in free_extents:
                         trial_dims[extent] = int(rng.integers(1, ceiling + 1))
                 staged: list[dict[str, Any]] = []
+                # A path argument is drawn as a scratch name, one per side:
+                # both sides create the file the source's OPEN creates, and
+                # writing to one path would have the second call overwrite
+                # what the comparison is about to read.
+                drawn_paths: dict[str, str] = {}
+                truth_paths: dict[str, str] = {}
+                if path_arguments:
+                    trial_root = Path(str(scratch)) / f"{round_index}.{attempt}"
+                    for side in ("c", "r"):
+                        (trial_root / side).mkdir(parents=True, exist_ok=True)
+                    drawn_paths = {
+                        a["name"]: str(trial_root / "c" / a["name"]) for a in path_arguments
+                    }
+                    truth_paths = {
+                        a["name"]: str(trial_root / "r" / a["name"]) for a in path_arguments
+                    }
                 if samples is not None:
                     bound = self._recorded_inputs(np, required, round_item)
                     if isinstance(bound, str):
                         return {"error": bound}
                     inputs = bound
                 else:
-                    inputs = {}
-                    for argument in required:
-                        if argument["intent"] == "OUT" and not argument.get("buffer"):
-                            continue
-                        # An intent(out) buffer is the caller's storage: generated
-                        # like an input, handed to the candidate, and compared
-                        # after the call the way any output is.
-                        lowered = argument["name"].lower()
-                        if argument.get("dtype") == PROCEDURE_DTYPE:
-                            interface = argument.get("interface")
-                            if not isinstance(interface, dict):
-                                return {
-                                    "error": f"procedure argument {argument['name']!r} carries no "
-                                    "interface; there is nothing to build a call-back from"
-                                }
-                            try:
-                                inputs[argument["name"]] = callback_for(
-                                    np, argument["name"], interface
-                                )
-                            except ValueError as error:
-                                return {"error": str(error)}
-                        elif not argument.get("dims") and (
-                            lowered in dimension_names or lowered in dims
-                        ):
-                            inputs[argument["name"]] = np.int32(
-                                _resolve_extent(lowered, trial_dims)
-                            )
-                        else:
-                            inputs[argument["name"]] = self._value(
-                                np, argument, trial_dims, ranges, rng
-                            )
+                    drawn = self._generated_inputs(
+                        np,
+                        required,
+                        dimension_names,
+                        dims,
+                        trial_dims,
+                        ranges,
+                        rng,
+                        drawn_paths,
+                        guards,
+                    )
+                    if isinstance(drawn, str):
+                        return {"error": drawn}
+                    inputs = drawn
 
                 recorded_outputs = None
                 if samples is not None:
@@ -1094,12 +1570,21 @@ class BitexactVerifier(Verifier):
                 # anchor emitted by this engine's own backend spells names the
                 # emitted way instead, because both sides of that comparison came
                 # out of the same emitter.
+                #
+                # A caller-buffer OUT array is handed to the reference as well:
+                # it is the caller's storage on both sides, and the reference
+                # cannot allocate what its wrapper never sized. The copy
+                # ``_truth_input`` makes keeps the two sides independent.
                 spell = pysafe if arg_naming == "pysafe" else _f2py_name
+                handed = [
+                    a
+                    for a in required
+                    if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
+                ]
                 try:
                     truth_kwargs = {
                         spell(a["name"]): self._truth_input(np, a, inputs[a["name"]], convention)
-                        for a in required
-                        if a["intent"] != "OUT" or _passed_buffer(a)
+                        for a in handed
                     }
                 except Exception as error:
                     if shaped:
@@ -1110,11 +1595,9 @@ class BitexactVerifier(Verifier):
                     return {
                         "error": f"oracle input preparation failed: {type(error).__name__}: {error}"
                     }
-                truth_args = [
-                    truth_kwargs[spell(a["name"])]
-                    for a in required
-                    if a["intent"] != "OUT" or _passed_buffer(a)
-                ]
+                for argument_name, reference_path in truth_paths.items():
+                    truth_kwargs[spell(argument_name)] = reference_path
+                truth_args = [truth_kwargs[spell(a["name"])] for a in handed]
                 if shaped:
                     # The profile asserts the reference takes this draw, so the
                     # reference goes first and decides. Refused there, the
@@ -1138,8 +1621,46 @@ class BitexactVerifier(Verifier):
                         }
                 else:
                     try:
-                        translated_out = translated_fn(**translated_kwargs)
+                        with _bounded(call_seconds):
+                            translated_out = translated_fn(**translated_kwargs)
+                    except _CallTimedOut as error:
+                        # The draw, not the translation: the reference runs
+                        # the same loop and would not come back from it
+                        # either, so it is not called on this one.
+                        declined = f"candidate {error}"
+                        redrawn += 1
+                        continue
                     except (SystemExit, IndexError) as error:
+                        if (
+                            isinstance(error, _NegativeSubscript)
+                            and reference_isolated
+                            and truth_fn is not None
+                            and samples is None
+                        ):
+                            # The candidate refused a subscript below the
+                            # dummy's declared lower bound rather than wrapping
+                            # it to the other end (see ``_NoWrapArray``). A
+                            # bounds-checked reference in its own process is the
+                            # authority on such a draw: it names the array and
+                            # the bound and ends cleanly, so the draw is
+                            # declined under the reference's own reason (#42).
+                            # An in-process reference cannot be trusted to
+                            # survive the read, so it is left uncalled and the
+                            # candidate's refusal stands.
+                            try:
+                                truth_fn(**truth_kwargs)
+                            except ReferenceAborted as ref_error:
+                                declined = f"reference aborted: {ref_error}"
+                                why = (
+                                    "reference subscript out of bounds"
+                                    if _bounds_violation(ref_error.runtime_error)
+                                    else "reference error stop"
+                                )
+                                declined_by[why] = declined_by.get(why, 0) + 1
+                                redrawn += 1
+                                continue
+                            except Exception:  # noqa: S110 - did not abort: the candidate's refusal stands
+                                pass
                         # Not a comparison that failed -- a draw the subprogram
                         # does not take. ``SystemExit`` is a translated ERROR
                         # STOP: the source itself saying these arguments are not
@@ -1151,10 +1672,77 @@ class BitexactVerifier(Verifier):
                         # not own. Either way the reference must not be called
                         # on this draw; draw again.
                         declined = f"candidate raised: {type(error).__name__}: {error}"
-                        reshape = reshape or isinstance(error, IndexError)
                         overrun = isinstance(error, IndexError)
                         why = "subscript past extent" if overrun else "error stop"
                         declined_by[why] = declined_by.get(why, 0) + 1
+                        # A ``_NegativeSubscript`` is a value outside the
+                        # source's own domain, not a shape this harness's
+                        # default got wrong (see the class) -- no extent
+                        # grows its way out of a negative index, so it is
+                        # not a candidate for ``_fit_extents`` and does not
+                        # earn the subprogram a ``reshaped`` count below.
+                        growable = isinstance(error, IndexError) and not isinstance(
+                            error, _NegativeSubscript
+                        )
+                        if growable and fitting and free_extents:
+                            # A subscript past the end at extents nobody
+                            # pinned is this harness's own default being
+                            # wrong about the shape, not the draw being
+                            # wrong about the values. Grow the default until
+                            # the body's subscripts fit and compare the
+                            # subprogram again from its first trial, so that
+                            # every trial is compared at one shape. Only
+                            # once: what the growth finds is pinned, and what
+                            # it does not find is what the redraw below is
+                            # for. A project that shapes its own inputs has
+                            # said what its subprograms take, and a replay's
+                            # extents are the recording's.
+                            table = self._fit_extents(
+                                np,
+                                name,
+                                required,
+                                dimension_names,
+                                translated_fn,
+                                dims,
+                                ranges,
+                                free_extents,
+                                trials,
+                                call_seconds,
+                                path_arguments,
+                                scratch,
+                                guards,
+                            )
+                            grown = {e: int(table[e]) for e in free_extents if e in table}
+                            if grown:
+                                return self._compare_subprogram(
+                                    np,
+                                    name,
+                                    sub,
+                                    translated_fn,
+                                    truth_fn,
+                                    trials,
+                                    table,
+                                    ranges,
+                                    profile=profile,
+                                    unit_uid=unit_uid,
+                                    dominant_at=dominant_at,
+                                    dominant_axis=dominant_axis,
+                                    rel_scale=rel_scale,
+                                    draws=draws,
+                                    call_seconds=call_seconds,
+                                    arg_naming=arg_naming,
+                                    convention=convention,
+                                    samples=samples,
+                                    fitted=grown,
+                                    scratch=scratch,
+                                    reference_isolated=reference_isolated,
+                                )
+                            fitting = False
+                        # Only where there is an extent left to move: with
+                        # every extent pinned or fitted there is nothing to
+                        # reshape, and counting the trial as reshaped would
+                        # name extents that did not move.
+                        reshape = reshape or (bool(free_extents) and growable)
                         redrawn += 1
                         continue
                     except Exception as error:
@@ -1207,6 +1795,15 @@ class BitexactVerifier(Verifier):
                     if sub["kind"] == "function"
                     else {a["name"]: a.get("dtype") for a in outs_all}
                 )
+                if path_arguments:
+                    produced = self._file_outputs(np, path_arguments, drawn_paths, truth_paths)
+                    if isinstance(produced, str):
+                        return {"error": produced}
+                    pairs = [*pairs, *produced]
+                    output_dtypes = {
+                        **output_dtypes,
+                        **{label: "int32" for label, _ours, _theirs in produced},
+                    }
                 for label, ours, theirs in pairs:
                     declared_dtype = output_dtypes.get(label)
                     if declared_dtype in {"int32", "int64"}:
@@ -1394,12 +1991,128 @@ class BitexactVerifier(Verifier):
             "reshaped": reshaped,
             "shaped": shaped_trials,
         }
+        if fitted:
+            # What was compared, at extents this harness chose: a reader who
+            # is told the points were bit-exact is owed the shape they were
+            # bit-exact at.
+            outcome["extents"] = fitted
         if dominant_at is not None:
             outcome["max_ulp_dominant"] = max_ulp_dominant
             outcome["dominant_points"] = dominant_points
         if samples is not None:
             outcome["per_sample"] = per_sample
         return outcome
+
+    def _fit_extents(
+        self,
+        np: Any,
+        name: str,
+        required: list[dict[str, Any]],
+        dimension_names: set[str],
+        translated_fn: Any,
+        dims: dict[str, int],
+        ranges: dict[str, tuple[float, float]],
+        free_extents: list[str],
+        trials: int,
+        call_seconds: float,
+        path_arguments: list[dict[str, Any]] | None = None,
+        scratch: Path | None = None,
+        guards: Sequence[dict[str, Any]] = (),
+    ) -> dict[str, int]:
+        """Grow the extents nobody pinned until the body's subscripts fit.
+
+        An extent no operator pinned is this harness's own choice rather than
+        a value the run asked for: every one of them is ``default_dim``. For a
+        packed workspace that choice is never right and cannot be -- MINPACK's
+        ``dogleg`` reads the upper triangle of an order-``n`` matrix out of
+        ``r(lr)``, so ``lr`` has to be ``n(n+1)/2`` and is never ``n`` -- and
+        at it the subprogram is not comparable at all: the first subscript the
+        body forms is already past the end.
+
+        So the default is *grown*, and only ever grown. A longer workspace at
+        the same order is the problem the operator configured, one size larger;
+        the extents a shape redraw moves to are a *smaller* problem, and a
+        different one every trial, which is why a subprogram compared that way
+        fails by name (see the ``reshaped`` floor). The growth is decided once,
+        at the first shape a trial refused, and the subprogram is compared
+        again from its first trial at it -- so every trial holds one shape,
+        and the metrics say which.
+
+        The candidate's own refusal is what a shape is judged by: an
+        ``IndexError`` is a subscript past a dummy's declared extent and there
+        is nothing else here that knows what the body needs. The reference is
+        not called -- on these draws it would read memory the call does not
+        own -- and a draw refused for its *values* (an ``ERROR STOP``, a loop
+        it does not come back from) says nothing about the shape, so it is
+        neither a fit nor a reason to grow.
+        """
+        from recast.transform.numpy.vocabulary import pysafe
+
+        def fits(table: dict[str, int]) -> bool:
+            for index in range(trials):
+                # The trials' own draws, at the shape under test: a shape
+                # fitted against draws of this pass's own would be a shape
+                # nothing that gets compared was ever made at.
+                rng = np.random.default_rng(
+                    int.from_bytes(f"{name}:{index}".encode(), "big") % 2**32
+                )
+                paths = {}
+                if path_arguments and scratch is not None:
+                    root = Path(str(scratch)) / f"fit.{index}"
+                    root.mkdir(parents=True, exist_ok=True)
+                    paths = {a["name"]: str(root / a["name"]) for a in path_arguments}
+                inputs = self._generated_inputs(
+                    np, required, dimension_names, dims, table, ranges, rng, paths, guards
+                )
+                if isinstance(inputs, str):
+                    return True  # no draw to make: not a shape this can fit
+                kwargs = {
+                    pysafe(a["name"]): inputs[a["name"]]
+                    for a in required
+                    if a["intent"] != "OUT" or (a.get("buffer") and a["name"] in inputs)
+                }
+                try:
+                    with _bounded(call_seconds):
+                        translated_fn(**kwargs)
+                except _NegativeSubscript:
+                    continue  # a value refusal, not a shape one -- see the class
+                except IndexError:
+                    return False
+                except (Exception, SystemExit):  # noqa: S112 - a value refusal, not a shape
+                    continue  # this draw has nothing to say about the shape
+            return True
+
+        if fits(dims):
+            return dims
+        base = {extent: _resolve_extent(extent, dims) for extent in free_extents}
+        # Each extent alone, and the one sizing fewest of the subprogram's
+        # arrays first: a packed workspace is the extent of one array, where
+        # an order is what every other array is cut to. Growing the order
+        # raises the requirement along with the supply and arrives nowhere,
+        # and it is the order the operator's own default is a statement
+        # about. Every extent together is tried last, for a body whose
+        # workspaces are more than one.
+        sized = {
+            extent: sum(
+                1
+                for argument in required
+                for dim in argument.get("dims") or []
+                if extent in re.findall(r"[a-z_]\w*", str(dim.get("ub") or "").lower())
+            )
+            for extent in free_extents
+        }
+        groups = [[extent] for extent in sorted(free_extents, key=lambda e: (sized[e], e))]
+        if len(free_extents) > 1:
+            groups.append(sorted(free_extents))
+        for group in groups:
+            for factor in GROWTH_FACTORS:
+                grown = {e: min(base[e] * factor, MAX_FITTED_EXTENT) for e in group}
+                if all(grown[e] == base[e] for e in group):
+                    continue
+                table = {**dims, **grown}
+                if fits(table):
+                    return table
+        return dims
 
     @staticmethod
     def _devices(translated: Any, handle: dict[str, Any]) -> dict[str, str]:
@@ -1623,6 +2336,44 @@ class BitexactVerifier(Verifier):
         return raw.astype(target, copy=False)
 
     @staticmethod
+    def _file_outputs(
+        np: Any,
+        path_arguments: list[dict[str, Any]],
+        drawn_paths: dict[str, str],
+        truth_paths: dict[str, str],
+    ) -> list[tuple[str, Any, Any]] | str:
+        """The file each side left at a path argument, as an output to compare.
+
+        A subprogram whose only product is a file has no output argument for
+        ``_paired_outputs`` to pair -- ``saveppm(filename, img)`` declares two
+        inputs and nothing else -- and comparing its arguments compares what
+        the caller already knew. What it produced is the bytes it wrote, and
+        those are compared as declared integers: the bit-exact bar for a file
+        is that it holds the same bytes, in the same order, and one that is a
+        byte longer is a different file rather than a near-miss.
+
+        A side that wrote nothing is not an empty file to compare against an
+        empty file: the source's OPEN creates one, so its absence is the call
+        having done nothing, and it is named rather than passed over.
+        """
+        produced: list[tuple[str, Any, Any]] = []
+        for argument in path_arguments:
+            label = f"{argument['name']} (file)"
+            ours = _file_bytes(drawn_paths[argument["name"]])
+            theirs = _file_bytes(truth_paths[argument["name"]])
+            if ours is None or theirs is None:
+                side = "candidate" if ours is None else "oracle"
+                return f"{label}: the {side} left no file at the path it was given"
+            produced.append(
+                (
+                    label,
+                    np.frombuffer(ours, dtype=np.uint8).astype(np.int32),
+                    np.frombuffer(theirs, dtype=np.uint8).astype(np.int32),
+                )
+            )
+        return produced
+
+    @staticmethod
     def _paired_outputs(
         sub: dict[str, Any],
         outs_all: list[dict[str, Any]],
@@ -1722,26 +2473,82 @@ class BitexactVerifier(Verifier):
             if isinstance(truth_out, tuple)
             else ([truth_out] if truth_out is not None else [])
         )
-        # A caller-buffer OUT array of no declared extent went in and was
-        # written in place (the wrapper spells it ``inout``): read back
-        # from what was passed, like an INOUT, not from the return.
-        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not _passed_buffer(a)]
+        # A caller-buffer OUT array is not among them: the wrapper spells it
+        # ``intent(in out)``, because the caller owns the storage on both
+        # sides, so it is read back from the array that was passed exactly as
+        # an INOUT is.
+        pure_out = [a for a in outs_required if a["intent"] == "OUT" and not a.get("buffer")]
         if len(theirs_out) != len(pure_out):
             return (
                 f"oracle returned {len(theirs_out)} value(s) for "
                 f"{len(pure_out)} intent(out) argument(s)"
             )
         theirs = dict(zip([a["name"] for a in pure_out], theirs_out, strict=True))
-        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or _passed_buffer(a)]
-        for argument in outs_required:
-            if argument["intent"] == "INOUT" or _passed_buffer(argument):
-                theirs[argument["name"]] = truth_args[passed_in.index(argument["name"])]
-                if argument["intent"] == "INOUT" and argument.get("dtype") == "bool":
-                    if not argument.get("dims") and convention == "f2py":
-                        # Back from the wrapper's integer to the logical.
-                        theirs[argument["name"]] = bool(int(theirs[argument["name"]]) != 0)
+        passed_in = [a["name"] for a in required if a["intent"] != "OUT" or a.get("buffer")]
+        read_back = [a for a in outs_required if a["intent"] == "INOUT" or a.get("buffer")]
+        if read_back and len(truth_args) != len(passed_in):
+            return (
+                f"the reference was handed {len(truth_args)} argument(s) for "
+                f"{len(passed_in)} the gate has to read an updated value back from"
+            )
+        for argument in read_back:
+            theirs[argument["name"]] = truth_args[passed_in.index(argument["name"])]
+            if argument["intent"] == "INOUT" and argument.get("dtype") == "bool":
+                if not argument.get("dims") and convention == "f2py":
+                    # Back from the wrapper's integer to the logical.
+                    theirs[argument["name"]] = bool(int(theirs[argument["name"]]) != 0)
 
         return [(a["name"], by_name[a["name"]], theirs[a["name"]]) for a in outs_required]
+
+    def _generated_inputs(
+        self,
+        np: Any,
+        required: list[dict[str, Any]],
+        dimension_names: set[str],
+        dims: dict[str, int],
+        trial_dims: dict[str, int],
+        ranges: dict[str, tuple[float, float]],
+        rng: Any,
+        paths: dict[str, str] | None = None,
+        guards: Sequence[dict[str, Any]] = (),
+    ) -> dict[str, Any] | str:
+        """One draw's inputs by argument name, or why there is no draw.
+
+        ``dims`` is what the operator pinned and ``trial_dims`` what this draw
+        is being made at; they differ where an extent nobody pinned has been
+        moved or grown for this trial. ``paths`` is the scratch name each
+        path argument is drawn as, chosen by the caller because the two sides
+        need different ones.
+        """
+        inputs: dict[str, Any] = {}
+        shapes = _guarded_shapes(required, guards, trial_dims)
+        for argument in required:
+            if argument["intent"] == "OUT" and not argument.get("buffer"):
+                continue
+            # An intent(out) buffer is the caller's storage: generated
+            # like an input, handed to the candidate, and compared
+            # after the call the way any output is.
+            lowered = argument["name"].lower()
+            if argument["name"] in (paths or {}):
+                inputs[argument["name"]] = (paths or {})[argument["name"]]
+            elif argument.get("dtype") == PROCEDURE_DTYPE:
+                interface = argument.get("interface")
+                if not isinstance(interface, dict):
+                    return (
+                        f"procedure argument {argument['name']!r} carries no "
+                        "interface; there is nothing to build a call-back from"
+                    )
+                try:
+                    inputs[argument["name"]] = callback_for(np, argument["name"], interface)
+                except ValueError as error:
+                    return str(error)
+            elif not argument.get("dims") and (lowered in dimension_names or lowered in dims):
+                inputs[argument["name"]] = np.int32(_resolve_extent(lowered, trial_dims))
+            else:
+                inputs[argument["name"]] = self._value(
+                    np, argument, trial_dims, ranges, rng, shapes.get(lowered)
+                )
+        return inputs
 
     def _value(
         self,
@@ -1750,6 +2557,7 @@ class BitexactVerifier(Verifier):
         dims: dict[str, int],
         ranges: dict[str, tuple[float, float]],
         rng: Any,
+        extents: list[int] | None = None,
     ) -> Any:
         name = argument["name"].lower()
         kinds = {
@@ -1768,7 +2576,11 @@ class BitexactVerifier(Verifier):
         dtype = kinds[argument["dtype"]]
         shape = None
         if argument.get("dims"):
-            shape = tuple(_extent(d, dims) for d in argument["dims"])
+            shape = (
+                tuple(extents)
+                if extents is not None
+                else tuple(_extent(d, dims) for d in argument["dims"])
+            )
         if dtype in (np.complex128, np.complex64):
             low, high = ranges.get(name, DEFAULT_RANGE)
             part = np.float32 if dtype is np.complex64 else np.float64
@@ -1781,7 +2593,8 @@ class BitexactVerifier(Verifier):
             low, high = ranges.get(name, DEFAULT_RANGE)
             if shape is None:
                 return dtype(rng.uniform(low, high))
-            return np.asfortranarray(rng.uniform(low, high, size=shape).astype(dtype))
+            drawn = np.asfortranarray(rng.uniform(low, high, size=shape).astype(dtype))
+            return drawn.view(_no_wrap_array_type(np))
         if dtype in (np.int32, np.int64):
             # The source's own domain for the dummy (``select case (mode)``
             # with a stopping default) bounds the draw; the operator's
@@ -1790,9 +2603,10 @@ class BitexactVerifier(Verifier):
             low, high = ranges.get(name, fallback)
             if shape is None:
                 return dtype(rng.integers(int(low), int(high) + 1))
-            return np.asfortranarray(
+            drawn = np.asfortranarray(
                 rng.integers(int(low), int(high) + 1, size=shape).astype(dtype)
             )
+            return drawn.view(_no_wrap_array_type(np))
         # A logical takes a range like anything else: ``pivot`` decides
         # whether ``qrfac`` writes ``ipvt`` at all, and an operator with no
         # way to pin it is comparing an array one side never defined.
@@ -1800,7 +2614,8 @@ class BitexactVerifier(Verifier):
         low, high = min(int(low), int(high)), max(int(low), int(high))
         if shape is None:
             return np.bool_(rng.integers(low, high + 1))
-        return np.asfortranarray(rng.integers(low, high + 1, size=shape).astype(np.bool_))
+        drawn = np.asfortranarray(rng.integers(low, high + 1, size=shape).astype(np.bool_))
+        return drawn.view(_no_wrap_array_type(np))
 
     # -- loading --------------------------------------------------------------
 
@@ -1895,6 +2710,23 @@ class BitexactVerifier(Verifier):
         return shaped, True
 
     @staticmethod
+    def _candidate_function(translated: Any, name: str) -> Any:
+        """The emitted translation of the subprogram ``_SIGNATURES`` names.
+
+        The table is in the source's vocabulary, and a Fortran name that is a
+        Python keyword cannot be a Python definition of the same spelling:
+        ``subroutine assert`` is emitted ``def assert_``. The trailing
+        underscore is PEP 8's convention and a fact about Python rather than
+        about any one backend -- ``static.rwset`` strips it back by the same
+        rule -- so it is read back here, and a subprogram whose name needed
+        it stops being invisible to this gate.
+        """
+        found = getattr(translated, name, None)
+        if found is None and keyword.iskeyword(name):
+            found = getattr(translated, f"{name}_", None)
+        return found
+
+    @staticmethod
     def _load_candidate(
         candidate: Candidate,
         workspace: Path,
@@ -1916,25 +2748,39 @@ class BitexactVerifier(Verifier):
         as the candidate, and the recipe says which by setting
         ``config["module_suffix"]``. Defaulting to the NumPy module keeps
         every existing config meaning what it did.
+
+        Among the files that carry the suffix, the one under judgement is the
+        unit's own -- ``<unit>_numpy.py`` for ``fortran:<unit>``. It used to
+        be whichever came last in ``Candidate.files``, which was this unit's
+        for as long as a candidate held exactly one such file. It no longer
+        does: a candidate carries the translations of the siblings it
+        imports, and a bundle written and read back is ordered by path, so
+        ``sorting`` was judged against ``utils_numpy.py`` -- its signature
+        table, its coverage, none of them the unit's. Which module a gate
+        judges is not the file order's to decide.
         """
         staged = workspace / "candidate"
         staged.mkdir(parents=True, exist_ok=True)
-        module_path = None
+        staged_stems = set()
+        offered: list[Path] = []
         for path, content in candidate.files.items():
             target = staged / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+            staged_stems.add(target.stem)
             if str(path).endswith(suffix):
-                module_path = target
-        if module_path is None:
-            raise FileNotFoundError(f"candidate carries no *{suffix} module")
+                offered.append(target)
+        module_path = _module_under_judgement(candidate.unit, offered, suffix)
 
         entries = [str(staged), *(str(p) for p in companions if str(p) != str(staged))]
         for entry in reversed(entries):
             sys.path.insert(0, entry)
         try:
+            # Every staged name, not just the module under judgement: a
+            # sibling left in ``sys.modules`` by an earlier unit would be
+            # imported instead of the copy this candidate carries.
             for name in list(sys.modules):
-                if name == module_path.stem or name.endswith("_constants"):
+                if name in staged_stems or name.endswith("_constants"):
                     del sys.modules[name]
             spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
             assert spec is not None and spec.loader is not None
@@ -1957,6 +2803,33 @@ class BitexactVerifier(Verifier):
             metrics=metrics,
             detail=detail,
         )
+
+
+def _module_under_judgement(unit: str, offered: list[Path], suffix: str) -> Path:
+    """Which of a candidate's suffix-carrying files is the unit's own.
+
+    One file is the unit's translation; the rest are the siblings it imports.
+    Picking by name rather than by position keeps the answer the same whether
+    the candidate came straight from the transform or through a bundle, which
+    orders files by path. Two files that both claim the name, or none that
+    does, is a candidate this gate cannot judge -- and a verifier says so
+    rather than guessing.
+    """
+    if not offered:
+        raise FileNotFoundError(f"candidate carries no *{suffix} module")
+    if len(offered) == 1:
+        return offered[0]
+    own = f"{unit.rpartition(':')[2].rpartition('/')[2].lower()}{suffix}"
+    named = [path for path in offered if path.name.lower() == own]
+    if len(named) == 1:
+        return named[0]
+    carried = ", ".join(sorted(path.name for path in offered))
+    raise FileNotFoundError(
+        f"candidate for {unit} carries {len(offered)} *{suffix} modules ({carried}); "
+        + ("none of them is" if not named else f"{len(named)} of them are")
+        + f" the unit's own {own}, and which one is under judgement cannot be "
+        "guessed from the file order"
+    )
 
 
 def _profile_site(unit_uid: str, name: str, trial: int) -> str:

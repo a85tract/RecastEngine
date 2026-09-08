@@ -29,6 +29,7 @@ two apart, which is the whole difference between an override and a guess.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -317,6 +318,8 @@ def dtype_of(base_type: str | None, kind: str | None, kind_map: dict[str, str]) 
             return "complex64"
         return f"UNKNOWN_COMPLEX_KIND({k})"
     if bt.startswith("DOUBLE"):
+        # DOUBLE PRECISION is float64; DOUBLE COMPLEX was handled above and
+        # reads as complex128, so what reaches here is a real double.
         return "float64"
     return f"UNKNOWN({bt})"
 
@@ -501,6 +504,203 @@ def apply_dimension_stmts(
         if not entity.get("dims"):
             entity["dims"] = shape["dims"]
             entity["array_spec"] = entity.get("array_spec") or shape["array_spec"]
+
+
+def opened_files(execution: Any, arg_names: list[str]) -> dict[str, str]:
+    """Dummy arguments an OPEN in this body names as its ``FILE=``, and what
+    the connection asks of the file: ``"existing"`` where any OPEN of it says
+    ``STATUS='OLD'``, ``"created"`` otherwise.
+
+    Which dummy is a path is not something a type can say -- ``character(len=*)
+    :: filename`` and ``character(len=*) :: msg`` are declared identically, and
+    only the body tells them apart. A consumer that has to *supply* one needs
+    the distinction: a path the subprogram creates is a scratch name any caller
+    may choose, and the file left at it is the subprogram's whole output where
+    it has no output argument at all (``saveppm``); a path it opens
+    ``STATUS='OLD'`` is a file that has to already hold something the caller
+    did not write, which is not a value anything can draw.
+    """
+    if execution is None:
+        return {}
+    dummies = {name.lower() for name in arg_names}
+    found: dict[str, str] = {}
+    for stmt in walk(execution, f03.Open_Stmt):
+        specifiers = stmt.children[1]
+        named = None
+        status = "unknown"
+        for spec in specifiers.children if hasattr(specifiers, "children") else [specifiers]:
+            keyword, value = spec.children
+            key = str(keyword).upper() if keyword is not None else None
+            if key == "FILE":
+                text = str(value).strip().lower()
+                named = text if text in dummies else None
+            elif key == "STATUS":
+                status = str(value).strip().strip("'\"").lower()
+        if named is None:
+            continue
+        if status == "old" or found.get(named) == "existing":
+            found[named] = "existing"
+        else:
+            found.setdefault(named, "created")
+    return found
+
+
+def file_units(execution: Any) -> list[str]:
+    """Local names an OPEN in this body connects to a named file.
+
+    A WRITE to one of these puts records in a file the translation itself
+    created, and for a subprogram whose only product is that file --
+    ``saveppm`` takes an image and returns nothing -- the records *are* the
+    translation. A WRITE to any other unit goes to a stream someone else
+    connected: standard output, or a unit number the caller opened. Those are
+    logs, and dropping them is the reading the emitter has always taken.
+    """
+    if execution is None:
+        return []
+    found: set[str] = set()
+    for stmt in walk(execution, f03.Open_Stmt):
+        specifiers = stmt.children[1]
+        named = None
+        has_file = False
+        for at, spec in enumerate(
+            specifiers.children if hasattr(specifiers, "children") else [specifiers]
+        ):
+            keyword, value = spec.children
+            key = str(keyword).upper() if keyword is not None else None
+            if key == "FILE":
+                has_file = True
+            elif key in ("UNIT", "NEWUNIT") or (key is None and at == 0):
+                text = str(value).strip().lower()
+                named = text if re.fullmatch(r"[a-z_]\w*", text) else None
+        if has_file and named is not None:
+            found.add(named)
+    return sorted(found)
+
+
+SHAPE_GUARD = re.compile(
+    r"\Asize\(\s*(?P<arg>\w+)\s*(?:,\s*(?P<axis>\d+)\s*)?\)\s*/=\s*(?P<extent>.+)\Z",
+    re.I | re.S,
+)
+"""``if (size(c,1) /= 5) call stop_error(...)``: the subject and the extent."""
+
+SIZE_TERM = re.compile(r"size\(\s*(\w+)\s*(?:,\s*(\d+)\s*)?\)", re.I)
+
+ARITHMETIC_ONLY = re.compile(r"\A[\d\s+\-*/()]*\Z")
+
+
+def shape_guards(execution: Any, arg_names: list[str]) -> list[dict[str, Any]]:
+    """What a body's own entry checks say the shapes of its dummies must be.
+
+    ``if (size(c,1) /= 5) call stop_error("size(c,1) /= 5")`` is not a
+    diagnostic aside: it is the declaration the language had no way to make.
+    ``c(0:,:)`` is assumed-shape, so the interface says nothing about either
+    extent, and the two lines under it say the first is five and the second
+    is one less than the length of ``xi``. A consumer that has to *supply* a
+    shape -- a differential harness drawing arguments -- has no other source
+    for that, and every shape it invents is one this subprogram stops on
+    before computing anything.
+
+    Only the ``/=`` form, and only over dummy arguments: a guard that stops
+    unless two things are equal is a statement that they are equal, where
+    ``<``/``>`` bounds a range with no single answer in it, and an extent
+    written in terms of a local says nothing a caller can act on. The extent
+    is returned as text over ``size(name, axis)`` terms and integer
+    arithmetic, which is as far as this can go without evaluating anything.
+    """
+    if execution is None:
+        return []
+    dummies = {name.lower() for name in arg_names}
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for statement in (*walk(execution, f03.If_Stmt), *walk(execution, f03.If_Then_Stmt)):
+        condition = statement.children[0]
+        match = SHAPE_GUARD.fullmatch(" ".join(str(condition).split()))
+        if match is None:
+            continue
+        subject = match.group("arg").lower()
+        axis = int(match.group("axis") or 1) - 1
+        if subject not in dummies or axis < 0 or (subject, axis) in seen:
+            continue
+        extent = match.group("extent").strip()
+        terms = SIZE_TERM.findall(extent)
+        if any(term[0].lower() not in dummies for term in terms):
+            continue
+        spelled = SIZE_TERM.sub(
+            lambda m: f"size({m.group(1).lower()},{int(m.group(2) or 1) - 1})", extent
+        )
+        if not ARITHMETIC_ONLY.fullmatch(SIZE_TERM.sub("0", spelled)):
+            continue
+        seen.add((subject, axis))
+        found.append({"arg": subject, "axis": axis, "extent": spelled})
+    return found
+
+
+VALUE_GUARD_TERM = re.compile(
+    r"\A(?P<arg>\w+)\s*(?:\(\s*\d+\s*\))?\s*(?P<op><=?|>=?)\s*(?P<bound>[+-]?\d+)\Z"
+)
+"""One side of ``if (bctype(1) < 1 .or. bctype(1) > 2) call stop_error(...)``."""
+
+
+def value_guards(execution: Any, args: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What a body's own entry checks say the *values* of its dummies must be.
+
+    ``if (bctype(1) < 1 .or. bctype(1) > 2) call stop_error("bctype /= 1 or 2")``
+    is the counterpart of ``shape_guards``: not a diagnostic aside but the
+    declaration the language had no way to make. ``bctype`` is a plain
+    ``integer`` dummy, so nothing in the interface says it is a mode selector
+    with two modes, and a harness drawing an integer from its own default
+    range hits one of them once in sixteen tries -- which is how ``spline3pars``
+    came out with no draw either side would take.
+
+    Only integer dummies, and only a guard that bounds one from both sides:
+    the pair reads as "this argument lies in [low, high]", which is a range a
+    caller can act on, where a one-sided bound leaves the other end wherever
+    the default had it and says nothing about the mode. The bounds are integer
+    literals, so this evaluates nothing.
+
+    And only the one-line ``if (...) call ...`` / ``stop`` form, where the
+    body *refuses* the value. ``if (k < 1 .or. k > 4) k = 1`` is the opposite
+    statement -- the subprogram takes any ``k`` and clamps it -- and reading
+    it as a range would quietly narrow every draw to the branch that does
+    nothing, which is a coverage loss no verdict would mention.
+    """
+    if execution is None:
+        return []
+    integers = {
+        str(arg["name"]).lower() for arg in args if str(arg.get("dtype")) in ("int32", "int64")
+    }
+    refusals = (f03.Call_Stmt, f03.Stop_Stmt, f08.Error_Stop_Stmt, f03.Return_Stmt)
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for statement in walk(execution, f03.If_Stmt):
+        if not isinstance(statement.children[1], refusals):
+            continue
+        text = " ".join(str(statement.children[0]).split())
+        parts = re.split(r"\.or\.", text, flags=re.I)
+        if len(parts) != 2:
+            continue
+        bounds: dict[str, int] = {}
+        subject = ""
+        for part in parts:
+            match = VALUE_GUARD_TERM.fullmatch(part.strip())
+            if match is None:
+                break
+            name = match.group("arg").lower()
+            if subject and name != subject:
+                break
+            subject = name
+            operator, bound = match.group("op"), int(match.group("bound"))
+            if operator.startswith("<"):
+                bounds["low"] = bound + (1 if operator == "<=" else 0)
+            else:
+                bounds["high"] = bound - (1 if operator == ">=" else 0)
+        if subject not in integers or subject in seen or len(bounds) != 2:
+            continue
+        if bounds["low"] > bounds["high"]:
+            continue
+        seen.add(subject)
+        found.append({"arg": subject, "low": bounds["low"], "high": bounds["high"]})
+    return found
 
 
 def sub_name_of(sub: Any) -> str:
@@ -731,6 +931,7 @@ def _record_of(
                 "intent": d["intent"],
                 "optional": "OPTIONAL" in d["attrs"],
                 "parameter": "PARAMETER" in d["attrs"],
+                "allocatable": "ALLOCATABLE" in d["attrs"],
                 "array_spec": e["array_spec"]
                 or next(
                     (a.split(":", 1)[1] for a in d["attrs"] if a.startswith("DIMENSION:")), None
@@ -830,6 +1031,7 @@ def _record_of(
         info["dtype"] = "PROCEDURE"
     dummy_procedures = procedure_declarations(spec)
 
+    paths = opened_files(execution, arg_names)
     args: list[dict[str, Any]] = []
     for pos, an in enumerate(arg_names):
         info = ent_info.get(an, {})
@@ -845,7 +1047,16 @@ def _record_of(
             "dims": info.get("dims"),
             "char_len": info.get("char_len"),
             "line": info.get("line"),
+            # An ALLOCATABLE dummy is not the caller's storage: intent(out)
+            # deallocates it on entry and the callee decides its extent, so
+            # every consumer that reasons about who owns an out array has to
+            # be able to tell it from an assumed-shape one, which is spelled
+            # the same way here (deferred upper bounds).
+            **({"allocatable": True} if info.get("allocatable") else {}),
             **({"procedure": True} if info.get("procedure") else {}),
+            # A character dummy an OPEN in this body names as its FILE=, and
+            # what that OPEN asks of the file (see ``opened_files``).
+            **({"path": paths[an]} if an in paths else {}),
         }
         # A dummy procedure is not data: it carries the interface it was
         # declared with instead of a dtype, and every consumer that asks
@@ -887,6 +1098,9 @@ def _record_of(
             "dtype": i["dtype"],
             "array_spec": i["array_spec"],
             "dims": i.get("dims"),
+            # ``character(len=80) :: line``: the length an A edit descriptor
+            # reads, which is a fact about the local and not only about a dummy.
+            "char_len": i.get("char_len"),
             # ``real(r8) :: x = -2._r8``: the declaration's value, which the
             # prologue emits instead of its UB-guard zero.
             "init_expr": i.get("init_expr"),
@@ -900,6 +1114,7 @@ def _record_of(
 
     present_args: list[str] = []
     calls: list[str] = []
+    outside: set[str] = set()
     state_read: set[str] = set()
     state_written: set[str] = set()
     if exec_part is not None:
@@ -914,6 +1129,8 @@ def _record_of(
             cn = str(call.children[0]).lower()
             if cn in module_sub_names:
                 calls.append(cn)
+            elif "%" not in cn:
+                outside.add(cn)
         # An arg-less function reference is a bare Name in the expression, not a
         # Part_Ref, so the two forms have to be caught separately.
         used = set(names_in(exec_part))
@@ -946,6 +1163,26 @@ def _record_of(
 
     folded = _fold_local_parameter_bounds(args, result_dims, local_parameters)
 
+    # Names this body reaches that this module does not define: a companion's
+    # procedure, an intrinsic, a use-imported array read like a call. Written
+    # generously on purpose -- every consumer intersects it with a set of its
+    # own (which procedures a build leaves undefined, say), and a name missing
+    # here is a reach nobody can see, while a name too many costs an
+    # intersection that comes back empty.
+    reached = {
+        str(ref.children[0]).lower()
+        for ref in walk(exec_part, f03.Part_Ref)
+        if exec_part is not None
+    }
+    outside |= {
+        candidate
+        for candidate in reached
+        if candidate not in module_sub_names
+        and candidate not in ent_info
+        and candidate not in arg_names
+        and candidate != name
+    }
+
     return {
         "name": name,
         "kind": kind,
@@ -960,8 +1197,17 @@ def _record_of(
         "locals": locals_,
         "present_calls": sorted(set(present_args)),
         "calls": sorted({c for c in calls if c != name}),
+        # What the body reaches outside this module (see above).
+        "external_calls": sorted(outside - {name}),
         "module_state_read": sorted(state_read),
         "module_state_written": sorted(state_written),
+        # Unit variables an OPEN here connects to a file (see ``file_units``).
+        "file_units": file_units(exec_part),
+        # What this body's own checks say its dummies' shapes must be
+        # (see ``shape_guards``).
+        "shape_guards": shape_guards(exec_part, arg_names),
+        # ... and their values (see ``value_guards``).
+        "value_guards": value_guards(exec_part, args),
     }
 
 
@@ -1129,10 +1375,37 @@ def _derived_types(
     return types
 
 
+def _public_types(mod_spec: Any, is_public: Callable[[str], bool]) -> list[str]:
+    """The derived types the module exports, by name.
+
+    ``type, public :: t`` and ``type, private :: t`` decide on the type
+    statement itself; a type declaring neither follows the module's default
+    and its ``public``/``private`` lists, the same way a subprogram does.
+    """
+    if mod_spec is None:
+        return []
+    exported: list[str] = []
+    for statement in walk(mod_spec, f03.Derived_Type_Stmt):
+        name = str(statement.children[1]).lower()
+        attributes = [str(a).upper() for a in walk(statement.children[0], f03.Access_Spec)]
+        if "PUBLIC" in attributes:
+            exported.append(name)
+        elif "PRIVATE" not in attributes and is_public(name):
+            exported.append(name)
+    return sorted(set(exported))
+
+
 def _interfaces(
-    mod_spec: Any, kind_map: dict[str, str], state_names: set[str], sub_names: set[str]
+    mod_spec: Any,
+    kind_map: dict[str, str],
+    state_names: set[str],
+    sub_names: set[str],
+    subs: list[Any] | None = None,
 ) -> dict[str, Any]:
     """``{name: subprogram record}`` for the bodies of interface blocks.
+
+    ``mod_spec`` is the module's specification part; ``subs`` are the
+    subprogram nodes whose own specification parts are searched as well.
 
     An explicit interface for a procedure the module does not define -- the
     shape a procedure dummy has to have (``external :: func`` in a solver,
@@ -1145,9 +1418,19 @@ def _interfaces(
     as a subprogram's so the call renderer needs no second path.
     """
     interfaces: dict[str, Any] = {}
-    if mod_spec is None:
-        return interfaces
-    for ib in walk(mod_spec, f03.Interface_Block):
+    blocks = list(walk(mod_spec, f03.Interface_Block)) if mod_spec is not None else []
+    # A subprogram may declare an interface in its own specification part --
+    # ``polyroots`` declares LAPACK's ``dgeev`` right where it calls it. The
+    # declaration is as real as one at module level: it is what the compiler
+    # checked the call against, what the reference build has to stub because
+    # nothing defines it, and what the translation binds the call to. Left
+    # uncollected, the call was refused as an unknown external and the build
+    # linked against nothing of the name.
+    for sub in subs or ():
+        spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
+        if spec is not None:
+            blocks.extend(walk(spec, f03.Interface_Block))
+    for ib in blocks:
         # ``interface gen`` names a generic: its specifics are procedures, see
         # _generics. ``abstract interface`` is spelled with the same slot.
         if any(
@@ -1157,7 +1440,9 @@ def _interfaces(
             continue
         for body in walk(ib, (f03.Subroutine_Body, f03.Function_Body)):
             record = extract_subprogram(body, kind_map, state_names, sub_names)
-            interfaces[record["name"]] = record
+            # The module's own declaration first; a subprogram's is not
+            # allowed to redefine what the module already said.
+            interfaces.setdefault(record["name"], record)
     return interfaces
 
 
@@ -1386,8 +1671,13 @@ def extract(
         "module_allocate_bounds": allocated_bounds,
         "public": sorted(set(public_names)),
         "types": _derived_types(mod_spec, kind_map, scope=sub_scope, visible=visible | imported),
+        # Which of those types the module exports. A reference wrapper that
+        # spells a derived-type dummy component by component has to ``use``
+        # the type, and ``type, public :: t`` is an attribute of the type
+        # statement, not an ``Access_Stmt`` the public list above sees.
+        "public_types": _public_types(mod_spec, is_public),
         "generics": generics,
-        "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names),
+        "interfaces": _interfaces(mod_spec, kind_map, state_names, sub_names, subs=subs),
         "buffer_convention": buffer_convention,
         "subprograms": subprograms,
     }
@@ -1404,7 +1694,21 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     transcribed by hand, which is how they would drift.
     """
     table: dict[str, dict[str, Any]] = {}
-    for sub in record["subprograms"]:
+    for sub in (
+        *record["subprograms"],
+        # A procedure the sibling declares through an INTERFACE block and does
+        # not define -- an interface module over a compiled library. It is a
+        # procedure by declaration, and a reader that does not know that takes
+        # ``nb = ilaenv(1, ...)`` for an array being subscripted. Its dummies
+        # carry no INTENT, so no position is known to be written, which is the
+        # same thing the translation can say about the call.
+        *(
+            declared
+            for declared in (record.get("interfaces") or {}).values()
+            if declared.get("kind") in ("subroutine", "function")
+            and declared["name"] not in {s["name"] for s in record["subprograms"]}
+        ),
+    ):
         table[sub["name"]] = {
             "kind": sub["kind"],
             "out_positions": [
@@ -1420,7 +1724,10 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             ],
             # What the caller reads: IN and INOUT actuals, and a buffer OUT.
             # An INOUT actual is written *and* read; out_positions alone said
-            # only the first.
+            # only the first. This is the superset the lab line spelled as a
+            # separate ``inout_positions`` (INOUT, or a buffer OUT the
+            # translation passes in and unpacks -- ``dscal(n, alpha, s, 1)``
+            # into a sibling BLAS): read_positions already carries both.
             "read_positions": [
                 at
                 for at, argument in enumerate(sub["args"])
@@ -1451,7 +1758,16 @@ def companion_externals(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         # argument count, and the scope picks by the actuals it sees. A
         # union over specifics of different arity marked the wrong
         # positions -- CLUBB's tridiag_solve, zm2zt_api.
-        signatures = {s: next(x for x in record["subprograms"] if x["name"] == s) for s, _ in known}
+        # A specific the module only declares (fftpack's ``dct_t1i`` over the
+        # bare ``dcosti``) has its signature in the interface block, not
+        # among the definitions.
+        by_name = {
+            d["name"]: d
+            for d in (record.get("interfaces") or {}).values()
+            if d.get("kind") in ("subroutine", "function")
+        }
+        by_name.update({x["name"]: x for x in record["subprograms"]})
+        signatures = {s: by_name[s] for s, _ in known}
         arity = {s: len(sig["args"]) for s, sig in signatures.items()}
         required = {
             s: sum(1 for a in sig["args"] if not a.get("optional")) for s, sig in signatures.items()
@@ -1782,9 +2098,18 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) 
     Fortran passes array storage, so an ``intent(out)`` array whose extent
     this subprogram cannot derive was allocated by the caller and has to stay
     a parameter -- returned like an INOUT rather than created here. It cannot
-    derive one when the dummy is assumed-size (``a(*)``), or assumed-shape
-    with neither a same-rank assumed-shape IN/INOUT donor to take the shape
-    from nor explicit-bound IN arguments covering every dimension.
+    derive one when the dummy is assumed-size (``a(*)``) or assumed-shape
+    (``x(:)``): either way the extent is the actual's, and only the caller
+    has it.
+
+    An assumed-shape OUT used to borrow the shape of a same-rank
+    assumed-shape IN/INOUT sibling instead. That donor is a guess about the
+    caller, and BVLS is where it is wrong: ``x(:)`` and ``w(:)`` are
+    ``n``-vectors (the columns of ``a``) while the only rank-1 donor, ``b(:)``,
+    is an ``m``-vector -- so the translation sized its solution off the
+    wrong axis, and the f2py reference, which cannot allocate an
+    ``intent(out)`` dummy of extent ``:`` at all, died on every call. The
+    caller's storage is the one answer that is right on both sides.
 
     Without the mark the return convention drops the argument from the
     signature and allocates a fresh array, so the caller's buffer is never
@@ -1801,32 +2126,45 @@ def _mark_buffer_out_arrays(records: list[dict[str, Any]], every: bool = False) 
             ):
                 continue
             dims = argument["dims"]
-            if every or any(d.get("assumed_size") for d in dims):
+            if every or any(d.get("ub") is None for d in dims):
                 argument["buffer"] = True
-                continue
-            if not all(d.get("ub") is None for d in dims):
-                continue
-            rank = len(dims)
-            donor = any(
-                other.get("intent") in ("IN", "INOUT")
-                and len(other.get("dims") or []) == rank
-                and any(d.get("ub") is None for d in other["dims"])
-                for other in args
-            )
-            if donor:
-                continue
-            explicit = [
-                other
-                for other in args
-                if other.get("intent") in ("IN", "INOUT")
-                and other.get("dims")
-                and all(d.get("ub") is not None for d in other["dims"])
-            ]
-            covered = all(
-                any(axis < len(other["dims"]) for other in explicit) for axis in range(rank)
-            )
-            if not covered:
-                argument["buffer"] = True
+
+
+def _callee_intents(records: list[dict[str, Any]]) -> dict[str, list[tuple[str, str]]]:
+    """Callee name -> its dummies as ``(name, intent)`` pairs, in position
+    order, with the intent each has so far, declared or inferred, for the
+    escape analysis of its callers.
+
+    Two same-named subprograms (internals of different hosts) are merged
+    conservatively: a position keeps its intent only where both agree, and is
+    ``UNKNOWN`` otherwise, which the caller of this table reads as "might be
+    written". Under-reporting a write is the one direction this table is not
+    allowed to err in.
+    """
+    table: dict[str, list[tuple[str, str]]] = {}
+    for record in records:
+        name = str(record["name"]).lower()
+        pairs = [
+            (str(argument["name"]).lower(), str(argument["intent"]))
+            for argument in record.get("args") or []
+        ]
+        if name not in table:
+            table[name] = pairs
+            continue
+        previous = table[name]
+        width = max(len(previous), len(pairs))
+        merged: list[tuple[str, str]] = []
+        for position in range(width):
+            here = pairs[position] if position < len(pairs) else None
+            there = previous[position] if position < len(previous) else None
+            if here is not None and there is not None and here[1] == there[1]:
+                merged.append(here)
+            else:
+                known = here if here is not None else there
+                assert known is not None  # width is the longer of the two
+                merged.append((known[0], "UNKNOWN"))
+        table[name] = merged
+    return table
 
 
 def _written_or_escaping(
@@ -1839,7 +2177,10 @@ def _written_or_escaping(
 
     A name is here if it is assigned to, if it controls a DO, if a READ fills
     it or a WRITE takes it as the internal unit, if an ALLOCATE, DEALLOCATE,
-    NULLIFY or INQUIRE names it, if an ASSOCIATE takes it as a selector -- or
+    NULLIFY or INQUIRE names it, if an ASSOCIATE takes it as a selector and
+    the associate-name is itself here (the alias is the selector: a body that
+    only reads ``a`` in ``associate (a => x%c)`` reads ``x``; one that assigns
+    ``a`` or hands it to a writer changes ``x``, #49) -- or
     if it is handed to something that might write it: a CALL, a function
     reference, or a parenthesised reference whose base is not a variable this
     scope declares. An intrinsic never writes its argument and a subscript of
@@ -1850,7 +2191,8 @@ def _written_or_escaping(
     own subprograms are calls, as before. ``callee_intents`` maps this
     file's subprograms to their dummies ``(name, intent)`` in order: an
     actual handed to a dummy declared or inferred ``intent(in)`` is read,
-    not handed over, and does not escape.
+    not handed over, and does not escape (``call dcbcrt(a(2), zr(2), zi(2))``
+    reads ``a`` and writes the other two).
     """
     escaping: set[str] = set()
     intents_of = callee_intents or {}
@@ -1905,6 +2247,15 @@ def _written_or_escaping(
             return leftmost(item)
         return None
 
+    # (associate-name, the variable its selector is rooted in): the alias is
+    # a variable of the construct, and the selector escapes with it.
+    aliases = [
+        (str(association.children[0]).lower(), leftmost(association.children[2]))
+        for association in walk(exec_part, f03.Association)
+    ]
+    if variables is not None and aliases:
+        variables = variables | {alias for alias, _ in aliases}
+
     for assignment in walk(exec_part, (f03.Assignment_Stmt, f03.Pointer_Assignment_Stmt)):
         name = leftmost(assignment.children[0])
         if name:
@@ -1932,10 +2283,6 @@ def _written_or_escaping(
             key, value = spec.children
             if key in (None, "UNIT") and isinstance(value, f03.Name):
                 escaping.add(str(value).lower())
-    for association in walk(exec_part, f03.Association):
-        name = leftmost(association.children[2])
-        if name:
-            escaping.add(name)
     for call in walk(exec_part, f03.Call_Stmt):
         callee = leftmost(call.children[0]) or ""
         arguments = call.children[1]
@@ -1969,15 +2316,52 @@ def _written_or_escaping(
             continue
         for name in walk(reference.children[1], f03.Name):
             escaping.add(str(name).lower())
+    # A selector escapes exactly when its associate-name does; a selector
+    # that is itself an alias (``associate (b => a(1:2))`` under
+    # ``associate (a => x)``) carries it one association further.
+    changed = True
+    while changed:
+        changed = False
+        for alias, root in aliases:
+            if root is not None and alias in escaping and root not in escaping:
+                escaping.add(root)
+                changed = True
     return escaping
 
 
-def _callee_intents(records: list[dict[str, Any]]) -> dict[str, list[tuple[str, str]]]:
-    """Each subprogram's dummies with the intent they have so far, declared
-    or inferred, for the escape analysis of its callers."""
-    return {
-        record["name"]: [(a["name"], a["intent"]) for a in record["args"]] for record in records
-    }
+def _written_through_calls(
+    exec_part: Any, callee_intents: dict[str, list[tuple[str, str]]]
+) -> set[str]:
+    """Names a CALL hands, whole and positionally, to a dummy the callee
+    declares or has been inferred to write (``OUT``/``INOUT``).
+
+    The decided half of ``_written_or_escaping``'s call rule: that one says
+    what *might* be written, this one what the callee's own interface says
+    *is*. A bare name only -- ``call vrshft(l3, zr, zi, conv)`` -- because a
+    subscripted actual writes one element of an array, which is the array
+    rule's business, not a scalar's. ``callee_intents`` maps each callee to
+    its dummies as ``(name, intent)`` pairs, so the intent is the second of
+    each.
+    """
+    settled: set[str] = set()
+    for call in walk(exec_part, f03.Call_Stmt):
+        arguments = call.children[1]
+        formals = callee_intents.get(str(call.children[0]).lower())
+        if arguments is None or formals is None:
+            continue
+        actuals = (
+            list(arguments.children)
+            if isinstance(arguments, f03.Actual_Arg_Spec_List)
+            else [arguments]
+        )
+        for position, actual in enumerate(actuals):
+            if (
+                isinstance(actual, f03.Name)
+                and position < len(formals)
+                and formals[position][1] in ("OUT", "INOUT")
+            ):
+                settled.add(str(actual).lower())
+    return settled
 
 
 def _infer_read_only_intents(
@@ -1999,33 +2383,77 @@ def _infer_read_only_intents(
     a procedure this file does not define, to an internal WRITE or an
     ASSOCIATE stays UNKNOWN, and the gate keeps refusing the routine by name
     rather than comparing it with an output missing on both sides.
+
+    An *array* dummy the body does change -- assigned into, or handed to
+    something that might write it -- is ``intent(inout)``. Not ``out``: the
+    caller's storage is what Fortran passes, a body that writes ``zr(1:3)``
+    of its ``zr(4)`` leaves the rest as the caller had it, and INOUT is the
+    convention under which both sides hand that buffer back. A *scalar* the
+    body only hands on is settled the same way when the callee has settled
+    it: passed to a dummy declared or inferred ``intent(out)``/``inout`` it
+    is written there, and INOUT here carries the value back -- ``cpoly``'s
+    ``fxshft(l2, zr, zi, conv)`` passes ``conv`` straight to ``vrshft``,
+    which sets it, and left UNKNOWN the translation never handed the flag
+    back and reported every polynomial as a failure. Passed to a procedure
+    with no body here it stays UNKNOWN. The scalar assignment rules stay
+    ``_infer_write_only_intents``'s. The bodies read are every execution
+    part under the subprogram, its internal procedures' included, because a
+    host dummy an internal procedure writes is written. Repeated to a
+    fixpoint, because a callee's inferred intent is what settles its
+    caller's.
     """
     by_name = {sub_name_of(s): s for s in subs}
-    for record in records:
-        candidates = [
-            argument
-            for argument in record["args"]
-            if argument["intent"] == "UNKNOWN"
-            and not argument.get("optional")
-            and not argument.get("procedure")
-        ]
-        node = by_name.get(record["name"])
-        if not candidates or node is None:
-            continue
-        exec_part = next((c for c in node.children if isinstance(c, f03.Execution_Part)), None)
-        if exec_part is None:
-            continue
-        variables = (
-            {a["name"] for a in record["args"]}
-            | {local["name"] for local in record.get("locals") or []}
-            | {p["name"] for p in record.get("local_parameters") or []}
-            | set(state_names or ())
-        )
-        escaping = _written_or_escaping(exec_part, sub_names, variables, _callee_intents(records))
-        for argument in candidates:
-            if argument["name"] not in escaping:
-                argument["intent"] = "IN"
-                argument["intent_inferred"] = "read-only"
+    changed = True
+    while changed:
+        changed = False
+        callee_intents = _callee_intents(records)
+        for record in records:
+            candidates = [
+                argument
+                for argument in record["args"]
+                if argument["intent"] == "UNKNOWN"
+                and not argument.get("optional")
+                and not argument.get("procedure")
+            ]
+            node = by_name.get(record["name"])
+            if not candidates or node is None:
+                continue
+            exec_parts = walk(node, f03.Execution_Part)
+            if not exec_parts:
+                continue
+            # The names this scope declares, so that a reference whose base is
+            # none of them and not a subprogram of this file is taken for a
+            # use-associated or external call whose variable actuals escape
+            # (#33) -- the escaping-dummy rule the read-only proof rests on.
+            variables = (
+                {a["name"] for a in record["args"]}
+                | {local["name"] for local in record.get("locals") or []}
+                | {p["name"] for p in record.get("local_parameters") or []}
+                | set(state_names or ())
+            )
+            escaping: set[str] = set()
+            settled: set[str] = set()
+            for exec_part in exec_parts:
+                escaping |= _written_or_escaping(exec_part, sub_names, variables, callee_intents)
+                settled |= _written_through_calls(exec_part, callee_intents)
+            for argument in candidates:
+                if argument["name"] not in escaping:
+                    argument["intent"] = "IN"
+                    argument["intent_inferred"] = "read-only"
+                    changed = True
+                elif _intent_inferable(argument.get("dtype")) and argument["name"] in settled:
+                    # Written through a call this file can see -- ``cpoly``'s
+                    # ``conv`` handed to ``vrshft``, which sets it. INOUT
+                    # carries the value back. An array the body writes in
+                    # place, whole or in part, is already settled by
+                    # ``_infer_write_only_intents`` (which handles arrays now,
+                    # not scalars only); what is left UNKNOWN here is an array
+                    # only *passed on* to a procedure this file does not
+                    # describe, whose fate is the callee's -- so a bare
+                    # ``dims`` must not force it to INOUT (#33).
+                    argument["intent"] = "INOUT"
+                    argument["intent_inferred"] = "written"
+                    changed = True
 
 
 def _host_associate(
@@ -2042,12 +2470,28 @@ def _host_associate(
     so the record has to say which they are: names used in the internal
     procedure's execution part that are not its own, but are declared by the
     host. As the pipeline's ``extract_interface`` does it.
+
+    Two more things the record has to say, because a Python scalar goes in
+    by value and comes back only if it is returned:
+
+    * ``host_vars`` is transitive over the host's other internal procedures.
+      ``fxshfr`` never names ``a1`` but calls ``calcsc``, which does; the
+      translation's call passes the callee's host variables as trailing
+      actuals, so the caller has to have received them -- without this it
+      raised ``NameError`` on the first name it was never handed;
+    * ``host_writes`` names the host variables the body may change (assigned,
+      or handed to something that might write them), its callees' included.
+      The translation returns those beside the procedure's own outputs and
+      the call site takes them back, the way an INOUT dummy travels. Without
+      it ``calcsc``'s ``a1 = b*f - a`` was computed into a local and dropped,
+      and every routine of ``rpoly`` after it ran on the host's stale value.
     """
     parents: dict[int, Any] = {}
     for s in subs:
         for inner in walk(s, (f03.Subroutine_Subprogram, f03.Function_Subprogram)):
             if inner is not s:
                 parents[id(inner)] = s
+    internals: list[tuple[Any, dict[str, Any], set[str], set[str]]] = []
     for s, rec in zip(subs, records, strict=True):
         parent = parents.get(id(s))
         if parent is None:
@@ -2079,6 +2523,8 @@ def _host_associate(
         host_vars = sorted((used & host_names) - own - sub_names - state_names)
         if host_vars:
             rec["host_vars"] = host_vars
+        internals.append((s, rec, own, host_names - sub_names - state_names))
+    _host_closure(internals, sub_names, records)
     # Two internal procedures of different hosts with one name cannot both
     # be `def func` in one file.
     seen: dict[str, int] = {}
@@ -2087,6 +2533,75 @@ def _host_associate(
     for rec in records:
         if rec.get("host") and seen[rec["name"]] > 1:
             rec["emit_name"] = f"{rec['host']}__{rec['name']}"
+
+
+def _host_closure(
+    internals: list[tuple[Any, dict[str, Any], set[str], set[str]]],
+    sub_names: set[str],
+    records: list[dict[str, Any]],
+) -> None:
+    """Close ``host_vars`` over sibling calls and record ``host_writes``.
+
+    ``internals`` carries each internal procedure's node, record, own names
+    and the host names visible to it. A sibling is another internal
+    procedure of the same host that this one calls or references; what the
+    sibling needs from the host, this one has to be handed too, and what the
+    sibling changes, this one changes. Both are fixpoints: siblings call
+    each other in chains and cycles (``fxshfr`` -> ``quadit`` -> ``calcsc``
+    -> ``nextk`` -> ...).
+    """
+    by_host: dict[str, dict[str, dict[str, Any]]] = {}
+    for _, rec, _, _ in internals:
+        by_host.setdefault(rec["host"], {})[rec["name"]] = rec
+    siblings: dict[int, list[dict[str, Any]]] = {}
+    written: dict[int, set[str]] = {}
+    callee_intents = _callee_intents(records)
+    for node, rec, _, _ in internals:
+        parts = [c for c in node.children if isinstance(c, f03.Execution_Part)]
+        referenced: set[str] = set()
+        changes: set[str] = set()
+        for part in parts:
+            referenced |= {str(call.children[0]).lower() for call in walk(part, f03.Call_Stmt)}
+            referenced |= {
+                str(ref.children[0]).lower()
+                for ref in walk(part, (f03.Part_Ref, f03.Function_Reference))
+                if isinstance(ref.children[0], f03.Name)
+            }
+            changes |= _written_or_escaping(part, sub_names, callee_intents=callee_intents)
+        same_host = by_host[rec["host"]]
+        siblings[id(rec)] = [
+            same_host[name]
+            for name in sorted(referenced)
+            if name in same_host and name != rec["name"]
+        ]
+        written[id(rec)] = changes
+    changed = True
+    while changed:
+        changed = False
+        for _, rec, own, host_names in internals:
+            have = set(rec.get("host_vars") or ())
+            for sibling in siblings[id(rec)]:
+                extra = (set(sibling.get("host_vars") or ()) & host_names) - own - have
+                if extra:
+                    have |= extra
+                    changed = True
+            if have and have != set(rec.get("host_vars") or ()):
+                rec["host_vars"] = sorted(have)
+    for _, rec, _, _ in internals:
+        written[id(rec)] &= set(rec.get("host_vars") or ())
+    changed = True
+    while changed:
+        changed = False
+        for _, rec, _, _ in internals:
+            have = written[id(rec)]
+            for sibling in siblings[id(rec)]:
+                extra = (written[id(sibling)] & set(rec.get("host_vars") or ())) - have
+                if extra:
+                    have |= extra
+                    changed = True
+    for _, rec, _, _ in internals:
+        if written[id(rec)]:
+            rec["host_writes"] = sorted(written[id(rec)])
 
 
 CONFLICTING_BOUNDS = "conflicting"

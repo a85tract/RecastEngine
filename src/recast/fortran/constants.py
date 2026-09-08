@@ -19,7 +19,7 @@ definition that both sides of a differential check can be pointed at.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -144,6 +144,7 @@ INTRINSICS = frozenset(
         "atan2",
         "cos",
         "dble",
+        "digits",
         "epsilon",
         "exp",
         "float",
@@ -156,6 +157,7 @@ INTRINSICS = frozenset(
         "mod",
         "modulo",
         "nint",
+        "radix",
         "real",
         "sign",
         "sin",
@@ -231,21 +233,33 @@ def _argument_tokens(
     known_names: set[str],
     aliases: dict[str, str] | None = None,
     kinds: Kinds | None = None,
+    array_names: set[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """One argument as tokens of the same vocabulary; ``None`` if it names
     something no earlier constant defines."""
     kinds = kinds or Kinds()
+    array_names = array_names or set()
     spelled: list[dict[str, Any]] = []
     at = 0
     while at < len(tokens):
         piece = tokens[at]
         if re.match(r"[A-Za-z_]", piece):
-            if piece.lower() in INTRINSICS and at + 1 < len(tokens) and tokens[at + 1] == "(":
+            called = at + 1 < len(tokens) and tokens[at + 1] == "("
+            if piece.lower() in INTRINSICS and called:
                 # A call inside an argument: ``max( 1.e-10, epsilon(tol) )``.
-                call, at = _intrinsic_call(tokens, at, known_names, aliases, kinds)
+                call, at = _intrinsic_call(tokens, at, known_names, aliases, kinds, array_names)
                 if call is None:
                     return None
                 spelled.append(call)
+                continue
+            if piece.lower() in array_names and called:
+                # A subscript of an earlier array parameter inside an argument:
+                # ``int(d1mach(5) * ...)`` keeps its machine constant an index,
+                # not a call this stage cannot evaluate.
+                index, at = _array_index(tokens, at, known_names, array_names, aliases, kinds)
+                if index is None:
+                    return None
+                spelled.append(index)
                 continue
             if piece.lower() in known_names:
                 spelled.append(_ref_token(piece, aliases, kinds))
@@ -378,12 +392,34 @@ def _spelled_ref(name: str, aliases: dict[str, str] | None) -> str:
     return (aliases or {}).get(lowered, lowered)
 
 
+def _kind_selector_dtype(stripped: list[str], kinds: Kinds) -> str | None:
+    """The dtype a trailing kind selector written as an inquiry names.
+
+    ``kind(1.0_wp)`` is the kind of its argument; ``selected_real_kind(p)``
+    is gfortran's ``8`` for ``p >= 10`` and ``4`` otherwise. ``None`` when the
+    width cannot be placed, and the conversion is refused rather than guessed.
+    """
+    head = stripped[0].lower()
+    inner = [token for token in stripped[2:-1] if token.strip()]
+    if head == "selected_real_kind" and len(inner) == 1 and re.fullmatch(r"\d+", inner[0]):
+        return "float64" if int(inner[0]) >= 10 else "float32"
+    if head == "kind" and len(inner) == 1:
+        token = inner[0]
+        if token.lower() == kinds.self_name:
+            return kinds.self_dtype
+        if re.match(r"\d", token):
+            return kinds.literal(token)
+        return kinds.dtypes.get(token.lower())
+    return None
+
+
 def _intrinsic_call(
     tokens: list[str],
     at: int,
     known_names: set[str],
     aliases: dict[str, str] | None = None,
     kinds: Kinds | None = None,
+    array_names: set[str] | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """The call starting at ``tokens[at]``, and the index just past it.
 
@@ -414,6 +450,8 @@ def _intrinsic_call(
     arguments = _split_arguments(tokens[at + 2 : end])
     kept = []
     kind_argument: str | None = None
+    kind_dtype: str | None = None
+    saw_kind_selector = False
     for index, argument in enumerate(arguments):
         stripped = [token for token in argument if token.strip()]
         last = index == len(arguments) - 1
@@ -422,6 +460,20 @@ def _intrinsic_call(
             continue
         if last and index > 0 and len(stripped) == 3 and stripped[0].lower() == "kind":
             kind_argument = stripped[2]  # ``kind = r8``, when the tokenizer keeps it
+            continue
+        if (
+            last
+            and index > 0
+            and len(stripped) >= 4
+            and stripped[1] == "("
+            and stripped[0].lower() in ("kind", "selected_real_kind", "selected_int_kind")
+        ):
+            # A kind selector written as an inquiry -- ``real(radix(1.0_wp),
+            # kind(1.0_wp))``, the shape a module's machine-constant array
+            # takes -- is the result kind, not a value to pass on. Read the
+            # width it names so the conversion's dtype is still known.
+            kind_dtype = _kind_selector_dtype(stripped, kinds)
+            saw_kind_selector = True
             continue
         kept.append(argument)
     if name in _KIND_INQUIRIES:
@@ -440,12 +492,18 @@ def _intrinsic_call(
         if dtype not in ("float32", "float64"):
             return None, end + 1
         return {"t": "call", "v": name, "args": [], "dtype": dtype}, end + 1
-    spelled_or_none = [_argument_tokens(argument, known_names, aliases, kinds) for argument in kept]
+    spelled_or_none = [
+        _argument_tokens(argument, known_names, aliases, kinds, array_names) for argument in kept
+    ]
     if any(text is None for text in spelled_or_none):
         return None, end + 1
     spelled = [text for text in spelled_or_none if text is not None]
     if name in CONVERSIONS:
-        if kind_argument is not None:
+        if saw_kind_selector:
+            if kind_dtype is None:
+                return None, end + 1
+            dtype = kind_dtype
+        elif kind_argument is not None:
             dtype = kinds.kind_argument(kind_argument)
             if dtype is None:
                 return None, end + 1
@@ -670,7 +728,10 @@ def _array_index(
     if end >= len(tokens):
         return None, end + 1
     subscripts = _split_arguments(tokens[at + 2 : end])
-    spelled = [_argument_tokens(subscript, known_names, aliases, kinds) for subscript in subscripts]
+    spelled = [
+        _argument_tokens(subscript, known_names, aliases, kinds, array_names)
+        for subscript in subscripts
+    ]
     if not spelled or any(text is None for text in spelled):
         return None, end + 1
     return {
@@ -710,7 +771,7 @@ def _classify_tokens(
         called = at + 1 < len(toks) and toks[at + 1] == "("
         if re.match(r"[A-Za-z_]", t) and t.lower() in INTRINSICS:
             if called:
-                call, at = _intrinsic_call(toks, at, known_names, aliases, kinds)
+                call, at = _intrinsic_call(toks, at, known_names, aliases, kinds, array_names)
                 if call is None:
                     return "skip", f"unresolved argument or kind in expression: {e}"
                 out.append(call)
@@ -786,7 +847,12 @@ def classify_init(
         # otherwise 8; a value, because the source can compare against it.
         n = int(m.group(1))
         return "int", 2 if n <= 4 else (4 if n <= 9 else 8)
-    if re.search(r"kind\s*\(", e, re.I):
+    if re.fullmatch(r"kind\s*\(.*\)", e, re.I | re.S):
+        # The whole initializer *is* a kind inquiry (``wp = kind(1.0d0)``):
+        # an integer selector with no runtime value to carry. A ``kind(...)``
+        # buried inside a larger expression -- ``real(radix(x), kind(x))`` in
+        # a machine-constant array -- is a precision argument, dropped where
+        # it is read, not a reason to skip the whole parameter.
         return "skip", "kind parameter (compile-time only)"
 
     m = re.fullmatch(r"int\s*\(\s*z'([0-9a-f]+)'\s*,\s*\w+\s*\)", e, re.I)
@@ -954,6 +1020,26 @@ def _holds_an_array(parameter: dict[str, Any]) -> bool:
         and len(payload) == 1
         and payload[0]["t"] in ("array", "spelled")
     )
+
+
+def _hoist_initializer(
+    node: Any, subprogram: str, hoist: Callable[[str, bool, str, str], None]
+) -> None:
+    """Give every literal in a local parameter's initializer a name.
+
+    The initializer lives in the specification part, so the sweep over the
+    execution part never sees it; the constants file folds the parameter from
+    its own record, but the prologue re-renders the same text as a local
+    assignment, and one the token pass could not spell -- ``cos(94.0_wp *
+    deg2rad)``, ``10.0_wp**int(log(epsilon(1.0_wp)))`` -- is read again as an
+    expression whose literals need the names the zero-literal rule gives
+    everything else. Without them the parameter was refused, and with it the
+    whole routine that read it.
+    """
+    for text, is_real, _line in literals_with_lines(node):
+        if is_whitelisted(text, is_real):
+            continue
+        hoist(text, is_real, f"{subprogram}:param", subprogram)
 
 
 def extract(
@@ -1184,6 +1270,7 @@ def extract(
                     if kind != "skip":
                         local_known.add(pname)
                         local_aliases[pname] = f"{sname}__{pname}"
+                    _hoist_initializer(pdef.children[1], sname, hoist)
             for decl in walk(spec, f03.Type_Declaration_Stmt):
                 local_type_spec, attr_list, _ = decl.children
                 attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
@@ -1234,6 +1321,8 @@ def extract(
                         if _holds_an_array(entry):
                             local_arrays.add(pname)
                     literal_map[sname][f"@param:{pname}"] = const
+                    if ent.children[3] is not None:
+                        _hoist_initializer(ent.children[3].children[1], sname, hoist)
 
             # Declaration bounds take part in the zero-literal rule too: the
             # prologue that allocates capeten(pcols, 5) must name the 5.

@@ -28,6 +28,7 @@ consumes next.
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -59,11 +60,19 @@ EXTENT = re.compile(r"(?:SIZE|UBOUND)\(\s*(\w+)\s*(?:,\s*((?:dim\s*=\s*)?\d+)\s*
 
 DIM_KEYWORD = re.compile(r"dim\s*=\s*", re.I)
 
-BOUND_TOKENS = re.compile(r"[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()+\-*/, ]")
+BOUND_TOKENS = re.compile(
+    rf"{EXTENT.pattern}|[A-Za-z_]\w*\s*%\s*[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[()+\-*/, ]",
+    re.I,
+)
 """What a declared bound is allowed to be made of. Bound texts are simple by
-construction; anything richer refuses the statement that needed the bound."""
+construction; anything richer refuses the statement that needed the bound.
 
-__all__ = ["REFUSED", "Expressions", "Remote"]
+``SIZE``/``UBOUND`` leads the alternation because an inquiry is one token
+here, comma and all: ``2*size(c,2)`` is arithmetic *over* an extent, and a
+tokenizer that took ``size`` for a plain name would stop at the comma it is
+not allowed to contain."""
+
+__all__ = ["REFUSED", "Expressions", "Remote", "function_outputs"]
 
 REFUSED = (NoRule, Unanalyzable)
 """The two ways a rule declines: no rule for the construct, or the semantics
@@ -167,6 +176,62 @@ class Remote:
 
     name: str
     """What it is called there, which a use-rename may make different."""
+
+
+def function_outputs(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """The OUT/INOUT dummies a function hands back beside its result.
+
+    A Fortran function may change its arguments -- SLSQP's ``linmin`` drives
+    a reverse-communication line search through ``mode`` and eighteen
+    INOUT scalars -- and a translation that returned the result alone kept
+    the search state at zero on every call, bit-exact in ``x`` and wrong in
+    everything the next call would read. A function with a mandatory
+    OUT/INOUT dummy therefore returns ``(result, *outputs)`` the way a
+    subroutine returns its outputs (``Statements.returned_value``), and a
+    reference to it is only translatable as the whole of an assignment,
+    where the statement layer unpacks that tuple (``Statements._call``).
+    Every OUT/INOUT dummy is in the tuple, optional ones included, so the
+    unpacking is the subroutine's. Empty for a function whose only
+    OUT/INOUT dummies are optional: those are dropped from the call and it
+    stays a plain expression, as it always was.
+    """
+    outputs = [a for a in record.get("args") or () if a.get("intent") in ("OUT", "INOUT")]
+    if record.get("kind") != "function" or not any(not a.get("optional") for a in outputs):
+        return []
+    return outputs
+
+
+class _IntegerDivision(ast.NodeTransformer):
+    """``a / b`` in a declared bound is Fortran integer division."""
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Div):
+            return ast.Call(
+                func=ast.Name(id="_f_int_div", ctx=ast.Load()),
+                args=[node.left, node.right],
+                keywords=[],
+            )
+        return node
+
+
+def _integer_divisions(text: str) -> str:
+    """A rendered bound with every ``/`` made the integer division it is.
+
+    A declared extent is an integer expression, so ``(n+1)*(n+2)/2`` -- the
+    packed triangle SLSQP hands ``slsqpb`` as ``l`` -- truncates in Fortran.
+    Rendered with Python's ``/`` it was a float, and the slice it sized the
+    workspace view with refused it ("slice indices must be integers").
+    ``_f_int_div`` is what the statement layer already spells the operator
+    as, so a bound rounds the way the body does.
+    """
+    if "/" not in text:
+        return text
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return text
+    return ast.unparse(_IntegerDivision().visit(tree).body)
 
 
 @dataclass
@@ -403,7 +468,29 @@ class Expressions:
             spelling = self.intrinsics.get("array", {}).get("**", "_f_vpow")
             return f"{spelling}({left}, {right})"
         scalar = self.intrinsics.get("scalar", {}).get("**")
-        return f"{scalar}({left}, {right})" if scalar else None
+        if scalar:
+            return f"{scalar}({left}, {right})"
+        if self.profile.int_pow_expand and self._integer_exponent(left_node, right_node):
+            # ``(xe(i)-x0)**(j-1)``: the exponent is an integer and the
+            # emitter cannot see which one, so ``expand_power`` above had
+            # nothing to expand and what was left was Python's ``**`` -- a
+            # ``pow`` call the reference binary never makes (``_f_powi``).
+            return f"_f_powi({left}, {right})"
+        return None
+
+    def _integer_exponent(self, left_node: Any, right_node: Any) -> bool:
+        """A real raised to an integer, which is the case ``powi`` covers.
+
+        An integer base is left alone: Fortran's integer power is its own
+        arithmetic (``2**(-1)`` is zero, not a half), and nothing here has
+        asked what the reference does with it.
+        """
+        try:
+            return self.semantics.is_integer(right_node) and not self.semantics.is_integer(
+                left_node
+            )
+        except Unanalyzable:
+            return False
 
     def _comparison(self, spelling: str, left: Any, right: Any, rl: str, rr: str) -> str:
         if rl in self.handles and ((RELATIONAL_OPS[spelling], rr) in ((">", "0"), (">=", "1"))):
@@ -551,9 +638,6 @@ class Expressions:
 
         if EXTENT.fullmatch(text):
             return EXTENT.sub(extent, text)
-        substituted = EXTENT.sub(extent, text)
-        if substituted != text:
-            text = substituted
         rendered, position = [], 0
         opens_intrinsic = False  # the next "(" opens a max/min call
         calls: list[bool] = []  # per open parenthesis: a max/min call?
@@ -562,7 +646,16 @@ class Expressions:
                 raise NoRule(f"dim expr {text!r}")
             position = match.end()
             piece = match.group(0)
-            if "%" in piece:
+            inquiry = EXTENT.fullmatch(piece)
+            if inquiry is not None:
+                # ``size(x)-1``, ``2*size(c,2)``: an extent is a *term* of a
+                # bound, not only a whole one. Substituting it into the text
+                # before this loop spelled ``np.size(x) - 1``, which the loop
+                # then refused at the ``.`` it has no token for -- an array
+                # the source sizes off its argument, deferred over the
+                # spelling of the answer rather than over the question.
+                rendered.append(extent(inquiry))
+            elif "%" in piece:
                 # ``bounds%begp`` sizing a local: the component of a dummy,
                 # which is an attribute of the same name on this side.
                 root, component = (t.strip() for t in piece.split("%", 1))
@@ -597,7 +690,7 @@ class Expressions:
                 rendered.append(piece)
         if position != len(text):
             raise NoRule(f"dim expr {text!r}")
-        return "".join(rendered)
+        return _integer_divisions("".join(rendered))
 
     def extent_of(self, name: str) -> str:
         """How many elements an array has, as this target spells it."""
@@ -806,20 +899,34 @@ class Expressions:
             # that is. Rendering the element alone -- what an unbounded
             # dummy used to get -- hands the callee one number to subscript.
             if element:
-                return self._association_tail(actual, formal_dims)
+                return self._association_tail(actual, formal_dims, substitutions)
             if rank is not None and 0 < rank < len(formal_dims):
-                raise NoRule(
-                    f"seq-assoc: rank-{rank} actual for the rank-{len(formal_dims)} "
-                    f"assumed-size dummy {formal['name']}"
-                )
+                # ``vl(ldvl, *)`` handed a rank-1 ``vl``: the leading axes have
+                # the extents the call binds, and the assumed-size last axis
+                # takes whatever the actual's storage has left, in column-major
+                # order -- which is what ``-1`` asks NumPy for.
+                leading = [self.extent(d, substitutions) for d in formal_dims[:-1]]
+                return f"np.reshape({rendered}, ({', '.join(leading)}, -1), order='F')"
+            if rank is not None and rank > len(formal_dims):
+                # A whole matrix handed to ``c(*)`` -- ``h12(..., a, mda, 1,
+                # i-1)``: the dummy spans all of its storage in column-major
+                # order, from the first element. Rendering the array alone
+                # handed the callee two axes to subscript with one index.
+                leading = [self.extent(d, substitutions) for d in formal_dims[:-1]]
+                return f"_f_seq_tail({', '.join([rendered, '0', *leading])})"
             return rendered
         if not all(d.get("ub") for d in formal_dims):
             return rendered
         if rank is not None and 0 < rank < len(formal_dims):
             # Fortran sequence association: a lower-rank actual fills the
-            # dummy in column-major order.
-            shape = ", ".join(self.extent(d, substitutions) for d in formal_dims)
-            return f"np.reshape({rendered}, ({shape},), order='F')"
+            # dummy in column-major order, and the dummy takes only as much
+            # of it as its extents span -- ``nnls(w, n1, n1, m, ...)`` hands
+            # ``a(mda, n)`` the first ``n1*m`` cells of a longer workspace,
+            # and reshaping the whole of ``w`` raised on the size.
+            extents = [self.extent(d, substitutions) for d in formal_dims]
+            span = " * ".join(f"({axis})" for axis in extents)
+            flat = rendered if rank == 1 else f"np.ravel({rendered}, order='F')"
+            return f"np.reshape({flat}[:{span}], ({', '.join(extents)},), order='F')"
         if element:
             return self.sequence_association(actual, formal_dims, substitutions)
         return rendered
@@ -829,24 +936,30 @@ class Expressions:
         """``x(*)`` or ``x(n, *)``: the last axis has no extent of its own."""
         return bool(formal_dims and formal_dims[-1].get("assumed_size"))
 
-    def _association_tail(self, actual: Any, formal_dims: list[dict[str, Any]]) -> str:
+    def _association_tail(
+        self, actual: Any, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
+    ) -> str:
         """An element actual for an assumed-size dummy: the actual's memory
-        from the element on, as a view the callee reads and writes in place.
+        from the element on, as the array the callee reads and writes.
 
-        Only a rank-1 actual has that as a view. A higher-rank actual's tail
-        in column-major order is ``ravel(order='F')``, which is a copy unless
-        the array happens to be Fortran-contiguous, and a copy is somewhere
-        an OUT dummy's writes are lost; a rank-2 assumed-size dummy has no
-        extent to reshape to at all. Both are refused.
+        A rank-1 actual to a rank-1 dummy is a plain slice, a view. Anything
+        else -- ``a(i, 1)`` to ``dx(*)``, ``c(i, 1)`` to ``u(iue, *)``, a
+        vector to ``x(2, *)`` -- goes through the runtime's ``_f_seq_tail``:
+        the storage from the element on in column-major order, a view when
+        the actual is Fortran-contiguous (the gate's inputs and every
+        reshaped window are), with a rank-2 dummy's leading extents folded
+        onto it the way Fortran lays it out. SLSQP's ``dcopy(n, a(i, 1),
+        la, ...)`` and ``h12(..., c(i, 1), lc, ..., c(j, 1), ...)`` were
+        refused here, which deferred every block that recovers a matrix row.
         """
         name = str(actual.children[0]).lower()
         declaration = self.semantics.declaration(name) or {}
-        if len(declaration.get("dims") or []) != 1 or len(formal_dims) != 1:
-            raise NoRule(
-                f"seq-assoc: element of {name} for an assumed-size dummy is only a view "
-                "when both are rank-1"
-            )
-        return f"{self.names.symbol(name)}[{self._association_start(actual)}:]"
+        symbol = self.names.symbol(name)
+        start = self._association_start(actual)
+        if len(declaration.get("dims") or []) == 1 and len(formal_dims) == 1:
+            return f"{symbol}[{start}:]"
+        leading = [self.extent(d, substitutions) for d in formal_dims[:-1]]
+        return f"_f_seq_tail({', '.join([symbol, start, *leading])})"
 
     def substitutions(self, record: dict[str, Any], actuals: list[Any]) -> dict[str, str]:
         """Formal name -> the actual bound to it, rendered in the caller's scope.
@@ -886,7 +999,16 @@ class Expressions:
         if self._assumed_size(formal_dims):
             # The tail view the callee was handed; the copy-out onto it is
             # the same memory, so the writes it made in place stand.
-            return self._association_tail(actual, formal_dims), True
+            tail = self._association_tail(actual, formal_dims, substitutions)
+            if not tail.startswith("_f_seq_tail("):
+                return tail, True
+            # A higher-rank tail has no slice to assign through, so the
+            # runtime writes the callee's array back into the caller's
+            # column-major storage: ``{}`` is where the value goes, whole,
+            # so the runtime can tell the view it handed out from a copy.
+            name = str(actual.children[0]).lower()
+            start = self._association_start(actual)
+            return f"_f_seq_tail_out({self.names.symbol(name)}, {start}, {{}})", False
         whole = self._leading_axes_whole(actual, formal_dims)
         if whole is not None:
             # The view the callee was handed is where its result lands (#27);
@@ -1096,13 +1218,15 @@ class Expressions:
             if remote
             else pysafe(emit_name(record or {"name": name}))
         )
-        if record is not None and not remote:
+        if record is not None:
             # Sequence association applies to a function reference as much as
             # to a CALL: ``enorm(m, a(1, j))`` hands the callee the whole of
             # column ``j``, and rendering the element alone hands it a scalar
             # to subscript. Only where every actual is positional -- a keyword
             # actual is not bound to a formal by position, and guessing which
-            # dummy it answers is how the reshape lands on the wrong one.
+            # dummy it answers is how the reshape lands on the wrong one. A
+            # sibling's function is bound the same way: ``ddot(n, w(i4), 1,
+            # w(iff), 1)`` into a translated BLAS handed ``ddot`` two scalars.
             positional = not any(
                 isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec)) for item in items
             )
@@ -1112,6 +1236,26 @@ class Expressions:
                     self.actual_argument(formal, item, substitutions)
                     for formal, item in zip(record["args"], items, strict=False)
                 ]
+        if record is not None and function_outputs(record):
+            # The callee hands its OUT/INOUT dummies back beside its result,
+            # and an expression has nowhere to put them. Only the statement
+            # layer, for ``x = f(...)`` as a whole, unpacks that tuple.
+            raise NoRule(
+                f"function {name} has OUT/INOUT dummy argument(s) "
+                f"{', '.join(a['name'] for a in function_outputs(record))}, which only a "
+                "whole-statement reference `x = f(...)` can carry back"
+            )
+        if record is not None and not remote:
+            if record.get("host_writes"):
+                # A function reference is an expression: there is no place
+                # in it for the host variables the body changes to land, and
+                # a subroutine convention here would put a tuple where the
+                # caller expects a value.
+                raise NoRule(
+                    f"internal function {name} writes host variable(s) "
+                    f"{', '.join(record['host_writes'])}, which a function reference "
+                    "cannot carry back"
+                )
             arguments = [
                 *arguments,
                 *(self.names.symbol(hv) for hv in record.get("host_vars") or ()),
@@ -1196,6 +1340,11 @@ class Expressions:
         if collapses_an_axis:
             # Fortran's DIM is 1-based and names a dimension; an axis is 0-based.
             return self.axis_reduction(REDUCTIONS[name], arguments[0], arguments[1])
+        if name == "sum" and len(arguments) == 1:
+            # Whole-array SUM folds left to right; np.sum is pairwise and
+            # rounds an ULP off. The runtime shim accumulates in order, the
+            # way DOT_PRODUCT already does and for the same reason.
+            return f"_f_vsum({arguments[0]})"
         return f"{REDUCTIONS[name]}({', '.join(arguments)})"
 
     def axis_reduction(self, spelling: str, array: str, dimension: str) -> str:
