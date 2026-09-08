@@ -8,9 +8,9 @@ modernization at all:
 
 | Project | What it actually does | Recipe | Product |
 |---|---|---|---|
-| the Fortran translator | rule-driven Fortran → NumPy/Numba/CUDA, gated bit-exact against f2py | `translate` | [PyCAM5](https://github.com/a85tract/PyCAM5) |
+| the Fortran translator | rule-driven Fortran → NumPy, gated bit-exact against f2py | `translate` | [PyCAM5](https://github.com/a85tract/PyCAM5) |
 | freeCAM | generates C-interop adapters + 16 ordered source patches that carve a Python control plane into iCESM1.3.1, gated on a 512-rank 50-step bit-for-bit run | `refactor-todo` | [freeCAM](https://github.com/a85tract/freeCAM) |
-| CESM-jax-kernels | rewrites CLUBB/MG/Kessler/RTE-RRTMGP kernels for JAX, gated against captured Fortran dumps | `port` | [JaxCAM6](https://github.com/a85tract/CESM-jax-kernels) |
+
 | CC-Test (cyber half) | secret scan, SBOM+CVE+VEX, LLM source audit, ASan — findings to Sec-Track | `audit` | CC-Test (restricted access) |
 
 The last two columns are the mapping the CLI shows as `recast recipes`: each
@@ -414,7 +414,7 @@ same fail-closed rule that governs an oracle which could not materialize, but
 nothing is decided.
 
 **In-tree vs plugin.** The engine ships what one person needs on one machine:
-the full frontend/rule/verification stack, the NumPy/Numba/JAX/CUDA backends,
+the full frontend/rule/verification stack, the NumPy backend,
 and the `local` executor. Scale and operations arrive as plugins — batch
 schedulers, cross-cluster routing, relay/resume of multi-day runs, multi-agent
 orchestration with budget control, restricted finding stores. They register

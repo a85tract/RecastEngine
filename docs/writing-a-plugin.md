@@ -20,8 +20,8 @@ from recast.model import Candidate, Facts, Unit
 from recast.plugins import Transform
 
 
-class KernelToJax(Transform):
-    name = "port.jax"
+class KernelToMlir(Transform):
+    name = "port.mlir"
     requires = ("interface", "effects")  # checked before apply() is called
     deterministic = True
 
@@ -46,7 +46,7 @@ Two rules that are easy to get wrong:
 
 ```toml
 [project.entry-points."recast.transforms"]
-"port.jax" = "yourpkg.transforms:KernelToJax"
+"port.mlir" = "yourpkg.transforms:KernelToMlir"
 ```
 
 Group name is `recast.<kind>s`. Install the package and `recast plugins` shows
@@ -139,7 +139,7 @@ is the set the engine holds itself to, and the example worth copying.
 Two names, and they are allowed to differ.
 
 The **entry-point name** is the address: what a recipe or a config asks for.
-Dotted and namespaced -- `translate.numpy`, `port.jax`, `differential.bitexact`,
+Dotted and namespaced -- `translate.numpy`, `port.mlir`, `differential.bitexact`,
 `scan.mytool` -- and unique per kind, which the registry enforces by refusing a
 silent override.
 
