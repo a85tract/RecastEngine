@@ -29,7 +29,9 @@ jobs:
 
   publish:
     needs: build
-    if: github.event_name == 'release'
+    # Only the published repository publishes: PyPI knows it, and no other
+    # tree carrying this file is meant to reach PyPI at all.
+    if: github.event_name == 'release' && github.repository == 'a85tract/RecastEngine'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
