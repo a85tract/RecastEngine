@@ -3,6 +3,57 @@
   "schema": 1,
   "units": [
     {
+      "candidate": "f7659a72702dc0b32e3055b9490280661b5636dc74a463044d71d79e2483d930",
+      "deferred": 0,
+      "oracle": "f2py-golden",
+      "stopped_by": null,
+      "transform": "recast.translate.tree-to-numpy",
+      "unit": "fortran:tridiag_lu_solver",
+      "verdicts": [
+        {
+          "confidence": "sampled",
+          "detail": "8 blocks match",
+          "metrics": {
+            "blocks_checked": 8,
+            "blocks_deferred": 0,
+            "blocks_matched": 8,
+            "blocks_waived": 0,
+            "reads_excused_by_stubs": 0
+          },
+          "passed": true,
+          "verifier": "static.rwset"
+        },
+        {
+          "confidence": "bit_exact",
+          "detail": "140 points across 1 subprogram(s), all bit-exact",
+          "metrics": {
+            "bit_exact": 140,
+            "input_profile": "recast_inputs.py",
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "points": 140,
+            "redrawn": 0,
+            "reference_isolation": "process",
+            "trials": 5
+          },
+          "passed": true,
+          "verifier": "differential.bitexact"
+        },
+        {
+          "confidence": "symbolic",
+          "detail": "no rewrites to notarize; the translation is print-order faithful",
+          "metrics": {
+            "rewrites": 0
+          },
+          "passed": true,
+          "verifier": "symbolic.notary"
+        }
+      ]
+    },
+    {
       "candidate": "da14ce278b413bb817f229202b401ed08910063d11edcc3faf75d7e94a6ded34",
       "deferred": 0,
       "oracle": "f2py-golden",
@@ -28,6 +79,7 @@
           "detail": "425 points across 1 subprogram(s), all bit-exact",
           "metrics": {
             "bit_exact": 425,
+            "input_profile": "recast_inputs.py",
             "integer_mismatch": 0,
             "integer_points": 5,
             "max_rel": 0.0,

@@ -1,7 +1,8 @@
 {
   "target": "tree",
   "units": [
-    "fortran:xp2_solve"
+    "fortran:xp2_solve",
+    "fortran:tridiag_lu_solver"
   ],
   "stages": {
     "fortran": {
@@ -12,7 +13,8 @@
       "dims": {
         "nzm": 7,
         "ngrdcol": 3,
-        "sclr_dim": 2
+        "sclr_dim": 2,
+        "ndim": 7
       },
       "ranges": {
         "dt": [
@@ -38,6 +40,14 @@
         "sclrp2": [
           0.0,
           0.0001
+        ],
+        "lhs": [
+          -1.0,
+          1.0
+        ],
+        "rhs": [
+          -1.0,
+          1.0
         ]
       }
     },
