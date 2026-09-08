@@ -1,14 +1,9 @@
 name: ci
 
-# Automatic runs are off while the Actions allowance is exhausted, and as of
-# 2026-08-21 the workflow itself is disabled on GitHub (`gh workflow disable`),
-# so even a manual dispatch is refused. The allowance returns in September.
-#
-# To restore, both halves are needed and only one of them is visible here:
-#   gh workflow enable ci.yml
-#   ...then put back the push (main) and pull_request triggers below.
-# Until then, tools/ci_local.sh runs these same jobs from the same file.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -77,6 +72,23 @@ jobs:
       # is the one plugin that ships in-tree, so its tests must actually run
       # rather than skip for want of fparser.
       - run: uv run --python ${{ matrix.python }} --extra dev --extra fortran --extra translate pytest --cov=recast
+
+  # The twelve corpus cases, run rather than trusted: corpus/baseline.json is
+  # what the engine says about them, and a change in what it says is a change
+  # in the engine, which this job makes visible as a diff rather than letting
+  # the file lag behind main. One minute; the cases are small on purpose.
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v3
+      - run: sudo apt-get update && sudo apt-get install -y gfortran
+      - run: uv python install 3.11
+      - run: uv run --extra dev --extra fortran --extra translate --extra verify python tools/corpus.py run
+      - name: The baseline is what main says
+        run: git diff --exit-code -- corpus/baseline.json
 
   # The contract, run rather than read. This is the suite an out-of-tree
   # extension has to pass to be an extension and not a fork, so the engine
