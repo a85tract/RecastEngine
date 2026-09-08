@@ -747,6 +747,12 @@ class BitexactVerifier(Verifier):
     call_seconds: float = 5.0
     """How long one generated draw may keep the candidate before it is refused.
 
+    A generated draw only. A recorded sample is the production run's own
+    numbers, which the source came back from, and it cannot be drawn again;
+    it is compared however long the candidate takes -- the first call of a
+    JIT-compiled whole step is minutes of compilation, not a loop the source
+    never leaves.
+
     Generous by three orders of magnitude: the gate's draws are small -- a
     default extent of eight -- and a subprogram that has not answered one in
     five seconds is not answering it. What the bound buys is that a draw the
@@ -1021,7 +1027,18 @@ class BitexactVerifier(Verifier):
         # hydraulic-stress routine). It fails by name, with the backend's
         # reason, unless declared ungated like any other silence.
         lowered = getattr(translated, "_JAX_KERNELS", None)
-        delegated = (candidate.notes.get("jax") or {}).get("delegated") or {}
+        jax_notes = candidate.notes.get("jax") or {}
+        # A companion's reasons beside the module's own: the chain from a
+        # driver to the companion kernel it lost ends in the companion's
+        # note, and the tree port keeps those by module.
+        delegated = {
+            name: why
+            for per_module in (
+                (jax_notes.get("companion_notes") or {}).get("delegated") or {}
+            ).values()
+            for name, why in per_module.items()
+        }
+        delegated.update(jax_notes.get("delegated") or {})
         declared_flat = handle.get("flattened")
         flattened: dict[str, Any] = declared_flat if isinstance(declared_flat, dict) else {}
         for name in wanted:
@@ -1621,7 +1638,14 @@ class BitexactVerifier(Verifier):
                         }
                 else:
                     try:
-                        with _bounded(call_seconds):
+                        # A generated draw is bounded (``call_seconds``): a
+                        # value the source's own loop never leaves is drawn
+                        # again. A recorded sample is not: the production
+                        # run came back from it, there is no drawing again,
+                        # and a candidate that compiles its whole step in
+                        # the first call (CLUBB's, under JAX, for minutes)
+                        # is not a loop that never leaves.
+                        with _bounded(call_seconds if samples is None else 0.0):
                             translated_out = translated_fn(**translated_kwargs)
                     except _CallTimedOut as error:
                         # The draw, not the translation: the reference runs

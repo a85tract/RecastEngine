@@ -2442,6 +2442,15 @@ class Statements:
                     return self.expressions.sequence_association_target(
                         actual, formal["dims"], substitutions
                     )
+                if rank is not None and rank != len(formal["dims"]):
+                    # A section of another rank -- CLUBB's ``sclrp2_solution(:,
+                    # :, sclr)`` to the solver's ``xapxbp(ngrdcol, nzm, nrhs)``:
+                    # the callee's array is the section's storage in
+                    # column-major order and lands back the same way, through
+                    # the view. Assigned as it came, a rank-3 result into a
+                    # rank-2 section would not broadcast.
+                    section = self.expressions.subscript(name, actual.children[1])
+                    return f"_f_seq_tail_out({section}, 0, {{}})", False
             # Subscripted, so an array whatever this file was told about it.
             return (
                 self.expressions.subscript(name, actual.children[1]),

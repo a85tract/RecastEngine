@@ -1114,4 +1114,9 @@ def factory(**config: Any) -> FortranFrontend:
         extern_constants=config.get("extern_constants", ()),
         intent_overrides=config.get("intent_overrides"),
         externals=config.get("externals"),
+        # ``"unsizable"`` (the default) or ``"all"``: which intent(out)
+        # arrays are the caller's buffer. A tree written the way CLUBB's is
+        # (corpus/clubb_solve) asks for the faithful convention from its
+        # config, the way the CLUBB extension's frontend does.
+        buffer_out_arrays=config.get("buffer_out_arrays", "unsizable"),
     )
