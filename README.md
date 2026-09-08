@@ -24,16 +24,6 @@ are the extras.
 
 RecastEngine translates and gates Fortran with flat interfaces end to end;
 the corpus of numerical libraries under `corpus/` is what it is proven on.
-<!-- tier -->
-
-This tree carries more: `numba`, `jax`, `agents` and `all` are further
-extras, and the shipped catalog contains `recast.fortran-python.numpy`,
-`recast.python-numpy.numba`, and `recast.python-numpy.jax`. The latter two use
-an independent stdlib-AST Python frontend, the untouched source module as their
-oracle, and backend-specific numerical gates. Install `.[numba,verify]` or
-`.[jax,verify]` to execute them. See
-[`docs/translation-engines.md`](docs/translation-engines.md).
-<!-- /tier -->
 
 ```console
 $ recast doctor
