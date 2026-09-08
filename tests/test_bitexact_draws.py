@@ -932,3 +932,49 @@ def test_the_reference_is_handed_only_the_buffers_its_wrapper_takes() -> None:
     assert _reference_takes(allocatable)
     assert not _reference_takes(scalar)
     assert not _reference_takes(inout)  # not an OUT: handed as an input anyway
+
+
+def test_a_draw_spans_a_declared_lower_bound() -> None:
+    """``lhs(-1:1, ndim)`` has three rows. The shapes under the body's own
+    guards started every axis at its upper bound alone, so CLUBB's
+    tridiagonal solvers were handed one row and every draw subscripted
+    past it."""
+    from recast.verify.bitexact import _guarded_shapes
+
+    required = [
+        {"name": "lhs", "intent": "INOUT", "dims": [{"lb": "-1", "ub": "1"}, {"ub": "ndim"}]},
+        {"name": "rhs", "intent": "IN", "dims": [{"ub": "ndim"}]},
+    ]
+    assert _guarded_shapes(required, [], {"ndim": 7}) == {"lhs": [3, 7], "rhs": [7]}
+
+
+def test_the_profile_reads_the_draw_the_way_python_does() -> None:
+    """The operator's ``recast_inputs.py`` is Python: ``xlist[-1]`` is the
+    last altitude (CLUBB's interpolation profile). The guard that refuses
+    a negative subscript is for the translated body, whose every subscript
+    is ``expr - lb``; handed to the profile it refused the profile, and
+    the run died with no verdict. The profile sees plain arrays, and what
+    it hands back is guarded again."""
+    import numpy as np
+
+    from recast.verify.bitexact import BitexactVerifier, _NegativeSubscript, _no_wrap_array_type
+
+    guarded = _no_wrap_array_type(np)
+    drawn = {"xlist": np.arange(4.0).view(guarded), "n": np.int32(4)}
+    with pytest.raises(_NegativeSubscript):
+        drawn["xlist"][-1]
+
+    def prepare(unit: str, name: str, inputs: dict[str, object], rng: object) -> dict[str, object]:
+        xlist = inputs["xlist"]
+        assert type(xlist) is np.ndarray
+        inputs["xvalue"] = np.float64(xlist[-1])  # plain: the last element
+        inputs["xlist"] = np.sort(xlist)
+        return inputs
+
+    shaped, was_shaped = BitexactVerifier._shape_inputs(
+        np, prepare, "fortran:m", "f", 0, {**drawn, "xvalue": np.float64(0)}, None
+    )
+    assert was_shaped and shaped["xvalue"] == 3.0
+    assert isinstance(shaped["xlist"], guarded)  # guarded again for the candidate
+    with pytest.raises(_NegativeSubscript):
+        shaped["xlist"][-1]

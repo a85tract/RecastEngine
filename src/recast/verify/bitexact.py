@@ -529,10 +529,11 @@ def _guarded_shapes(
     it replaces, and the subprogram refusing it says so where a shape nobody
     can name would not.
     """
+    # Every axis at its declared extent -- ``ub - lb + 1`` where a lower
+    # bound is declared: CLUBB's tridiagonal solvers take ``lhs(-1:1, ...)``,
+    # three rows, and drawing the upper bound alone handed them one.
     shapes = {
-        str(argument["name"]).lower(): [
-            _resolve_extent(dim.get("ub"), dims) for dim in argument["dims"]
-        ]
+        str(argument["name"]).lower(): [_extent(dim, dims) for dim in argument["dims"]]
         for argument in required
         if argument.get("dims")
     }
@@ -2733,11 +2734,19 @@ class BitexactVerifier(Verifier):
         the interface.
         """
         site = _profile_site(unit_uid, name, trial)
-        offered = {key: _copy_input(value) for key, value in drawn.items()}
+        # The profile is the operator's Python, and reads the draw the way
+        # Python does -- ``xlist[-1]`` for the last altitude (CLUBB's
+        # interpolation profile). The subscript guard on a drawn array is
+        # for the translated body, whose every subscript is ``expr - lb``;
+        # the profile sees plain arrays, and what it hands back is guarded
+        # again before the candidate sees it.
+        offered = {key: _plain_input(np, _copy_input(value)) for key, value in drawn.items()}
         try:
             shaped = prepare(unit_uid, name, offered, rng)
         except Exception as error:
             raise InputProfileError(f"{site} raised {type(error).__name__}: {error}") from error
+        if shaped is not None and isinstance(shaped, dict):
+            shaped = {key: _guarded_input(np, value) for key, value in shaped.items()}
         if shaped is None:
             edited = sorted(key for key in drawn if not _same_input(np, offered[key], drawn[key]))
             if edited:
@@ -2886,6 +2895,21 @@ def _module_under_judgement(unit: str, offered: list[Path], suffix: str) -> Path
 
 def _profile_site(unit_uid: str, name: str, trial: int) -> str:
     return f"{INPUT_PROFILE}: prepare({unit_uid!r}, {name!r}) at trial {trial}"
+
+
+def _plain_input(np: Any, value: Any) -> Any:
+    """A drawn array as a plain ndarray, the guard on its subscripts off."""
+    if isinstance(value, np.ndarray) and type(value) is not np.ndarray:
+        return value.view(np.ndarray)
+    return value
+
+
+def _guarded_input(np: Any, value: Any) -> Any:
+    """A plain array with the guard on its subscripts on, the way a draw is
+    handed to the candidate: an array the profile shaped is one too."""
+    if isinstance(value, np.ndarray) and type(value) is np.ndarray and value.ndim > 0:
+        return value.view(_no_wrap_array_type(np))
+    return value
 
 
 def _copy_input(value: Any) -> Any:
