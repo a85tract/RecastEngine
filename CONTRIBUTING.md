@@ -75,6 +75,38 @@ sign-off trailer, which is cheap to add as you go and a rebase to add afterwards
   The core installs with zero dependencies and CI asserts it stays importable
   that way.
 
+### Names and paths already taken
+
+The registry refuses two plugins under one name, and a module path can hold
+one module. Both are shared with plugins that install alongside this tree
+rather than inside it, so the names and paths below are taken even where
+this tree has nothing at them. A contribution that adds a plugin of the same
+kind — another JAX target, another tolerance gate, another flat oracle —
+picks a new name and a new path, and the two can then be installed together
+and chosen between in a recipe.
+
+Plugin names: `c-kernel`; `translate.tree`, `port.jax`, `port.tree-jax`,
+`translate.numba`, `translate.cuda`, `translate.python-numba`,
+`translate.python-jax`; `differential.tolerance`, `differential.probes`,
+`differential.python-numba`, `differential.python-jax`,
+`performance.benchmark`; `f2py-golden-flat`, `dump-replay`,
+`executable-golden`; the recipes `port`, `python-to-numba`, `python-to-jax`;
+the engines `recast.python-numpy.numba`, `recast.python-numpy.jax`.
+
+Module paths under `src/recast/`: `fortran/flatten.py`,
+`transform/numpy/tree.py`, `transform/numpy/flat.py`, `transform/jax/`,
+`transform/numba/`, `transform/cuda/`, `transform/python_accelerators.py`,
+`c/`, `verify/tolerance.py`, `verify/conditioning.py`, `verify/probes.py`,
+`verify/probe_inject.py`, `verify/gpu_time.py`,
+`verify/python_accelerators.py`, `verify/python_accelerators_worker.py`,
+`oracle/flat.py`, `oracle/record.py`, `oracle/dump_replay.py`,
+`oracle/executable.py`, `recipes/optional.py`,
+`conformance/builtin_optional.py`.
+
+The `flatten` option of the Fortran frontend is such a plugin's: without it
+the frontend translates flat interfaces, and asking for `flatten` says what
+is not installed.
+
 ## Contributor agreement — CLA
 
 This project takes contributions under a [Contributor License Agreement](CLA.md).
