@@ -134,7 +134,10 @@ line-length = 100
 src = ["src", "tests"]
 # corpus/ is twelve upstream Fortran libraries vendored as submodules, to be
 # translated, not styled. A few carry Python of their own; it is theirs.
-extend-exclude = ["corpus"]
+# docs/ quotes code the engine emitted, parentheses and all; the formatter
+# rewriting a fenced block there would misquote it. So the docs are not
+# formatted, though their prose is linted like anything else.
+extend-exclude = ["corpus", "docs/*.md", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "S", "RUF"]
@@ -154,6 +157,17 @@ python_version = "3.11"
 packages = ["recast"]
 strict = true
 warn_unreachable = true
+
+# Modules an installation may lack -- the optional recipes, the optional
+# conformance cases, the flat adapters -- are imported behind a guard; where
+# they are absent the import is not an error.
+[[tool.mypy.overrides]]
+module = [
+    "recast.recipes.optional",
+    "recast.conformance.builtin_optional",
+    "recast.fortran.flatten",
+]
+ignore_missing_imports = true
 
 # fparser2 ships no py.typed marker. It is confined to recast.fortran, and the
 # node types it returns are untyped trees anyway -- the frontend's own boundary
