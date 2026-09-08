@@ -49,7 +49,7 @@ every command prints.
 | `recast run <recipe> <tree>` | walk them over a source tree |
 | `recast version` | the version alone |
 
-The six recipes, the config keys, the flags on `run` and what its exit codes
+The recipes, the config keys, the flags on `run` and what its exit codes
 mean: [`docs/cli.md`](docs/cli.md).
 
 ## Documentation
