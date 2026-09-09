@@ -20,7 +20,12 @@
 ! by its own shape, a name the kernel never receives. The gate handed the
 ! driver's OUT array (the tendency, every OUT array being the caller's
 ! buffer under CLUBB's convention) to the f2py reference, whose wrapper
-! sizes and returns it, as one keyword argument more than it takes.
+! sizes and returns it, as one keyword argument more than it takes. The
+! held bounds, set in the branch of a PDF switch the trace resolves and
+! carried by the return flag's cond around it, were stored as Python ints
+! against their int32 start: the cond's arms disagreed, and the whole step
+! would not trace on a case with passive scalars (gabls2) while every case
+! without them compiled and passed.
 !
 ! The solver reads its solution back to flip it, as CLUBB's does, so the
 ! caller's storage is what it writes; and the tree is read under CLUBB's
@@ -30,16 +35,16 @@
 ! anchor wraps, so that shape is held in tests/test_jax_transform.py.)
 module xp2_solve
   use clubb_precision, only: core_rknd
-  use constants_clubb, only: ndiags3, km1, k0, kp1
+  use constants_clubb, only: ndiags3, km1, k0, kp1, ipdf_adg1
   implicit none
   private
   public :: advance_xp2
 
 contains
 
-  subroutine advance_xp2( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, invrs_tau, rtm, &
+  subroutine advance_xp2( nzm, ngrdcol, sclr_dim, ipdf_type, dt, c2rt, l_flip, invrs_tau, rtm, &
                           rtp2, sclrp2, n_solved, rtp2_tndcy )
-    integer, intent(in) :: nzm, ngrdcol, sclr_dim
+    integer, intent(in) :: nzm, ngrdcol, sclr_dim, ipdf_type
     integer, intent(out) :: n_solved
     real( kind = core_rknd ), intent(in) :: dt
     real( kind = core_rknd ), intent(in) :: c2rt
@@ -57,8 +62,8 @@ contains
         rtp2_old(i,k) = rtp2(i,k)
       end do
     end do
-    call solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, invrs_tau, &
-                                      rtm, rtp2, sclrp2, n_solved )
+    call solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, ipdf_type, dt, c2rt, l_flip, &
+                                      invrs_tau, rtm, rtp2, sclrp2, n_solved )
     do k = 1, nzm
       do i = 1, ngrdcol
         rtp2_tndcy(i,k) = ( rtp2(i,k) - rtp2_old(i,k) ) / dt
@@ -66,9 +71,9 @@ contains
     end do
   end subroutine advance_xp2
 
-  subroutine solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, dt, c2rt, l_flip, &
+  subroutine solve_xp2_with_multiple_lhs( nzm, ngrdcol, sclr_dim, ipdf_type, dt, c2rt, l_flip, &
                                           invrs_tau, rtm, rtp2, sclrp2, n_solved )
-    integer, intent(in) :: nzm, ngrdcol, sclr_dim
+    integer, intent(in) :: nzm, ngrdcol, sclr_dim, ipdf_type
     integer, intent(out) :: n_solved
     real( kind = core_rknd ), intent(in) :: dt
     real( kind = core_rknd ), intent(in) :: c2rt
@@ -94,15 +99,43 @@ contains
         rtp2(i,k) = max( rtp2_solution(i,k), 0.0_core_rknd )
       end do
     end do
+    ! CLUBB checks its error code after every solve and leaves; from here
+    ! on the kernel runs under the return flag's branch, which carries what
+    ! the rest of the routine sets.
+    if ( any( rtp2_solution < -1.0_core_rknd ) ) then
+      n_solved = -1
+      return
+    end if
 
-    ! Each passive scalar's variance through the same system, when the
-    ! moisture field is not dry: its slab of the rank-3 solution is the
-    ! solver's OUT actual; the loop's bound goes to a call in its body,
-    ! and its index is read once the loop is done.
+    ! Each passive scalar's variance through the same system, the way
+    ! CLUBB switches on its PDF: under any PDF but ADG1 the left-hand side
+    ! is assembled per scalar, and a solution gone negative ends the step
+    ! there (CLUBB returns on a fatal error code); under ADG1 it is
+    ! assembled once and the scalar loop holds its bounds -- the bound goes
+    ! to a call in the body, and the index is read once the loop is done.
+    ! The selector is a static under jit, so the two branches are Python;
+    ! the returns in the first put everything after them under the return
+    ! flag's cond, which carries the held bounds of the second.
     n_solved = 0
-    if ( any( rtm > 0.0_core_rknd ) ) then
-      do sclr = 1, sclr_dim
+    if ( ipdf_type /= ipdf_adg1 ) then
+      do sclr = 1, sclr_dim, 1
         call xp2_lhs( nzm, ngrdcol, dt, invrs_tau, lhs )
+        call xp2_sclr_rhs( nzm, ngrdcol, sclr_dim, sclr, dt, c2rt, rtm, sclrp2, rhs )
+        call xp2_solve_system( nzm, ngrdcol, 1, l_flip, rhs, lhs, sclrp2_solution(:,:,sclr) )
+        if ( any( sclrp2_solution(:,:,sclr) < 0.0_core_rknd ) ) then
+          n_solved = -sclr
+          return
+        end if
+        do k = 1, nzm
+          do i = 1, ngrdcol
+            sclrp2(i,k,sclr) = sclrp2_solution(i,k,sclr)
+          end do
+        end do
+      end do
+      n_solved = sclr_dim
+    else
+      call xp2_lhs( nzm, ngrdcol, dt, invrs_tau, lhs )
+      do sclr = 1, sclr_dim
         call xp2_sclr_rhs( nzm, ngrdcol, sclr_dim, sclr, dt, c2rt, rtm, sclrp2, rhs )
         call xp2_solve_system( nzm, ngrdcol, 1, l_flip, rhs, lhs, sclrp2_solution(:,:,sclr) )
         do k = 1, nzm

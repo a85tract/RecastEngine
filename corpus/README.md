@@ -186,7 +186,13 @@ column-major order; the port to JAX once could not read that spelling
 back, dropped the private routine's kernel without a note, left its caller
 calling a host function that does not exist, and sized the OUT array by
 its own unbound shape -- each while the engine's suite and the ELM tree
-stayed green. Both recipes run over it in CI:
+stayed green. Its scalar loop sits in one branch of a PDF switch the trace
+resolves (`ipdf_type`, a static under jit), after an error return, the way
+CLUBB's does: the loop's held bounds are set in that branch and carried by
+the return flag's cond around it, and the port once stored them as Python
+ints against their int32 start, so the whole step would not trace on the
+one case with passive scalars while every case without them passed. Both
+recipes run over it in CI:
 
     recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json \
         --summary corpus/clubb_solve/verification.json
