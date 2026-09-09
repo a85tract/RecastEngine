@@ -1447,7 +1447,16 @@ def _interfaces(
 
 
 def _generics(mod_spec: Any) -> dict[str, list[str]]:
-    """``{generic_name: [specific names]}`` from interface blocks."""
+    """``{generic_name: [specific names]}`` from interface blocks.
+
+    A named interface names its specifics one of two ways: a ``MODULE
+    PROCEDURE``/``PROCEDURE`` statement that references them (fftpack's
+    ``interface dct_t1 / procedure :: dcost``), or interface bodies that
+    spell them out in full -- ``interface fftshift`` over the
+    ``fftshift_crk``/``fftshift_rrk`` module functions, whose bodies stand
+    for the specifics with no ``MODULE PROCEDURE`` line. Both make the
+    specifics reachable only through the generic (they are otherwise
+    private), so both belong here."""
     generics: dict[str, list[str]] = {}
     if mod_spec is None:
         return generics
@@ -1456,9 +1465,13 @@ def _generics(mod_spec: Any) -> dict[str, list[str]]:
         for st in walk(ib, f03.Interface_Stmt):
             if st.children[0] is not None:
                 gname = str(st.children[0]).lower()
-        if gname is None:
+        # ``interface`` (unnamed, explicit interfaces for external procedures)
+        # and ``abstract interface`` are not generics: neither renames a
+        # specific behind a public generic name.
+        if gname is None or gname == "abstract":
             continue
         specs = [str(n).lower() for ps in walk(ib, f03.Procedure_Stmt) for n in walk(ps, f03.Name)]
+        specs += [sub_name_of(body) for body in walk(ib, (f03.Subroutine_Body, f03.Function_Body))]
         if specs:
             generics[gname] = specs
     return generics

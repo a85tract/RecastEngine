@@ -15,10 +15,11 @@ parse tree per source revision.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
-from fparser.common.readfortran import FortranFileReader
+from fparser.common.readfortran import FortranFileReader, FortranStringReader
 
 # f03 is the alias every module in this package uses for the node classes;
 # the lowercase name is worth more at the ~200 call sites than the rule is.
@@ -33,6 +34,18 @@ STD = "f2008"
 
 _parsers: dict[str, Any] = {}
 _trees: dict[tuple[str, str], Any] = {}
+
+# ``implicit none (type, external)`` is the Fortran 2018 spelling of the
+# ordinary ``implicit none``: the parenthesised list only says *which* of the
+# two implicit rules the statement turns off, and ``(type)`` -- present here
+# whenever the statement appears at all -- is the one that matters, the ban on
+# implicit typing. fparser2 0.2.5 tops out at Fortran 2008 and rejects the
+# spec-list form outright (fftpack's ``fftpack_kind`` module opens with it),
+# taking the whole file down and with it the ``rk`` kind every submodule
+# host-associates from it. Normalising the statement back to a bare
+# ``implicit none`` before the reader sees it costs nothing the analysis reads:
+# the spec-list carries no type information.
+_IMPLICIT_NONE_SPEC = re.compile(r"(?im)^([ \t]*implicit[ \t]+none)[ \t]*\([^)]*\)[ \t]*$")
 
 
 def walk(node: Any, types: Any = object) -> list[Any]:
@@ -92,7 +105,15 @@ def parse(path: Path, *, std: str = STD) -> Any:
     key = (digest(path), std)
     tree = _trees.get(key)
     if tree is None:
-        reader = FortranFileReader(str(path))
+        text = path.read_text(errors="replace")
+        normalized = _IMPLICIT_NONE_SPEC.sub(r"\1", text)
+        if normalized != text:
+            # A rewritten source has to be read as a string; the include path
+            # the file reader derives from the file's own directory is handed
+            # over explicitly so a source with an ``include`` still resolves it.
+            reader: Any = FortranStringReader(normalized, include_dirs=[str(path.parent)])
+        else:
+            reader = FortranFileReader(str(path))
         # fparser's reader answers a malformed line -- ``end subroutine`` naming
         # the wrong procedure, say -- by logging it and calling ``sys.exit(1)``,
         # which took the whole discovery of a tree down with the one file

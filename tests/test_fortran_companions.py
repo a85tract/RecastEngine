@@ -56,7 +56,7 @@ end module cam_history
 
 BROKEN = """\
 module halfparsed
-  implicit none(type, external)
+  integer :: :: mangled
 end module halfparsed
 """
 

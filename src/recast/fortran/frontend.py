@@ -484,6 +484,34 @@ class FortranFrontend(Frontend):
         # The operator's table wins where both name a procedure.
         companions, unresolved = self._companions(record, path, Path(root))
         dependencies = self._companion_dependencies(companions, own.lower(), Path(root))
+        # A submodule declares no interface of its own: the generic that
+        # renames its module procedures behind a public name lives in the
+        # parent module (fftpack's ``interface fftshift`` over the submodule's
+        # ``fftshift_crk``/``fftshift_rrk``). The specifics are private, so the
+        # f2py-golden wrapper has to reach them through that generic; the
+        # parent's generics are threaded onto the submodule record here, where
+        # the parent's own record is already resolved as a companion.
+        parent_name = str(record.get("submodule_of") or "").lower()
+        if parent_name:
+            own_names = {str(s["name"]).lower() for s in record.get("subprograms", ())}
+            parent_generics = next(
+                (
+                    c["record"].get("generics") or {}
+                    for c in companions
+                    if str(c.get("module", "")).lower() == parent_name
+                ),
+                {},
+            )
+            inherited = {
+                generic: specifics
+                for generic, specifics in parent_generics.items()
+                if any(str(s).lower() in own_names for s in specifics)
+            }
+            if inherited:
+                record = {
+                    **record,
+                    "generics": {**(record.get("generics") or {}), **inherited},
+                }
         # A submodule's procedures belong to its parent's namespace -- `use
         # parent` reaches them -- so the parent's translation re-exports them
         # (#29). Which submodules, and what they define, is a fact about the
