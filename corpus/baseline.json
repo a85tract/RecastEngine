@@ -408,15 +408,10 @@
    }
   },
   "fftpack": {
-   "bare_files": 50,
-   "blocks": 28,
-   "deferred": 8,
-   "refusals": [
-    [
-     "array of declared type 'X': no NumPy dtype spells it",
-     8
-    ]
-   ],
+   "bare_files": 49,
+   "blocks": 36,
+   "deferred": 0,
+   "refusals": [],
    "status": "failed",
    "units": {
     "fortran:fftpack": {
@@ -447,195 +442,6 @@
      }
     },
     "fortran:fftpack_dct": {
-     "deferred": 4,
-     "imports": true,
-     "mechanical": false,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "2 blocks match",
-       "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 4,
-        "blocks_matched": 2,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_fft": {
-     "deferred": 1,
-     "imports": true,
-     "mechanical": false,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "4 blocks match",
-       "metrics": {
-        "blocks_checked": 4,
-        "blocks_deferred": 1,
-        "blocks_matched": 4,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_fftshift": {
-     "deferred": 0,
-     "imports": true,
-     "mechanical": true,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "2 blocks match",
-       "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 0,
-        "blocks_matched": 2,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_ifft": {
-     "deferred": 1,
-     "imports": true,
-     "mechanical": false,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "4 blocks match",
-       "metrics": {
-        "blocks_checked": 4,
-        "blocks_deferred": 1,
-        "blocks_matched": 4,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_ifftshift": {
-     "deferred": 0,
-     "imports": true,
-     "mechanical": true,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "2 blocks match",
-       "metrics": {
-        "blocks_checked": 2,
-        "blocks_deferred": 0,
-        "blocks_matched": 2,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_irfft": {
-     "deferred": 1,
-     "imports": true,
-     "mechanical": false,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "4 blocks match",
-       "metrics": {
-        "blocks_checked": 4,
-        "blocks_deferred": 1,
-        "blocks_matched": 4,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_rfft": {
-     "deferred": 1,
-     "imports": true,
-     "mechanical": false,
-     "parses": true,
-     "stages": {
-      "frontend/fortran": "ok",
-      "oracle/f2py-golden": "failed",
-      "store/fs-evidence": "ok",
-      "transform/translate.numpy": "ok",
-      "verifier/static.rwset": "ok"
-     },
-     "stopped_by": "f2py-golden",
-     "verdicts": {
-      "static.rwset": {
-       "detail": "4 blocks match",
-       "metrics": {
-        "blocks_checked": 4,
-        "blocks_deferred": 1,
-        "blocks_matched": 4,
-        "blocks_waived": 0,
-        "reads_excused_by_stubs": 0
-       },
-       "passed": true
-      }
-     }
-    },
-    "fortran:fftpack_utils": {
      "deferred": 0,
      "imports": true,
      "mechanical": true,
@@ -657,6 +463,387 @@
         "blocks_matched": 6,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_fft": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "5 blocks match",
+       "metrics": {
+        "blocks_checked": 5,
+        "blocks_deferred": 0,
+        "blocks_matched": 5,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_fftshift": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
+     },
+     "stopped_by": null,
+     "verdicts": {
+      "differential.bitexact": {
+       "detail": "240 points across 2 subprogram(s), all bit-exact",
+       "metrics": {
+        "bit_exact": 240,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 240,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "fftshift_crk": {
+          "bit_exact": 160,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 160,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "fftshift_rrk": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "2 blocks match",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 0,
+        "blocks_matched": 2,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_ifft": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "5 blocks match",
+       "metrics": {
+        "blocks_checked": 5,
+        "blocks_deferred": 0,
+        "blocks_matched": 5,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_ifftshift": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
+     },
+     "stopped_by": null,
+     "verdicts": {
+      "differential.bitexact": {
+       "detail": "240 points across 2 subprogram(s), all bit-exact",
+       "metrics": {
+        "bit_exact": 240,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 0,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 240,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "ifftshift_crk": {
+          "bit_exact": 160,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 160,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "ifftshift_rrk": {
+          "bit_exact": 80,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 0,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 80,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "2 blocks match",
+       "metrics": {
+        "blocks_checked": 2,
+        "blocks_deferred": 0,
+        "blocks_matched": 2,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_irfft": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "5 blocks match",
+       "metrics": {
+        "blocks_checked": 5,
+        "blocks_deferred": 0,
+        "blocks_matched": 5,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_kind": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "0 blocks match",
+       "metrics": {
+        "blocks_checked": 0,
+        "blocks_deferred": 0,
+        "blocks_matched": 0,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_rfft": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "failed",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/static.rwset": "ok"
+     },
+     "stopped_by": "f2py-golden",
+     "verdicts": {
+      "static.rwset": {
+       "detail": "5 blocks match",
+       "metrics": {
+        "blocks_checked": 5,
+        "blocks_deferred": 0,
+        "blocks_matched": 5,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      }
+     }
+    },
+    "fortran:fftpack_utils": {
+     "deferred": 0,
+     "imports": true,
+     "mechanical": true,
+     "parses": true,
+     "stages": {
+      "frontend/fortran": "ok",
+      "oracle/f2py-golden": "ok",
+      "store/fs-evidence": "ok",
+      "transform/translate.numpy": "ok",
+      "verifier/differential.bitexact": "ok",
+      "verifier/static.rwset": "ok",
+      "verifier/symbolic.notary": "ok"
+     },
+     "stopped_by": null,
+     "verdicts": {
+      "differential.bitexact": {
+       "detail": "112 points across 2 subprogram(s), all bit-exact",
+       "metrics": {
+        "bit_exact": 112,
+        "declined": {},
+        "input_profile": null,
+        "integer_mismatch": 0,
+        "integer_points": 112,
+        "max_rel": 0.0,
+        "max_ulp": 0,
+        "nan_mismatch": 0,
+        "points": 112,
+        "redrawn": 0,
+        "reference_isolation": "process",
+        "subprograms": {
+         "fftfreq": {
+          "bit_exact": 56,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 56,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 56,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         },
+         "rfftfreq": {
+          "bit_exact": 56,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 56,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 56,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
+         }
+        },
+        "trials": 10
+       },
+       "passed": true
+      },
+      "static.rwset": {
+       "detail": "6 blocks match",
+       "metrics": {
+        "blocks_checked": 6,
+        "blocks_deferred": 0,
+        "blocks_matched": 6,
+        "blocks_waived": 0,
+        "reads_excused_by_stubs": 0
+       },
+       "passed": true
+      },
+      "symbolic.notary": {
+       "detail": "no rewrites to notarize; the translation is print-order faithful",
+       "metrics": {
+        "rewrites": 0
        },
        "passed": true
       }
