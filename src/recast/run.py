@@ -142,6 +142,7 @@ class _RunEventEmitter:
         evidence_index: int | None = None,
         verifier: str | None = None,
         confidence: str | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> None:
         if self.observer is None:
             return
@@ -166,6 +167,7 @@ class _RunEventEmitter:
                 evidence_index=evidence_index,
                 verifier=verifier,
                 confidence=confidence,
+                metrics=metrics,
             )
         )
 
@@ -1150,6 +1152,7 @@ def _walk_stage(
             candidate_digest=verdict.candidate,
             verifier=verdict.verifier,
             confidence=verdict.confidence.value,
+            metrics=verdict.metrics,
         )
         return StageOutcome(
             stage.kind, stage.plugin, status, f"{verdict.confidence.value}: {verdict.detail}"
