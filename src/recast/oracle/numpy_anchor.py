@@ -112,6 +112,20 @@ class NumpyAnchorOracle(Oracle):
 
         module = _import_from(staged, f"{module_name}_numpy")
         subprograms = [s["name"] for s in facts.interface["subprograms"] if s.get("public", True)]
+        # A tree anchor spells every plan the flattener accepted as a flat
+        # function beside the original -- ``warm_flat`` for ``warm``, the
+        # Python adapter that takes the object's components the way the flat
+        # f2py oracle's Fortran adapter does. A tree port's kernel *is* that
+        # flat function, so its reference is here, offered under the same
+        # name; the original, with its derived-type dummy, has no draw, and
+        # the verifier counts it compared through its flat spelling. Without
+        # this a flat kernel was "never compared" and the unit failed for
+        # silence (#71's corpus tree, canopy_flat).
+        subprograms += [
+            f"{name}_flat"
+            for name in subprograms
+            if callable(getattr(module, f"{name}_flat", None))
+        ]
         return OracleRef(
             unit=unit.uid,
             oracle=self.name,

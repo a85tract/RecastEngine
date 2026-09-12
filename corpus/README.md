@@ -142,13 +142,15 @@ static check passes, and for most cases it does not yet.
 
 ## The trees shipped in-tree
 
-Beside the submodules, four source trees live here directly, small enough
+Beside the submodules, five source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
 config beside it; `elm_leaf/`, five modules written the way the E3SM Land
 Model writes its biogeophysics and the framework modules under it;
 `clubb_solve/`, three modules in the shape of CLUBB's variance step and
-the tridiagonal solver under it; and `probe_kernel/`,
+the tridiagonal solver under it; `canopy_flat/`, five modules around an
+object with pointer components, the shape the flattener and the tree port
+were built for; and `probe_kernel/`,
 two scripts standing in for an instrumented C kernel (its own README says
 how). They are the public form of the check the roadmap names: the recipe
 has to work *here*, on sources anyone can read, not only on the private
@@ -220,6 +222,24 @@ recipes run over it in CI:
         --summary corpus/clubb_solve/verification.json
     recast run port corpus/clubb_solve --config corpus/clubb_solve/port.json \
         --summary corpus/clubb_solve/port-verification.json
+
+`canopy_flat/` is the flattened tree: a derived type with pointer
+components and a type-bound `Init`, a physics routine that takes the
+object and writes one component inside an `associate`, a module variable
+the run sets, and -- the reason it exists -- a function that takes the
+object (`conductance(inst, p)`, the way CLUBB's `gradzm_2d` takes `gr` and
+`mvr_hm_max` takes `hm_metadata`) called inside an expression, twice in one
+sum, under an IF whose test is traced. The flat rewrite lifts each call
+into a temporary before the statement; lowered inside the branch, that
+temporary was threaded through the `lax.cond` carry like a Fortran local
+and read unbound at trace time, in a kernel the CLUBB whole step emits but
+never traces. And the port's kernel is the *flat* function, which the
+numpy-anchor reference has to offer beside the original for the gate to
+compare anything: before it did, the unit failed for silence. f2py cannot
+pass the object, so this tree runs the port recipe alone:
+
+    recast run port corpus/canopy_flat --config corpus/canopy_flat/port.json \
+        --summary corpus/canopy_flat/port-verification.json
 
     recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
         --summary corpus/toy_physics/verification.json

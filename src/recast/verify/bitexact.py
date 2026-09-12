@@ -993,10 +993,20 @@ class BitexactVerifier(Verifier):
             # lands on the verdict below. Comparing one anyway compares the
             # candidate against a wrapper the oracle has already disclaimed.
             disclaimed = set(handle.get("ungated") or {}) | set(config.get("ungated") or {})
+            # A subprogram the reference also spells flat (``warm`` beside
+            # ``warm_flat``: a tree anchor's Python adapter) is compared
+            # through that spelling, the way the coverage below counts it.
+            # The original takes the object, which no draw builds, and a
+            # tree port lowers it as the flat kernel alone -- offered on its
+            # own it was "not lowered by this backend" (#71).
             wanted = config.get("subprograms") or [
                 name
                 for name in wrappers
-                if name in table and judged(name) and generable(name) and name not in disclaimed
+                if name in table
+                and judged(name)
+                and generable(name)
+                and name not in disclaimed
+                and f"{name}_flat" not in wrappers
             ]
             skipped = sorted(set(wrappers) - set(wanted))
             # A translated subprogram the harness has no draw for is named

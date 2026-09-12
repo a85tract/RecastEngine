@@ -1,0 +1,42 @@
+{
+  "recipe": "port",
+  "schema": 1,
+  "units": [
+    {
+      "candidate": "c40cd107713d76f414368d85cc52b261d0a0de8410458b6dd35794b4eface999",
+      "deferred": 0,
+      "host_calls": [],
+      "oracle": "numpy-anchor",
+      "refused": [],
+      "stopped_by": null,
+      "transform": "recast.port.tree-to-jax",
+      "unit": "fortran:physics_mod",
+      "verdicts": [
+        {
+          "confidence": "bit_exact",
+          "detail": "90 points across 1 subprogram(s), all bit-exact -- this backend did not need the tiers",
+          "metrics": {
+            "bit_exact": 90,
+            "candidate_device": "cpu:0",
+            "dominant_points": 90,
+            "input_profile": "recast_inputs.py",
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "max_ulp_dominant": 0,
+            "nan_mismatch": 0,
+            "points": 90,
+            "redrawn": 0,
+            "reference_device": "cpu",
+            "rel_gate": 1e-12,
+            "trials": 5,
+            "ulp_gate": 32
+          },
+          "passed": true,
+          "verifier": "differential.tolerance"
+        }
+      ]
+    }
+  ]
+}

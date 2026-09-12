@@ -1,0 +1,30 @@
+{
+  "backend": "tree-jax",
+  "units": [
+    "fortran:physics_mod"
+  ],
+  "stages": {
+    "fortran": {
+      "flatten": true
+    },
+    "differential.tolerance": {
+      "trials": 5,
+      "dims": {
+        "num": 4,
+        "np_": 6,
+        "nlev": 3
+      },
+      "ranges": {
+        "dt": [0.1, 2.0],
+        "inst__gs": [-1.0, 1.0],
+        "inst__tleaf": [270.0, 310.0],
+        "state_mod__scale": [0.5, 2.0]
+      }
+    },
+    "port.tree-jax": {
+      "constant_modules": [
+        "types_mod"
+      ]
+    }
+  }
+}
