@@ -5,7 +5,9 @@
     {
       "candidate": "176be59888048cea0c174a6fb9a2b54d0db8555d59b3c033d1988f6386e2a397",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:tridiag_lu_solver",
@@ -37,9 +39,11 @@
       ]
     },
     {
-      "candidate": "31814ef0b843be9afa011b659e23a5491af35c5f0fcd6744b48029093801f744",
+      "candidate": "bf1b3a02bf77ed1a5a8d3470bac049cda852f0c8ab0704d2dcdc27ffe28b8f10",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:xp2_solve",

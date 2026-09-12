@@ -5,7 +5,9 @@
     {
       "candidate": "aaeb567bde16f7d4753885bb011987a3ac26a53565e00b5c01c3e77662060a6f",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:leaf_layers",
@@ -38,7 +40,9 @@
     {
       "candidate": "59f3e2b3335c08dfd0b279e103164a6fabfc08be2d15034035befa90ab6ad567",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:soil_stress",

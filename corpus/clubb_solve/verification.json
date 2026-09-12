@@ -54,7 +54,7 @@
       ]
     },
     {
-      "candidate": "76dd07543ac7bc180c1020b3759600397ba43df4959653c8ee9b8cbe6633998f",
+      "candidate": "354a237771a729175da2a9c9564b4ff1c3d10524d8686305af7e2fcf1fb55503",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,
@@ -63,11 +63,11 @@
       "verdicts": [
         {
           "confidence": "sampled",
-          "detail": "16 blocks match",
+          "detail": "17 blocks match",
           "metrics": {
-            "blocks_checked": 16,
+            "blocks_checked": 17,
             "blocks_deferred": 0,
-            "blocks_matched": 16,
+            "blocks_matched": 17,
             "blocks_waived": 0,
             "reads_excused_by_stubs": 0
           },

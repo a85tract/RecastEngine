@@ -201,7 +201,19 @@ resolves (`ipdf_type`, a static under jit), after an error return, the way
 CLUBB's does: the loop's held bounds are set in that branch and carried by
 the return flag's cond around it, and the port once stored them as Python
 ints against their int32 start, so the whole step would not trace on the
-one case with passive scalars while every case without them passed. Both
+one case with passive scalars while every case without them passed. Its `error_code` is the stand-in shape CLUBB's is --
+a private debug level with an initializer, set by one public routine,
+read by one public function -- named in the configs' `stub_modules`, so
+the flattener leaves the level to the module and says so; `clip_module`
+asks that function inside the routine the step calls. The JAX lowering
+once refused that companion's kernel for reading a state "the plan does
+not carry" and left the step calling the NumPy module for it, which the
+gate passed all the same, because the host computes the same numbers.
+The port summary carries two lists for exactly this: `host_calls`, the
+companion calls a kernel leaves on the host, and `refused`, the kernels
+the flat rewrite would not spell and why, the unit's own and its
+companions'; the committed summary says `[]` for both, and a re-run that
+says otherwise is the finding. Both
 recipes run over it in CI:
 
     recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json \

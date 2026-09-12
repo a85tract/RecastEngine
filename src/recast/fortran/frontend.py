@@ -271,6 +271,7 @@ class FortranFrontend(Frontend):
         intent_overrides: dict[str, Any] | None = None,
         externals: dict[str, dict[str, Any]] | None = None,
         stub_modules: Iterable[str] = (),
+        stood_in_modules: Iterable[str] = (),
         stub_procedure_names: Mapping[str, Iterable[str]] | None = None,
         exclude: Iterable[str] = (),
         buffer_out_arrays: str = "unsizable",
@@ -305,6 +306,14 @@ class FortranFrontend(Frontend):
         self.intent_overrides = dict(intent_overrides or {})
         self.externals = dict(externals or {})
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
+        # Modules whose *source is in the tree* but whose private state the
+        # project stands in: the flattener leaves such a state to the
+        # module's own declaration instead of refusing it (the way the CLUBB
+        # extension does for ``error_code``), while the module is still
+        # compiled, translated and ported like any other. ``stub_modules``
+        # says the source is not here at all; this says only whose value a
+        # private variable runs on.
+        self.stood_in_modules = frozenset(m.lower() for m in stood_in_modules)
         # For a stub module the tree does not carry: which of its names are
         # procedures. Unsaid, every name imported from it is taken for one
         # and the record says so (``stub_procedures_assumed``).
@@ -661,7 +670,7 @@ class FortranFrontend(Frontend):
             conventions = FlatConventions(
                 kind_assumptions=dict(self.kind_assumptions),
                 constant_modules=self.constant_modules,
-                stub_modules=self.stub_modules,
+                stub_modules=self.stub_modules | self.stood_in_modules,
                 **spelled,
             )
             plans = plans_for(facts, root, conventions)
@@ -1152,4 +1161,9 @@ def factory(**config: Any) -> FortranFrontend:
         # (corpus/clubb_solve) asks for the faithful convention from its
         # config, the way the CLUBB extension's frontend does.
         buffer_out_arrays=config.get("buffer_out_arrays", "unsizable"),
+        # Modules the project stands in (corpus/clubb_solve's ``error_code``):
+        # the flattener leaves their private state to the module rather than
+        # refusing it, the way the CLUBB extension's conventions do.
+        stub_modules=config.get("stub_modules") or (),
+        stood_in_modules=config.get("stood_in_modules") or (),
     )

@@ -5,6 +5,7 @@
     {
       "candidate": "26b0e1c141955d434c044298c5454306a437cee38e2a172f86c24aec7b323ac6",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
       "stopped_by": null,
       "transform": "recast.port.kernel-to-jax",

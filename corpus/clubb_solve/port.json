@@ -6,7 +6,10 @@
   ],
   "stages": {
     "fortran": {
-      "buffer_out_arrays": "all"
+      "buffer_out_arrays": "all",
+      "stood_in_modules": [
+        "error_code"
+      ]
     },
     "differential.tolerance": {
       "trials": 5,
@@ -56,6 +59,9 @@
       "constant_modules": [
         "clubb_precision",
         "constants_clubb"
+      ],
+      "stub_modules": [
+        "error_code"
       ]
     }
   }

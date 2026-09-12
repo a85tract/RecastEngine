@@ -27,6 +27,14 @@
 ! would not trace on a case with passive scalars (gabls2) while every case
 ! without them compiled and passed.
 !
+! The clip of the solved variance is a companion's (clip_module), which
+! asks error_code's debug level -- private state of a module the project
+! stands in, as CLUBB's is -- before it flags what it clipped. The JAX
+! lowering once refused that companion's kernel for reading a state "the
+! plan does not carry" and left the step calling the NumPy module for it,
+! which the gate passed all the same; the port summary's `host_calls`
+! names such a call now.
+!
 ! The solver reads its solution back to flip it, as CLUBB's does, so the
 ! caller's storage is what it writes; and the tree is read under CLUBB's
 ! convention that every intent(out) array is the caller's buffer. (CLUBB
@@ -36,6 +44,7 @@
 module xp2_solve
   use clubb_precision, only: core_rknd
   use constants_clubb, only: ndiags3, km1, k0, kp1, ipdf_adg1
+  use clip_module, only: clip_variance
   implicit none
   private
   public :: advance_xp2
@@ -86,7 +95,7 @@ contains
     real( kind = core_rknd ), dimension(ngrdcol,nzm) :: rhs
     real( kind = core_rknd ), dimension(ngrdcol,nzm) :: rtp2_solution
     real( kind = core_rknd ), dimension(ngrdcol,nzm,sclr_dim) :: sclrp2_solution
-    integer :: i, k, sclr
+    integer :: i, k, sclr, n_clipped
 
     call xp2_lhs( nzm, ngrdcol, dt, invrs_tau, lhs )
     call xp2_rhs( nzm, ngrdcol, dt, c2rt, rtm, rtp2, rhs )
@@ -94,9 +103,13 @@ contains
     ! The rank-2 rhs and solution to the solver's rank-3 dummies, nrhs = 1.
     call xp2_solve_system( nzm, ngrdcol, 1, l_flip, rhs, lhs, rtp2_solution )
 
+    ! The clip is a companion's, and it asks error_code's debug level --
+    ! private state of a module the project stands in -- before it flags
+    ! what it clipped.
+    call clip_variance( nzm, ngrdcol, rtp2_solution, n_clipped )
     do k = 1, nzm
       do i = 1, ngrdcol
-        rtp2(i,k) = max( rtp2_solution(i,k), 0.0_core_rknd )
+        rtp2(i,k) = rtp2_solution(i,k)
       end do
     end do
     ! CLUBB checks its error code after every solve and leaves; from here
