@@ -169,6 +169,20 @@ contains
     ks = (/ (2*n, n = 1, 3) /)
   end subroutine sections
 
+  subroutine zeroed(k, n)
+    integer, intent(out) :: k, n
+    k = zero
+    n = three
+  end subroutine zeroed
+
+  subroutine stepped(a, b, k1, k2, st)
+    real(r8), intent(inout) :: a(10), b(0:9)
+    integer, intent(in) :: k1, k2, st
+    a(k1:k2:st) = 0.0_r8
+    b(:k2:st) = 1.0_r8
+    a(k1:k2:2) = 2.0_r8
+  end subroutine stepped
+
   subroutine backward(n, s)
     integer, intent(in) :: n
     real(r8), intent(inout) :: s
@@ -696,6 +710,21 @@ def test_a_descending_section_carries_its_declared_lower_bound(
     assert rendered[0] == "    a[_f_rstep_lb(n, 1, (-1), 1)] = 0.0"
     assert rendered[1] == "    a[_f_rstep_lb(None, n, (-1), 1)] = 1.0"
     assert rendered[2] == "    b[_f_rstep_lb(I_9, 0, (-1), 0)] = F_2P0"
+
+
+def test_a_section_stepped_by_a_variable_is_sliced_by_the_runtime(
+    sources: dict[str, Path],
+) -> None:
+    """CLUBB's ``field(i, k_start:k_end:grid_dir_indx)``: the step is 1 or -1
+    with the grid's direction, which the emitter cannot read. Spelled
+    ascending, ``lo:hi+1:step`` stopped one short under a negative step and
+    was empty at the first element; the runtime reads the sign (#75). A
+    literal positive step keeps the plain slice."""
+    statements, nodes = build(sources["emit_mod"], "stepped")
+    rendered = [statements.render(node, 1)[0] for node in nodes[:3]]
+    assert rendered[0] == "    a[_f_rstep_any(k1, k2, st, 1)] = 0.0"
+    assert rendered[1] == "    b[_f_rstep_any(None, k2, st, 0)] = 1.0"
+    assert rendered[2] == "    a[k1 - 1:k2:2] = F_2P0"
 
 
 def test_an_implied_do_in_an_array_constructor_is_a_comprehension(
@@ -1725,3 +1754,20 @@ def test_a_stubbed_call_names_the_reads_it_dropped(sources: dict[str, Path]) -> 
     dropped = statements.dropped_reads
     assert dropped and all(n == n.lower() for n in dropped)
     assert "outfld" not in dropped
+
+
+def test_an_integer_assigned_a_use_imported_real_constant_converts(
+    sources: dict[str, Path],
+) -> None:
+    """CLUBB's ``k_first_lte_thresh = zero``: an INTEGER level zeroed with
+    the tree's REAL ``zero``, which Fortran converts on assignment. The
+    use-imported constant was "opaque" -- typed by a table this translation
+    does not own -- and came out bare, so the Python name held a float and
+    a later slice on it raised. The resolution that hoisted the constant
+    knows its declared type; a REAL one converts, an INTEGER one (``n =
+    three``) stays as it was (#78)."""
+    statements, nodes = build(sources["emit_mod"], "zeroed")
+    statements.names.use_parameters.update({"zero": "ZERO", "three": "THREE"})
+    statements.names.use_parameter_types.update({"zero": "real", "three": "int"})
+    rendered = [statements.render(node, 1)[0] for node in nodes[:2]]
+    assert rendered == ["    k = _f_int(ZERO)", "    n = THREE"]

@@ -697,3 +697,25 @@ def test_seq_tail_out_reaches_a_c_ordered_matrix() -> None:
     assert np.array_equal(c_ordered, flat.reshape(3, 4, order="F"))
     runtime._f_seq_tail_out(c_ordered, 4, np.zeros(0))
     assert np.array_equal(c_ordered, flat.reshape(3, 4, order="F"))
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "st", "lb", "want"),
+    [
+        (5, 3, -1, 1, [5, 4, 3]),  # a(5:3:-1)
+        (3, 1, -1, 1, [3, 2, 1]),  # down to the first element: the stop edge underflows
+        (1, 3, 1, 1, [1, 2, 3]),  # a(1:3:1)
+        (2, 9, 3, 1, [2, 5, 8]),  # a(2:9:3)
+        (None, 2, -1, 1, [10, 9, 8, 7, 6, 5, 4, 3, 2]),  # a(:2:-1) over a(10)
+        (None, 4, 1, 0, [0, 1, 2, 3, 4]),  # b(:4) over b(0:9)
+        (7, None, -2, 0, [7, 5, 3, 1]),  # b(7::-2) over b(0:9)
+    ],
+)
+def test_a_step_of_either_sign_enumerates_what_fortran_does(
+    lo: Any, hi: Any, st: int, lb: int, want: list[int]
+) -> None:
+    """CLUBB's ``field(k_start:k_end:grid_dir_indx)`` with the step 1 or -1
+    at run time: the ascending spelling stopped one short under a negative
+    step. The runtime's slice picks exactly the Fortran indices (#75)."""
+    indices = np.arange(lb, lb + 10)  # the array's own Fortran indices
+    assert indices[runtime._f_rstep_any(lo, hi, st, lb)].tolist() == want

@@ -827,6 +827,15 @@ class Expressions:
             lower = self.render(position.lower) if position.lower is not None else "None"
             upper = self.render(position.upper) if position.upper is not None else "None"
             return f"_f_rstep_lb({lower}, {upper}, {step}, {self._origin(position.origin)})"
+        if step is not None and not step.strip("()").isdigit():
+            # A step whose sign this cannot read -- a dummy, a variable
+            # (CLUBB's ``grid_dir_indx``, 1 or -1 with the grid's direction):
+            # the ascending spelling ``lo:hi+1:step`` stops one short when the
+            # step turns out negative, and is empty at the first element. The
+            # runtime reads the sign and builds the slice (#75).
+            lower = self.render(position.lower) if position.lower is not None else "None"
+            upper = self.render(position.upper) if position.upper is not None else "None"
+            return f"_f_rstep_any({lower}, {upper}, {step}, {self._origin(position.origin)})"
         start = ""
         if position.lower is not None:
             folded = indexing.fold_index(position.lower, position.origin, WHITELIST_INT)

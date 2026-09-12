@@ -10,7 +10,7 @@ import numpy as np
 
 
 def prepare(unit: str, name: str, inputs: dict[str, Any], rng: Any) -> dict[str, Any] | None:
-    if unit == "fortran:physics_mod" and name in ("warm_flat", "fill_flat"):
+    if unit == "fortran:physics_mod" and name in ("warm_flat", "fill_flat", "clip_flat"):
         np_ = int(np.asarray(inputs["inst__tleaf"]).shape[0])
         num = int(inputs["num"])
         inputs["filter"] = np.asarray(rng.permutation(np_)[:num] + 1, dtype=np.int32)

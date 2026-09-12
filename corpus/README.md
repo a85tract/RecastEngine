@@ -147,8 +147,8 @@ to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
 config beside it; `elm_leaf/`, five modules written the way the E3SM Land
 Model writes its biogeophysics and the framework modules under it;
-`clubb_solve/`, three modules in the shape of CLUBB's variance step and
-the tridiagonal solver under it; `canopy_flat/`, five modules around an
+`clubb_solve/`, modules in the shape of CLUBB's variance step, the
+tridiagonal solver under it and its hole-filling window; `canopy_flat/`, five modules around an
 object with pointer components, the shape the flattener and the tree port
 were built for; and `probe_kernel/`,
 two scripts standing in for an instrumented C kernel (its own README says
@@ -216,7 +216,19 @@ companion calls a kernel leaves on the host, and `refused`, the kernels
 the flat rewrite would not spell and why, the unit's own and its
 companions'; the committed summary says `[]` for both, and a re-run that
 says otherwise is the finding. Both
-recipes run over it in CI:
+recipes run over it in CI. `fill_window` is the shape of CLUBB's
+`fill_holes_widening_windows`: a window of a column walked in the grid's
+direction, `field(k_start:k_end:grid_dir_indx)`, the step a dummy that is
+1 or -1 at run time, asked with `any`, summed with its weights, written
+back clipped. The emitter spelled every section whose step it could not
+read the sign of as an ascending Python slice -- one element short under a
+negative step, empty at the first level -- and every recorded CLUBB case
+runs the ascending grid, so no gate saw it; the input profile here draws
+both directions, and the f2py bit-exact gate is what catches it. Its
+`first_hole` zeroes an INTEGER level with the tree's REAL `zero`, as
+`fill_holes_smart_window` does; Fortran converts on assignment, and the
+translation once left the use-imported constant bare, a float the later
+index could not take.
 
     recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json \
         --summary corpus/clubb_solve/verification.json
@@ -242,7 +254,17 @@ covered layers summed into a scalar bound before the loop by a DO loop
 inside its body. The while body is lowered by a lowerer of its own, and
 that lowerer knew nothing bound before the while, so the DO loop had "no
 carried effects" and four of CLUBB's fill routines stayed on the host.
-f2py cannot pass the object, so this tree runs the port recipe alone:
+`Fill` runs its passes under an outer `do while` -- a while around a DO
+around an IF around a while, the nesting of `fill_holes_parallel`, whose
+inner exit flag the loop between once left out of its carry. Its `Clip`
+is the shape of `fill_holes_widening_windows`: a window of the layers
+walked in either direction, `tleaf(p, k_start:k_end:dir)`, the edges
+found in the data and the step 1 or -1, asked with `any`, summed,
+written back clipped -- a window no slice can take under jit, spelled as
+the axis's whole extent under a mask over both edges and the step -- and
+a DO loop stepped by that same `dir`, whose stop edge's sign the lowering
+once asked of a tracer. f2py cannot pass the object, so this tree runs
+the port recipe alone:
 
     recast run port corpus/canopy_flat --config corpus/canopy_flat/port.json \
         --summary corpus/canopy_flat/port-verification.json

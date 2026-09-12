@@ -785,7 +785,13 @@ class Statements:
             node = node.children[1]
         if isinstance(node, f03.Name):
             name = str(node).lower()
-            return name in self.names.use_bindings or name in self.names.use_parameters
+            if name in self.names.use_parameters:
+                # A use-imported constant the resolution typed REAL is a
+                # REAL: CLUBB zeroes an INTEGER level with the tree's
+                # ``zero`` and Fortran converts on assignment (#78). One it
+                # typed INTEGER, or could not type, is left as it is.
+                return self.names.use_parameter_types.get(name) != "real"
+            return name in self.names.use_bindings
         if isinstance(
             node,
             (

@@ -371,6 +371,11 @@ class NumpyTranslation(Transform):
         use_parameters = (
             {e["name"]: e["name"].upper() for e in use["resolved"] if e["requested"]} if use else {}
         )
+        use_parameter_types = (
+            {e["name"]: e["dtype"] for e in use["resolved"] if e["requested"] and e.get("dtype")}
+            if use
+            else {}
+        )
 
         assembler = Subprograms(
             record=facts.interface,
@@ -378,6 +383,7 @@ class NumpyTranslation(Transform):
             profile=PROFILES[config.get("profile", DEFAULT)],
             companions=records,
             use_parameters=use_parameters,
+            use_parameter_types=use_parameter_types,
             companion_globals=companion_globals,
             externals=facts.provenance.get("externals", {}),
             stub_procedures=frozenset(facts.interface.get("stub_procedures") or ()),

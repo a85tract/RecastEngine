@@ -279,6 +279,18 @@ def _f_rstep_lb(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
     return slice(start, stop, st)
 
 
+def _f_rstep_any(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
+    """Fortran lo:hi:st with a step of either sign (a variable the source
+    reads at run time), inclusive edges, declared lower bound lb; either
+    edge may be implied. Ascending, the stop edge is one past ``hi``;
+    descending, ``_f_rstep_lb`` works it out (#75)."""
+    if st < 0:
+        return _f_rstep_lb(lo, hi, st, lb)
+    start = None if lo is None else lo - lb
+    stop = None if hi is None else hi - lb + 1
+    return slice(start, stop, st)
+
+
 def _f_vdot(a: Any, b: Any) -> Any:
     """Fortran DOT_PRODUCT accumulates in order; np.dot (BLAS/pairwise)
     rounds differently."""

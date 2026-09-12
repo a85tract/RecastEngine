@@ -2,7 +2,8 @@
   "target": "tree",
   "units": [
     "fortran:xp2_solve",
-    "fortran:tridiag_lu_solver"
+    "fortran:tridiag_lu_solver",
+    "fortran:fill_window"
   ],
   "stages": {
     "fortran": {
@@ -51,6 +52,18 @@
         ],
         "rhs": [
           -1.0,
+          1.0
+        ],
+        "threshold": [
+          0.2,
+          0.8
+        ],
+        "rho_ds_dz": [
+          0.5,
+          2.0
+        ],
+        "field": [
+          0.0,
           1.0
         ]
       }

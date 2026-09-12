@@ -3,7 +3,58 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "f7659a72702dc0b32e3055b9490280661b5636dc74a463044d71d79e2483d930",
+      "candidate": "1863a72cb1c06b74d0834eca500af32992230e895adf16ed7b26ba285d6b9d48",
+      "deferred": 0,
+      "oracle": "f2py-golden",
+      "stopped_by": null,
+      "transform": "recast.translate.tree-to-numpy",
+      "unit": "fortran:fill_window",
+      "verdicts": [
+        {
+          "confidence": "sampled",
+          "detail": "5 blocks match",
+          "metrics": {
+            "blocks_checked": 5,
+            "blocks_deferred": 0,
+            "blocks_matched": 5,
+            "blocks_waived": 0,
+            "reads_excused_by_stubs": 0
+          },
+          "passed": true,
+          "verifier": "static.rwset"
+        },
+        {
+          "confidence": "bit_exact",
+          "detail": "50 points across 2 subprogram(s), all bit-exact",
+          "metrics": {
+            "bit_exact": 50,
+            "input_profile": "recast_inputs.py",
+            "integer_mismatch": 0,
+            "integer_points": 5,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "points": 50,
+            "redrawn": 0,
+            "reference_isolation": "process",
+            "trials": 5
+          },
+          "passed": true,
+          "verifier": "differential.bitexact"
+        },
+        {
+          "confidence": "symbolic",
+          "detail": "no rewrites to notarize; the translation is print-order faithful",
+          "metrics": {
+            "rewrites": 0
+          },
+          "passed": true,
+          "verifier": "symbolic.notary"
+        }
+      ]
+    },
+    {
+      "candidate": "e78c5d75b37ee6fe6dcdfeeaf1a4f6453406e5fc5ca00781e03439dcbb2adb06",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,
@@ -54,7 +105,7 @@
       ]
     },
     {
-      "candidate": "354a237771a729175da2a9c9564b4ff1c3d10524d8686305af7e2fcf1fb55503",
+      "candidate": "599d3dd6cab1c10d1f88f77515fc5b57a72dfbf56a738c8d9ab8c37504c98d93",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,

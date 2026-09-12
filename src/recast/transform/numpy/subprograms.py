@@ -195,6 +195,7 @@ class Subprograms:
 
     companions: tuple[dict[str, Any], ...] = ()
     use_parameters: dict[str, str] = field(default_factory=dict)
+    use_parameter_types: dict[str, str] = field(default_factory=dict)
     companion_globals: dict[str, str] = field(default_factory=dict)
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     remotes: dict[str, Remote] = field(default_factory=dict)
@@ -358,6 +359,7 @@ class Subprograms:
             use_parameters=self.use_parameters,
             companion_globals=self.companion_globals,
             use_bindings=self.use_bindings,
+            use_parameter_types=self.use_parameter_types,
         )
         shadowed = {a["name"] for a in semantics.subprogram["args"]}
         shadowed |= {loc["name"] for loc in semantics.subprogram.get("locals") or ()}

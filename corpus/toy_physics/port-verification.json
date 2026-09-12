@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "26b0e1c141955d434c044298c5454306a437cee38e2a172f86c24aec7b323ac6",
+      "candidate": "04292f857080c341219fe2879fc4e588e58b0d1d5751548d5550d87030a73f69",
       "deferred": 0,
       "host_calls": [],
       "oracle": "numpy-anchor",
