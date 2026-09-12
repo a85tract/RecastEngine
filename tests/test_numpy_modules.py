@@ -248,3 +248,99 @@ def test_a_declared_procedure_recast_can_supply_is_defined_here(
     assert "\ndef dgesv(" in text
     assert "\ndef dsyevd(" not in text
     assert "\ndef touch(" not in text
+
+
+CONSTANT_SETTER = """\
+module method_mod
+  implicit none
+  private
+  public :: init_method, scaled, method_default
+  integer, parameter :: method_default = 2
+  integer :: method
+  integer :: other
+contains
+  subroutine init_method()
+    method = method_default
+  end subroutine init_method
+  real(8) function scaled( x )
+    real(8), intent(in) :: x
+    scaled = x * method + other
+  end function scaled
+end module method_mod
+"""
+
+
+def test_constant_state_starts_at_the_setters_constant(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """``method`` has no initializer, and the honest rendering of that is
+    ``None`` -- which the first ``select case`` on it would read. But one
+    public argument-less setter fixes it to a module parameter and nothing
+    else writes it (the record's ``constant_state``), so the module starts
+    it there, saying whose value that is. ``other``, with no setter, keeps
+    the ``None``."""
+    path = tmp_path_factory.mktemp("constant") / "method_mod.f90"
+    path.write_text(CONSTANT_SETTER)
+    renderer = Modules(
+        subprograms=Subprograms(
+            record=interface.extract(path, kind_assumptions=KINDS),
+            constants=constants.extract(path),
+            profile=PROFILES["ifx"],
+        ),
+    )
+    body, report = renderer.body(renderer._subprogram_nodes(path))
+    assert (
+        "method = METHOD_DEFAULT  # module state (int32), what init_method sets it to "
+        "and nothing else writes"
+    ) in body
+    assert "other = None  # module state (int32), set by init" in body
+    assert not any(entry["key"].startswith("module-state:") for entry in report)
+
+
+HOURS_PARAMETERS = """\
+module hours_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+  real(r8), parameter :: secs = 5400.0_r8
+  real(r8), parameter :: per_hour = 3600.0_r8
+  integer, parameter :: isecs = 86400
+contains
+  subroutine noop(y)
+    integer, intent(out) :: y
+    integer, parameter :: hours = nint(secs / 3600.0_r8)
+    integer, parameter :: hours_too = nint(secs / per_hour)
+    integer, parameter :: quarter = isecs / 4
+    integer, parameter :: mixed = isecs / 4 + nint(secs / per_hour)
+    y = hours + hours_too + quarter + mixed
+  end subroutine noop
+end module hours_mod
+"""
+
+
+def test_an_integer_parameters_real_quotients_stay_real(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """An integer parameter's initializer is not an integer expression
+    throughout, only its result is. ``nint(secs / 3600.0_r8)`` is 2 in
+    Fortran (1.5 rounded); every quotient made integer division, it was
+    ``nint(1)``. A quotient under a real-taking intrinsic, or with a real
+    literal (hoisted or not) or a REAL parameter as an operand, is real
+    division; ``isecs / 4`` is still the integer one, in a larger expression
+    too (#59)."""
+    import re
+
+    path = tmp_path_factory.mktemp("hours") / "hours_mod.f90"
+    path.write_text(HOURS_PARAMETERS)
+    renderer = Modules(
+        subprograms=Subprograms(
+            record=interface.extract(path, kind_assumptions=KINDS),
+            constants=constants.extract(path),
+            profile=PROFILES["ifx"],
+        ),
+    )
+    body, _report = renderer.body(renderer._subprogram_nodes(path))
+    text = "\n".join(body)
+    assert re.search(r"hours = _f_nint\(SECS / F_3600P0\)", text), text
+    assert "hours_too = _f_nint(SECS / PER_HOUR)" in text
+    assert re.search(r"quarter = _f_int_div\(ISECS, (4|I_4)\)", text), text
+    assert re.search(r"mixed = _f_int_div\(ISECS, (4|I_4)\) \+ _f_nint\(SECS / PER_HOUR\)", text)

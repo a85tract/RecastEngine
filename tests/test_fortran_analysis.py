@@ -3539,3 +3539,131 @@ def test_an_interface_declared_inside_a_subprogram_is_extracted(tmp_path: Path) 
     assert "xgeev" not in {s["name"] for s in record["subprograms"]}, "declared, not defined"
     eig = next(s for s in record["subprograms"] if s["name"] == "eig")
     assert "xgeev" in eig["external_calls"], "still an external for the reference build"
+
+
+# --- constant state -----------------------------------------------------------
+
+METHODS = """\
+module methods_mod
+  implicit none
+  private
+  public :: init_methods, set_level, apply, method_default, alt_method
+  integer, parameter :: method_default = 0
+  integer, parameter :: alt_method = 1
+  integer :: method
+  integer :: level = 0
+  integer :: guarded
+  integer :: twice
+  logical :: verbose = .false.
+  integer, public :: shared = 0
+contains
+  subroutine init_methods()
+    method = method_default
+    verbose = .true.
+    if (level > 0) guarded = alt_method
+    twice = alt_method
+    shared = alt_method
+  end subroutine init_methods
+  subroutine set_level(n)
+    integer, intent(in) :: n
+    level = n
+    twice = n
+  end subroutine set_level
+  subroutine apply(x)
+    real(8), intent(inout) :: x
+    if (method == alt_method .and. verbose) x = 2.0d0 * x
+    if (guarded > 0 .or. twice > 0 .or. level > 0 .or. shared > 0) x = x + 1.0d0
+  end subroutine apply
+end module methods_mod
+"""
+
+
+def test_private_state_one_setter_fixes_to_a_constant_is_constant_state(tmp_path: Path) -> None:
+    """``method`` and ``verbose`` are private, written by ``init_methods``
+    alone, each as one top-level ``state = constant`` -- a module parameter,
+    a literal. The run cannot have left them anywhere else, so they are the
+    module's ``constant_state`` and their reads leave ``module_state_read``
+    for ``constant_state_read``. What does not qualify, each for its own
+    reason: ``guarded`` (written under an IF), ``twice`` (two writers),
+    ``level`` (the setter takes the value as an argument), ``shared``
+    (public: an adapter can set it, so a recording carries it)."""
+    record = interface.extract(_write(tmp_path, "methods.f90", METHODS), kind_assumptions=KINDS)
+    assert record["constant_state"] == {
+        "method": {"setter": "init_methods", "value": "method_default"},
+        "verbose": {"setter": "init_methods", "value": ".true."},
+    }
+    subs = {s["name"]: s for s in record["subprograms"]}
+    assert subs["init_methods"]["module_state_constant_writes"] == {
+        "method": "method_default",
+        "shared": "alt_method",
+        "twice": "alt_method",
+        "verbose": ".true.",
+    }
+    assert subs["set_level"]["module_state_constant_writes"] == {}
+    # The setter still *writes* them: the translation's ``global`` list needs that.
+    assert "method" in subs["init_methods"]["module_state_written"]
+    assert subs["apply"]["constant_state_read"] == ["method", "verbose"]
+    assert subs["apply"]["module_state_read"] == ["guarded", "level", "shared", "twice"]
+
+
+RUN_SETTABLE = """\
+module switches_mod
+  implicit none
+  private
+  public :: init_switches, read_switches, apply
+  integer, parameter :: method_default = 0
+  integer, parameter :: scale_default = 1
+  integer :: method
+  integer :: scale
+  integer :: guarded
+  namelist /switches/ scale
+contains
+  subroutine init_switches()
+    if (guarded < 0) return
+    method = method_default
+    scale = scale_default
+  end subroutine init_switches
+  subroutine read_switches(unit)
+    integer, intent(in) :: unit
+    read(unit, nml=switches)
+    read(unit, *) guarded
+  end subroutine read_switches
+  subroutine apply(x)
+    real(8), intent(inout) :: x
+    if (method > 0 .or. scale > 0 .or. guarded > 0) x = 2.0d0 * x
+  end subroutine apply
+end module switches_mod
+"""
+
+
+def test_state_a_run_can_set_or_a_setter_can_skip_is_not_constant(tmp_path: Path) -> None:
+    """Three shapes the single-writer test did not see, each of which would
+    have frozen the variable at the setter's constant while the run held
+    something else. ``scale`` is in a NAMELIST group a READ names, and
+    ``guarded`` is a READ's item: a run sets either to whatever its input
+    file says, and neither READ is a writer in ``module_state_written``.
+    ``method``'s assignment is top-level and its only one, but a RETURN
+    ahead of it can leave the setter before it runs, and then the run holds
+    the declaration's default. #32 row 8 refuses the guess for all three."""
+    record = interface.extract(
+        _write(tmp_path, "switches.f90", RUN_SETTABLE), kind_assumptions=KINDS
+    )
+    assert record["constant_state"] == {}
+    subs = {s["name"]: s for s in record["subprograms"]}
+    # Still the raw material: the write is one top-level constant assignment.
+    assert subs["init_switches"]["module_state_constant_writes"] == {
+        "method": "method_default",
+        "scale": "scale_default",
+    }
+    assert subs["apply"]["constant_state_read"] == []
+    assert subs["apply"]["module_state_read"] == ["guarded", "method", "scale"]
+
+
+def test_a_setter_that_also_writes_under_an_if_still_fixes_its_constants(tmp_path: Path) -> None:
+    """The transfer test is for what can *skip* the assignment. An IF whose
+    action writes another variable (``if (level > 0) guarded = alt_method``
+    in ``init_methods``) cannot, so ``method`` and ``verbose`` stay
+    constant state -- the shape the earlier test pins, kept here beside the
+    refusals so the boundary is in one place."""
+    record = interface.extract(_write(tmp_path, "methods.f90", METHODS), kind_assumptions=KINDS)
+    assert sorted(record["constant_state"]) == ["method", "verbose"]

@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "2afddcc8add4ed0577d7f0e0fa1898b820cd4ee16bae286bd062ae7ede5afb35",
+      "candidate": "176be59888048cea0c174a6fb9a2b54d0db8555d59b3c033d1988f6386e2a397",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "candidate": "3477a389fd8d800223c464e49adb892b6d27e2dfd135f1b9b00e9a3e59c2e922",
+      "candidate": "31814ef0b843be9afa011b659e23a5491af35c5f0fcd6744b48029093801f744",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,

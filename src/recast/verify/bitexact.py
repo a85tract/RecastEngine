@@ -1062,6 +1062,15 @@ class BitexactVerifier(Verifier):
             for name, why in per_module.items()
         }
         delegated.update(jax_notes.get("delegated") or {})
+        # The flat rewrite's own refusal is the root of a flat kernel's
+        # absence: the NumPy wrapper the backend then tried to lower fails
+        # on its first ``import``, and "[emit] unsupported stmt Import" said
+        # nothing about why the rewrite stepped aside (ELM's CanopyFluxes).
+        for name, why in (jax_notes.get("flat_refused") or {}).items():
+            emitted = delegated.get(name)
+            delegated[name] = f"flat rewrite refused: {why}" + (
+                f"; the NumPy wrapper then {emitted}" if emitted else ""
+            )
         declared_flat = handle.get("flattened")
         flattened: dict[str, Any] = declared_flat if isinstance(declared_flat, dict) else {}
         for name in wanted:
@@ -2497,8 +2506,13 @@ class BitexactVerifier(Verifier):
             return [(sub.get("result") or "result", translated_out, truth_out)]
 
         if convention == "emitted":
-            mine = list(translated_out) if isinstance(translated_out, tuple) else [translated_out]
-            yours = list(truth_out) if isinstance(truth_out, tuple) else [truth_out]
+            # ``_returned`` on both sides: a subroutine with no OUT argument
+            # returns ``None`` -- a port's argument-less state setter, whose
+            # write lands on the host and whose wrapper hands nothing back --
+            # and that is zero values, not one; read as one, both sides
+            # "returned 1 value(s) for 0 out-intent argument(s)".
+            mine = _returned(translated_out)
+            yours = _returned(truth_out)
             names = [a["name"] for a in outs_all]
             if len(mine) != len(names) or len(yours) != len(names):
                 return (

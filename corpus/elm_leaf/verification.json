@@ -51,6 +51,56 @@
           "verifier": "symbolic.notary"
         }
       ]
+    },
+    {
+      "candidate": "10b2679da29edf2f581e9b2a6cdd433a30e4c296ce6d42e8a324ebb1755cf205",
+      "deferred": 0,
+      "oracle": "f2py-golden",
+      "stopped_by": null,
+      "transform": "recast.translate.tree-to-numpy",
+      "unit": "fortran:soil_stress",
+      "verdicts": [
+        {
+          "confidence": "sampled",
+          "detail": "4 blocks match",
+          "metrics": {
+            "blocks_checked": 4,
+            "blocks_deferred": 0,
+            "blocks_matched": 4,
+            "blocks_waived": 0,
+            "reads_excused_by_stubs": 0
+          },
+          "passed": true,
+          "verifier": "static.rwset"
+        },
+        {
+          "confidence": "bit_exact",
+          "detail": "30 points across 2 subprogram(s), all bit-exact",
+          "metrics": {
+            "bit_exact": 30,
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 0.0,
+            "max_ulp": 0,
+            "nan_mismatch": 0,
+            "points": 30,
+            "redrawn": 0,
+            "reference_isolation": "process",
+            "trials": 5
+          },
+          "passed": true,
+          "verifier": "differential.bitexact"
+        },
+        {
+          "confidence": "symbolic",
+          "detail": "no rewrites to notarize; the translation is print-order faithful",
+          "metrics": {
+            "rewrites": 0
+          },
+          "passed": true,
+          "verifier": "symbolic.notary"
+        }
+      ]
     }
   ]
 }

@@ -145,7 +145,7 @@ static check passes, and for most cases it does not yet.
 Beside the submodules, four source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
-config beside it; `elm_leaf/`, four modules written the way the E3SM Land
+config beside it; `elm_leaf/`, five modules written the way the E3SM Land
 Model writes its biogeophysics and the framework modules under it;
 `clubb_solve/`, three modules in the shape of CLUBB's variance step and
 the tridiagonal solver under it; and `probe_kernel/`,
@@ -163,8 +163,18 @@ character names -- and `leaf_layers` reads them the way a biogeophysics
 routine does, truncates a REAL into an INTEGER scalar, takes a log and an
 integer power inside its loop, and takes its extent from a dummy called
 `np`. Each of those refused, misfolded or reached the emitted kernel
-unresolved at some engine commit that passed its own suite. Both recipes
-run over it (`target: tree`, `backend: tree-jax`, the engines the
+unresolved at some engine commit that passed its own suite. `soil_stress`
+is written the way `SoilMoistStressMod` and the `SimpleMathMod` under it
+are: the method switch is a private module variable with no initializer
+that one public argument-less init routine fixes to a module parameter --
+the plan carries it by calling the setter, on both sides -- and a generic
+whose two specifics have the same arity and differ by the type of one
+argument alone is called with computed actuals (`nlev + 1`, `size(work)`,
+`max(nlev, 2)`, `-1`, a real expression), the way
+`array_normalization(bounds%begp, ...)` is. The frontend once read every
+computed actual as a wildcard and refused each call as ambiguous, with
+its suite green. Both recipes
+run over the tree (`target: tree`, `backend: tree-jax`, the engines the
 extensions stand on), with the constants modules declared in the config
 the way the ELM extension's conventions declare them:
 

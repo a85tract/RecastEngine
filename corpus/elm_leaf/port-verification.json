@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "c8bef93fee2d1044fae0769df27170938f62cf584bb98051be450e1a2fbc6dda",
+      "candidate": "aaeb567bde16f7d4753885bb011987a3ac26a53565e00b5c01c3e77662060a6f",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,
@@ -24,6 +24,39 @@
             "max_ulp_dominant": 0,
             "nan_mismatch": 0,
             "points": 60,
+            "redrawn": 0,
+            "reference_device": "cpu",
+            "rel_gate": 1e-12,
+            "trials": 5,
+            "ulp_gate": 32
+          },
+          "passed": true,
+          "verifier": "differential.tolerance"
+        }
+      ]
+    },
+    {
+      "candidate": "59f3e2b3335c08dfd0b279e103164a6fabfc08be2d15034035befa90ab6ad567",
+      "deferred": 0,
+      "oracle": "numpy-anchor",
+      "stopped_by": null,
+      "transform": "recast.port.tree-to-jax",
+      "unit": "fortran:soil_stress",
+      "verdicts": [
+        {
+          "confidence": "ulp_bounded",
+          "detail": "every one of 30 points within 1 ULP (gate 32)",
+          "metrics": {
+            "bit_exact": 25,
+            "candidate_device": "cpu:0",
+            "dominant_points": 30,
+            "integer_mismatch": 0,
+            "integer_points": 0,
+            "max_rel": 2.1353586202975466e-16,
+            "max_ulp": 1,
+            "max_ulp_dominant": 1,
+            "nan_mismatch": 0,
+            "points": 30,
             "redrawn": 0,
             "reference_device": "cpu",
             "rel_gate": 1e-12,

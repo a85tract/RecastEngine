@@ -201,12 +201,75 @@ def function_outputs(record: dict[str, Any]) -> list[dict[str, Any]]:
     return outputs
 
 
+REAL_ARGUMENT_INTRINSICS = frozenset(
+    {
+        "nint",
+        "_f_nint",
+        "rint",
+        "int",
+        "_f_int",
+        "floor",
+        "_f_floor",
+        "ceiling",
+        "_f_ceiling",
+        "ceil",
+        "idint",
+        "idnint",
+        "ifix",
+        "trunc",
+    }
+)
+"""Integer-result intrinsics whose argument is a REAL expression: a quotient
+inside one is real division however integer the result."""
+
+
+HOISTED_REAL = re.compile(r"^F_\d")
+"""A real literal the renderer hoisted to a name (``3600.0_r8`` ->
+``F_3600P0``), as real as the literal it stands for."""
+
+
 class _IntegerDivision(ast.NodeTransformer):
-    """``a / b`` in a declared bound is Fortran integer division."""
+    """``a / b`` in an integer expression is Fortran integer division.
+
+    Only where both operands are integer-valued: a float literal on either
+    side, a name the caller knows is real (``real_names``), or a position
+    inside the argument of a real-taking intrinsic (``nint(secs / 3600.0)``)
+    is real division, and stays Python's ``/`` (#59).
+    """
+
+    def __init__(self, real_names: frozenset[str] = frozenset()) -> None:
+        self.real_names = real_names
+        self.real_depth = 0
+
+    def _real(self, node: ast.AST) -> bool:
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Constant) and isinstance(inner.value, float):
+                return True
+            if isinstance(inner, ast.Name) and (
+                inner.id.lower() in self.real_names or HOISTED_REAL.match(inner.id)
+            ):
+                return True
+        return False
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if str(name).lower() in REAL_ARGUMENT_INTRINSICS:
+            self.real_depth += 1
+            self.generic_visit(node)
+            self.real_depth -= 1
+            return node
+        self.generic_visit(node)
+        return node
 
     def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
         self.generic_visit(node)
-        if isinstance(node.op, ast.Div):
+        if (
+            isinstance(node.op, ast.Div)
+            and self.real_depth == 0
+            and not self._real(node.left)
+            and not self._real(node.right)
+        ):
             return ast.Call(
                 func=ast.Name(id="_f_int_div", ctx=ast.Load()),
                 args=[node.left, node.right],
@@ -215,15 +278,20 @@ class _IntegerDivision(ast.NodeTransformer):
         return node
 
 
-def _integer_divisions(text: str) -> str:
-    """A rendered bound with every ``/`` made the integer division it is.
+def _integer_divisions(text: str, real_names: frozenset[str] = frozenset()) -> str:
+    """A rendered integer expression with each integer ``/`` made the integer
+    division it is.
 
     A declared extent is an integer expression, so ``(n+1)*(n+2)/2`` -- the
     packed triangle SLSQP hands ``slsqpb`` as ``l`` -- truncates in Fortran.
     Rendered with Python's ``/`` it was a float, and the slice it sized the
     workspace view with refused it ("slice indices must be integers").
     ``_f_int_div`` is what the statement layer already spells the operator
-    as, so a bound rounds the way the body does.
+    as, so a bound rounds the way the body does. An integer *parameter's*
+    initializer is not an integer expression throughout -- only its result
+    is -- so a quotient with a real operand, or under ``nint``, is left the
+    real division it is; ``real_names`` are the parameters the caller knows
+    to be real.
     """
     if "/" not in text:
         return text
@@ -231,7 +299,7 @@ def _integer_divisions(text: str) -> str:
         tree = ast.parse(text, mode="eval")
     except SyntaxError:
         return text
-    return ast.unparse(_IntegerDivision().visit(tree).body)
+    return ast.unparse(_IntegerDivision(real_names).visit(tree).body)
 
 
 @dataclass

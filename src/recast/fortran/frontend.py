@@ -574,7 +574,12 @@ class FortranFrontend(Frontend):
                 companions=tuple(c["record"] for c in companions),
             )
             effects[sub_uid] = {
-                "reads": sub["module_state_read"],
+                # Constant state is split out of ``module_state_read`` for the
+                # flat plan's benefit; the subprogram still reads it, and an
+                # rwset compared against the Fortran has to say so.
+                "reads": sorted(
+                    set(sub["module_state_read"]) | set(sub.get("constant_state_read") or ())
+                ),
                 "writes": sub["module_state_written"],
                 "optional_args": sub["present_calls"],
                 **side_channels(nodes[sub_name]),

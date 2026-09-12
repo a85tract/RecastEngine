@@ -349,3 +349,126 @@ def test_double_complex_is_complex_and_not_a_double(tmp_path: Path) -> None:
     float64 that ``startswith('DOUBLE')`` would otherwise hand back."""
     assert interface.dtype_of("DOUBLE COMPLEX", None, {}) == "complex128"
     assert interface.dtype_of("DOUBLE PRECISION", None, {}) == "float64"
+
+
+UNSEEN_TYPE = """\
+module norm_mod
+  use bounds_mod, only: bounds_type
+  implicit none
+  interface normalize
+    module procedure normalize_plain, normalize_filtered
+  end interface normalize
+contains
+  subroutine drive(bounds, n, filt, arr)
+    type(bounds_type), intent(in) :: bounds
+    integer, intent(in) :: n, filt(:)
+    real(8), intent(inout) :: arr(:, :)
+    call normalize(bounds%begp, bounds%endp, n, filt, arr)
+  end subroutine drive
+  subroutine normalize_plain(which, arr)
+    integer, intent(in) :: which
+    real(8), intent(inout) :: arr(:, :)
+  end subroutine normalize_plain
+  subroutine normalize_filtered(lb, ub, n, filt, arr)
+    integer, intent(in) :: lb, ub, n, filt(:)
+    real(8), intent(inout) :: arr(lb:, :)
+  end subroutine normalize_filtered
+end module norm_mod
+"""
+
+SEEN_REAL_TYPE = """\
+module bounds_mod
+  implicit none
+  type bounds_type
+    real(8) :: begp
+    real(8) :: endp
+  end type bounds_type
+end module bounds_mod
+"""
+
+
+def test_a_component_of_a_type_out_of_sight_is_a_wildcard_for_dispatch(tmp_path: Path) -> None:
+    """``bounds % begp`` where ``bounds_type`` comes from a module that is
+    not a companion (ELM's ``decompMod``, a stub): nothing here says what
+    the component is, so it constrains nothing, and the arity picks the
+    overload -- as the compiler does. Answered as a definite non-integer,
+    the only five-argument specific was rejected and the call refused."""
+    src = tmp_path / "norm_mod.f90"
+    src.write_text(UNSEEN_TYPE)
+    sem = semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "drive")
+    call = walk(parse(src), f03.Call_Stmt)[0]
+    actuals = list(call.children[1].children)
+    assert sem._signature(actuals[0]) == (0, None, None)
+    assert sem.dispatch("normalize", actuals) == "normalize_filtered"
+
+
+def test_a_component_of_a_type_in_sight_still_decides(tmp_path: Path) -> None:
+    """The same call with the type visible as a companion and the component
+    declared REAL: now the answer is known and it rules the integer formal out."""
+    src = tmp_path / "norm_mod.f90"
+    src.write_text(UNSEEN_TYPE)
+    types = tmp_path / "bounds_mod.f90"
+    types.write_text(SEEN_REAL_TYPE)
+    companion = interface.extract(types, kind_assumptions=KINDS)
+    sem = semantics.for_subprogram(
+        interface.extract(src, kind_assumptions=KINDS), "drive", companions=(companion,)
+    )
+    call = walk(parse(src), f03.Call_Stmt)[0]
+    actuals = list(call.children[1].children)
+    assert sem._signature(actuals[0]) == (0, False, None)
+    with pytest.raises(semantics.AmbiguousDispatch, match="no match"):
+        sem.dispatch("normalize", actuals)
+
+
+COMPUTED_ACTUALS = """\
+module g_mod
+  implicit none
+  integer, parameter :: dp = kind(1.0d0)
+  interface takes
+    module procedure takes_int, takes_real
+  end interface takes
+contains
+  subroutine go(n, x)
+    integer, intent(in) :: n
+    real(dp), intent(in) :: x(:)
+    call takes(n + 1)
+    call takes(size(x))
+    call takes(-1)
+    call takes(max(n, 2))
+    call takes(x(1))
+    call takes(2.0_dp * x(1))
+  end subroutine go
+  subroutine takes_int(v)
+    integer, intent(in) :: v
+  end subroutine takes_int
+  subroutine takes_real(v)
+    real(dp), intent(in) :: v
+  end subroutine takes_real
+end module g_mod
+"""
+
+
+@pytest.mark.parametrize(
+    ("expression", "specific"),
+    [
+        ("n + 1", "takes_int"),
+        ("size(x)", "takes_int"),
+        ("-1", "takes_int"),
+        ("max(n, 2)", "takes_int"),
+        ("x(1)", "takes_real"),
+        ("2.0_dp * x(1)", "takes_real"),
+    ],
+)
+def test_a_computed_actual_keeps_the_type_its_expression_settles(
+    tmp_path: Path, expression: str, specific: str
+) -> None:
+    """Reading integer-ness as "unknown unless declared" made every computed
+    actual a wildcard, and a generic whose overloads differ by type alone --
+    the common shape -- became ambiguous on ``takes(n + 1)``. Only what has
+    no declaration in reach is untold; arithmetic, a sign, an integer-result
+    intrinsic and an argument-typed one all still say what they are."""
+    src = tmp_path / "g_mod.f90"
+    src.write_text(COMPUTED_ACTUALS)
+    sem = semantics.for_subprogram(interface.extract(src, kind_assumptions=KINDS), "go")
+    actuals = list(f03.Actual_Arg_Spec_List(expression).children)
+    assert sem.dispatch("takes", actuals) == specific

@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "2382c7d75ff54340c5e53633de40234326b194279ea91463ea70648df7008a4e",
+      "candidate": "26b0e1c141955d434c044298c5454306a437cee38e2a172f86c24aec7b323ac6",
       "deferred": 0,
       "oracle": "numpy-anchor",
       "stopped_by": null,
