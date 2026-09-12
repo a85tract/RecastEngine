@@ -352,6 +352,33 @@ class FortranFrontend(Frontend):
 
     # --- discovery -----------------------------------------------------------
 
+    def configuration(self) -> dict[str, Any]:
+        """The constructor arguments that rebuild this frontend, JSON-plain.
+
+        Recorded in every unit's provenance (``frontend_config``) so the
+        transforms analyze a companion with the frontend the unit had: a
+        default one knows no constant modules, no stood-in modules and does
+        not flatten, and a companion taking a derived-type object then has
+        no flat plan and its kernel is gone -- while an extension's factory
+        defaults hid the gap on the trees it was built for.
+        """
+        return {
+            "kind_assumptions": dict(self.kind_assumptions),
+            "extern_constants": sorted(self.extern_constants),
+            "intent_overrides": dict(self.intent_overrides),
+            "externals": dict(self.externals),
+            "stub_modules": sorted(self.stub_modules),
+            "stood_in_modules": sorted(self.stood_in_modules),
+            "stub_procedure_names": {
+                m: sorted(n) for m, n in sorted(self.stub_procedure_names.items())
+            },
+            "exclude": [str(d) for d in self.exclude],
+            "buffer_out_arrays": self.buffer_out_arrays,
+            "constant_modules": sorted(self.constant_modules),
+            "derived_intent_out_as_inout": bool(self.derived_intent_out_as_inout),
+            "flatten": self.flatten if isinstance(self.flatten, dict) else bool(self.flatten),
+        }
+
     def discover(self, root: Path) -> Iterable[Unit]:
         _require_fparser()
         return list(self._walk(Path(root)))
@@ -622,6 +649,9 @@ class FortranFrontend(Frontend):
                 "stub_procedure_names": {
                     m: sorted(n) for m, n in sorted(self.stub_procedure_names.items())
                 },
+                # Everything above and the rest, as the factory takes it: what
+                # a transform rebuilds this frontend from for a companion.
+                "frontend_config": self.configuration(),
                 # What this unit ``use``s that the same tree defines. The
                 # translation of a module that calls into a sibling needs the
                 # sibling's declarations, and a resolver that ran on the
@@ -1166,4 +1196,10 @@ def factory(**config: Any) -> FortranFrontend:
         # refusing it, the way the CLUBB extension's conventions do.
         stub_modules=config.get("stub_modules") or (),
         stood_in_modules=config.get("stood_in_modules") or (),
+        constant_modules=config.get("constant_modules") or (),
+        derived_intent_out_as_inout=bool(config.get("derived_intent_out_as_inout", False)),
+        # A tree target flattens derived-type and module-state interfaces:
+        # ``True`` or the flat conventions' fields. Off by default, as the
+        # class is; a recipe or a companion rebuilt from provenance asks.
+        flatten=config.get("flatten", False),
     )

@@ -534,3 +534,35 @@ def test_every_program_unit_of_a_file_is_a_unit_analyzed_under_its_own_name(tmp_
     companion = driver.provenance["companions"][0]["record"]
     assert [s["name"] for s in companion["subprograms"]] == ["two"]
     assert any(c.endswith("two") for c in driver.callgraph["fortran:driver/driver"])
+
+
+def test_the_frontend_records_the_configuration_that_rebuilds_it(tmp_path: Path) -> None:
+    """A transform analyzes a companion with the frontend the unit had, rebuilt
+    from ``provenance["frontend_config"]`` through the factory. A default one
+    knew no constant modules, no stood-in modules and did not flatten, so a
+    companion taking a derived-type object had no flat plan and its kernel
+    fell to the host -- unseen on the trees an extension's factory defaults
+    were built for."""
+    from recast.fortran.frontend import FortranFrontend, factory
+
+    src = tmp_path / "solo.f90"
+    src.write_text(
+        "module solo\n  implicit none\ncontains\n  subroutine go(x)\n"
+        "    real(8), intent(inout) :: x\n    x = x + 1.0d0\n  end subroutine go\nend module solo\n"
+    )
+    frontend = FortranFrontend(
+        kind_assumptions={"r8": "float64"},
+        constant_modules=["consts_mod"],
+        stood_in_modules=["error_code"],
+        stub_modules=["netcdf"],
+        buffer_out_arrays="all",
+        flatten=True,
+    )
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:solo")
+    recorded = frontend.analyze(unit, tmp_path).provenance["frontend_config"]
+    assert recorded["constant_modules"] == ["consts_mod"]
+    assert recorded["stood_in_modules"] == ["error_code"]
+    assert recorded["stub_modules"] == ["netcdf"]
+    assert recorded["flatten"] is True
+    rebuilt = factory(**recorded)
+    assert rebuilt.configuration() == recorded
