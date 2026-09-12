@@ -235,8 +235,14 @@ temporary was threaded through the `lax.cond` carry like a Fortran local
 and read unbound at trace time, in a kernel the CLUBB whole step emits but
 never traces. And the port's kernel is the *flat* function, which the
 numpy-anchor reference has to offer beside the original for the gate to
-compare anything: before it did, the unit failed for silence. f2py cannot
-pass the object, so this tree runs the port recipe alone:
+compare anything: before it did, the unit failed for silence. Its `Fill`
+is the shape of CLUBB's `fill_holes_smart_window`: a window widened inside
+a `do while` until the mass above a threshold covers the hole, the newly
+covered layers summed into a scalar bound before the loop by a DO loop
+inside its body. The while body is lowered by a lowerer of its own, and
+that lowerer knew nothing bound before the while, so the DO loop had "no
+carried effects" and four of CLUBB's fill routines stayed on the host.
+f2py cannot pass the object, so this tree runs the port recipe alone:
 
     recast run port corpus/canopy_flat --config corpus/canopy_flat/port.json \
         --summary corpus/canopy_flat/port-verification.json

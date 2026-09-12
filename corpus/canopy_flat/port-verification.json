@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "c40cd107713d76f414368d85cc52b261d0a0de8410458b6dd35794b4eface999",
+      "candidate": "b1279d1a8e3b03d87bf57e9395afd56ecbc387d5d50c9415a9d744bfe00d7b8d",
       "deferred": 0,
       "host_calls": [],
       "oracle": "numpy-anchor",
@@ -14,11 +14,11 @@
       "verdicts": [
         {
           "confidence": "bit_exact",
-          "detail": "90 points across 1 subprogram(s), all bit-exact -- this backend did not need the tiers",
+          "detail": "180 points across 2 subprogram(s), all bit-exact -- this backend did not need the tiers",
           "metrics": {
-            "bit_exact": 90,
+            "bit_exact": 180,
             "candidate_device": "cpu:0",
-            "dominant_points": 90,
+            "dominant_points": 180,
             "input_profile": "recast_inputs.py",
             "integer_mismatch": 0,
             "integer_points": 0,
@@ -26,7 +26,7 @@
             "max_ulp": 0,
             "max_ulp_dominant": 0,
             "nan_mismatch": 0,
-            "points": 90,
+            "points": 180,
             "redrawn": 0,
             "reference_device": "cpu",
             "rel_gate": 1e-12,

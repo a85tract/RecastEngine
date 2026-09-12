@@ -16,6 +16,7 @@
       },
       "ranges": {
         "dt": [0.1, 2.0],
+        "threshold": [280.0, 300.0],
         "inst__gs": [-1.0, 1.0],
         "inst__tleaf": [270.0, 310.0],
         "state_mod__scale": [0.5, 2.0]
