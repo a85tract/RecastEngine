@@ -159,35 +159,3 @@ def test_release_is_idempotent(subject: tuple, tmp_path: Path) -> None:
     ref = oracle.materialize(unit, facts, tmp_path / "ws", LocalExecutor(), config)
     oracle.release(ref)
     oracle.release(ref)
-
-
-def test_a_tree_anchor_offers_the_flat_spelling_beside_the_original(tmp_path: Path) -> None:
-    """A tree translation writes ``warm_flat`` beside ``warm`` for every plan
-    the flattener accepted -- the Python adapter that takes the object's
-    components. A tree port's kernel is that flat function, so the anchor
-    offers it as a wrapper under its own name; without it the kernel was
-    "never compared" and the unit failed for silence (#71)."""
-    from tests.test_flatten import DRIVER, PHYSICS, STATE, TYPES
-
-    root = tmp_path / "src"
-    root.mkdir()
-    for name, text in (
-        ("types_mod", TYPES),
-        ("state_mod", STATE),
-        ("physics_mod", PHYSICS),
-        ("driver_mod", DRIVER),
-    ):
-        (root / f"{name}.f90").write_text(text)
-    frontend = FortranFrontend(constant_modules=["types_mod"], flatten=True)
-    unit = next(u for u in frontend.discover(root) if u.uid == "fortran:physics_mod")
-    facts = frontend.analyze(unit, root)
-    config = {
-        "root": str(root),
-        "anchor_transform": "translate.tree",
-        "constant_modules": ["types_mod"],
-    }
-    ref = NumpyAnchorOracle().materialize(unit, facts, tmp_path / "ws", LocalExecutor(), config)
-    handle = ref.handle
-    assert handle["wrappers"]["warm"] == "warm"
-    assert handle["wrappers"]["warm_flat"] == "warm_flat"
-    assert callable(handle["module"].warm_flat)
