@@ -760,6 +760,31 @@ class Semantics:
                 return -value if str(children[0]) == "-" else value
         return None
 
+    def integral_real_literal(self, node: Any) -> int | None:
+        """The whole-number value of a *real* literal, through parens and a sign.
+
+        ``None`` for a real literal that is not a whole number, and for
+        anything that is not a real literal. ``x**2._r8`` is a real power in
+        the source and a multiplication in the object code, because a compiler
+        folds the powers it can fold exactly; which of them it folds is the
+        emitter's business, and this only reads the value.
+        """
+        if isinstance(node, f03.Real_Literal_Constant):
+            text = str(node).split("_")[0].replace("d", "e").replace("D", "E")
+            try:
+                value = float(text)
+            except ValueError:
+                return None
+            return int(value) if value.is_integer() else None
+        if isinstance(node, f03.Parenthesis):
+            return self.integral_real_literal(node.children[1])
+        children = getattr(node, "children", None)
+        if children and len(children) == 2 and str(children[0]) in ("+", "-"):
+            value = self.integral_real_literal(children[1])
+            if value is not None:
+                return -value if str(children[0]) == "-" else value
+        return None
+
     # -- dispatch -------------------------------------------------------------
 
     def dispatch(self, name: str, actuals: list[Any]) -> str:

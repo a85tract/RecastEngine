@@ -682,3 +682,48 @@ def test_a_runtime_integer_exponent_is_lowered_the_way_a_literal_one_is(tmp_path
     assert "_f_powi(x, ((j - 1)))" in lowered
     left = "\n".join(build(path, profile="ifx").render(node_of(path, "fill"), "fill")[0])
     assert "(x ** ((j - 1)))" in left
+
+
+REAL_POWERS = """\
+module realpow_mod
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine squares(x, a)
+    real(r8), intent(in) :: x
+    real(r8), intent(out) :: a(3)
+    a(1) = x**2._r8
+    a(2) = x**3._r8
+    a(3) = x**1.5_r8
+  end subroutine squares
+end module realpow_mod
+"""
+
+
+def test_a_real_exponent_of_two_is_the_multiplication_gcc_folds_it_into(tmp_path: Path) -> None:
+    """``uaf(p)**2._r8`` is a real power, so the literal-exponent rule above
+    never saw it and what was emitted was a ``pow`` call -- which NumPy
+    answers one ULP away from ``x*x`` on ordinary values (two points of
+    321,888 on a day of ELM's CanopyFluxes, enough to fail the bit-exact
+    gate).
+
+    GCC folds ``pow(x, 2.0)`` into the multiplication unconditionally, since
+    that is what the call must return anyway; the other whole-number real
+    exponents it expands only under ``-funsafe-math-optimizations``, so those
+    stay the call the reference binary makes, and so does a real exponent
+    that is not whole.
+    """
+    path = tmp_path / "realpow.f90"
+    path.write_text(REAL_POWERS)
+    made = build(path, profile="gfortran").render(node_of(path, "squares"), "squares")[0]
+    lowered = "\n".join(made)
+    assert "a[0] = (x * x)" in lowered
+    assert "a[1] = (x ** F_3P)" in lowered
+    assert "a[2] = (x ** F_1P5)" in lowered
+
+    # Under a profile whose reference does not expand a literal integer
+    # exponent either, nothing changes: the two decisions are the same fact
+    # about the reference binary.
+    other = build(path, profile="ifx").render(node_of(path, "squares"), "squares")[0]
+    left = "\n".join(other)
+    assert "a[0] = (x ** F_2P)" in left
