@@ -44,6 +44,11 @@ class Names:
     use_parameters: dict[str, str] = field(default_factory=dict)
     """Constant imported from a module that is not being translated."""
 
+    use_parameter_types: dict[str, str] = field(default_factory=dict)
+    """The declared base type of a use-imported constant -- ``real``, ``int``,
+    ``complex``, ``str`` -- from the resolution that hoisted it. What says
+    an INTEGER assigned the tree's REAL ``zero`` converts (#78)."""
+
     companion_globals: dict[str, str] = field(default_factory=dict)
     """Global reached through a sibling translated module's alias."""
 
@@ -144,6 +149,7 @@ def for_subprogram(
     use_parameters: dict[str, str] | None = None,
     companion_globals: dict[str, str] | None = None,
     use_bindings: dict[str, str] | None = None,
+    use_parameter_types: dict[str, str] | None = None,
 ) -> Names:
     """Build ``Names`` from the frontend's two records plus the operator's tables.
 
@@ -161,6 +167,7 @@ def for_subprogram(
             p["name"]: p["name"].upper() for p in semantics.module["module_parameters"]
         },
         use_parameters=dict(use_parameters or {}),
+        use_parameter_types=dict(use_parameter_types or {}),
         companion_globals=dict(companion_globals or {}),
         state_names=frozenset(s["name"] for s in semantics.module["module_state"]),
         use_bindings=dict(use_bindings or {}),

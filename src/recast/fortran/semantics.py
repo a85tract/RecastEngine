@@ -596,8 +596,8 @@ class Semantics:
             return lowered
         return F77_SPECIFIC_TO_GENERIC[lowered]
 
-    def _arguments_are_integer(self, name: str, items: list[Any]) -> bool:
-        """Whether an argument-typed intrinsic call is INTEGER here."""
+    def _typing_arguments(self, name: str, items: list[Any]) -> list[Any]:
+        """The actuals of an argument-typed intrinsic that carry its type."""
         values = [
             argument.children[1]
             if isinstance(argument, (f03.Actual_Arg_Spec, f03.Component_Spec))
@@ -606,10 +606,24 @@ class Semantics:
         ]
         if name in ("sum", "product", "maxval", "minval"):
             # DIM and MASK follow the array and say nothing about its type.
-            values = values[:1]
+            return values[:1]
+        return values
+
+    def _arguments_are_integer(self, name: str, items: list[Any]) -> bool:
+        """Whether an argument-typed intrinsic call is INTEGER here."""
+        values = self._typing_arguments(name, items)
         if name in SAME_TYPE_ARGUMENTS and len(values) > 1:
             return any(self.is_integer(value) for value in values)
         return bool(values) and all(self.is_integer(value) for value in values)
+
+    def _arguments_integral_or_unknown(self, name: str, items: list[Any]) -> bool | None:
+        """``_arguments_are_integer`` for dispatch: unsure stays ``None``."""
+        answers = [self._integral_or_unknown(v) for v in self._typing_arguments(name, items)]
+        if not answers:
+            return None
+        if name in SAME_TYPE_ARGUMENTS and len(answers) > 1:
+            return _any_integral(answers)
+        return _all_integral(answers)
 
     def _dataref_component(self, node: Any) -> dict[str, Any] | None:
         """``root%comp``, ``root(i)%comp`` and ``root%comp(i)`` -> comp's record."""
@@ -834,9 +848,78 @@ class Semantics:
         """
         dtype = self.declared_dtype(node)
         try:
-            return self.rank(node), self.is_integer(node), dtype
+            return self.rank(node), self._integral_or_unknown(node), dtype
         except Unanalyzable:
             return None, None, dtype
+
+    def _integral_or_unknown(self, node: Any) -> bool | None:
+        """Integer-ness of an actual for dispatch, ``None`` where untold.
+
+        ``is_integer`` answers False when unsure, which is the right side to
+        err on for the division rule and the wrong one here: a component of
+        a derived type this scope cannot see (ELM's ``bounds % begp`` where
+        ``decompMod`` is a stub, not a companion) answered False, and that
+        rejected the one overload of the right arity for a call the compiler
+        resolves without looking. What has no declaration in reach is a
+        wildcard, like an actual whose rank cannot be told.
+
+        Only *that* False becomes ``None``. A computed actual whose type the
+        expression itself settles -- ``n + 1``, ``size(x)``, ``-1``,
+        ``max(n, 2)``, ``2.0_dp * x(1)`` -- keeps its definite answer, and
+        that is the whole discrimination for a generic whose overloads differ
+        by type alone.
+        """
+        if isinstance(node, f03.Int_Literal_Constant):
+            return True
+        if isinstance(
+            node,
+            (f03.Real_Literal_Constant, f03.Char_Literal_Constant, f03.Logical_Literal_Constant),
+        ):
+            return False
+        if isinstance(node, (f03.Parenthesis, f03.Actual_Arg_Spec, f03.Component_Spec)):
+            return self._integral_or_unknown(node.children[1])
+        if isinstance(node, f03.Name):
+            declared = self.declaration(str(node))
+            if declared is not None:
+                return _integral_of(declared.get("dtype"))
+            if self.subprogram.get("result") == str(node).lower():
+                return _integral_of(self.subprogram.get("result_dtype"))
+            return None
+        if isinstance(node, f03.Data_Ref):
+            component = self._dataref_component(node)
+            return _integral_of(component.get("dtype")) if component is not None else None
+        if isinstance(
+            node,
+            (
+                f03.Part_Ref,
+                f03.Intrinsic_Function_Reference,
+                f03.Function_Reference,
+                f03.Structure_Constructor,
+            ),
+        ):
+            name = str(node.children[0]).lower()
+            if self.is_array(name):
+                declared = self.declaration(name)
+                return _integral_of(declared.get("dtype")) if declared is not None else None
+            if name in INTEGER_RESULT_INTRINSICS:
+                return True
+            if name in INTEGER_WITH_INTEGER_ARGUMENTS:
+                return self._arguments_integral_or_unknown(name, self._arguments(node))
+            if name in self.statement_functions:
+                return None
+            record = self.procedures.get(name)
+            return _integral_of(record.get("result_dtype")) if record is not None else None
+        children = getattr(node, "children", None)
+        if children and len(children) == 2 and isinstance(children[0], str):
+            return self._integral_or_unknown(children[1])
+        if children and len(children) == 3 and _is_operator(children[1], ARITHMETIC):
+            return _all_integral(
+                [
+                    self._integral_or_unknown(children[0]),
+                    self._integral_or_unknown(children[2]),
+                ]
+            )
+        return None
 
     def _matches(
         self, record: dict[str, Any], positional: list[Any], keyword: dict[str, Any]
@@ -870,6 +953,29 @@ class Semantics:
             if not _dtype_match(dtype, formal.get("dtype")):
                 return False
         return True
+
+
+def _all_integral(answers: list[bool | None]) -> bool | None:
+    """Three-valued AND. One definite non-integer settles a mixed expression
+    -- Fortran promotes it to real -- and one unknown clouds the rest."""
+    if any(answer is False for answer in answers):
+        return False
+    return True if all(answer is True for answer in answers) else None
+
+
+def _any_integral(answers: list[bool | None]) -> bool | None:
+    """Three-valued OR, for the intrinsics whose arguments share one type."""
+    if any(answer is True for answer in answers):
+        return True
+    return False if all(answer is False for answer in answers) else None
+
+
+def _integral_of(dtype: str | None) -> bool | None:
+    """Whether a declared dtype is an integer one; ``None`` unless the dtype
+    is concrete (an unresolved kind says nothing either way)."""
+    if dtype is None or not _concrete_dtype(dtype):
+        return None
+    return dtype in INTEGER_DTYPES
 
 
 def _concrete_dtype(dtype: str) -> bool:

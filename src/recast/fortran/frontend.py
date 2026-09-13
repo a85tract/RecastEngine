@@ -271,6 +271,7 @@ class FortranFrontend(Frontend):
         intent_overrides: dict[str, Any] | None = None,
         externals: dict[str, dict[str, Any]] | None = None,
         stub_modules: Iterable[str] = (),
+        stood_in_modules: Iterable[str] = (),
         stub_procedure_names: Mapping[str, Iterable[str]] | None = None,
         exclude: Iterable[str] = (),
         buffer_out_arrays: str = "unsizable",
@@ -305,6 +306,14 @@ class FortranFrontend(Frontend):
         self.intent_overrides = dict(intent_overrides or {})
         self.externals = dict(externals or {})
         self.stub_modules = frozenset(m.lower() for m in stub_modules)
+        # Modules whose *source is in the tree* but whose private state the
+        # project stands in: the flattener leaves such a state to the
+        # module's own declaration instead of refusing it (the way the CLUBB
+        # extension does for ``error_code``), while the module is still
+        # compiled, translated and ported like any other. ``stub_modules``
+        # says the source is not here at all; this says only whose value a
+        # private variable runs on.
+        self.stood_in_modules = frozenset(m.lower() for m in stood_in_modules)
         # For a stub module the tree does not carry: which of its names are
         # procedures. Unsaid, every name imported from it is taken for one
         # and the record says so (``stub_procedures_assumed``).
@@ -342,6 +351,33 @@ class FortranFrontend(Frontend):
         ] = {}
 
     # --- discovery -----------------------------------------------------------
+
+    def configuration(self) -> dict[str, Any]:
+        """The constructor arguments that rebuild this frontend, JSON-plain.
+
+        Recorded in every unit's provenance (``frontend_config``) so the
+        transforms analyze a companion with the frontend the unit had: a
+        default one knows no constant modules, no stood-in modules and does
+        not flatten, and a companion taking a derived-type object then has
+        no flat plan and its kernel is gone -- while an extension's factory
+        defaults hid the gap on the trees it was built for.
+        """
+        return {
+            "kind_assumptions": dict(self.kind_assumptions),
+            "extern_constants": sorted(self.extern_constants),
+            "intent_overrides": dict(self.intent_overrides),
+            "externals": dict(self.externals),
+            "stub_modules": sorted(self.stub_modules),
+            "stood_in_modules": sorted(self.stood_in_modules),
+            "stub_procedure_names": {
+                m: sorted(n) for m, n in sorted(self.stub_procedure_names.items())
+            },
+            "exclude": [str(d) for d in self.exclude],
+            "buffer_out_arrays": self.buffer_out_arrays,
+            "constant_modules": sorted(self.constant_modules),
+            "derived_intent_out_as_inout": bool(self.derived_intent_out_as_inout),
+            "flatten": self.flatten if isinstance(self.flatten, dict) else bool(self.flatten),
+        }
 
     def discover(self, root: Path) -> Iterable[Unit]:
         _require_fparser()
@@ -484,6 +520,34 @@ class FortranFrontend(Frontend):
         # The operator's table wins where both name a procedure.
         companions, unresolved = self._companions(record, path, Path(root))
         dependencies = self._companion_dependencies(companions, own.lower(), Path(root))
+        # A submodule declares no interface of its own: the generic that
+        # renames its module procedures behind a public name lives in the
+        # parent module (fftpack's ``interface fftshift`` over the submodule's
+        # ``fftshift_crk``/``fftshift_rrk``). The specifics are private, so the
+        # f2py-golden wrapper has to reach them through that generic; the
+        # parent's generics are threaded onto the submodule record here, where
+        # the parent's own record is already resolved as a companion.
+        parent_name = str(record.get("submodule_of") or "").lower()
+        if parent_name:
+            own_names = {str(s["name"]).lower() for s in record.get("subprograms", ())}
+            parent_generics = next(
+                (
+                    c["record"].get("generics") or {}
+                    for c in companions
+                    if str(c.get("module", "")).lower() == parent_name
+                ),
+                {},
+            )
+            inherited = {
+                generic: specifics
+                for generic, specifics in parent_generics.items()
+                if any(str(s).lower() in own_names for s in specifics)
+            }
+            if inherited:
+                record = {
+                    **record,
+                    "generics": {**(record.get("generics") or {}), **inherited},
+                }
         # A submodule's procedures belong to its parent's namespace -- `use
         # parent` reaches them -- so the parent's translation re-exports them
         # (#29). Which submodules, and what they define, is a fact about the
@@ -546,7 +610,12 @@ class FortranFrontend(Frontend):
                 companions=tuple(c["record"] for c in companions),
             )
             effects[sub_uid] = {
-                "reads": sub["module_state_read"],
+                # Constant state is split out of ``module_state_read`` for the
+                # flat plan's benefit; the subprogram still reads it, and an
+                # rwset compared against the Fortran has to say so.
+                "reads": sorted(
+                    set(sub["module_state_read"]) | set(sub.get("constant_state_read") or ())
+                ),
                 "writes": sub["module_state_written"],
                 "optional_args": sub["present_calls"],
                 **side_channels(nodes[sub_name]),
@@ -580,6 +649,9 @@ class FortranFrontend(Frontend):
                 "stub_procedure_names": {
                     m: sorted(n) for m, n in sorted(self.stub_procedure_names.items())
                 },
+                # Everything above and the rest, as the factory takes it: what
+                # a transform rebuilds this frontend from for a companion.
+                "frontend_config": self.configuration(),
                 # What this unit ``use``s that the same tree defines. The
                 # translation of a module that calls into a sibling needs the
                 # sibling's declarations, and a resolver that ran on the
@@ -628,7 +700,7 @@ class FortranFrontend(Frontend):
             conventions = FlatConventions(
                 kind_assumptions=dict(self.kind_assumptions),
                 constant_modules=self.constant_modules,
-                stub_modules=self.stub_modules,
+                stub_modules=self.stub_modules | self.stood_in_modules,
                 **spelled,
             )
             plans = plans_for(facts, root, conventions)
@@ -1119,4 +1191,15 @@ def factory(**config: Any) -> FortranFrontend:
         # (corpus/clubb_solve) asks for the faithful convention from its
         # config, the way the CLUBB extension's frontend does.
         buffer_out_arrays=config.get("buffer_out_arrays", "unsizable"),
+        # Modules the project stands in (corpus/clubb_solve's ``error_code``):
+        # the flattener leaves their private state to the module rather than
+        # refusing it, the way the CLUBB extension's conventions do.
+        stub_modules=config.get("stub_modules") or (),
+        stood_in_modules=config.get("stood_in_modules") or (),
+        constant_modules=config.get("constant_modules") or (),
+        derived_intent_out_as_inout=bool(config.get("derived_intent_out_as_inout", False)),
+        # A tree target flattens derived-type and module-state interfaces:
+        # ``True`` or the flat conventions' fields. Off by default, as the
+        # class is; a recipe or a companion rebuilt from provenance asks.
+        flatten=config.get("flatten", False),
     )

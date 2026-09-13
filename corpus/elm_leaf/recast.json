@@ -1,13 +1,15 @@
 {
   "target": "tree",
   "units": [
-    "fortran:leaf_layers"
+    "fortran:leaf_layers",
+    "fortran:soil_stress"
   ],
   "stages": {
     "differential.bitexact": {
       "trials": 5,
       "dims": {
-        "np": 6
+        "np": 6,
+        "nlev": 4
       },
       "ranges": {
         "t_veg": [
@@ -17,6 +19,14 @@
         "nrad": [
           0.5,
           4.5
+        ],
+        "rootfr": [
+          0.0,
+          1.0
+        ],
+        "h2osoi": [
+          0.1,
+          0.5
         ]
       }
     },

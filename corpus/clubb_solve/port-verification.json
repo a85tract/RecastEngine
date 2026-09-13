@@ -3,9 +3,47 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "2afddcc8add4ed0577d7f0e0fa1898b820cd4ee16bae286bd062ae7ede5afb35",
+      "candidate": "3cacc94be58650ab5bbf57f370f7748170de23f641931ff5f53360b552860034",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
+      "stopped_by": null,
+      "transform": "recast.port.tree-to-jax",
+      "unit": "fortran:fill_window",
+      "verdicts": [
+        {
+          "confidence": "ulp_bounded",
+          "detail": "every one of 50 points within 1 ULP (gate 32)",
+          "metrics": {
+            "bit_exact": 47,
+            "candidate_device": "cpu:0",
+            "dominant_points": 45,
+            "input_profile": "recast_inputs.py",
+            "integer_mismatch": 0,
+            "integer_points": 5,
+            "max_rel": 1.4166311700562282e-16,
+            "max_ulp": 1,
+            "max_ulp_dominant": 1,
+            "nan_mismatch": 0,
+            "points": 50,
+            "redrawn": 0,
+            "reference_device": "cpu",
+            "rel_gate": 1e-12,
+            "trials": 5,
+            "ulp_gate": 32
+          },
+          "passed": true,
+          "verifier": "differential.tolerance"
+        }
+      ]
+    },
+    {
+      "candidate": "23439ecf6c3ae93cdc25159a6998a44d6846f5d97df80e0857d4d50989a24604",
+      "deferred": 0,
+      "host_calls": [],
+      "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:tridiag_lu_solver",
@@ -37,9 +75,11 @@
       ]
     },
     {
-      "candidate": "3477a389fd8d800223c464e49adb892b6d27e2dfd135f1b9b00e9a3e59c2e922",
+      "candidate": "1ecd5a8207ed015ea667db8a21a3f705e7fbea6b563f320587fe9b0b556a74e5",
       "deferred": 0,
+      "host_calls": [],
       "oracle": "numpy-anchor",
+      "refused": [],
       "stopped_by": null,
       "transform": "recast.port.tree-to-jax",
       "unit": "fortran:xp2_solve",

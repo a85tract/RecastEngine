@@ -339,6 +339,7 @@ def test_compiler_semantics_is_frozen_into_transform_and_golden_oracle_config() 
     transform = phase_api._resolved_stage_config(Stage("transform", "phase.transform"), semantic)
     oracle = phase_api._resolved_stage_config(Stage("oracle", "f2py-golden"), semantic)
     flat = phase_api._resolved_stage_config(Stage("oracle", "f2py-golden-flat"), semantic)
+    anchor = phase_api._resolved_stage_config(Stage("oracle", "numpy-anchor"), semantic)
 
     assert transform == {"profile": "gfortran"}
     assert oracle == {"fc": "gfortran"}
@@ -346,6 +347,7 @@ def test_compiler_semantics_is_frozen_into_transform_and_golden_oracle_config() 
     # at the top level that it never saw would be one the bundle's identity
     # names and no build used.
     assert flat == {"fc": "gfortran"}
+    assert anchor == {"profile": "gfortran"}
     with pytest.raises(ConfigError, match="contradicts compiler_semantics"):
         phase_api._resolved_stage_config(
             Stage("transform", "phase.transform", config={"profile": "ifx"}),
@@ -361,6 +363,18 @@ def test_transform_phase_receives_the_bound_compiler_profile(tmp_path: Path) -> 
     )
     assert PhaseTransform.last_config is not None
     assert PhaseTransform.last_config["profile"] == "gfortran"
+
+
+@pytest.mark.parametrize("via_override", [False, True])
+def test_numpy_anchor_cannot_override_the_bound_compiler_profile(via_override: bool) -> None:
+    semantic: dict[str, Any] = {"compiler_semantics": "gfortran"}
+    stage = Stage("oracle", "numpy-anchor")
+    if via_override:
+        semantic["stages"] = {"numpy-anchor": {"profile": "ifx"}}
+    else:
+        stage.config["profile"] = "ifx"
+    with pytest.raises(ConfigError, match=r"numpy-anchor.*profile contradicts compiler_semantics"):
+        phase_api._resolved_stage_config(stage, semantic)
 
 
 def test_unit_run_positional_constructor_remains_backward_compatible() -> None:

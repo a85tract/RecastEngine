@@ -39,7 +39,7 @@ from recast.fortran.constants import is_default_real
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name, node_span, subprogram_key
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
-from recast.transform.numpy.expressions import Expressions, Remote
+from recast.transform.numpy.expressions import Expressions, Remote, _integer_divisions
 from recast.transform.numpy.names import bind_use_statements
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import (
@@ -195,6 +195,7 @@ class Subprograms:
 
     companions: tuple[dict[str, Any], ...] = ()
     use_parameters: dict[str, str] = field(default_factory=dict)
+    use_parameter_types: dict[str, str] = field(default_factory=dict)
     companion_globals: dict[str, str] = field(default_factory=dict)
     externals: dict[str, dict[str, Any]] = field(default_factory=dict)
     remotes: dict[str, Remote] = field(default_factory=dict)
@@ -358,6 +359,7 @@ class Subprograms:
             use_parameters=self.use_parameters,
             companion_globals=self.companion_globals,
             use_bindings=self.use_bindings,
+            use_parameter_types=self.use_parameter_types,
         )
         shadowed = {a["name"] for a in semantics.subprogram["args"]}
         shadowed |= {loc["name"] for loc in semantics.subprogram.get("locals") or ()}
@@ -806,6 +808,27 @@ class Subprograms:
                     f"{parameter['name']} ({rec['payload']})"
                 )
                 continue
+            single = (
+                rec is not None and rec["kind"] == "real32" and rec.get("dtype") == "float64"
+            ) or (
+                parameter.get("dtype") == "float64"
+                and REAL_TEXT.fullmatch(initializer.strip()) is not None
+                and is_default_real(initializer.strip())
+            )
+            if single:
+                # ``real(r8), parameter :: prandtl = 0.72``: a default-kind
+                # literal is single precision, and the compiler stores the
+                # single, widened -- 0.7200000286102295, not 0.72. The
+                # constants pass classified it (``_storage`` -> ``single``);
+                # rendering the decimal text into a float64 changed the
+                # number by 4e-8, which ELM's leaf boundary-layer
+                # resistance carried to its output at 2.6e-8.
+                literal = initializer.strip().replace(" ", "").lower().replace("d", "e")
+                lines.append(
+                    f"    {name} = np.float64(np.float32('{literal}'))"
+                    "  # default-kind literal, stored as the single it is"
+                )
+                continue
             try:
                 value = self._parameter_value(
                     initializer.strip(), own_parameters, statements, parameter.get("dtype")
@@ -1142,9 +1165,32 @@ class Subprograms:
             # ``integer, parameter :: h(3) = (/1, 2, 3/) / 2``: the token pass
             # has no integer division and rendered a float64 1.5 where
             # Fortran truncates to 1 (ledger #32 row 18). The parse path
-            # spells ``_f_int_div``; an integer initializer with a quotient
-            # takes it.
-            return self._reparsed_parameter_value(text, spelled, statements)
+            # spells ``_f_int_div`` where it can tell both operands are
+            # integers; where an operand is a constant another module
+            # defines (ELM's ``irrig_start_time = isecspday/4``) it cannot,
+            # and wrote Python's ``/`` -- a float where the body carried an
+            # integer, which a JAX ``cond`` refused. An integer constant
+            # expression's every quotient is integer division, the rule the
+            # declared bounds already apply (``_integer_divisions``).
+            if "(/" in text or NEWFORM_ARRAY.search(text.strip()):
+                # An array constructor in the quotient: the parse path's
+                # elementwise spelling, as before (row 18).
+                return self._reparsed_parameter_value(text, spelled, statements)
+            # The parameters this module declares REAL: a quotient over one
+            # of them is real division, whatever the result's type (#59).
+            real_names = frozenset(
+                str(p["name"]).lower()
+                for p in self.record.get("module_parameters", ())
+                if not str(p.get("dtype") or "").startswith(("int", "bool"))
+            )
+            if _is_expression(spelled) and not _token_pass_guessed(text, spelled):
+                # The token pass spells the constants the way the rest of
+                # the module does (a use-imported ``isecspday`` upper-cased);
+                # its quotient just needs to be the integer one.
+                return _integer_divisions(spelled, real_names)
+            return _integer_divisions(
+                self._reparsed_parameter_value(text, spelled, statements), real_names
+            )
         if _is_expression(spelled) and not _token_pass_guessed(text, spelled):
             return spelled
         return self._reparsed_parameter_value(text, spelled, statements)

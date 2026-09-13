@@ -142,13 +142,15 @@ static check passes, and for most cases it does not yet.
 
 ## The trees shipped in-tree
 
-Beside the submodules, four source trees live here directly, small enough
+Beside the submodules, five source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
-config beside it; `elm_leaf/`, four modules written the way the E3SM Land
+config beside it; `elm_leaf/`, five modules written the way the E3SM Land
 Model writes its biogeophysics and the framework modules under it;
-`clubb_solve/`, three modules in the shape of CLUBB's variance step and
-the tridiagonal solver under it; and `probe_kernel/`,
+`clubb_solve/`, modules in the shape of CLUBB's variance step, the
+tridiagonal solver under it and its hole-filling window; `canopy_flat/`, five modules around an
+object with pointer components, the shape the flattener and the tree port
+were built for; and `probe_kernel/`,
 two scripts standing in for an instrumented C kernel (its own README says
 how). They are the public form of the check the roadmap names: the recipe
 has to work *here*, on sources anyone can read, not only on the private
@@ -163,8 +165,18 @@ character names -- and `leaf_layers` reads them the way a biogeophysics
 routine does, truncates a REAL into an INTEGER scalar, takes a log and an
 integer power inside its loop, and takes its extent from a dummy called
 `np`. Each of those refused, misfolded or reached the emitted kernel
-unresolved at some engine commit that passed its own suite. Both recipes
-run over it (`target: tree`, `backend: tree-jax`, the engines the
+unresolved at some engine commit that passed its own suite. `soil_stress`
+is written the way `SoilMoistStressMod` and the `SimpleMathMod` under it
+are: the method switch is a private module variable with no initializer
+that one public argument-less init routine fixes to a module parameter --
+the plan carries it by calling the setter, on both sides -- and a generic
+whose two specifics have the same arity and differ by the type of one
+argument alone is called with computed actuals (`nlev + 1`, `size(work)`,
+`max(nlev, 2)`, `-1`, a real expression), the way
+`array_normalization(bounds%begp, ...)` is. The frontend once read every
+computed actual as a wildcard and refused each call as ambiguous, with
+its suite green. Both recipes
+run over the tree (`target: tree`, `backend: tree-jax`, the engines the
 extensions stand on), with the constants modules declared in the config
 the way the ELM extension's conventions declare them:
 
@@ -191,13 +203,71 @@ resolves (`ipdf_type`, a static under jit), after an error return, the way
 CLUBB's does: the loop's held bounds are set in that branch and carried by
 the return flag's cond around it, and the port once stored them as Python
 ints against their int32 start, so the whole step would not trace on the
-one case with passive scalars while every case without them passed. Both
-recipes run over it in CI:
+one case with passive scalars while every case without them passed. Its `error_code` is the stand-in shape CLUBB's is --
+a private debug level with an initializer, set by one public routine,
+read by one public function -- named in the configs' `stub_modules`, so
+the flattener leaves the level to the module and says so; `clip_module`
+asks that function inside the routine the step calls. The JAX lowering
+once refused that companion's kernel for reading a state "the plan does
+not carry" and left the step calling the NumPy module for it, which the
+gate passed all the same, because the host computes the same numbers.
+The port summary carries two lists for exactly this: `host_calls`, the
+companion calls a kernel leaves on the host, and `refused`, the kernels
+the flat rewrite would not spell and why, the unit's own and its
+companions'; the committed summary says `[]` for both, and a re-run that
+says otherwise is the finding. Both
+recipes run over it in CI. `fill_window` is the shape of CLUBB's
+`fill_holes_widening_windows`: a window of a column walked in the grid's
+direction, `field(k_start:k_end:grid_dir_indx)`, the step a dummy that is
+1 or -1 at run time, asked with `any`, summed with its weights, written
+back clipped. The emitter spelled every section whose step it could not
+read the sign of as an ascending Python slice -- one element short under a
+negative step, empty at the first level -- and every recorded CLUBB case
+runs the ascending grid, so no gate saw it; the input profile here draws
+both directions, and the f2py bit-exact gate is what catches it. Its
+`first_hole` zeroes an INTEGER level with the tree's REAL `zero`, as
+`fill_holes_smart_window` does; Fortran converts on assignment, and the
+translation once left the use-imported constant bare, a float the later
+index could not take.
 
     recast run translate corpus/clubb_solve --config corpus/clubb_solve/recast.json \
         --summary corpus/clubb_solve/verification.json
     recast run port corpus/clubb_solve --config corpus/clubb_solve/port.json \
         --summary corpus/clubb_solve/port-verification.json
+
+`canopy_flat/` is the flattened tree: a derived type with pointer
+components and a type-bound `Init`, a physics routine that takes the
+object and writes one component inside an `associate`, a module variable
+the run sets, and -- the reason it exists -- a function that takes the
+object (`conductance(inst, p)`, the way CLUBB's `gradzm_2d` takes `gr` and
+`mvr_hm_max` takes `hm_metadata`) called inside an expression, twice in one
+sum, under an IF whose test is traced. The flat rewrite lifts each call
+into a temporary before the statement; lowered inside the branch, that
+temporary was threaded through the `lax.cond` carry like a Fortran local
+and read unbound at trace time, in a kernel the CLUBB whole step emits but
+never traces. And the port's kernel is the *flat* function, which the
+numpy-anchor reference has to offer beside the original for the gate to
+compare anything: before it did, the unit failed for silence. Its `Fill`
+is the shape of CLUBB's `fill_holes_smart_window`: a window widened inside
+a `do while` until the mass above a threshold covers the hole, the newly
+covered layers summed into a scalar bound before the loop by a DO loop
+inside its body. The while body is lowered by a lowerer of its own, and
+that lowerer knew nothing bound before the while, so the DO loop had "no
+carried effects" and four of CLUBB's fill routines stayed on the host.
+`Fill` runs its passes under an outer `do while` -- a while around a DO
+around an IF around a while, the nesting of `fill_holes_parallel`, whose
+inner exit flag the loop between once left out of its carry. Its `Clip`
+is the shape of `fill_holes_widening_windows`: a window of the layers
+walked in either direction, `tleaf(p, k_start:k_end:dir)`, the edges
+found in the data and the step 1 or -1, asked with `any`, summed,
+written back clipped -- a window no slice can take under jit, spelled as
+the axis's whole extent under a mask over both edges and the step -- and
+a DO loop stepped by that same `dir`, whose stop edge's sign the lowering
+once asked of a tracer. f2py cannot pass the object, so this tree runs
+the port recipe alone:
+
+    recast run port corpus/canopy_flat --config corpus/canopy_flat/port.json \
+        --summary corpus/canopy_flat/port-verification.json
 
     recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
         --summary corpus/toy_physics/verification.json

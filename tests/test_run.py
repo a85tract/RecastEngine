@@ -1848,3 +1848,68 @@ def test_a_unit_is_walked_after_the_siblings_it_uses() -> None:
     ]
     cycle = [unit("fortran:a", "fortran:b"), unit("fortran:b", "fortran:a")]
     assert [u.uid for u, _ in _dependencies_first(cycle)] == ["fortran:b", "fortran:a"]
+
+
+def test_the_summary_names_a_ports_host_calls_and_refusals_and_a_translation_has_neither() -> None:
+    """A kernel that calls the NumPy module for a companion computes the
+    same numbers as one that inlines the companion's port, so the gate
+    passes either way; five of CLUBB's whole-step companions were such
+    calls under a kernel's name for months. The summary names them where
+    the transform recorded them (``notes["jax"]["host_calls"]``, kernel ->
+    calls), flattened and sorted; a candidate without that note -- a
+    translation -- keeps its shape."""
+    from recast.run import _host_calls
+
+    ported = Candidate(
+        unit="fortran:xp2_solve",
+        transform="recast.port.tree-to-jax",
+        files={Path("xp2_solve_jax.py"): b"x = 1\n"},
+        notes={
+            "jax": {
+                "host_calls": {
+                    "advance_xp2_flat": ["clip_module.clip_variance", "error_code.report"],
+                    "helper": ["clip_module.clip_variance"],
+                }
+            }
+        },
+    )
+    assert _host_calls(ported) == {"host_calls": ["clip_module.clip_variance", "error_code.report"]}
+    clean = Candidate(
+        unit="fortran:xp2_solve",
+        transform="recast.port.tree-to-jax",
+        files={Path("xp2_solve_jax.py"): b"x = 1\n"},
+        notes={"jax": {"host_calls": {}}},
+    )
+    assert _host_calls(clean) == {"host_calls": []}
+    refused = Candidate(
+        unit="fortran:xp2_solve",
+        transform="recast.port.tree-to-jax",
+        files={Path("xp2_solve_jax.py"): b"x = 1\n"},
+        notes={
+            "jax": {
+                "host_calls": {},
+                "flat_refused": {"advance_xp2_flat": "a dynamic slice outside a store"},
+                "companion_notes": {
+                    "flat_refused": {
+                        "clip_module": {
+                            "clip_variance": "error_code.at_least reads level, which the plan "
+                            "does not carry"
+                        }
+                    }
+                },
+            }
+        },
+    )
+    assert _host_calls(refused) == {
+        "host_calls": [],
+        "refused": [
+            "advance_xp2_flat: a dynamic slice outside a store",
+            "clip_module.clip_variance: error_code.at_least reads level, which the plan does "
+            "not carry",
+        ],
+    }
+    translated = Candidate(
+        unit="fortran:xp2_solve", transform="translate.numpy", files={Path("x.py"): b"x = 1\n"}
+    )
+    assert _host_calls(translated) == {}
+    assert _host_calls(None) == {}

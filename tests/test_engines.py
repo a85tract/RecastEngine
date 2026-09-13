@@ -175,6 +175,8 @@ def test_cli_exports_catalog_json(capsys: pytest.CaptureFixture[str]) -> None:
     from recast.recipes import BUILTIN
 
     expected = ["recast.fortran-python.numpy"]
+    if "fortran-to-jax" in BUILTIN:
+        expected.insert(0, "recast.fortran-python.jax")
     if "python-to-jax" in BUILTIN:
         expected += ["recast.python-numpy.jax", "recast.python-numpy.numba"]
     assert [engine["id"] for engine in document["engines"]] == expected

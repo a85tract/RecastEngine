@@ -113,7 +113,7 @@ def encode_value(np: Any, value: Any, *, _depth: int = 0) -> dict[str, Any]:
     return {
         "kind": "numpy_scalar" if isinstance(value, np.generic) else "ndarray",
         "dtype": contiguous.dtype.str,
-        "shape": list(contiguous.shape),
+        "shape": list(array.shape),
         "data": base64.b64encode(payload).decode("ascii"),
     }
 

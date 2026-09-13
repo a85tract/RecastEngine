@@ -29,6 +29,7 @@ __all__ = [
     "canonical_digest",
     "catalog_document",
     "engines",
+    "fortran_jax_engine",
     "fortran_numpy_engine",
     "get_engine",
     "python_jax_engine",
@@ -345,6 +346,46 @@ def fortran_numpy_engine() -> TranslationEngine:
         default_config={"target": "numpy", "frontend": "fortran", "executor": "local"},
         required_gates=("static.rwset", "differential.bitexact"),
         capabilities=("translation", "deterministic", "numerical-verification"),
+        owning_repository="https://github.com/a85tract/RecastEngine",
+    )
+
+
+def fortran_jax_engine() -> TranslationEngine:
+    """Fortran source to JAX, checked against its independent NumPy anchor."""
+    config = {
+        "backend": "jax",
+        "frontend": "fortran",
+        "executor": "local",
+        "oracle": "numpy-anchor",
+    }
+    return TranslationEngine(
+        id="recast.fortran-python.jax",
+        version="1",
+        implementation_digest=_installed_code_digest(),
+        default_recipe="fortran-to-jax",
+        input_artifact_contract=ArtifactContract(
+            id="recast.source-tree.fortran",
+            version="1",
+            media_type="application/vnd.recast.source-tree",
+            language="fortran",
+        ),
+        output_artifact_contract=ArtifactContract(
+            id="recast.source-tree.python.jax",
+            version="1",
+            media_type="application/vnd.recast.source-tree",
+            language="python",
+            profile="jax",
+        ),
+        config_schema={
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {key: {"const": value} for key, value in config.items()},
+            "required": list(config),
+            "additionalProperties": False,
+        },
+        default_config=config,
+        required_gates=("differential.tolerance",),
+        capabilities=("translation", "deterministic", "numerical-verification", "jax"),
         owning_repository="https://github.com/a85tract/RecastEngine",
     )
 

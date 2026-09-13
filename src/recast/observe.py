@@ -15,11 +15,13 @@ applying its own disclosure policy.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
 from recast.model import Access
+from recast.observe_metrics import numerical_event_metrics, numerical_metrics_record
 
 __all__ = ["RunEvent", "RunEventAction", "RunEventEntity", "RunObserver"]
 
@@ -81,6 +83,21 @@ class RunEvent:
     verifier: str | None = None
     confidence: str | None = None
     access: Access = Access.EMBARGOED
+    metrics: Mapping[str, Any] | None = field(default=None, hash=False)
+    """Source-free, immutable numerical measurements on finished verdicts only.
+
+    Unknown metric families never cross this boundary. This is an observed
+    result, not an acceptance limit or authority to override the verifier.
+    """
+
+    def __post_init__(self) -> None:
+        if self.metrics is not None:
+            if (
+                self.entity is not RunEventEntity.VERDICT
+                or self.action is not RunEventAction.FINISHED
+            ):
+                raise ValueError("numerical metrics belong only to finished verdict events")
+            object.__setattr__(self, "metrics", numerical_event_metrics(self.metrics))
 
     @property
     def event_id(self) -> str:
@@ -115,6 +132,8 @@ class RunEvent:
             "confidence": self.confidence,
         }
         record.update({name: value for name, value in optional.items() if value is not None})
+        if self.metrics is not None:
+            record["metrics"] = numerical_metrics_record(self.metrics)
         return record
 
 

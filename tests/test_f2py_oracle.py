@@ -854,6 +854,28 @@ def step(x, a):
     assert seen == [((), True, (3,))] * 3
 
 
+def test_an_emitted_reference_and_candidate_returning_none_return_no_values() -> None:
+    """A port's argument-less state setter (``init_root_stress``) writes the
+    module variable on the host and its wrapper returns ``None``, on both
+    sides, because the same emitter wrote both. Read as one value each, the
+    pairing refused the subprogram -- "candidate returned 1 and reference 1
+    value(s) for 0 out-intent argument(s)" -- and the unit with it. ``None``
+    is zero values, the way the f2py branch already reads it."""
+    sub = {"kind": "subroutine", "name": "init_root_stress", "args": []}
+    pairs = BitexactVerifier._paired_outputs(sub, [], [], [], None, None, [], convention="emitted")
+    assert pairs == []
+    # One OUT argument still pairs by position, and a count that disagrees
+    # is still refused by name.
+    out = {"name": "y", "dtype": "float64", "intent": "OUT", "optional": False}
+    assert BitexactVerifier._paired_outputs(
+        sub, [out], [out], [out], 2.0, 2.0, [], convention="emitted"
+    ) == [("y", 2.0, 2.0)]
+    refused = BitexactVerifier._paired_outputs(
+        sub, [out], [out], [out], None, 2.0, [], convention="emitted"
+    )
+    assert refused == "candidate returned 0 and reference 1 value(s) for 1 out-intent argument(s)"
+
+
 @pytest.mark.parametrize("convention", ["emitted", "recorded"])
 def test_non_f2py_conventions_keep_scalar_inout_as_a_scalar(convention: str) -> None:
     """A rank-0 buffer is an f2py ABI detail, not a universal convention."""

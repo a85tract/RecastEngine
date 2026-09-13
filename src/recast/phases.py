@@ -984,6 +984,11 @@ def _resolved_stage_config(
         inherited: tuple[str, str] | None = None
         if stage.kind == "transform":
             inherited = ("profile", compiler_semantics)
+        elif stage.kind == "oracle" and stage.plugin == "numpy-anchor":
+            # This oracle re-translates the source independently. Its NumPy
+            # anchor must use the same compiler rules as the port's precursor;
+            # otherwise integer powers and folded constants can round differently.
+            inherited = ("profile", compiler_semantics)
         elif stage.kind == "oracle" and stage.plugin in ("f2py-golden", "f2py-golden-flat"):
             # The flat oracle compiles the same reference, plus the tree it
             # uses, with the same compiler: it reads ``fc`` for both builds.

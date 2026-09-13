@@ -372,6 +372,19 @@ class Modules:
             return [f"{pysafe(state['name'])} = None  # AGENT_QUEUE: {reason}"]
 
         parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
+        # A private scalar one public argument-less setter fixes to a
+        # constant (the record's ``constant_state``) starts at that constant:
+        # it is what the run's init leaves there, and a ``None`` for the
+        # declaration's missing initializer would be read by the first
+        # ``select case`` on it.
+        constant = (self.subprograms.record.get("constant_state") or {}).get(state["name"])
+        if constant and not state.get("dims"):
+            value = self._state_value({**state, "init_expr": constant["value"]}, parameters)
+            if not value.startswith("None  # TODO"):
+                return [
+                    f"{pysafe(state['name'])} = {value}  # module state ({state['dtype']}), "
+                    f"what {constant['setter']} sets it to and nothing else writes"
+                ]
         initializer = str(state.get("init_expr") or "").strip()
         lowered = initializer.lower()
         # An array's branch, whether or not it carries an initializer. Only

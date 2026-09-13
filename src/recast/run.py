@@ -142,6 +142,7 @@ class _RunEventEmitter:
         evidence_index: int | None = None,
         verifier: str | None = None,
         confidence: str | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> None:
         if self.observer is None:
             return
@@ -166,6 +167,7 @@ class _RunEventEmitter:
                 evidence_index=evidence_index,
                 verifier=verifier,
                 confidence=confidence,
+                metrics=metrics,
             )
         )
 
@@ -336,6 +338,15 @@ class RecipeRun:
                     # the run's Evidence manifest, which records all of it.
                     "oracle": unit_run.oracle.oracle if unit_run.oracle.key else None,
                     "stopped_by": unit_run.stopped_by,
+                    # A port's companion calls left on the host, by name. The
+                    # gate cannot see these: a kernel that calls the NumPy
+                    # module for a companion computes the same numbers as one
+                    # that inlines its port, and passes. Five of CLUBB's
+                    # whole-step companions were such calls dressed as kernels
+                    # for months. With them, the kernels the flat rewrite
+                    # refused and why, the unit's own and its companions'.
+                    # Only where the transform says (a JAX port).
+                    **_host_calls(unit_run.candidate),
                     # Findings are deliberately absent, including their count.
                     # This file is written to be committed; a Finding defaults
                     # to Access.EMBARGOED, and SECURITY.md is explicit that
@@ -361,6 +372,27 @@ class RecipeRun:
                 for unit_run in sorted(self.units, key=lambda u: u.unit.uid)
             ],
         }
+
+
+def _host_calls(candidate: Candidate | None) -> dict[str, list[str]]:
+    """What a port's gate cannot see, from the transform's notes: the
+    companion calls left on the host (``notes["jax"]["host_calls"]``,
+    kernel -> calls) and the kernels the flat rewrite refused, the unit's
+    own and its companions' (``flat_refused``, ``companion_notes``), each
+    with the reason. Empty for a candidate without those notes -- a
+    translation -- so its summary keeps its shape."""
+    notes = (candidate.notes.get("jax") or {}) if candidate is not None else {}
+    out: dict[str, list[str]] = {}
+    if "host_calls" in notes:
+        calls = notes["host_calls"] or {}
+        out["host_calls"] = sorted({str(c) for group in calls.values() for c in group})
+    if "flat_refused" in notes:
+        refused = {f"{k}: {why}" for k, why in (notes["flat_refused"] or {}).items()}
+        companions = (notes.get("companion_notes") or {}).get("flat_refused") or {}
+        for module, kernels in companions.items():
+            refused |= {f"{module}.{k}: {why}" for k, why in (kernels or {}).items()}
+        out["refused"] = sorted(refused)
+    return out
 
 
 def _exception_reason(error: BaseException) -> str:
@@ -1150,6 +1182,7 @@ def _walk_stage(
             candidate_digest=verdict.candidate,
             verifier=verdict.verifier,
             confidence=verdict.confidence.value,
+            metrics=verdict.metrics,
         )
         return StageOutcome(
             stage.kind, stage.plugin, status, f"{verdict.confidence.value}: {verdict.detail}"

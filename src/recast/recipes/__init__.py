@@ -213,6 +213,7 @@ BUILTIN: dict[str, type[Recipe]] = {
 try:
     from recast.recipes.optional import BUILTIN as _OPTIONAL
     from recast.recipes.optional import (  # noqa: F401 -- re-exported for their tests
+        FortranToJaxRecipe,
         PortRecipe,
         PythonToJaxRecipe,
         PythonToNumbaRecipe,

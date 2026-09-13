@@ -29,6 +29,7 @@ two apart, which is the whole difference between an override and a guess.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -832,6 +833,41 @@ def _fold_local_parameter_bounds(
     return folded
 
 
+_CONTROL_TRANSFERS = (
+    f03.Return_Stmt,
+    f03.Goto_Stmt,
+    f03.Computed_Goto_Stmt,
+    f03.Stop_Stmt,
+    f08.Error_Stop_Stmt,
+)
+"""A statement that can leave a setter before its last assignment runs."""
+
+_CONSTANT_LITERAL = re.compile(
+    r"(?:[+-]?\d+(?:_\w+)?|\.true\.|\.false\.|"
+    r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[ed][+-]?\d+)?(?:_\w+)?)",
+    re.I,
+)
+
+
+def _constant_write(asgn: Any, rhs: Any) -> str | None:
+    """The right-hand side of ``state = constant``, or ``None``.
+
+    Constant means a bare name or a literal; the statement has to stand
+    directly in the execution part -- not under an IF, a CASE, a loop or a
+    WHERE, where whether it runs is the run's business. What the name
+    denotes (a module parameter, or something else) is for ``extract`` to
+    decide, which sees the module's parameters.
+    """
+    if not isinstance(getattr(asgn, "parent", None), f03.Execution_Part):
+        return None
+    if isinstance(rhs, f03.Name):
+        return str(rhs).lower()
+    literals = (f03.Int_Literal_Constant, f03.Real_Literal_Constant, f03.Logical_Literal_Constant)
+    if isinstance(rhs, literals):
+        return str(rhs).lower()
+    return None
+
+
 def extract_subprogram(
     sub: Any,
     kind_map: dict[str, str],
@@ -1117,6 +1153,12 @@ def _record_of(
     outside: set[str] = set()
     state_read: set[str] = set()
     state_written: set[str] = set()
+    # ``state = constant`` as a direct statement of the body, and the number
+    # of assignments each state variable gets: the raw material of a
+    # module's ``constant_state`` (see ``extract``).
+    constant_candidates: dict[str, str | None] = {}
+    assigned: dict[str, int] = {}
+    other_written: set[str] = set()
     if exec_part is not None:
         for ref in walk(exec_part, (f03.Part_Ref, f03.Intrinsic_Function_Reference)):
             fn = str(ref.children[0]).lower()
@@ -1136,20 +1178,35 @@ def _record_of(
         used = set(names_in(exec_part))
         calls.extend(sorted((used & module_sub_names) - {name} - set(calls)))
 
+        occurrences = Counter(n for n in names_in(exec_part) if n in module_state_names)
+        top_level_assigned: dict[str, int] = {}
         for asgn in walk(exec_part, f03.Assignment_Stmt):
             lhs, _, rhs = asgn.children
             state_written |= set(names_in(lhs)) & module_state_names
             state_read |= set(names_in(rhs)) & module_state_names
+            if isinstance(lhs, f03.Name) and str(lhs).lower() in module_state_names:
+                target = str(lhs).lower()
+                assigned[target] = assigned.get(target, 0) + 1
+                if isinstance(getattr(asgn, "parent", None), f03.Execution_Part):
+                    top_level_assigned[target] = top_level_assigned.get(target, 0) + 1
+                value = _constant_write(asgn, rhs)
+                # A name this subprogram declares -- a dummy, a local -- is
+                # the caller's value, not a constant.
+                if value is not None and (value in arg_names or value in ent_info):
+                    value = None
+                constant_candidates[target] = value
         # deallocate(X) is a write: Fortran sets the allocation status to
         # unallocated, and the translator maps that to ``X = None``
         for dealloc in walk(exec_part, f03.Deallocate_Stmt):
             state_written |= set(names_in(dealloc)) & module_state_names
+            other_written |= set(names_in(dealloc)) & module_state_names
         # So is allocate(X): the name goes from unallocated to an array.
         for allocate in walk(exec_part, f03.Allocate_Stmt):
             for item in walk(allocate, f03.Allocation):
                 target = str(item.children[0]).lower()
                 if target in module_state_names:
                     state_written.add(target)
+                    other_written.add(target)
         # Module state passed as a call actual may be written through an
         # intent(out) or intent(inout) dummy, and the callee's intents are
         # not in view here. Counted as written, which costs a name on the
@@ -1158,8 +1215,18 @@ def _record_of(
         for call in walk(exec_part, f03.Call_Stmt):
             if call.children[1] is not None:
                 state_written |= set(names_in(call.children[1])) & module_state_names
+                other_written |= set(names_in(call.children[1])) & module_state_names
         # reads in non-assignment contexts (if conditions, call arguments)
         state_read |= (used & module_state_names) - state_written
+        # Overwritten: every occurrence is the target of a top-level
+        # whole-variable assignment, so the body sets it unconditionally and
+        # reads it nowhere -- not in a condition, not on a right-hand side,
+        # not as a call actual. What the flat plan may call internal (#60).
+        overwritten = sorted(
+            name for name, count in occurrences.items() if top_level_assigned.get(name) == count
+        )
+    else:
+        overwritten = []
 
     folded = _fold_local_parameter_bounds(args, result_dims, local_parameters)
 
@@ -1201,6 +1268,16 @@ def _record_of(
         "external_calls": sorted(outside - {name}),
         "module_state_read": sorted(state_read),
         "module_state_written": sorted(state_written),
+        # Written unconditionally and never read here (see above).
+        "module_state_overwritten": overwritten,
+        # ``{state: constant}`` for each state variable this body writes
+        # exactly once, as ``state = constant`` at the top level of the body
+        # (see ``_constant_write``), and never any other way.
+        "module_state_constant_writes": {
+            n: v
+            for n, v in sorted(constant_candidates.items())
+            if v is not None and assigned[n] == 1 and n not in other_written
+        },
         # Unit variables an OPEN here connects to a file (see ``file_units``).
         "file_units": file_units(exec_part),
         # What this body's own checks say its dummies' shapes must be
@@ -1447,7 +1524,16 @@ def _interfaces(
 
 
 def _generics(mod_spec: Any) -> dict[str, list[str]]:
-    """``{generic_name: [specific names]}`` from interface blocks."""
+    """``{generic_name: [specific names]}`` from interface blocks.
+
+    A named interface names its specifics one of two ways: a ``MODULE
+    PROCEDURE``/``PROCEDURE`` statement that references them (fftpack's
+    ``interface dct_t1 / procedure :: dcost``), or interface bodies that
+    spell them out in full -- ``interface fftshift`` over the
+    ``fftshift_crk``/``fftshift_rrk`` module functions, whose bodies stand
+    for the specifics with no ``MODULE PROCEDURE`` line. Both make the
+    specifics reachable only through the generic (they are otherwise
+    private), so both belong here."""
     generics: dict[str, list[str]] = {}
     if mod_spec is None:
         return generics
@@ -1456,9 +1542,13 @@ def _generics(mod_spec: Any) -> dict[str, list[str]]:
         for st in walk(ib, f03.Interface_Stmt):
             if st.children[0] is not None:
                 gname = str(st.children[0]).lower()
-        if gname is None:
+        # ``interface`` (unnamed, explicit interfaces for external procedures)
+        # and ``abstract interface`` are not generics: neither renames a
+        # specific behind a public generic name.
+        if gname is None or gname == "abstract":
             continue
         specs = [str(n).lower() for ps in walk(ib, f03.Procedure_Stmt) for n in walk(ps, f03.Name)]
+        specs += [sub_name_of(body) for body in walk(ib, (f03.Subroutine_Body, f03.Function_Body))]
         if specs:
             generics[gname] = specs
     return generics
@@ -1524,6 +1614,11 @@ def extract(
                     "dims": e["dims"],
                     "init_expr": e["init_expr"],
                     "line": d["line"],
+                    # A pointer array is tested with ``associated``, an
+                    # allocatable with ``allocated``: an adapter that guards
+                    # a module array before reading it has to know which
+                    # (ELM's ``elm_varsur`` arrays are pointers).
+                    "pointer": "POINTER" in d["attrs"],
                 }
                 if "PARAMETER" in d["attrs"]:
                     module_parameters.append(rec)
@@ -1646,6 +1741,78 @@ def extract(
             record["public"] = True
             record["public_via"] = via[record["name"]]
 
+    # Private state one public, argument-less setter writes to one constant
+    # and nothing else writes: the run holds either the declaration's default
+    # or that constant, and which one is whether it called the setter --
+    # which an init routine's caller does before any physics runs (ELM's
+    # ``root_moist_stress_method = moist_stress_clm_default`` in
+    # ``init_root_moist_stress``, called from ``init_hydrology``). The
+    # assumption recorded, not guessed: the plan says both adapters call the
+    # setter first, as the run did; a recording taken before the run's
+    # init would fail its gate with that line to point at. Consumers: the flat plan carries the
+    # variable as left to the module and has both adapters call the setter;
+    # the NumPy module starts the variable at the constant; and the reads
+    # move from ``module_state_read`` to ``constant_state_read`` so a kernel
+    # closure does not ask a plan to carry what no ``use`` can reach.
+    parameter_names = {str(p["name"]).lower() for p in module_parameters}
+    # A NAMELIST group the tree declares over the variable, or a READ that
+    # targets it, is a writer nobody here counted: ``module_state_written`` is
+    # assignments, allocations, deallocations and call actuals, and a run sets
+    # a namelist switch to whatever its input file says. Left out of the test,
+    # such a variable looked single-writer and the plan froze it at the
+    # setter's constant -- the guess #32 row 8 exists to refuse.
+    run_settable: set[str] = set()
+    namelist_objects: dict[str, set[str]] = {}
+    for statement in walk(sub_scope, f03.Namelist_Stmt):
+        # One ``(group, objects)`` pair per group the statement declares.
+        for pair in statement.children:
+            group, objects = pair
+            grouped = {str(n).lower() for n in walk(objects, f03.Name)}
+            namelist_objects.setdefault(str(group).lower(), set()).update(grouped)
+            run_settable |= grouped
+    for read in walk(sub_scope, f03.Read_Stmt):
+        if read.children[2] is not None:
+            run_settable |= {str(n).lower() for n in walk(read.children[2], f03.Name)}
+        for spec in walk(read.children[0], f03.Io_Control_Spec):
+            if str(spec.children[0] or "").upper() == "NML":
+                run_settable |= namelist_objects.get(str(spec.children[1]).lower(), set())
+
+    nodes = {sub_name_of(s): s for s in subs}
+    constant_state: dict[str, dict[str, str]] = {}
+    for state_rec in module_state:
+        var = str(state_rec["name"]).lower()
+        if is_public(var) or state_rec.get("dims"):
+            continue
+        if var in run_settable:
+            continue
+        if str(state_rec.get("dtype")) not in ("int32", "int64", "float32", "float64", "bool"):
+            continue
+        writers = [s for s in subprograms if var in s["module_state_written"]]
+        if len(writers) != 1:
+            continue
+        setter = writers[0]
+        if not setter["public"] or setter.get("public_via") or setter["args"]:
+            continue
+        if setter["kind"] != "subroutine":
+            continue
+        value = setter["module_state_constant_writes"].get(var)
+        if value is None:
+            continue
+        # And nothing in the setter may skip the assignment. A top-level
+        # ``state = constant`` still does not run when something ahead of it
+        # returns (``if (method < 0) return``), stops or jumps past it, and
+        # then the run holds the declaration's default while the plan says
+        # it holds the constant. An IF around *another* variable's write
+        # cannot skip this one, so only the transfers disqualify.
+        if walk(nodes[setter["name"]], _CONTROL_TRANSFERS):
+            continue
+        if value not in parameter_names and not _CONSTANT_LITERAL.fullmatch(value):
+            continue
+        constant_state[var] = {"setter": setter["name"], "value": value}
+    for s in subprograms:
+        s["constant_state_read"] = [n for n in s["module_state_read"] if n in constant_state]
+        s["module_state_read"] = [n for n in s["module_state_read"] if n not in constant_state]
+
     parent = submodule_parent(sub_scope) if isinstance(sub_scope, f08.Submodule) else None
     use_statements = [str(u) for u in walk(sub_scope, f03.Use_Stmt)]
     if parent:
@@ -1665,6 +1832,8 @@ def extract(
         "use_statements": use_statements,
         "module_parameters": module_parameters,
         "module_state": module_state,
+        # ``{state: {"setter", "value"}}``, see above.
+        "constant_state": constant_state,
         # Module state whose ALLOCATE gave it a lower bound its declaration
         # does not carry. Module-wide because the ALLOCATE is usually in the
         # init routine and the references are everywhere else.

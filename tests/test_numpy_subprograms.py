@@ -9,6 +9,7 @@ differential runs with an empty patch table. Those are here.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,8 @@ contains
     logical, intent(in), optional :: flags
     real(r8), intent(out) :: out1(:)
     real(r8), parameter :: half = 0.5_r8
+    real(r8), parameter :: prandtl = 0.72
+    integer, parameter :: quarter = plev / 4
     real(r8), parameter :: gains(2) = (/ 1.0_r8, 2.0_r8 /)
     character(len=2), parameter :: tags(2) = (/ 'ab', 'cd' /)
     integer, parameter :: three = 3
@@ -257,6 +260,14 @@ def test_out_arguments_are_allocated_or_zeroed(source: Path) -> None:
 def test_parameter_initializers_render_by_form(source: Path) -> None:
     lines, _ = build(source).render(node_of(source, "work"), "work")
     assert "    half = np.float64('0.5')" in lines
+    # A default-kind literal into a double: the single the compiler stores,
+    # widened -- not the decimal text (ELM's getlblcef, 2.6e-8 in its output).
+    assert any(line.startswith("    prandtl = np.float64(np.float32('0.72'))") for line in lines)
+    # An integer constant expression's quotient is integer division, whatever
+    # the renderer knows of the operands' kinds (ELM's isecspday/4).
+    assert any(
+        re.fullmatch(r"    quarter = _f_int_div\(PLEV, (4|I_4)\)", line) for line in lines
+    ), [line for line in lines if "quarter" in line]
     assert "    gains = np.array([1.0, 2.0])" in lines
     assert "    tags = np.array(['ab', 'cd'])" in lines
     assert "    three = 3" in lines
