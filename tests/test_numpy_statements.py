@@ -153,10 +153,12 @@ contains
   subroutine initialised(x)
     real(r8), intent(out) :: x
     real(r8) :: table(4)
+    real(r8) :: whole(3)
     integer :: counter
     data counter /0/
     data table /3*1.0_r8, 0.0_r8/
-    x = table(1) + counter
+    data whole(:) /1.0_r8, 2.0_r8, 3.0_r8/
+    x = table(1) + counter + whole(2)
   end subroutine initialised
 
   subroutine sections(a, b, n)
@@ -696,6 +698,32 @@ def test_data_becomes_assignments_with_its_repeats_written_out(
     assert statements.data_statement(data[0], 1) == ["    counter = 0"]
     assert statements.data_statement(data[1], 1) == [
         "    table[:] = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float64)"
+    ]
+
+
+def test_a_data_section_with_implied_edges_takes_the_declared_bounds(
+    sources: dict[str, Path],
+) -> None:
+    """ELM's ``data k_snw_tmps(:) /223.0, .../``: the whole array as a
+    section. The implied edges are the declaration's, so the run of
+    elements is static and pairs with the values like ``k(1:3)`` would.
+    Left refused, the DATA was a ``raise`` the JAX rewrite dropped, and the
+    table read as zeros."""
+    from recast.fortran._parse import parse as parse_source
+
+    statements, _ = build(sources["emit_mod"], "initialised")
+    subprogram = next(
+        sub
+        for sub in walk(
+            parse_source(sources["emit_mod"]),
+            (f03.Subroutine_Subprogram, f03.Function_Subprogram),
+        )
+        if str(walk(sub, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower()
+        == "initialised"
+    )
+    data = walk(subprogram, f03.Data_Stmt)
+    assert statements.data_statement(data[2], 1) == [
+        "    whole[0:3] = np.array([1.0, F_2P0, F_3P0], dtype=np.float64)"
     ]
 
 

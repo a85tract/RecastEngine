@@ -414,12 +414,15 @@ class NumpyTranslation(Transform):
         )
 
         text, report = renderer.render(source)
+        # The module's own parameters may be spelled over the names its
+        # use-constants file defines (the frontend classified them as known),
+        # so the constants file imports that file first.
+        extern = [(e["stem"], e["count"]) for e in config.get("extern_constants", [])]
+        if use:
+            extern.append((use_stem, sum(1 for e in use["resolved"] if e["requested"])))
         files: dict[Path, bytes] = {
             Path(f"{module}_numpy.py"): text.encode(),
-            Path(f"{stem}.py"): constants_module(
-                facts.constants,
-                extern=tuple((e["stem"], e["count"]) for e in config.get("extern_constants", [])),
-            ).encode(),
+            Path(f"{stem}.py"): constants_module(facts.constants, extern=tuple(extern)).encode(),
         }
         if use:
             files[Path(f"{use_stem}.py")] = use_constants_module(

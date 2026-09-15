@@ -1535,6 +1535,19 @@ class Statements:
             return env[str(node).lower()]
         raise NoRule(f"DATA non-literal bound {node}")
 
+    def _data_declared_axis(self, name: str, axis: int) -> tuple[int, int]:
+        """The declared ``(lb, ub)`` of one axis of ``name``, for a DATA
+        section that leaves an edge implied. Literal bounds only: a
+        declaration sized by a parameter is not resolved here."""
+        dims = (self.semantics.declaration(name) or {}).get("dims")
+        if dims is None or axis >= len(dims):
+            raise NoRule(f"DATA section of {name!r}: dims unknown")
+        lb = str(dims[axis].get("lb") or "1").strip()
+        ub = str(dims[axis].get("ub") or "").strip()
+        if not re.fullmatch(r"-?\d+", lb) or not re.fullmatch(r"-?\d+", ub):
+            raise NoRule(f"DATA section of {name!r}: declared bounds {lb}:{ub} not literal")
+        return int(lb), int(ub)
+
     def _data_targets(
         self, objects: list[Any], env: dict[str, int] | None = None
     ) -> list[tuple[str, tuple[int, ...] | None]]:
@@ -1555,11 +1568,19 @@ class Statements:
             elif isinstance(target, f03.Part_Ref):
                 name = str(target.children[0]).lower()
                 expanded: list[list[int]] = [[]]
-                for subscript in self._items(target.children[1]):
+                for axis, subscript in enumerate(self._items(target.children[1])):
                     if isinstance(subscript, f03.Subscript_Triplet):
                         lower, upper, step = subscript.children
-                        low = self._data_literal_int(lower, env)
-                        high = self._data_literal_int(upper, env)
+                        # ``data k(:) /.../``: an edge left implied is the
+                        # declared bound of that axis, literal in the
+                        # declaration or not static at all.
+                        declared = (
+                            self._data_declared_axis(name, axis)
+                            if lower is None or upper is None
+                            else (None, None)
+                        )
+                        low = self._data_literal_int(lower, env, declared[0])
+                        high = self._data_literal_int(upper, env, declared[1])
                         by = self._data_literal_int(step, env, 1)
                         values = list(range(low, high + (1 if by > 0 else -1), by))
                     else:
