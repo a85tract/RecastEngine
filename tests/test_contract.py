@@ -79,6 +79,10 @@ def test_core_imports_no_domain_packages() -> None:
         # of trusting a wrapper attribute. Both remain lazy inside verification,
         # so catalog/plugin discovery stays dependency-free.
         "recast.verify.python_accelerators": {"numpy", "jax"},
+        # The finite-derivative check's instrument is JAX's forward mode on
+        # the port's own kernel, and NumPy is how it reads the recorded
+        # samples and judges the tangents. Lazy inside verification, as above.
+        "recast.verify.finite_derivative": {"numpy", "jax"},
         # The replay oracle parses recorded values into the arrays the gate
         # compares, so NumPy is the reference's representation rather than a
         # convenience -- same rule as the gate above it, and lazy for the same
