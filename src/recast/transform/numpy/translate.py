@@ -37,6 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recast import references
 from recast.errors import ConfigError
 from recast.model import Candidate, Facts, Unit
 from recast.plugins.transform import Transform
@@ -664,6 +665,16 @@ class NumpyTranslation(Transform):
                 # ... and the stubbed modules' (the frontend's list): a call to
                 # a stand-in function is a call, not a read of its name.
                 | {pysafe(name) for name in facts.interface.get("stub_procedures") or ()}
+                # ... and a library procedure called bare, with no interface
+                # anywhere (ELM's ``call dgbsv``), which recast's reference
+                # implementation stands in for under that name.
+                | set(
+                    references.supported(
+                        name
+                        for record in facts.interface["subprograms"]
+                        for name in record.get("external_calls") or ()
+                    )
+                )
             ),
             "aliases": sorted(
                 {remote.alias for remote in assembler.remotes.values()}

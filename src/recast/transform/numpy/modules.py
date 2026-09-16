@@ -298,14 +298,33 @@ class Modules:
         defined = {s["name"] for s in record["subprograms"]}
         for names in (record.get("submodules") or {}).values():
             defined |= set(names)
+        declared_elsewhere: set[str] = set()
         for companion in self.subprograms.companions:
             defined |= {s["name"] for s in companion.get("subprograms") or ()}
-        return references.supported(
+            declared_elsewhere |= {
+                declared["name"]
+                for declared in (companion.get("interfaces") or {}).values()
+                if declared.get("kind") in ("subroutine", "function")
+            }
+        declared_here = {
             declared["name"]
             for declared in (record.get("interfaces") or {}).values()
             if declared.get("kind") in ("subroutine", "function")
-            and declared["name"] not in defined
-            and declared["name"] not in self.subprograms.externals
+        }
+        # A bare ``call dgbsv(...)`` -- declared by nothing, an implicit
+        # external -- is bound against ``references.interface`` and spelled
+        # as a call into this module (``Statements._call``), so the
+        # definition lands here too. One a companion declares is spelled
+        # through that companion's alias and is that module's to define.
+        called = {
+            str(name).lower()
+            for subprogram in record["subprograms"]
+            for name in subprogram.get("external_calls") or ()
+        }
+        return references.supported(
+            name
+            for name in declared_here | (called - declared_elsewhere)
+            if name not in defined and name not in self.subprograms.externals
         )
 
     # -- derived-type factories -----------------------------------------------

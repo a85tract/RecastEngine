@@ -30,6 +30,16 @@ Two things this is not, and both are said on the verdict (``substituted``):
   audited ``externals`` shim is what covers those, and it is the operator's to
   supply.
 
+A call needs no interface block to reach one of these. ELM's BandDiagonalMod
+writes ``call dgbsv(...)`` with the name declared nowhere at all -- an implicit
+external, which Fortran resolves at link time -- and that call is bound against
+``interface(name)`` below, the argument list LAPACK documents, and spelled the
+same way as one reached through an interface module: the reference is emitted
+into the calling module, and the call is a bare call whose array actuals are
+updated in place. The JAX port reaches the same procedures through its
+runtime (``_f_dgesv``, ``_f_dgbsv``); ``WRITTEN`` says which actuals a call
+hands back there, since a kernel cannot write in place.
+
 The pairs are kept in one file, next to each other, because the only thing that
 makes them useful is that they agree; ``tests/test_references.py`` compiles the
 Fortran and runs the Python over the same draws to hold them there.
@@ -38,11 +48,55 @@ Fortran and runs the Python over the same draws to hold them there.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
-__all__ = ["SUPPORTED", "fortran_for", "python_for", "reason", "supported"]
+__all__ = [
+    "SUPPORTED",
+    "WRITTEN",
+    "fortran_for",
+    "interface",
+    "python_for",
+    "reason",
+    "supported",
+]
 
 SUPPORTED = frozenset({"dgbsv", "dgesv"})
 """Procedures this module can stand in for, by lower-case name."""
+
+_ARGUMENTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "dgesv": (
+        ("n", "int32"),
+        ("nrhs", "int32"),
+        ("a", "float64"),
+        ("lda", "int32"),
+        ("ipiv", "int32"),
+        ("b", "float64"),
+        ("ldb", "int32"),
+        ("info", "int32"),
+    ),
+    "dgbsv": (
+        ("n", "int32"),
+        ("kl", "int32"),
+        ("ku", "int32"),
+        ("nrhs", "int32"),
+        ("ab", "float64"),
+        ("ldab", "int32"),
+        ("ipiv", "int32"),
+        ("b", "float64"),
+        ("ldb", "int32"),
+        ("info", "int32"),
+    ),
+}
+"""LAPACK's argument lists, in order, with the element type of each."""
+
+WRITTEN: dict[str, tuple[str, ...]] = {
+    "dgesv": ("a", "ipiv", "b"),
+    "dgbsv": ("ab", "ipiv", "b"),
+}
+"""The arguments each procedure overwrites: the factors over the matrix, the
+pivot rows, the solution over the right-hand sides. ``info`` is LAPACK's
+status and is not among them -- the Python side stops on a nonzero one
+(``_recast_ref_stop``) rather than handing it back."""
 
 REASON = (
     "no source in this build defines it; recast's own reference implementation "
@@ -196,6 +250,21 @@ def _recast_ref_2d(x, ld, arg, routine):
         )
 
 
+def _recast_ref_rhs(b, ldb, nrhs, routine):
+    """A right-hand side as a Fortran ``(LDB,*)`` dummy sees it.
+
+    A rank-1 actual with ``nrhs == 1`` -- ELM hands ``result(n)`` to
+    ``dgbsv`` -- is the one column of a ``(LDB,1)`` array, by sequence
+    association; it is read as that column, through a view, so the solution
+    lands in the caller's array. Anything else has to be the rank-2 array
+    the contract states.
+    """
+    if getattr(b, "ndim", 0) == 1 and int(nrhs) == 1 and int(b.shape[0]) == int(ldb):
+        return b[:, None]
+    _recast_ref_2d(b, ldb, "b", routine)
+    return b
+
+
 def _recast_ref_gepp(n, nrhs, a, ipiv, b):
     """Gaussian elimination with partial pivoting; returns LAPACK's INFO.
 
@@ -268,7 +337,7 @@ def dgesv(n, nrhs, a, lda, ipiv, b, ldb, info=0):
     ``_recast_ref_stop``.
     """
     _recast_ref_2d(a, lda, "a", "dgesv")
-    _recast_ref_2d(b, ldb, "b", "dgesv")
+    b = _recast_ref_rhs(b, ldb, nrhs, "dgesv")
     status = _recast_ref_gepp(n, nrhs, a, ipiv, b)
     if status != 0:
         _recast_ref_stop("dgesv", status)
@@ -283,7 +352,7 @@ def dgbsv(n, kl, ku, nrhs, ab, ldab, ipiv, b, ldb, info=0):
     pivoting fills, which is what the Fortran beside this does.
     """
     _recast_ref_2d(ab, ldab, "ab", "dgbsv")
-    _recast_ref_2d(b, ldb, "b", "dgbsv")
+    b = _recast_ref_rhs(b, ldb, nrhs, "dgbsv")
     n = int(n)
     kl = int(kl)
     ku = int(ku)
@@ -316,6 +385,30 @@ def supported(names: Iterable[str]) -> list[str]:
 def reason(name: str) -> str:
     """What the evidence says about a name this stood in for."""
     return f"{name}: {REASON}"
+
+
+def interface(name: str) -> dict[str, Any]:
+    """The interface record a bare ``call <name>(...)`` is bound against.
+
+    An implicit external declares nothing, so the record is LAPACK's own
+    argument list with every intent ``UNKNOWN`` -- the same binding a call
+    through an interface block without intents gets: every actual is passed,
+    none is unpacked, and the arrays are updated in place.
+    """
+    key = str(name).lower()
+    if key not in SUPPORTED:
+        raise KeyError(f"{name}: recast has no reference implementation")
+    return {
+        "name": key,
+        "kind": "subroutine",
+        "prefixes": [],
+        "result": None,
+        "result_dtype": None,
+        "args": [
+            {"name": arg, "dtype": dtype, "intent": "UNKNOWN", "optional": False}
+            for arg, dtype in _ARGUMENTS[key]
+        ],
+    }
 
 
 def fortran_for(names: Iterable[str]) -> str:

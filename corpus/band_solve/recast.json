@@ -1,0 +1,26 @@
+{
+  "target": "tree",
+  "units": [
+    "fortran:band_solve"
+  ],
+  "stages": {
+    "fortran": {
+      "flatten": true
+    },
+    "differential.bitexact": {
+      "trials": 5,
+      "dims": {
+        "lbj": 1,
+        "ubj": 7,
+        "ncol": 4,
+        "numf": 3,
+        "nband": 5
+      },
+      "ranges": {
+        "b": [-1.0, 1.0],
+        "r": [-1.0, 1.0],
+        "u": [-1.0, 1.0]
+      }
+    }
+  }
+}

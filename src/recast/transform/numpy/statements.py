@@ -45,6 +45,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from recast import references
 from recast.fortran import intrinsics
 from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
@@ -2292,6 +2293,17 @@ class Statements:
                 reason = f"{name}: procedure of a stubbed module, not ported"
                 self.not_ported.add(name)
                 return [f"{pad}raise NotImplementedError({reason!r})"]
+            if name in references.SUPPORTED:
+                # ``call dgbsv(...)`` with the name declared nowhere (ELM's
+                # BandDiagonalMod): an implicit external, resolved at link
+                # time. recast's reference implementation stands in -- the
+                # module emits it (``modules._reference_externals``) and the
+                # reference build compiles its Fortran twin -- and the call
+                # binds against LAPACK's argument list the way a call through
+                # an interface block without intents does: a bare call, the
+                # arrays updated in place.
+                record = references.interface(name)
+        if record is None:
             raise NoRule(f"call to external subroutine {name!r}")
 
         # Bind actuals to formals BY NAME for keyword arguments: Fortran

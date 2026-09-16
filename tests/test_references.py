@@ -184,3 +184,47 @@ def test_the_two_sides_are_bit_for_bit_one_implementation(tmp_path: Path) -> Non
         assert ab.tobytes() == mine[0].tobytes(), "the factors, over the band pivoting fills"
         assert b.tobytes() == mine[1].tobytes()
         assert (ipiv == mine[2]).all()
+
+
+# --- a call with no interface anywhere ---------------------------------------
+
+
+def test_a_bare_call_binds_against_lapacks_argument_list() -> None:
+    """ELM's BandDiagonalMod writes ``call dgbsv(...)`` with the name declared
+    nowhere. The record such a call binds against is LAPACK's argument list
+    with no intents -- passed whole, updated in place, like a call through an
+    interface block without them -- and ``WRITTEN`` says which actuals the
+    JAX runtime hands back instead."""
+    record = references.interface("DGBSV")
+    assert record["kind"] == "subroutine"
+    assert [a["name"] for a in record["args"]] == [
+        "n", "kl", "ku", "nrhs", "ab", "ldab", "ipiv", "b", "ldb", "info",
+    ]  # fmt: skip
+    assert {a["intent"] for a in record["args"]} == {"UNKNOWN"}
+    assert references.WRITTEN["dgbsv"] == ("ab", "ipiv", "b")
+    assert [a["name"] for a in references.interface("dgesv")["args"]][:3] == ["n", "nrhs", "a"]
+    with pytest.raises(KeyError):
+        references.interface("dsyevd")
+
+
+def test_a_rank_one_right_hand_side_is_the_one_column_of_the_contract() -> None:
+    """``result(n)`` handed to ``b(ldb,*)`` with ``nrhs = 1`` is Fortran
+    sequence association for the one column of a ``(LDB,1)`` array. The Python
+    reads it as that column, through a view, so the solution lands in the
+    caller's array; with more right-hand sides than one it stays the rank-2
+    contract and a rank-1 actual is refused."""
+    side = _python_side()
+    ab = np.asfortranarray(
+        np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [4.0, 4.0, 4.0], [1.0, 1.0, 0.0]])
+    )
+    rhs = np.array([1.0, 2.0, 3.0])
+    ipiv = np.zeros(3, dtype=np.int32)
+    ab_col, b_col = ab.copy(order="F"), np.asfortranarray(rhs.copy().reshape(3, 1))
+    side["dgbsv"](3, 1, 1, 1, ab_col, 4, ipiv.copy(), b_col, 3, 0)
+    ab_vec, b_vec = ab.copy(order="F"), rhs.copy()
+    side["dgbsv"](3, 1, 1, 1, ab_vec, 4, ipiv.copy(), b_vec, 3, 0)
+    assert b_vec.tolist() == b_col[:, 0].tolist()
+    assert ab_vec.tolist() == ab_col.tolist()
+    assert not np.array_equal(b_vec, rhs), "the solution was written into the caller's array"
+    with pytest.raises(SystemExit):
+        side["dgbsv"](3, 1, 1, 2, ab.copy(order="F"), 4, ipiv.copy(), rhs.copy(), 3, 0)

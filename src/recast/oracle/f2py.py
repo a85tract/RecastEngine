@@ -753,6 +753,18 @@ def undefined_externals(records: list[dict[str, Any]], extras: list[Path]) -> li
         for entry in (record.get("interfaces") or {}).values():
             if isinstance(entry, dict) and entry.get("kind") in ("subroutine", "function"):
                 declared.add(str(entry["name"]).lower())
+        # A bare ``call dgbsv(...)`` declares nothing and links the same
+        # symbol (ELM's BandDiagonalMod). ``external_calls`` is written
+        # generously -- intrinsics and companions' procedures are in it --
+        # so only the names recast can supply are taken from it: a body
+        # that refuses is the answer for a declared name, and for an
+        # undeclared one it would be a stub for every intrinsic.
+        for subprogram in record["subprograms"]:
+            declared |= {
+                str(name).lower()
+                for name in subprogram.get("external_calls") or ()
+                if str(name).lower() in references.SUPPORTED
+            }
     for extra in extras:
         try:
             text = extra.read_text(errors="replace")
