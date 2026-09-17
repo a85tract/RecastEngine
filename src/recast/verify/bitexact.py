@@ -129,6 +129,12 @@ covers an order-eight triangle (36) with room over.
 MAX_FITTED_EXTENT = 1024
 """Ceiling on a grown extent, so a subprogram no shape fits costs a bounded
 amount of memory rather than the machine's."""
+COLLAPSE_AT = 1e-3
+"""How far below the value it updated a state has to land before the update
+counts as a cancellation and its difference is judged against what cancelled
+rather than against the residue (#84). Three orders: far enough that an
+ordinary update never qualifies, close enough that ELM's canopy water, at
+1e-6 of the 1e-2 it held that morning, does."""
 SUPPORTED_DTYPES = frozenset(
     {"float32", "float64", "int32", "int64", "bool", "complex64", "complex128"}
 )
@@ -1118,6 +1124,7 @@ class BitexactVerifier(Verifier):
                 dominant_at=config.get("dominant_at", self.dominant_at),
                 dominant_axis=config.get("dominant_axis", -1),
                 rel_scale=str(config.get("rel_scale", "element")),
+                fill_values=tuple(float(v) for v in (config.get("fill_values") or ())),
                 draws=int(config.get("draws", self.draws_per_trial)),
                 call_seconds=float(config.get("call_seconds", self.call_seconds)),
                 arg_naming=str(handle.get("arg_naming", "lower")),
@@ -1347,6 +1354,7 @@ class BitexactVerifier(Verifier):
         dominant_at: float | None = None,
         dominant_axis: Any = -1,
         rel_scale: str = "element",
+        fill_values: tuple[float, ...] = (),
         draws: int = 1,
         call_seconds: float = 0.0,
         arg_naming: str = "lower",
@@ -1799,6 +1807,7 @@ class BitexactVerifier(Verifier):
                                     dominant_at=dominant_at,
                                     dominant_axis=dominant_axis,
                                     rel_scale=rel_scale,
+                                    fill_values=fill_values,
                                     draws=draws,
                                     call_seconds=call_seconds,
                                     arg_naming=arg_naming,
@@ -1866,6 +1875,11 @@ class BitexactVerifier(Verifier):
                     if sub["kind"] == "function"
                     else {a["name"]: a.get("dtype") for a in outs_all}
                 )
+                # An INOUT argument is a state the kernel updated in place, so
+                # the value it updated is the one the inputs still hold (#84).
+                updated_in_place = {
+                    a["name"] for a in outs_all if str(a.get("intent", "")).upper() == "INOUT"
+                }
                 if path_arguments:
                     produced = self._file_outputs(np, path_arguments, drawn_paths, truth_paths)
                     if isinstance(produced, str):
@@ -1925,13 +1939,22 @@ class BitexactVerifier(Verifier):
                         return {
                             "error": f"{label}: shape {shaped_ours.shape} vs {shaped_theirs.shape}"
                         }
+                    prior = inputs.get(label) if label in updated_in_place else None
+                    weighed, cancelled = self._weighed(
+                        np, shaped_theirs, prior, fill_values, COLLAPSE_AT
+                    )
+                    dominant = self._dominance(
+                        np, shaped_theirs, dominant_at, dominant_axis, weighed, cancelled
+                    )
                     a = shaped_ours.ravel()
                     b = shaped_theirs.ravel()
-                    audit = ulp_audit(
-                        a.tolist(),
-                        b.tolist(),
-                        dominant=self._dominance(np, shaped_theirs, dominant_at, dominant_axis),
-                    )
+                    keep = None if weighed is None else weighed.ravel()
+                    if keep is not None:
+                        a, b = a[keep], b[keep]
+                        if dominant is not None:
+                            kept_flags = keep.tolist()
+                            dominant = [d for d, k in zip(dominant, kept_flags, strict=True) if k]
+                    audit = ulp_audit(a.tolist(), b.tolist(), dominant=dominant)
                     if samples is None:
                         nan_ours = np.isnan(a)
                         nan_theirs = np.isnan(b)
@@ -1975,6 +1998,17 @@ class BitexactVerifier(Verifier):
                             scale = np.maximum(float(np.abs(b).max()) if b.size else 0.0, 1e-300)
                         else:
                             scale = np.maximum(np.abs(b), 1e-300)
+                        if cancelled is not None and cancelled.any():
+                            # What a collapsed state update's difference means
+                            # is its size against the value that cancelled, not
+                            # against the residual that is left (#84).
+                            before = np.abs(np.asarray(prior, dtype=np.float64)).ravel()
+                            drained = cancelled.ravel()
+                            if keep is not None:
+                                before, drained = before[keep], drained[keep]
+                            widest = np.maximum(before, np.abs(b))
+                            scale = np.where(drained, widest, np.broadcast_to(scale, b.shape))
+                            scale = np.maximum(scale, 1e-300)
                         with np.errstate(invalid="ignore"):
                             rel = np.abs(a - b) / scale
                         # A one-sided NaN is counted in ``nan_mismatch``; it has
@@ -2209,7 +2243,12 @@ class BitexactVerifier(Verifier):
 
     @staticmethod
     def _dominance(
-        np: Any, reference: Any, dominant_at: float | None, axis: Any = -1
+        np: Any,
+        reference: Any,
+        dominant_at: float | None,
+        axis: Any = -1,
+        weighed: Any = None,
+        cancelled: Any = None,
     ) -> list[bool] | None:
         """Which elements a ULP bound is allowed to be held to.
 
@@ -2224,6 +2263,12 @@ class BitexactVerifier(Verifier):
         axis is not a row of comparable values (a two-element sun/shade pair,
         say), where a cancellation residual of 1e-17 would otherwise be the
         maximum of its own row and judged at the ULP tier.
+
+        ``weighed`` marks the elements that count at all: an unused subgrid
+        slot carrying a fill value is not an observation, and letting its 1e36
+        set the maximum puts every real value of the array below the bar
+        (#83). ``cancelled`` marks the elements a state update collapsed,
+        which are judged against what they updated instead (#84).
         """
         if dominant_at is None:
             return None
@@ -2232,12 +2277,53 @@ class BitexactVerifier(Verifier):
             # A zero-extent output (CLUBB's scalar tracers under
             # sclr_dim = 0): nothing to weigh, and no maximum to take.
             return []
+        counted = magnitude if weighed is None else np.where(weighed, magnitude, 0.0)
         if axis in ("all", None) or magnitude.ndim <= 1:
-            scale = magnitude.max()
+            scale = counted.max()
         else:
-            scale = magnitude.max(axis=int(axis), keepdims=True)
-        mask: list[bool] = (magnitude >= dominant_at * scale).ravel().tolist()
+            scale = counted.max(axis=int(axis), keepdims=True)
+        holds = magnitude >= dominant_at * scale
+        if weighed is not None:
+            holds = holds & weighed
+        if cancelled is not None:
+            holds = holds & ~cancelled
+        mask: list[bool] = holds.ravel().tolist()
         return mask
+
+    @staticmethod
+    def _weighed(
+        np: Any, reference: Any, prior: Any, fill_values: tuple[float, ...], collapse_at: float
+    ) -> tuple[Any, Any]:
+        """``(weighed, cancelled)`` for one output, both element-wise.
+
+        *weighed*: the elements that are observations. ELM allocates a patch
+        array over every subgrid slot a gridcell could hold and writes its
+        ``spval`` into the ones no patch uses; those compare equal on both
+        sides, and counting them inflates the points a verdict claims while
+        their 1e36 sets a maximum no real value can reach (#83). The
+        extension declares the value, because only it knows.
+
+        *cancelled*: the elements of a state the kernel updated in place
+        whose result is far below what it updated -- canopy water drained to
+        1e-6 of the 1e-2 it held. The difference there is the error that
+        entered upstream, multiplied by the cancellation; judging it against
+        the collapsed output reads a translation defect where the arithmetic
+        is doing what it does, so those are judged against the value they
+        updated instead (#84). Only a *shrinking* update qualifies, so the
+        rule can excuse what a cancellation explains and nothing else.
+        """
+        magnitude = np.abs(reference)
+        weighed = None
+        if fill_values:
+            weighed = np.ones(magnitude.shape, dtype=bool)
+            for value in fill_values:
+                weighed &= reference != value
+        cancelled = None
+        if prior is not None:
+            before = np.abs(np.asarray(prior, dtype=np.float64))
+            if before.shape == magnitude.shape:
+                cancelled = magnitude < collapse_at * before
+        return weighed, cancelled
 
     @staticmethod
     def _type_recorded(np: Any, samples: list[dict[str, Any]], table: dict[str, Any]) -> int:

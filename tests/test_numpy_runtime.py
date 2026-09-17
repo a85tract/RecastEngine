@@ -641,6 +641,27 @@ def test_a_runtime_integer_power_is_not_the_pow_call_python_would_make() -> None
     assert runtime._f_powi(x, 3) == x * (x * x)
 
 
+def test_a_scalar_squared_by_pow_is_not_the_multiplication_gcc_folds() -> None:
+    """Why a real exponent of two is expanded as well as an integer one
+    (#80). NumPy's ``power`` turns ``array ** 2.0`` into ``square``, so the
+    difference never shows on an array expression; the scalar path is a
+    ``pow`` call, and it disagrees with the multiplication on about one value
+    in a thousand -- rarely enough to pass a noon recording of ELM's
+    CanopyFluxes and often enough to fail a day of it.
+    """
+    uaf = 0.38719310676529134  # a patch's friction velocity, ELM brazil_sp, nstep 17548
+    # The array path is NumPy's ``square`` on every platform.
+    assert np.asarray([uaf]) ** np.float64(2.0) == uaf * uaf
+    # The scalar path is the C library's ``pow``, and which values it
+    # disagrees on is the library's: Apple's differs on this one, glibc's
+    # folds pow(x, 2.0) to the multiplication to the bit. The rule exists
+    # for the libraries where they differ; where they do not there is
+    # nothing to show.
+    if uaf ** np.float64(2.0) == uaf * uaf:
+        pytest.skip("this platform's pow(x, 2.0) is x * x to the bit")
+    assert uaf * uaf != uaf ** np.float64(2.0)
+
+
 def test_seq_tail_is_the_column_major_storage_from_the_element_on() -> None:
     """``a(i, 1)`` for ``dx(*)``: Fortran hands the callee the memory from
     that element to the end of the array in column-major order. A view of a

@@ -3117,3 +3117,25 @@ def test_a_call_into_a_declared_only_library_is_compared_not_disclaimed(tmp_path
     assert "ungated" not in verdict.metrics
     assert set(verdict.metrics["substituted"]) == {"dgesv"}
     assert "stood in for by recast's own reference implementation" in verdict.detail
+
+
+def test_a_bare_call_to_a_procedure_recast_can_supply_is_undefined_too() -> None:
+    """ELM's BandDiagonalMod calls ``dgbsv`` with no interface anywhere: the
+    same undefined symbol, reached without a declaration. ``external_calls``
+    is written generously -- intrinsics are in it -- so only the names recast
+    has a reference implementation for are taken from it; a stub for ``sqrt``
+    would be a duplicate of the compiler's own."""
+    records = [
+        {
+            "module": "band",
+            "subprograms": [
+                {"name": "solve", "calls": [], "external_calls": ["dgbsv", "max", "sqrt"]}
+            ],
+            "interfaces": {},
+        }
+    ]
+    assert f2py_module.undefined_externals(records, []) == ["dgbsv"]
+    assert f2py_module.undefined_externals([*records, *LIBRARY_RECORDS], []) == [
+        "dgbsv",
+        "solve_it",
+    ]

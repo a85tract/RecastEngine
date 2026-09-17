@@ -37,6 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recast import references
 from recast.errors import ConfigError
 from recast.model import Candidate, Facts, Unit
 from recast.plugins.transform import Transform
@@ -414,12 +415,15 @@ class NumpyTranslation(Transform):
         )
 
         text, report = renderer.render(source)
+        # The module's own parameters may be spelled over the names its
+        # use-constants file defines (the frontend classified them as known),
+        # so the constants file imports that file first.
+        extern = [(e["stem"], e["count"]) for e in config.get("extern_constants", [])]
+        if use:
+            extern.append((use_stem, sum(1 for e in use["resolved"] if e["requested"])))
         files: dict[Path, bytes] = {
             Path(f"{module}_numpy.py"): text.encode(),
-            Path(f"{stem}.py"): constants_module(
-                facts.constants,
-                extern=tuple((e["stem"], e["count"]) for e in config.get("extern_constants", [])),
-            ).encode(),
+            Path(f"{stem}.py"): constants_module(facts.constants, extern=tuple(extern)).encode(),
         }
         if use:
             files[Path(f"{use_stem}.py")] = use_constants_module(
@@ -661,6 +665,16 @@ class NumpyTranslation(Transform):
                 # ... and the stubbed modules' (the frontend's list): a call to
                 # a stand-in function is a call, not a read of its name.
                 | {pysafe(name) for name in facts.interface.get("stub_procedures") or ()}
+                # ... and a library procedure called bare, with no interface
+                # anywhere (ELM's ``call dgbsv``), which recast's reference
+                # implementation stands in for under that name.
+                | set(
+                    references.supported(
+                        name
+                        for record in facts.interface["subprograms"]
+                        for name in record.get("external_calls") or ()
+                    )
+                )
             ),
             "aliases": sorted(
                 {remote.alias for remote in assembler.remotes.values()}

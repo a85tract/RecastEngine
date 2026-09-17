@@ -558,3 +558,41 @@ def test_a_body_reports_the_names_it_reaches_outside_its_own_module(tmp_path: Pa
     unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:uses_library")
     record = frontend.analyze(unit, tmp_path).interface
     assert record["subprograms"][0]["external_calls"] == ["solve_it"]
+
+
+BARE_LIBRARY_CALL = """\
+module bare_call
+  implicit none
+contains
+  subroutine solve(n, a, b)
+    integer, intent(in) :: n
+    real(8), intent(inout) :: a(n, n)
+    real(8), intent(inout) :: b(n)
+    integer :: ipiv(n), info
+    call dgesv(n, 1, a, n, ipiv, b, n, info)
+    if (info /= 0) stop
+  end subroutine solve
+end module bare_call
+"""
+
+
+def test_a_bare_call_to_a_library_procedure_recast_supplies_is_bound(tmp_path: Path) -> None:
+    """ELM's BandDiagonalMod calls ``dgbsv`` with no interface anywhere -- an
+    implicit external, resolved at link time. The block around it was deferred
+    whole ("call to external subroutine"), and the routine's kernel with it.
+    The call binds against LAPACK's argument list, the module emits recast's
+    reference implementation under that name -- the reference build compiles
+    its Fortran twin -- and the read/write check knows the name is a call."""
+    from recast.transform.numpy.translate import NumpyTranslation
+
+    (tmp_path / "bare_call.f90").write_text(BARE_LIBRARY_CALL)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:bare_call")
+    facts = frontend.analyze(unit, tmp_path)
+    assert facts.interface["subprograms"][0]["external_calls"] == ["dgesv"]
+    candidate = NumpyTranslation().apply(unit, facts, {"root": str(tmp_path)})
+    text = candidate.files[Path("bare_call_numpy.py")].decode()
+    assert candidate.deferred == []
+    assert "    dgesv(n, 1, a, n, ipiv, b, n, info)\n" in text
+    assert "\ndef dgesv(" in text and "\ndef _recast_ref_gepp(" in text
+    assert "dgesv" in candidate.notes["rwset"]["procedures"]

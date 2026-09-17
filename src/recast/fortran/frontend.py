@@ -83,6 +83,10 @@ USE_STATEMENT = re.compile(
 )
 """Both spellings, including ``USE, INTRINSIC :: iso_fortran_env``."""
 
+FRAMEWORK_INPUT_DTYPES = frozenset({"float64", "float32", "int32", "bool", "str"})
+"""The result kinds an argument-less function of a stub module is recorded
+in: the scalars a flat signature declares (#96)."""
+
 ONLY_ITEM = re.compile(r"^\s*(?:[\w.]+\s*=>\s*)?(\w+)\s*$")
 """One entry of an ``ONLY`` list, reduced to the name the *used* module knows
 it by -- the right-hand side of a rename. Entries that are not a plain
@@ -347,7 +351,8 @@ class FortranFrontend(Frontend):
         self._module_indexes: dict[Path, dict[str, Path]] = {}
         self._submodule_parents: dict[Path, dict[str, str]] = {}
         self._analyzed: dict[
-            tuple[str, str, str | None, tuple[tuple[str, str], ...]], dict[str, Any]
+            tuple[str, str, str | None, tuple[tuple[str, str], ...], tuple[str, ...]],
+            dict[str, Any],
         ] = {}
 
     # --- discovery -----------------------------------------------------------
@@ -490,7 +495,7 @@ class FortranFrontend(Frontend):
         )
         consts = constants_mod.extract(
             path,
-            extern_names=set(self.extern_constants),
+            extern_names=set(self.extern_constants) | self._use_imported_parameters(record, root),
             scope=scope_name,
             kind_assumptions={
                 **{name: found["dtype"] for name, found in tree_kinds.items()},
@@ -585,11 +590,21 @@ class FortranFrontend(Frontend):
         # stub module's own record says which names are procedures; a stub
         # the tree does not carry is taken at its import list.
         assumed_stubs: dict[str, list[str]] = {}
-        stub_procedures = self._stub_procedures(record, Path(root), assumed_stubs)
+        framework_inputs: list[dict[str, str]] = []
+        stub_procedures = self._stub_procedures(record, Path(root), assumed_stubs, framework_inputs)
         for name in stub_procedures:
             stubbed = {"kind": "subroutine", "out_positions": [], "buffer_positions": []}
             externals.setdefault(name, {**stubbed, "stub": True})
         record = {**record, "stub_procedures": sorted(stub_procedures)}
+        if framework_inputs:
+            # An argument-less function of a stub module is a value the run
+            # held (ELM's ``get_step_size()`` off the ESMF clock), not a call
+            # the translation can answer: it goes on the record as a
+            # recorded input of the unit, and the flat plan carries it (#96).
+            # Once per function: a unit's subprograms each ``use`` the module
+            # for themselves (CanopyHydrology imports get_step_size twice).
+            distinct = {(e["module"], e["name"]): e for e in framework_inputs}
+            record["framework_inputs"] = [distinct[key] for key in sorted(distinct)]
         if assumed_stubs:
             record["stub_procedures_assumed"] = {
                 module: sorted(names) for module, names in sorted(assumed_stubs.items())
@@ -707,6 +722,28 @@ class FortranFrontend(Frontend):
             if plans:
                 facts.extra["flat_plans"] = [p.to_dict() for p in plans]
 
+    def _use_imported_parameters(self, record: dict[str, Any], root: str | Path) -> set[str]:
+        """Parameters this unit use-imports, with an ONLY list, from the
+        tree's constants modules. A module parameter over one of them --
+        ELM's ``icol_sunwall = isturb_MIN*10 + 2`` in column_varcon, over
+        landunit_varcon's ``isturb_MIN`` -- is an expression the classifier
+        can spell only if it knows the name; without this it was a
+        ``# SKIPPED`` line in the constants file and an AttributeError the
+        first time a kernel read it. The translation resolves the same
+        names into ``<module>_use_constants.py`` and refuses the unit when
+        one does not resolve, so every name here is defined there."""
+        from recast.fortran.tree import module_sources, parameter_names, use_imports
+
+        if not self.constant_modules:
+            return set()
+        wanted = use_imports(record, self.constant_modules, frozenset(self.kind_assumptions))
+        if not wanted:
+            return set()
+        files = module_sources(Path(root).resolve(), self.constant_modules)
+        if not files:
+            return set()
+        return set(wanted) & parameter_names(files, self.kind_assumptions)
+
     def _tree_kinds(
         self, path: Path, root: Path, own: str | None = None
     ) -> dict[str, dict[str, str]]:
@@ -773,13 +810,23 @@ class FortranFrontend(Frontend):
         return found
 
     def _stub_procedures(
-        self, record: dict[str, Any], root: Path, assumed: dict[str, list[str]] | None = None
+        self,
+        record: dict[str, Any],
+        root: Path,
+        assumed: dict[str, list[str]] | None = None,
+        framework_inputs: list[dict[str, str]] | None = None,
     ) -> set[str]:
         """The local names this unit imports from stubbed modules that are
         procedures of theirs -- calls the translation stubs. A stub module the
         tree does not carry contributes every name it is imported for unless
         ``stub_procedure_names`` says otherwise, and ``assumed`` (when given)
-        collects those names per module."""
+        collects those names per module.
+
+        ``framework_inputs`` (when given) collects, per import, the
+        procedures that are *functions with no dummy arguments* of a stub
+        module the tree carries -- ``{module, name, local, dtype}``, the
+        result's dtype -- because such a function is a value the run held
+        rather than an action a stub can stand in for (#96)."""
         from recast.fortran import interface as interface_mod
 
         index = self._module_index(root.resolve())
@@ -797,11 +844,22 @@ class FortranFrontend(Frontend):
             }
             source = index.get(module)
             procedures = None
+            argless: dict[str, str] = {}
             if source is not None:
                 record_of = self._readable(source, interface_mod.extract, module)
                 if record_of is not None:
                     procedures = {str(sub["name"]).lower() for sub in record_of["subprograms"]}
                     procedures |= {g.lower() for g in record_of.get("generics") or {}}
+                    # A result the flat signature can carry, only: a function
+                    # returning a derived type (ESMF's clock time) stays a
+                    # stub call the stand-in refuses by name at run time.
+                    argless = {
+                        str(sub["name"]).lower(): str(sub.get("result_dtype"))
+                        for sub in record_of["subprograms"]
+                        if sub.get("kind") == "function"
+                        and not sub.get("args")
+                        and str(sub.get("result_dtype")) in FRAMEWORK_INPUT_DTYPES
+                    }
             if procedures is None and module in self.stub_procedure_names:
                 # The tree does not carry the module; the operator says
                 # which of its names are procedures (CLUBB's ``netcdf``).
@@ -819,6 +877,15 @@ class FortranFrontend(Frontend):
                     assumed.setdefault(module, []).append(local)
                 elif remote in procedures:
                     names.add(local)
+                    if remote in argless and framework_inputs is not None:
+                        framework_inputs.append(
+                            {
+                                "module": module,
+                                "name": remote,
+                                "local": local,
+                                "dtype": argless[remote],
+                            }
+                        )
         return names
 
     def _companions(
@@ -911,6 +978,7 @@ class FortranFrontend(Frontend):
                     constants_mod.extract,
                     module,
                     {**sibling_kinds, **record_of.get("kind_map", {})},
+                    frozenset(self._use_imported_parameters(record_of, resolved_root)),
                 )
             except Exception as error:  # fparser raises several unrelated types
                 # A sibling that does not parse is not this unit's failure. It
@@ -1044,11 +1112,14 @@ class FortranFrontend(Frontend):
         extract: Any,
         scope: str | None = None,
         kind_assumptions: dict[str, str] | None = None,
+        extern_names: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """One extraction per (file revision, kind, scope), however many units
         want it. ``scope`` names the program unit of the file -- the module a
         ``use`` asked for -- so a file holding two modules answers for the
-        right one.
+        right one. ``extern_names`` are the constants a companion use-imports
+        from the tree's constants modules, known to its classifier the way
+        the unit's own are (``_use_imported_parameters``).
 
         A tree of forty modules is forty analyses, and without this each would
         re-extract every sibling it depends on.
@@ -1056,7 +1127,13 @@ class FortranFrontend(Frontend):
         from recast.fortran._parse import digest
 
         kinds = {**(kind_assumptions or {}), **self.kind_assumptions}
-        key = (digest(source), kind, scope, tuple(sorted(kinds.items())))
+        key = (
+            digest(source),
+            kind,
+            scope,
+            tuple(sorted(kinds.items())),
+            tuple(sorted(extern_names)),
+        )
         cached = self._analyzed.get(key)
         if cached is None:
             if kind == "interface":
@@ -1073,7 +1150,7 @@ class FortranFrontend(Frontend):
                 # is of the width ``wp`` has there.
                 cached = extract(
                     source,
-                    extern_names=set(self.extern_constants),
+                    extern_names=set(self.extern_constants) | set(extern_names),
                     scope=scope,
                     kind_assumptions=kinds,
                 )

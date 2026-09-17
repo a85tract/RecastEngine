@@ -142,7 +142,7 @@ static check passes, and for most cases it does not yet.
 
 ## The trees shipped in-tree
 
-Beside the submodules, five source trees live here directly, small enough
+Beside the submodules, six source trees live here directly, small enough
 to read in one sitting and needing nothing checked out: `toy_physics/`, a
 Fortran module the shipped recipes run over end to end with the operator
 config beside it; `elm_leaf/`, five modules written the way the E3SM Land
@@ -150,7 +150,9 @@ Model writes its biogeophysics and the framework modules under it;
 `clubb_solve/`, modules in the shape of CLUBB's variance step, the
 tridiagonal solver under it and its hole-filling window; `canopy_flat/`, five modules around an
 object with pointer components, the shape the flattener and the tree port
-were built for; and `probe_kernel/`,
+were built for; `band_solve/`, one module in the shape of ELM's
+`BandDiagonalMod`, a per-column LAPACK band solve over locals sized per
+column; and `probe_kernel/`,
 two scripts standing in for an instrumented C kernel (its own README says
 how). They are the public form of the check the roadmap names: the recipe
 has to work *here*, on sources anyone can read, not only on the private
@@ -268,6 +270,38 @@ the port recipe alone:
 
     recast run port corpus/canopy_flat --config corpus/canopy_flat/port.json \
         --summary corpus/canopy_flat/port-verification.json
+
+`band_solve/` is ELM's `BandDiagonalMod` in one routine, the soil
+temperature solve's last step: for each column of a filter, LAPACK band
+storage `ab(m,n)` is allocated with `m` from the band width and `n` from
+the column's own top and bottom level, the five diagonals are laid into it
+by copies between two windows with different edges
+(`ab(kl+ku-1, 3:n) = b(ci, 1, jtop(ci):jbot(ci)-2)`), and a bare
+`call dgbsv` -- no interface anywhere, an implicit external resolved at
+link time -- solves it, followed by a diagnostic dump under
+`if (info /= 0)` that ends in STOP. Every one of those stopped both
+recipes at some engine commit: the NumPy translation deferred the whole
+block for the call it could not bind, and the reference build had no
+symbol for it; the port to JAX carried `kl`, `ku` and `m` as loop
+tracers, had no static shape for the allocations, no rule for the copies,
+no callee for the call, and a while loop for the dump. The translation
+binds the call against LAPACK's argument list and emits recast's own
+reference implementation of `dgbsv` beside the caller while the reference
+build compiles its Fortran twin, so the bit-exact gate compares the whole
+routine with the library stood in for on both sides, and says so. The
+port hoists the trace-time stores before the loop, pads each local to the
+level axis a window copy proves bounds it, spells each copy as a shifted
+window, hands the call to the runtime's `_f_dgbsv` -- the reference's
+operations in the reference's order within the band, over a padded buffer
+with a traced order, differentiable in reverse mode -- and drops the dump
+with its abort. The input profile draws a diagonally dominant band and
+per-column windows inside the level axis, the domain a heat-conduction
+step lives in.
+
+    recast run translate corpus/band_solve --config corpus/band_solve/recast.json \
+        --summary corpus/band_solve/verification.json
+    recast run port corpus/band_solve --config corpus/band_solve/port.json \
+        --summary corpus/band_solve/port-verification.json
 
     recast run translate corpus/toy_physics --config corpus/toy_physics/recast.json \
         --summary corpus/toy_physics/verification.json

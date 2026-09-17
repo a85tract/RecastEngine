@@ -60,9 +60,17 @@ contains
     real(r8), intent(out) :: btran(np)
     integer :: p, j
     real(r8) :: work(nlev)
+    real(r8) :: probe
     do p = 1, np
       do j = 1, nlev
         work(j) = rootfr(j) * h2osoi(p, j)
+        ! CanopyFluxes' laminar boundary resistance, in the one shape that
+        ! matters here: a real exponent whose value is an integer. gfortran
+        ! folds x**2._r8 into the multiplication, and a pow call is one ULP
+        ! away from it on about one value in a thousand. Scalar on purpose --
+        ! NumPy turns ``array ** 2.0`` into ``square``, so an array
+        ! expression never shows the difference.
+        work(j) = work(j) / ( work(j)**2._r8 + 1.e-10_r8 )
       end do
       select case (root_stress_method)
       case (moist_stress_clm_default)
@@ -73,7 +81,12 @@ contains
         call normalize( -1, nlev, work )
         call normalize( 2.0_r8 * h2osoi(p, 1), nlev, work )
       end select
-      btran(p) = 0.0_r8
+      ! One value the two lowerings disagree on, so the case fails without
+      ! the fold rather than only when a draw happens to land on one: a
+      ! friction velocity ELM's CanopyFluxes computed at nstep 17548, where
+      ! a day's gate caught the difference.
+      probe = 0.38719310676529134_r8
+      btran(p) = probe / ( probe**2._r8 + 1.e-10_r8 )
       do j = 1, nlev
         btran(p) = btran(p) + work(j)
       end do

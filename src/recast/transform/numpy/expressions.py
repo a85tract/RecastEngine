@@ -128,6 +128,12 @@ MAX_EXPANDED_POWER = 16
 """Beyond this, expanding ``x**n`` to multiplications stops being worth reading
 and starts being a place for a transcription error. Refused instead."""
 
+FOLDED_REAL_EXPONENTS = frozenset({2})
+"""Whole-number *real* exponents the reference compiler folds into
+multiplication rather than a ``pow`` call. Only 2: GCC folds ``pow(x, 2.0)``
+unconditionally, because ``x*x`` is what the call must return, and expands the
+others only under ``-funsafe-math-optimizations``."""
+
 
 _LEADING_NAME = re.compile(r"^[\s(+-]*([A-Za-z_]\w*)")
 """The first identifier of a rendered argument: the name a subscript or a
@@ -522,6 +528,8 @@ class Expressions:
     def _power(self, left: str, right: str, left_node: Any, right_node: Any) -> str | None:
         """``x**n``, which the reference compiler may have lowered two ways."""
         exponent = self.semantics.integer_literal(right_node)
+        if exponent is None:
+            exponent = self._folded_real_exponent(right_node)
         if exponent is not None and exponent != 0:
             if not self.profile.int_pow_expand:
                 return f"({left} ** {exponent})"
@@ -545,6 +553,23 @@ class Expressions:
             # ``pow`` call the reference binary never makes (``_f_powi``).
             return f"_f_powi({left}, {right})"
         return None
+
+    def _folded_real_exponent(self, node: Any) -> int | None:
+        """A real literal exponent the reference compiler folds, not calls.
+
+        ``uaf(p)**2._r8`` is a real power, so nothing above reads it as a
+        literal exponent and what is emitted is a ``pow`` call -- which NumPy
+        answers one ULP away from ``x*x`` often enough to fail a bit-exact
+        gate (2 points of 321,888 on a day of ELM's CanopyFluxes). GCC folds
+        ``pow(x, 2.0)`` into the multiplication unconditionally, because that
+        is what the call must return anyway; every other whole-number real
+        exponent it expands only under ``-funsafe-math-optimizations``, so
+        those stay the call the reference binary makes.
+        """
+        if not self.profile.int_pow_expand:
+            return None
+        value = self.semantics.integral_real_literal(node)
+        return value if value in FOLDED_REAL_EXPONENTS else None
 
     def _integer_exponent(self, left_node: Any, right_node: Any) -> bool:
         """A real raised to an integer, which is the case ``powi`` covers.
