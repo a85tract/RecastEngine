@@ -44,7 +44,10 @@ from typing import Any
 
 from recast.fortran.tree import MODULE_DEFINITION, module_sources
 
-__all__ = ["stand_ins"]
+__all__ = ["STAND_IN_HEADER", "stand_ins"]
+
+STAND_IN_HEADER = '"""Stand-in for Fortran module '
+"""How every stand-in file begins: what tells one from a translation."""
 
 STUB_IMPORT = re.compile(r"^\s*import (?P<module>\w+)_numpy as (?P<alias>_\w+)\s*$", re.MULTILINE)
 
@@ -142,7 +145,7 @@ def stand_ins(
             continue
         path = _module_file(module, root)
         pieces = [
-            f'"""Stand-in for Fortran module {module}, written by RecastEngine.',
+            f"{STAND_IN_HEADER}{module}, written by RecastEngine.",
             "",
             "Not a translation: the module is a stub under the frontend. Its",
             "initialized entities are resolved from the source tree; framework",
