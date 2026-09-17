@@ -650,8 +650,16 @@ def test_a_scalar_squared_by_pow_is_not_the_multiplication_gcc_folds() -> None:
     CanopyFluxes and often enough to fail a day of it.
     """
     uaf = 0.38719310676529134  # a patch's friction velocity, ELM brazil_sp, nstep 17548
-    assert uaf * uaf != uaf ** np.float64(2.0)
+    # The array path is NumPy's ``square`` on every platform.
     assert np.asarray([uaf]) ** np.float64(2.0) == uaf * uaf
+    # The scalar path is the C library's ``pow``, and which values it
+    # disagrees on is the library's: Apple's differs on this one, glibc's
+    # folds pow(x, 2.0) to the multiplication to the bit. The rule exists
+    # for the libraries where they differ; where they do not there is
+    # nothing to show.
+    if uaf ** np.float64(2.0) == uaf * uaf:
+        pytest.skip("this platform's pow(x, 2.0) is x * x to the bit")
+    assert uaf * uaf != uaf ** np.float64(2.0)
 
 
 def test_seq_tail_is_the_column_major_storage_from_the_element_on() -> None:

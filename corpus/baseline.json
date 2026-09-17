@@ -853,12 +853,12 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 540,
-   "deferred": 54,
+   "blocks": 544,
+   "deferred": 50,
    "refusals": [
     [
      "call to external subroutine 'X'",
-     48
+     44
     ],
     [
      "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
@@ -899,7 +899,7 @@
      }
     },
     "fortran:linalg": {
-     "deferred": 35,
+     "deferred": 34,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -912,11 +912,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/259 blocks disagree: ddiag/B004, zdiag/B004, qr_fact/B001, qr_fact/B006, qr_fact/B015",
+       "detail": "5/260 blocks disagree: ddiag/B004, zdiag/B004, qr_fact/B001, qr_fact/B006, qr_fact/B015",
        "metrics": {
-        "blocks_checked": 259,
-        "blocks_deferred": 35,
-        "blocks_matched": 254,
+        "blocks_checked": 260,
+        "blocks_deferred": 34,
+        "blocks_matched": 255,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -1402,9 +1402,9 @@
      }
     },
     "fortran:splines": {
-     "deferred": 3,
+     "deferred": 0,
      "imports": true,
-     "mechanical": false,
+     "mechanical": true,
      "parses": true,
      "stages": {
       "frontend/fortran": "ok",
@@ -1416,11 +1416,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "51 blocks match",
+       "detail": "54 blocks match",
        "metrics": {
-        "blocks_checked": 51,
-        "blocks_deferred": 3,
-        "blocks_matched": 51,
+        "blocks_checked": 54,
+        "blocks_deferred": 0,
+        "blocks_matched": 54,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
