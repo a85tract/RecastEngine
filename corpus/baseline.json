@@ -1929,7 +1929,7 @@
   "numfor": {
    "bare_files": 85,
    "blocks": 898,
-   "deferred": 51,
+   "deferred": 54,
    "refusals": [
     [
      "generic 'X': no match",
@@ -1965,6 +1965,18 @@
     ],
     [
      "internal READ: the unit is a character variable",
+     1
+    ],
+    [
+     "r2str/P001: single-precision subprogram: dummy rin (float32); this translation has no sing",
+     1
+    ],
+    [
+     "rarr2str/P001: single-precision subprogram: dummy vec (float32); this translation has no s",
+     1
+    ],
+    [
+     "rarr2d2str/P001: single-precision subprogram: dummy vec (float32); this translation has no",
      1
     ],
     [
@@ -3125,7 +3137,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 2,
+     "deferred": 5,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -3141,7 +3153,7 @@
        "detail": "5/107 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
        "metrics": {
         "blocks_checked": 107,
-        "blocks_deferred": 2,
+        "blocks_deferred": 5,
         "blocks_matched": 102,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0

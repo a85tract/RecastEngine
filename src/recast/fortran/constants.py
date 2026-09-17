@@ -33,7 +33,7 @@ from recast.fortran.expr import (
     promoted,
     real_kind_of,
 )
-from recast.fortran.interface import _scope_of
+from recast.fortran.interface import _scope_of, collect_decls, local_kind_aliases
 
 WHITELIST_INT = frozenset({"0", "1", "2"})
 WHITELIST_REAL = frozenset({0.0, 1.0, 0.5})
@@ -1102,11 +1102,14 @@ def extract(
                     kind_map[local] = "float32" if remote == "real32" else "float64"
     dtypes: dict[str, str | None] = dict.fromkeys(known)
 
-    def dtype_of_decl(type_spec: Any) -> str | None:
+    def dtype_of_decl(type_spec: Any, kinds: dict[str, str] | None = None) -> str | None:
+        """The dtype a declaration names, against ``kinds`` -- the module's
+        kind map, or a subprogram's own extended with its local aliases."""
+        kinds = kind_map if kinds is None else kinds
         text = str(type_spec)
         base = text.split("(")[0].strip().upper()
         if base in ("REAL", "DOUBLE PRECISION"):
-            return declared_dtype("real", kind_spelling(text, base), kind_map)
+            return declared_dtype("real", kind_spelling(text, base), kinds)
         if base == "INTEGER":
             return "int"
         if base == "LOGICAL":
@@ -1117,7 +1120,7 @@ def extract(
             # Two reals of one kind: complex128 / complex64 by that kind,
             # None when the kind is not known (and the value then refuses
             # like any leaf of unknown kind).
-            return declared_dtype("complex", kind_spelling(text, base), kind_map)
+            return declared_dtype("complex", kind_spelling(text, base), kinds)
         return None
 
     # The kind of every entity the module declares, variables included: a
@@ -1229,13 +1232,24 @@ def extract(
 
         spec = next((c for c in sub.children if isinstance(c, f03.Specification_Part)), None)
         local_chars = dict(char_values)  # the module's values, then this subprogram's
+        # ``integer, parameter :: rk = r4`` declared in the routine: a kind
+        # alias of this scope. The frontend types the routine's declarations
+        # through it; the fold of its parameters has to read ``0.5E0_rk`` the
+        # same way, or a known single is "a kind this fold does not know" and
+        # the body assigns it inline as a double (#97).
+        local_kind_map = {
+            **kind_map,
+            **(local_kind_aliases(collect_decls(spec), kind_map) if spec is not None else {}),
+        }
         if spec is not None:
             # The declared type of every local, for the F77 separate form
             # whose PARAMETER statement names no type of its own.
             declared_types: dict[str, str | None] = {}
             for decl in walk(spec, f03.Type_Declaration_Stmt):
                 for ent in walk(decl, f03.Entity_Decl):
-                    declared_types[str(ent.children[0]).lower()] = dtype_of_decl(decl.children[0])
+                    declared_types[str(ent.children[0]).lower()] = dtype_of_decl(
+                        decl.children[0], local_kind_map
+                    )
             local_dtypes.update(declared_types)
             # F77 separate form: PARAMETER (NAME = expr, ...)
             for pstmt in walk(spec, f03.Parameter_Stmt):
@@ -1250,7 +1264,7 @@ def extract(
                         local_chars,
                         array_names=local_arrays,
                         aliases=local_aliases,
-                        kinds=Kinds(kind_map, local_dtypes, pname, p_dtype),
+                        kinds=Kinds(local_kind_map, local_dtypes, pname, p_dtype),
                         info=info,
                     )
                     if kind == "str":
@@ -1278,7 +1292,7 @@ def extract(
                 attrs = [str(a).upper() for a in (attr_list.children if attr_list else [])]
                 if "PARAMETER" not in attrs:
                     continue
-                l_dtype = dtype_of_decl(local_type_spec)
+                l_dtype = dtype_of_decl(local_type_spec, local_kind_map)
                 for ent in walk(decl, f03.Entity_Decl):
                     pname = str(ent.children[0]).lower()
                     init = str(ent.children[3].children[1]) if ent.children[3] is not None else None
@@ -1299,7 +1313,7 @@ def extract(
                             char_length(str(local_type_spec), str(ent)),
                             array_names=local_arrays,
                             aliases=local_aliases,
-                            kinds=Kinds(kind_map, local_dtypes, pname, l_dtype),
+                            kinds=Kinds(local_kind_map, local_dtypes, pname, l_dtype),
                             info=info,
                         )
                     if kind == "str":

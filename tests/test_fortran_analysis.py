@@ -249,6 +249,63 @@ def test_an_unresolvable_kind_is_named_not_defaulted(tmp_path: Path) -> None:
     assert locals_["scratch"]["dtype"] == "UNKNOWN_REAL_KIND(mystery)"
 
 
+LOCAL_KINDS = """\
+module local_kinds_mod
+  use precision_mod, only: r4 => wp_r4
+  implicit none
+  integer, parameter :: r8 = selected_real_kind(12)
+contains
+  subroutine single(x, n)
+    integer, parameter :: rk = r4
+    integer, parameter :: n_max = 4
+    real(rk), intent(in) :: x
+    integer, intent(out) :: n
+    n = n_max
+  end subroutine single
+
+  subroutine double(x, z)
+    integer, parameter :: wk = r8
+    integer, parameter :: rk = wk
+    real(rk), intent(in) :: x
+    complex(rk), intent(out) :: z
+    real(rk) :: y
+    y = x
+    z = cmplx(y, y, rk)
+  end subroutine double
+
+  subroutine outright(x)
+    integer, parameter :: rk = 8
+    real(rk), intent(inout) :: x
+    x = x
+  end subroutine outright
+end module local_kinds_mod
+"""
+
+
+def test_a_routine_local_kind_parameter_types_the_routine(tmp_path: Path) -> None:
+    """``integer, parameter :: rk = r4`` inside a routine is a kind alias of
+    that scope: ``real(rk)`` resolves through it, to the module's kind, the
+    extension's assumption, or a kind spelled outright, and through a chain
+    of local aliases. Unresolved, it was ``UNKNOWN_REAL_KIND(rk)`` and every
+    consumer read that as a double -- for the single kind, a silent
+    widening (#97). A count is not a kind: ``n_max = 4`` is not taken."""
+    source = _write(tmp_path, "local_kinds.f90", LOCAL_KINDS)
+    record = interface.extract(source, kind_assumptions=KINDS)
+    subs = {sub["name"]: sub for sub in record["subprograms"]}
+    assert subs["single"]["kind_map"] == {"rk": "float32"}
+    assert subs["single"]["args"][0]["dtype"] == "float32"
+    assert subs["double"]["kind_map"] == {"wk": "float64", "rk": "float64"}
+    assert {a["name"]: a["dtype"] for a in subs["double"]["args"]} == {
+        "x": "float64",
+        "z": "complex128",
+    }
+    assert subs["double"]["locals"][0]["dtype"] == "float64"
+    assert subs["outright"]["kind_map"] == {"rk": "float64"}
+    assert subs["outright"]["args"][0]["dtype"] == "float64"
+    # The module's own map is untouched by a routine's aliases.
+    assert "rk" not in record["kind_map"]
+
+
 def test_kind_assumptions_supply_what_the_tree_does_not_contain(tmp_path: Path) -> None:
     """The same knob as intent overrides, for the same reason: the fact is real,
     the source does not state it, and the frontend must not invent it."""

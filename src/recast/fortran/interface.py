@@ -272,6 +272,47 @@ def resolve_kind_map(module_params: list[dict[str, Any]]) -> dict[str, str]:
     return resolved
 
 
+def local_kind_aliases(decls: list[dict[str, Any]], kind_map: dict[str, str]) -> dict[str, str]:
+    """The kind parameters a scope declares for itself, as ``{name: dtype}``.
+
+    ``integer, parameter :: rk = r4`` names, for one routine, a kind the
+    module (or the extension's assumptions) already placed; ``rk =
+    selected_real_kind(12)`` places one outright. Read the same way the
+    module's are (``resolve_kind_map``), against the enclosing map first, so
+    a routine-local alias of a known kind is as known as the kind itself.
+    Only a parameter whose initializer reads as a kind is taken, and one
+    that is a bare number (``rk = 8``) only where a declaration of the scope
+    spells it as a kind: ``n_max = 4`` beside ``real(rk)`` is a count, and
+    stays one.
+    """
+    used_as_kind = {str(d["kind"]).lower() for d in decls if d.get("kind")}
+    resolved: dict[str, str] = {}
+    pending: dict[str, str] = {}
+    for d in decls:
+        if str(d.get("base_type") or "").upper() != "INTEGER" or "PARAMETER" not in d["attrs"]:
+            continue
+        for e in d["entities"]:
+            init = e.get("init_expr")
+            if not init or e.get("array_spec") or e.get("dims"):
+                continue
+            compact = str(init).lower().replace(" ", "")
+            if compact.isdigit() and e["name"] not in used_as_kind:
+                continue
+            pending[e["name"]] = compact
+    while pending:
+        progressed = False
+        for name, init in list(pending.items()):
+            dtype = _kind_dtype(init, {**kind_map, **resolved})
+            if dtype is None:
+                continue
+            resolved[name] = dtype
+            del pending[name]
+            progressed = True
+        if not progressed:
+            break
+    return resolved
+
+
 def dtype_of(base_type: str | None, kind: str | None, kind_map: dict[str, str]) -> str:
     """Fortran type + kind -> dtype name, or an ``UNKNOWN`` marker.
 
@@ -956,6 +997,14 @@ def _record_of(
     spec = [c for c in sub.children if isinstance(c, f03.Specification_Part)] or None
     decls = collect_decls(spec) if spec is not None else []
 
+    # ``integer, parameter :: rk = r4`` inside the routine: a kind alias of
+    # this scope, resolved before the declarations that spell ``real(rk)``
+    # are typed. Left unresolved they came back ``UNKNOWN_REAL_KIND(rk)``,
+    # and every consumer downstream read that as a double -- for a routine
+    # whose alias names the single kind, a silent widening (#97).
+    local_kinds = local_kind_aliases(decls, kind_map)
+    scope_kinds = {**kind_map, **local_kinds}
+
     ent_info: dict[str, dict[str, Any]] = {}
     local_parameters: list[dict[str, Any]] = []
     for d in decls:
@@ -963,7 +1012,7 @@ def _record_of(
             info = {
                 "fortran_type": d["base_type"],
                 "kind": d["kind"],
-                "dtype": dtype_of(d["base_type"], d["kind"], kind_map),
+                "dtype": dtype_of(d["base_type"], d["kind"], scope_kinds),
                 "intent": d["intent"],
                 "optional": "OPTIONAL" in d["attrs"],
                 "parameter": "PARAMETER" in d["attrs"],
@@ -1126,7 +1175,7 @@ def _record_of(
                 for nm in walk(t.children[1] or [], (f03.Name, f03.Int_Literal_Constant)):
                     k = str(nm)
                     break
-                result_dtype = dtype_of(str(t.children[0]), k, kind_map)
+                result_dtype = dtype_of(str(t.children[0]), k, scope_kinds)
 
     locals_ = [
         {
@@ -1262,6 +1311,9 @@ def _record_of(
         "folded_bounds": folded,
         "local_parameters": local_parameters,
         "locals": locals_,
+        # The kind aliases this scope declares itself (``rk = r4``), for the
+        # consumers that resolve a kind by name at a use site.
+        "kind_map": local_kinds,
         "present_calls": sorted(set(present_args)),
         "calls": sorted({c for c in calls if c != name}),
         # What the body reaches outside this module (see above).

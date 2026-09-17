@@ -72,6 +72,36 @@ REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re
 NEWFORM_ARRAY = re.compile(r"\[\s*(.*?)\s*\]", re.S)
 
 
+SINGLE_PRECISION = frozenset({"float32", "complex64"})
+
+
+def _single_precision_entities(subprogram: dict[str, Any]) -> list[str]:
+    """The entities a subprogram declares in a single-precision kind, each
+    spelled ``role name (dtype)`` -- dummies, the result, locals and local
+    parameters, in that order. Empty for a routine this renderer can spell.
+
+    A ``real`` with no kind is the default real, single in every build the
+    engine targets; ``real(r4)`` is single where the tree or the extension
+    said ``r4`` is; ``real(rk)`` with a routine-local ``rk = r4`` resolves
+    through the frontend's scope aliases. An unresolved kind is not single:
+    it is unknown, and named as such elsewhere.
+    """
+    found: list[str] = []
+    for argument in subprogram.get("args") or []:
+        if argument.get("dtype") in SINGLE_PRECISION:
+            found.append(f"dummy {argument['name']} ({argument['dtype']})")
+    if subprogram.get("result_dtype") in SINGLE_PRECISION:
+        found.append(f"result {subprogram.get('result')} ({subprogram['result_dtype']})")
+    parameters = {p["name"] for p in subprogram.get("local_parameters") or []}
+    for local in subprogram.get("locals") or []:
+        if local["name"] not in parameters and local.get("dtype") in SINGLE_PRECISION:
+            found.append(f"local {local['name']} ({local['dtype']})")
+    for parameter in subprogram.get("local_parameters") or []:
+        if parameter.get("dtype") in SINGLE_PRECISION:
+            found.append(f"parameter {parameter['name']} ({parameter['dtype']})")
+    return found
+
+
 def _literal_array(inner: str) -> str | None:
     """A ``[ ... ]`` constructor of nothing but literals, rendered element by
     element at the precision the compiler evaluated each in, or ``None``.
@@ -392,7 +422,17 @@ class Subprograms:
             intrinsics={k: v for k, v in self.intrinsics.items() if isinstance(v, dict)},
             elemental=_is_elemental(semantics.subprogram),
             allocated_bounds=allocated,
-            kind_map={k.lower(): v for k, v in (self.record.get("kind_map") or {}).items()},
+            kind_map={
+                k.lower(): v
+                for table in (
+                    self.record.get("kind_map") or {},
+                    # The routine's own aliases (``integer, parameter :: rk = r4``)
+                    # over the module's, the way the frontend typed its
+                    # declarations.
+                    semantics.subprogram.get("kind_map") or {},
+                )
+                for k, v in table.items()
+            },
         )
         return self.statements_class(
             semantics,
@@ -767,6 +807,28 @@ class Subprograms:
             lines.extend(emitted)
             for reason in pending:
                 refusals.append((reason, low, high))
+
+        # A routine declared in single precision is refused whole, before
+        # anything of it is emitted. This renderer has no single-precision
+        # arithmetic: every real it spells is a float64, and a body whose
+        # dummies, result, locals or parameters are real(4) would compute
+        # the double where the Fortran rounds to single at every store. The
+        # constants fold already refuses a single-precision *fold* on that
+        # ground; the routine is the same fact at a larger scale (#97).
+        singles = _single_precision_entities(subprogram)
+        if singles:
+            reason = (
+                f"single-precision subprogram: {', '.join(singles)}; "
+                "this translation has no single-precision arithmetic"
+            )
+            _emit(
+                [
+                    f"    # AGENT_QUEUE: {reason}",
+                    f"    raise NotImplementedError({reason!r})",
+                ],
+                [reason],
+            )
+            return lines
 
         # intent(out)-only arguments are NOT parameters (return convention):
         # the function owns their buffers. Arrays go through

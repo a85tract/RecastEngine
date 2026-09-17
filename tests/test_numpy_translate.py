@@ -427,8 +427,8 @@ module search_mod
 contains
   subroutine first_above( n, z, zmax, k_found, k_scan )
     integer, intent(in) :: n
-    real, dimension(n), intent(in) :: z
-    real, intent(in) :: zmax
+    real(8), dimension(n), intent(in) :: z
+    real(8), intent(in) :: zmax
     integer, intent(out) :: k_found, k_scan
     integer :: k, kk
     do k = 1, n
@@ -491,8 +491,8 @@ module lapack_wrap
 contains
   subroutine band_solvex( n, a, x )
     integer, intent(in) :: n
-    real, intent(inout) :: a(n)
-    real, intent(out) :: x(n)
+    real(8), intent(inout) :: a(n)
+    real(8), intent(out) :: x(n)
     x = a
   end subroutine band_solvex
 end module lapack_wrap
@@ -505,9 +505,9 @@ module solver_mod
 contains
   subroutine solve( method, n, m, a, x )
     integer, intent(in) :: method, n, m
-    real, intent(inout) :: a(n)
-    real, intent(out) :: x(n)
-    real :: work(n, max(2, m))
+    real(8), intent(inout) :: a(n)
+    real(8), intent(out) :: x(n)
+    real(8) :: work(n, max(2, m))
     work = 0.0
     if ( method == 1 ) then
       call band_solvex( n, a, x )
@@ -565,17 +565,17 @@ module relay_mod
   implicit none
 contains
   subroutine inner( x, y, rc )
-    real, intent(in) :: x
-    real, intent(out) :: y
-    real, intent(out), optional :: rc
+    real(8), intent(in) :: x
+    real(8), intent(out) :: y
+    real(8), intent(out), optional :: rc
     y = 2.0 * x
     if ( present(rc) ) rc = 1.0 / x
   end subroutine inner
   subroutine outer( x, y, rc, scale )
-    real, intent(in) :: x
-    real, intent(out) :: y
-    real, intent(out), optional :: rc
-    real, intent(in), optional :: scale
+    real(8), intent(in) :: x
+    real(8), intent(out) :: y
+    real(8), intent(out), optional :: rc
+    real(8), intent(in), optional :: scale
     call inner( x, y, rc = rc )
     if ( present(scale) ) y = y * scale
   end subroutine outer
