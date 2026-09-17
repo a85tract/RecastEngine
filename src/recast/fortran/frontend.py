@@ -601,9 +601,10 @@ class FortranFrontend(Frontend):
             # held (ELM's ``get_step_size()`` off the ESMF clock), not a call
             # the translation can answer: it goes on the record as a
             # recorded input of the unit, and the flat plan carries it (#96).
-            record["framework_inputs"] = sorted(
-                framework_inputs, key=lambda e: (e["module"], e["name"])
-            )
+            # Once per function: a unit's subprograms each ``use`` the module
+            # for themselves (CanopyHydrology imports get_step_size twice).
+            distinct = {(e["module"], e["name"]): e for e in framework_inputs}
+            record["framework_inputs"] = [distinct[key] for key in sorted(distinct)]
         if assumed_stubs:
             record["stub_procedures_assumed"] = {
                 module: sorted(names) for module, names in sorted(assumed_stubs.items())
