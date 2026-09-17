@@ -780,9 +780,9 @@ class Semantics:
             return self.integral_real_literal(node.children[1])
         children = getattr(node, "children", None)
         if children and len(children) == 2 and str(children[0]) in ("+", "-"):
-            value = self.integral_real_literal(children[1])
-            if value is not None:
-                return -value if str(children[0]) == "-" else value
+            inner = self.integral_real_literal(children[1])
+            if inner is not None:
+                return -inner if str(children[0]) == "-" else inner
         return None
 
     # -- dispatch -------------------------------------------------------------
