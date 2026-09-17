@@ -19,7 +19,15 @@ What a stand-in carries:
   drives the translation to fill;
 * for a framework module, whatever the caller's ``framework`` table says a
   standalone run answers -- ``endrun`` raises, the kinds are NumPy dtypes.
-  That table is the one piece of knowledge here, and it is the caller's.
+  That table is the one piece of knowledge here, and it is the caller's;
+* for an argument-less function of the module the unit calls
+  (``framework_inputs``: ELM's ``get_step_size()``), a function that answers
+  from ``_answers`` -- what the flat adapter set from the recording -- and
+  raises, naming the rule, when nothing set it. The framework table wins
+  where it defines the same name (#96).
+
+A name the stand-in does not define raises an ``AttributeError`` that says
+what a stub module can answer, rather than the bare one.
 
 A name the tree initializes with something ``resolve`` cannot evaluate --
 ``selected_real_kind(12)``, a namelist default read at run time -- is
@@ -105,12 +113,15 @@ def stand_ins(
     modules: frozenset[str],
     framework: dict[str, str] | None = None,
     kind_assumptions: dict[str, str] | None = None,
+    framework_inputs: list[dict[str, str]] | None = None,
 ) -> tuple[dict[Path, bytes], dict[str, Any]]:
     """Files for every ``import X_numpy`` in ``emitted`` that ``existing`` lacks.
 
     ``modules`` are the tree's stub and constants modules, whose files are
     the resolver's search path; ``framework`` maps a module name to the
-    Python text a standalone run answers its calls with. Returns
+    Python text a standalone run answers its calls with;
+    ``framework_inputs`` are the unit record's -- the argument-less
+    functions of stub modules it calls, ``{module, name, dtype}``. Returns
     ``(files, report)``; the report says per module what was resolved and
     what was skipped, for ``Candidate.notes``.
     """
@@ -118,6 +129,9 @@ def stand_ins(
 
     framework = framework or {}
     kinds = kind_assumptions or {}
+    recorded: dict[str, list[dict[str, str]]] = {}
+    for given in framework_inputs or []:
+        recorded.setdefault(str(given["module"]).lower(), []).append(given)
     files: dict[Path, bytes] = {}
     report: dict[str, Any] = {}
     search = module_sources(root, modules)
@@ -171,9 +185,67 @@ def stand_ins(
                 pieces.extend(f"{name} = _Record()" for name in state)
                 pieces.append("")
                 entry["state"] = state
+        answered = [
+            e
+            for e in recorded.get(module, [])
+            if not _framework_defines(framework.get(module, ""), str(e["name"]))
+        ]
+        if answered:
+            pieces.extend(_recorded_functions(module, answered))
+            entry["framework_inputs"] = [str(e["name"]) for e in answered]
         if module in framework:
             pieces.append(framework[module])
             entry["framework"] = True
+        pieces.extend(_unknown_name_guard(module))
         files[Path(filename)] = ("\n".join(pieces) + "\n").encode()
         report[module] = entry
     return files, report
+
+
+def _framework_defines(text: str, name: str) -> bool:
+    """Whether the framework table's text for a module binds ``name``."""
+    pattern = rf"^\s*(?:def\s+{re.escape(name)}\s*\(|{re.escape(name)}\s*=)"
+    return re.search(pattern, text, re.M) is not None
+
+
+def _recorded_functions(module: str, entries: list[dict[str, str]]) -> list[str]:
+    """The argument-less functions of a stub module, answering from what the
+    flat adapter set (``_answers``) and refusing by name otherwise."""
+    lines = [
+        "# Recorded inputs: the value the run held for each argument-less function",
+        "# of this module the unit calls, set by the flat adapter before the body",
+        "# runs (the plan's ``<module>__<function>``; RecastEngine #96).",
+        "_answers = {}",
+        "",
+        "",
+    ]
+    for entry in entries:
+        name = str(entry["name"])
+        flat = f"{module}__{name}"
+        lines += [
+            f"def {name}():",
+            f"    if {name!r} in _answers:",
+            f"        return _answers[{name!r}]",
+            "    raise RuntimeError(",
+            f'        "{module}.{name}: argument-less framework function; no framework answer "',
+            f'        "and no recorded input -- the flat plan carries it as {flat}, and the "',
+            f'        "adapter sets {module}_numpy._answers[{name!r}] from the recording"',
+            "    )",
+            "",
+            "",
+        ]
+    return lines
+
+
+def _unknown_name_guard(module: str) -> list[str]:
+    """A module-level ``__getattr__`` (PEP 562): a call into a name the
+    stand-in does not carry says what it is, instead of a bare AttributeError
+    at the first trace."""
+    return [
+        "def __getattr__(name):",
+        "    raise AttributeError(",
+        f"        f'{module}.{{name}}: not carried by this stand-in -- a stub module answers '",
+        "        'only its resolved constants, the framework table, and the recorded '",
+        "        'argument-less functions of the plan (RecastEngine #96)'",
+        "    )",
+    ]

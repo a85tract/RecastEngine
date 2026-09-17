@@ -83,6 +83,10 @@ USE_STATEMENT = re.compile(
 )
 """Both spellings, including ``USE, INTRINSIC :: iso_fortran_env``."""
 
+FRAMEWORK_INPUT_DTYPES = frozenset({"float64", "float32", "int32", "bool", "str"})
+"""The result kinds an argument-less function of a stub module is recorded
+in: the scalars a flat signature declares (#96)."""
+
 ONLY_ITEM = re.compile(r"^\s*(?:[\w.]+\s*=>\s*)?(\w+)\s*$")
 """One entry of an ``ONLY`` list, reduced to the name the *used* module knows
 it by -- the right-hand side of a rename. Entries that are not a plain
@@ -586,11 +590,20 @@ class FortranFrontend(Frontend):
         # stub module's own record says which names are procedures; a stub
         # the tree does not carry is taken at its import list.
         assumed_stubs: dict[str, list[str]] = {}
-        stub_procedures = self._stub_procedures(record, Path(root), assumed_stubs)
+        framework_inputs: list[dict[str, str]] = []
+        stub_procedures = self._stub_procedures(record, Path(root), assumed_stubs, framework_inputs)
         for name in stub_procedures:
             stubbed = {"kind": "subroutine", "out_positions": [], "buffer_positions": []}
             externals.setdefault(name, {**stubbed, "stub": True})
         record = {**record, "stub_procedures": sorted(stub_procedures)}
+        if framework_inputs:
+            # An argument-less function of a stub module is a value the run
+            # held (ELM's ``get_step_size()`` off the ESMF clock), not a call
+            # the translation can answer: it goes on the record as a
+            # recorded input of the unit, and the flat plan carries it (#96).
+            record["framework_inputs"] = sorted(
+                framework_inputs, key=lambda e: (e["module"], e["name"])
+            )
         if assumed_stubs:
             record["stub_procedures_assumed"] = {
                 module: sorted(names) for module, names in sorted(assumed_stubs.items())
@@ -796,13 +809,23 @@ class FortranFrontend(Frontend):
         return found
 
     def _stub_procedures(
-        self, record: dict[str, Any], root: Path, assumed: dict[str, list[str]] | None = None
+        self,
+        record: dict[str, Any],
+        root: Path,
+        assumed: dict[str, list[str]] | None = None,
+        framework_inputs: list[dict[str, str]] | None = None,
     ) -> set[str]:
         """The local names this unit imports from stubbed modules that are
         procedures of theirs -- calls the translation stubs. A stub module the
         tree does not carry contributes every name it is imported for unless
         ``stub_procedure_names`` says otherwise, and ``assumed`` (when given)
-        collects those names per module."""
+        collects those names per module.
+
+        ``framework_inputs`` (when given) collects, per import, the
+        procedures that are *functions with no dummy arguments* of a stub
+        module the tree carries -- ``{module, name, local, dtype}``, the
+        result's dtype -- because such a function is a value the run held
+        rather than an action a stub can stand in for (#96)."""
         from recast.fortran import interface as interface_mod
 
         index = self._module_index(root.resolve())
@@ -820,11 +843,22 @@ class FortranFrontend(Frontend):
             }
             source = index.get(module)
             procedures = None
+            argless: dict[str, str] = {}
             if source is not None:
                 record_of = self._readable(source, interface_mod.extract, module)
                 if record_of is not None:
                     procedures = {str(sub["name"]).lower() for sub in record_of["subprograms"]}
                     procedures |= {g.lower() for g in record_of.get("generics") or {}}
+                    # A result the flat signature can carry, only: a function
+                    # returning a derived type (ESMF's clock time) stays a
+                    # stub call the stand-in refuses by name at run time.
+                    argless = {
+                        str(sub["name"]).lower(): str(sub.get("result_dtype"))
+                        for sub in record_of["subprograms"]
+                        if sub.get("kind") == "function"
+                        and not sub.get("args")
+                        and str(sub.get("result_dtype")) in FRAMEWORK_INPUT_DTYPES
+                    }
             if procedures is None and module in self.stub_procedure_names:
                 # The tree does not carry the module; the operator says
                 # which of its names are procedures (CLUBB's ``netcdf``).
@@ -842,6 +876,15 @@ class FortranFrontend(Frontend):
                     assumed.setdefault(module, []).append(local)
                 elif remote in procedures:
                     names.add(local)
+                    if remote in argless and framework_inputs is not None:
+                        framework_inputs.append(
+                            {
+                                "module": module,
+                                "name": remote,
+                                "local": local,
+                                "dtype": argless[remote],
+                            }
+                        )
         return names
 
     def _companions(
