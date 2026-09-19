@@ -27,10 +27,14 @@ from recast.fortran.expr import (
     real_kind_of,
     substitute,
 )
+from recast.fortran.tree import source_text
 
 
 class UnresolvedConstant(RecastError):
     """A use-imported name whose initializer is in none of the given sources."""
+
+
+_HARVESTS: dict[int, tuple[Any, dict[str, tuple[Any, int | None, str | None, str | None]]]] = {}
 
 
 def harvest(path: Path) -> dict[str, tuple[Any, int | None, str | None, str | None]]:
@@ -43,8 +47,23 @@ def harvest(path: Path) -> dict[str, tuple[Any, int | None, str | None, str | No
     constant that a physics module reads is a constant whether or not the
     author spelled ``parameter``. A stub file may hold several modules, so all
     of them are harvested.
+
+    Once per parsed tree: a stand-in resolves each of its module's names on
+    its own, and every resolution used to re-harvest every source on the
+    search path. The parse cache keeps a tree for the process's life, so
+    its identity is the key; the tree is kept beside the table so the
+    identity cannot be reused. Callers read the table and do not write to it.
     """
     ast = parse(path)
+    cached = _HARVESTS.get(id(ast))
+    if cached is not None and cached[0] is ast:
+        return cached[1]
+    out = _harvest(ast)
+    _HARVESTS[id(ast)] = (ast, out)
+    return out
+
+
+def _harvest(ast: Any) -> dict[str, tuple[Any, int | None, str | None, str | None]]:
     out: dict[str, tuple[Any, int | None, str | None, str | None]] = {}
     for mod in walk(ast, f03.Module):
         spec = next((c for c in mod.children if isinstance(c, f03.Specification_Part)), None)
@@ -127,7 +146,7 @@ def _kind_tables(
     for path in sources:
         own = dict(shared)
         try:
-            text = path.read_text(errors="replace")
+            text = source_text(path)
         except OSError:
             tables[path] = own
             continue
@@ -168,6 +187,46 @@ def declared_dtype(
     return parts
 
 
+_INDEXES: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+
+
+def _index(sources: list[Path], kind_assumptions: dict[str, str] | None) -> tuple[Any, ...]:
+    """``(table, origin, kinds_of, declared_kinds)`` over the search path:
+    every initialized entity the sources declare, which file declares it,
+    the kind table each file sees, and each entity's declared dtype. A pure
+    function of the sources' revisions and the assumed kinds, and the whole
+    of what ``resolve`` does before it follows a name -- so it is built once
+    per (search path revision, kinds) rather than once per name asked for."""
+    key = (
+        tuple((str(path), *_revision(path)) for path in sources),
+        tuple(sorted((k.lower(), v) for k, v in (kind_assumptions or {}).items())),
+    )
+    cached = _INDEXES.get(key)
+    if cached is not None:
+        return cached
+    table: dict[str, tuple[Any, int | None, str | None, str | None]] = {}
+    origin: dict[str, Path] = {}
+    for path in sources:
+        for name, rec in harvest(path).items():
+            table[name] = rec
+            origin[name] = path
+    kinds_of = _kind_tables(table, origin, sources, kind_assumptions)
+    declared_kinds = {
+        name: declared_dtype(declared, kind_spelling, kinds_of[origin[name]])
+        for name, (_node, _line, declared, kind_spelling) in table.items()
+    }
+    built = _INDEXES[key] = (table, origin, kinds_of, declared_kinds)
+    return built
+
+
+def _revision(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (-1, -1)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def resolve(
     symbols: list[str], sources: list[Path], kind_assumptions: dict[str, str] | None = None
 ) -> list[dict[str, Any]]:
@@ -185,17 +244,7 @@ def resolve(
     constant that silently becomes undefined downstream is far more expensive to
     diagnose than a failure here that names it.
     """
-    table: dict[str, tuple[Any, int | None, str | None, str | None]] = {}
-    origin: dict[str, Path] = {}
-    for path in sources:
-        for name, rec in harvest(path).items():
-            table[name] = rec
-            origin[name] = path
-    kinds_of = _kind_tables(table, origin, sources, kind_assumptions)
-    declared_kinds = {
-        name: declared_dtype(declared, kind_spelling, kinds_of[origin[name]])
-        for name, (_node, _line, declared, kind_spelling) in table.items()
-    }
+    table, origin, kinds_of, declared_kinds = _index(sources, kind_assumptions)
 
     requested = [s.strip().lower() for s in symbols if s.strip()]
     ordered: list[dict[str, Any]] = []

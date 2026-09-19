@@ -22,6 +22,7 @@ reports 96% coverage of a source tree it never read.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
@@ -254,6 +255,10 @@ def _derived_out_as_inout(records: list[dict[str, Any]]) -> list[str]:
     return corrected
 
 
+_DISCOVERED: dict[tuple[Any, ...], list[Unit]] = {}
+_FACTS: dict[tuple[Any, ...], Facts] = {}
+
+
 class FortranFrontend(Frontend):
     """Fortran 2008 as parsed by fparser2.
 
@@ -384,9 +389,21 @@ class FortranFrontend(Frontend):
             "flatten": self.flatten if isinstance(self.flatten, dict) else bool(self.flatten),
         }
 
+    def _tree_key(self, root: Path) -> tuple[str, str, tuple[tuple[str, int, int], ...]]:
+        """What the answers below are a function of: this frontend's
+        configuration, the root, and the revision of every file under it."""
+        from recast.fortran.tree import revision
+
+        resolved = Path(root).resolve()
+        return (json.dumps(self.configuration(), sort_keys=True), str(resolved), revision(resolved))
+
     def discover(self, root: Path) -> Iterable[Unit]:
         _require_fparser()
-        return list(self._walk(Path(root)))
+        key = self._tree_key(root)
+        units = _DISCOVERED.get(key)
+        if units is None:
+            units = _DISCOVERED[key] = list(self._walk(Path(root)))
+        return list(units)
 
     def _walk(self, root: Path) -> Iterator[Unit]:
         for path in sorted(root.rglob("*")):
@@ -456,6 +473,28 @@ class FortranFrontend(Frontend):
 
     def analyze(self, unit: Unit, root: Path) -> Facts:
         _require_fparser()
+        # Once per (frontend configuration, tree revision, unit), process-wide.
+        # The transforms rebuild the frontend from a unit's provenance to
+        # analyze its companions, the NumPy bundling and the JAX port each
+        # for themselves, and a tree's companions are shared between its
+        # units; without this every companion was analyzed several times per
+        # unit, and the analysis -- the flat plans above all -- is most of a
+        # port's wall clock. The Facts are shared and nothing writes to them
+        # after this returns. A refusal is not cached: it is raised again.
+        key = (
+            *self._tree_key(root),
+            unit.uid,
+            unit.kind,
+            tuple(str(s) for s in unit.sources),
+            unit.parent,
+            json.dumps(unit.attrs, sort_keys=True, default=str),
+        )
+        facts = _FACTS.get(key)
+        if facts is None:
+            facts = _FACTS[key] = self._analyze(unit, root)
+        return facts
+
+    def _analyze(self, unit: Unit, root: Path) -> Facts:
         from recast.fortran import constants as constants_mod
         from recast.fortran import interface as interface_mod
         from recast.fortran._parse import STD, digest, f03

@@ -28,6 +28,7 @@ two apart, which is the whole difference between an override and a guess.
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -35,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from recast.errors import RecastError
-from recast.fortran._parse import f03, f08, parse, walk
+from recast.fortran._parse import digest, f03, f08, parse, walk
 
 INTENTS = frozenset({"IN", "OUT", "INOUT"})
 
@@ -1617,7 +1618,47 @@ def submodule_parent(ast: Any) -> str | None:
     return str(walk(statement.children[0], f03.Name)[0]).lower()
 
 
+_RECORDS: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
 def extract(
+    path: Path,
+    *,
+    kind_assumptions: dict[str, str] | None = None,
+    intent_overrides: dict[str, Any] | None = None,
+    buffer_out_arrays: str = "unsizable",
+    scope: str | None = None,
+) -> dict[str, Any]:
+    """Full interface record for one program unit of a Fortran source file:
+    ``_extract`` below, cached on the file's content digest and every
+    argument. The record is a pure function of those, and a run asks for
+    the same file's record from several places -- the frontend for the unit
+    and each companion, the flat planner for every type's module and every
+    module whose state a call reaches, the constants lookup for every
+    parameter's module -- so one extraction per revision is what a run pays.
+    Callers share the returned record and do not write to it.
+    """
+    key = (
+        str(path),
+        digest(path),
+        tuple(sorted((k.lower(), v) for k, v in (kind_assumptions or {}).items())),
+        json.dumps(intent_overrides or {}, sort_keys=True, default=str),
+        buffer_out_arrays,
+        scope,
+    )
+    record = _RECORDS.get(key)
+    if record is None:
+        record = _RECORDS[key] = _extract(
+            path,
+            kind_assumptions=kind_assumptions,
+            intent_overrides=intent_overrides,
+            buffer_out_arrays=buffer_out_arrays,
+            scope=scope,
+        )
+    return record
+
+
+def _extract(
     path: Path,
     *,
     kind_assumptions: dict[str, str] | None = None,
