@@ -35,6 +35,7 @@ from recast.model import Candidate, Facts, Patch, Unit, Verdict
 from recast.observe import RunEventAction, RunEventEntity, RunObserver
 from recast.plugins.recipe import Recipe, Stage
 from recast.registry import REGISTRY, Registry
+from recast.workspace_resources import resolve_workspace_resources
 from recast.run import (
     StageOutcome,
     UnitRun,
@@ -1441,24 +1442,17 @@ def _verification_run(
         copied = _json_value(stage.config, f"verification stage {stage.plugin}.config")
         if not isinstance(copied, dict):  # VerificationStage makes this defensive only.
             raise ConfigError(f"verification stage {stage.plugin!r} config must be an object")
+        # The frozen plan keeps the portable ``{"$workspace": "..."}`` form;
+        # only the call is given a path, and only for the workspace this
+        # verification was handed. Resolved lazily below, once that workspace
+        # exists.
         return cast(dict[str, Any], copied)
 
-    executor: Any = None
-    executor_name = ""
-    if executor_stages:
-        executor_stage = executor_stages[0]
-        try:
-            executor = safe_registry.get("executor", executor_stage.plugin)(
-                **stage_config(executor_stage)
-            )
-        finally:
-            _require_bundle_unchanged(
-                original_bundle,
-                bundle,
-                bundle_snapshot,
-                f"executor {executor_stage.plugin!r}",
-            )
-        executor_name = executor_stage.plugin
+    def resolved_stage_config(stage: Stage) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            resolve_workspace_resources(stage_config(stage), verification_workspace),
+        )
 
     resolved_root = Path(root).resolve()
     runtime_config: dict[str, Any] = {}
@@ -1471,6 +1465,27 @@ def _verification_run(
         else destination / f"{recipe.name}-verification"
     )
     verification_workspace.mkdir(parents=True, exist_ok=True)
+
+    executor: Any = None
+    executor_name = ""
+    if executor_stages:
+        executor_stage = executor_stages[0]
+        try:
+            # Resolved, like every other stage: the workspace is chosen above
+            # so an executor that declares a workspace resource is handed a
+            # path rather than the declaration.
+            executor = safe_registry.get("executor", executor_stage.plugin)(
+                **resolved_stage_config(executor_stage)
+            )
+        finally:
+            _require_bundle_unchanged(
+                original_bundle,
+                bundle,
+                bundle_snapshot,
+                f"executor {executor_stage.plugin!r}",
+            )
+        executor_name = executor_stage.plugin
+
     oracle_cache: dict[str, Any] = {}
     results: dict[str, UnitRun] = {}
 
@@ -1478,7 +1493,7 @@ def _verification_run(
         return {
             "root": resolved_root,
             "output": destination,
-            **stage_config(stage),
+            **resolved_stage_config(stage),
         }
 
     def walk_one(
