@@ -228,3 +228,40 @@ def test_a_rank_one_right_hand_side_is_the_one_column_of_the_contract() -> None:
     assert not np.array_equal(b_vec, rhs), "the solution was written into the caller's array"
     with pytest.raises(SystemExit):
         side["dgbsv"](3, 1, 1, 2, ab.copy(order="F"), 4, ipiv.copy(), rhs.copy(), 3, 0)
+
+
+# --- what a set of records reaches, and what defines it ----------------------
+
+
+RECORDS = [
+    {
+        "module": "band",
+        "subprograms": [
+            {"name": "solve", "calls": [], "external_calls": ["dgbsv", "max"]},
+            {"name": "outer", "calls": ["solve"], "external_calls": []},
+            {"name": "plain", "calls": [], "external_calls": ["sqrt"]},
+        ],
+        "interfaces": {},
+    },
+    {
+        "module": "lapack",
+        "subprograms": [],
+        "interfaces": {"dgesv": {"name": "dgesv", "kind": "subroutine"}},
+    },
+]
+
+
+def test_a_procedure_declared_or_called_bare_and_defined_nowhere_is_stood_in() -> None:
+    """A bare ``call dgbsv`` (ELM) and an interface-only ``dgesv`` (the
+    corpus's lapack module) are both stood in for; an intrinsic in the
+    generous ``external_calls`` list is not, and neither is a name the
+    operator's externals shim answers."""
+    assert references.stood_in(RECORDS) == ["dgbsv", "dgesv"]
+    assert references.stood_in(RECORDS, defined_elsewhere={"dgbsv"}) == ["dgesv"]
+    defined = [*RECORDS, {"module": "mine", "subprograms": [{"name": "dgbsv", "calls": []}]}]
+    assert references.stood_in(defined) == ["dgesv"]
+
+
+def test_reaching_closes_over_the_call_graph() -> None:
+    assert references.reaching(RECORDS, {"dgbsv"}) == {"solve": "dgbsv", "outer": "dgbsv"}
+    assert references.reaching(RECORDS, {"dgesv"}) == {}

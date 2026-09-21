@@ -777,36 +777,10 @@ def undefined_externals(records: list[dict[str, Any]], extras: list[Path]) -> li
     return sorted(declared - defined)
 
 
-def reaching(records: list[dict[str, Any]], targets: set[str]) -> dict[str, str]:
-    """Subprogram name -> the undefined procedure it reaches, directly or not.
-
-    ``spline3`` calls ``spline3pars``, which calls ``dgesv``; neither can be
-    run against a reference whose ``dgesv`` is a refusal, and only this
-    closure says so about the first one.
-    """
-    edges: dict[str, set[str]] = {}
-    for record in records:
-        for subprogram in record["subprograms"]:
-            name = str(subprogram["name"]).lower()
-            edges.setdefault(name, set()).update(
-                str(callee).lower()
-                for callee in (*subprogram["calls"], *subprogram.get("external_calls", ()))
-            )
-    found: dict[str, str] = {}
-    for name in edges:
-        seen: set[str] = set()
-        pending = [name]
-        while pending:
-            current = pending.pop()
-            for callee in sorted(edges.get(current, ())):
-                if callee in targets:
-                    found.setdefault(name, callee)
-                    pending = []
-                    break
-                if callee not in seen:
-                    seen.add(callee)
-                    pending.append(callee)
-    return found
+reaching = references.reaching
+"""Subprogram name -> the undefined procedure it reaches, directly or not; the
+closure lives beside the reference implementations because the translation
+asks the same question of the same records (``Candidate.notes["references"]``)."""
 
 
 def unresolved_stubs(names: list[str]) -> str:

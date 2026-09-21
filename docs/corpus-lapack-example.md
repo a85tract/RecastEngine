@@ -171,6 +171,32 @@ caller as one the differential holds no reference for, and the unit passes
 with its two headline subprograms never compared -- which is what it did until
 `verify_recipe_candidates` learned to read the ungated list.
 
+"On both sides" is the clause that makes the claim bit-exact, and it holds
+only for a reference recast builds. A reference that *replays a recording*
+ran the real library, and the translation's stand-in does the same
+elimination in textbook order, which a blocked LAPACK does not -- so the
+subprograms whose numbers pass through the solve cannot be bit-exact against
+it, however right the translation around it is. ELM's `SoilTemperature` is
+the case (RecastEngine-Pro #109): 1,926,692 of 1,929,936 points bit-exact,
+the 3,244 that were not all downstream of `dgbsv` at 1.9e-11 relative. The
+transform records which procedures it stood in for and which subprograms
+reach them (`notes["references"]["stood_in"]`), and the gate reports them
+under `stood_in` on the verdict's metrics with the comparison's numbers over
+exactly those subprograms:
+
+```text
+... and no rtol excuses them; every differing point is downstream of dgbsv,
+stood in for by recast's own reference implementation on the candidate side
+only, the reference having run the library's (max_rel=1.923e-11 there), and
+no stood_in_rtol excuses them
+```
+
+`stood_in_rtol` is the operator's grant, in the stage's config, of a relative
+tolerance to those subprograms and no others; with it the verdict is
+`toleranced`, says how many points outside the solve were bit-exact, and
+states the tolerance. A difference in a subprogram that never reaches the
+stand-in fails as before, whatever was granted.
+
 ### The read/write check, and what it is actually reporting
 
 The verdict lists 13 blocks of 229, and they are all one shape:

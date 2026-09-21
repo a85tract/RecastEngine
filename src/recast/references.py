@@ -56,7 +56,9 @@ __all__ = [
     "fortran_for",
     "interface",
     "python_for",
+    "reaching",
     "reason",
+    "stood_in",
     "supported",
 ]
 
@@ -385,6 +387,64 @@ def supported(names: Iterable[str]) -> list[str]:
 def reason(name: str) -> str:
     """What the evidence says about a name this stood in for."""
     return f"{name}: {REASON}"
+
+
+def stood_in(records: Iterable[dict[str, Any]], defined_elsewhere: Iterable[str] = ()) -> list[str]:
+    """Which of ``SUPPORTED`` a set of interface records reaches and none defines.
+
+    The records are a unit's own and its companions', the same set the
+    reference build compiles from. A name counts when some record declares it
+    through an INTERFACE block (``use lapack, only: dgbsv``) or calls it bare
+    (ELM's ``call dgbsv(...)``, declared nowhere), and no record has a body
+    for it; ``defined_elsewhere`` is the operator's audited externals shim,
+    whose names the translation calls instead of these.
+    """
+    declared: set[str] = set()
+    defined: set[str] = set()
+    for record in records:
+        defined |= {str(s["name"]).lower() for s in record.get("subprograms") or ()}
+        for names in (record.get("submodules") or {}).values():
+            defined |= {str(name).lower() for name in names}
+        for entry in (record.get("interfaces") or {}).values():
+            if isinstance(entry, dict) and entry.get("kind") in ("subroutine", "function"):
+                declared.add(str(entry["name"]).lower())
+        for subprogram in record.get("subprograms") or ():
+            declared |= {str(name).lower() for name in subprogram.get("external_calls") or ()}
+    shimmed = {str(name).lower() for name in defined_elsewhere}
+    return sorted((declared & SUPPORTED) - defined - shimmed)
+
+
+def reaching(records: Iterable[dict[str, Any]], targets: set[str]) -> dict[str, str]:
+    """Subprogram name -> the procedure in ``targets`` it reaches, directly or not.
+
+    ``spline3`` calls ``spline3pars``, which calls ``dgesv``; only this
+    closure says so about the first one. The oracle uses it to disclaim the
+    callers of a procedure it could not define, and the translation to say
+    which subprograms' numbers pass through a procedure it stood in for.
+    """
+    edges: dict[str, set[str]] = {}
+    for record in records:
+        for subprogram in record.get("subprograms") or ():
+            name = str(subprogram["name"]).lower()
+            edges.setdefault(name, set()).update(
+                str(callee).lower()
+                for callee in (*subprogram.get("calls", ()), *subprogram.get("external_calls", ()))
+            )
+    found: dict[str, str] = {}
+    for name in edges:
+        seen: set[str] = set()
+        pending = [name]
+        while pending:
+            current = pending.pop()
+            for callee in sorted(edges.get(current, ())):
+                if callee in targets:
+                    found.setdefault(name, callee)
+                    pending = []
+                    break
+                if callee not in seen:
+                    seen.add(callee)
+                    pending.append(callee)
+    return found
 
 
 def interface(name: str) -> dict[str, Any]:
