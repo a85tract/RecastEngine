@@ -74,7 +74,7 @@ SKIP_DIRS = {
 # This file necessarily contains the patterns it forbids.
 SELF = Path(__file__).resolve()
 
-EXEMPT = {"NOTICE"}
+EXEMPT = {"NOTICE", "replacements.txt"}
 """Files a rule does not reach, by name and for a stated reason.
 
 ``NOTICE`` is an Apache-2.0 attribution record. Naming where a relayed body of
@@ -82,6 +82,12 @@ work came from is the whole function of the file, and a link an outside reader
 cannot follow is a smaller cost than a record that does not say whose work it
 is. Exempted by path rather than by an inline marker: a comment syntax
 borrowed from source code does not belong in a legal notice.
+
+``tools/export/replacements.txt`` is the export's substitution table: its
+left-hand sides are the very names the ``private-repo`` rules forbid, because
+rewriting them out of the published tree is what the file is for. Like this
+checker, it necessarily contains what it removes; a line-by-line marker would
+corrupt the table's ``old==>new`` form.
 """
 
 
