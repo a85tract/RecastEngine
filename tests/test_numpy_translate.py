@@ -1155,3 +1155,49 @@ def test_spellings_the_gate_depends_on(shapes) -> None:
     # A rank-1 actual for ``vl(ldvl, *)`` fills the dummy in column-major order.
     assert "np.reshape(vl, (1, -1), order='F')" in text
     assert "xgeev('N', 'N', n, a, n, wr, wi, " in text
+
+
+BAND = """\
+module band_mod
+  implicit none
+contains
+  subroutine solve(n, ab, b)
+    integer, intent(in) :: n
+    double precision, intent(inout) :: ab(7, n), b(n)
+    integer :: ipiv(n), info
+    call dgbsv(n, 2, 2, 1, ab, 7, ipiv, b, n, info)
+  end subroutine solve
+  subroutine outer(n, ab, b)
+    integer, intent(in) :: n
+    double precision, intent(inout) :: ab(7, n), b(n)
+    call solve(n, ab, b)
+  end subroutine outer
+  function plain(x) result(y)
+    double precision, intent(in) :: x
+    double precision :: y
+    y = 2.0d0 * x
+  end function plain
+end module band_mod
+"""
+
+
+def test_the_notes_say_what_was_stood_in_for_and_who_reaches_it(tmp_path: Path) -> None:
+    """ELM's ``call dgbsv`` is declared nowhere and defined by recast's own
+    reference implementation (#109). A gate judging this candidate against a
+    reference that ran the library needs to know which subprograms' numbers
+    passed through the stand-in, and the transform is the one that knows."""
+    (tmp_path / "band_mod.f90").write_text(BAND)
+    frontend = FortranFrontend()
+    unit = next(u for u in frontend.discover(tmp_path) if u.uid == "fortran:band_mod")
+    facts = frontend.analyze(unit, tmp_path)
+    candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
+    assert candidate.deferred == []
+    assert candidate.notes["references"] == {"stood_in": {"dgbsv": ["outer", "solve"]}}
+
+
+def test_a_module_that_stood_nothing_in_carries_no_such_note(
+    root: Path, analyzed: tuple[Unit, Facts]
+) -> None:
+    unit, facts = analyzed
+    candidate = NumpyTranslation().apply(unit, facts, config_for(root))
+    assert "references" not in candidate.notes

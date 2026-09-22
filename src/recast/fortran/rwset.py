@@ -238,18 +238,35 @@ def _selector_dims(selector: Any, scope: Scope) -> Any:
     return record.get("allocated_dims") or record.get("dims")
 
 
-def lower_bound_reads(name: str, scope: Scope) -> set[str]:
-    """The names a subscript of ``name`` reads through its declared lower
-    bounds. ``rho(bounds%begp:bounds%endp, ...)`` then ``rho(p, ic)``: the
-    element's address is ``p - bounds%begp``, which the translation spells
-    out and the source computes silently. Both sides read ``bounds``."""
-    semantics = scope.semantics
-    if semantics is None:
-        return set()
-    declared = semantics.declaration(name) or {}
-    dims = scope.alias_dims.get(name) or declared.get("dims") or ()
+def _subscript_items(arglist: Any) -> list[Any]:
+    if arglist is None:
+        return []
+    return list(arglist.children) if hasattr(arglist, "children") else [arglist]
+
+
+def _bare_section(item: Any) -> bool:
+    """``:`` alone -- the whole axis, no edge spelled."""
+    return isinstance(item, f03.Subscript_Triplet) and all(c is None for c in item.children)
+
+
+def bound_reads(dims: Any, subscripts: list[Any] | None = None) -> set[str]:
+    """The names a subscript list reads through the declared lower bounds of
+    the axes it indexes.
+
+    ``rho(bounds%begp:bounds%endp, ...)`` then ``rho(p, ic)``: the element's
+    address is ``p - bounds%begp``, which the translation spells out and the
+    source computes silently. Both sides read ``bounds``. Per axis, the way
+    the translation spells it: an element or a section with an edge is
+    shifted by the axis's origin and reads the names in it; a bare ``:`` is
+    emitted as ``:`` and reads nothing (``bmatrix(begc:endc, :, :)`` over
+    an axis declared ``-nlevsno+1:`` does not read ``nlevsno``, and the
+    gate said it did -- #107). With no subscript list, every axis counts,
+    which is what an associate alias's dims need before the body is read.
+    """
     found: set[str] = set()
-    for dim in dims:
+    for axis, dim in enumerate(dims or ()):
+        if subscripts is not None and (axis >= len(subscripts) or _bare_section(subscripts[axis])):
+            continue
         lower = str(dim.get("lb") or "").strip()
         if not lower or re.fullmatch(r"-?\d+", lower):
             continue
@@ -261,6 +278,36 @@ def lower_bound_reads(name: str, scope: Scope) -> set[str]:
             # the translation spells each of them in the shift.
             found.add(name_)
     return found
+
+
+def lower_bound_reads(name: str, scope: Scope, subscripts: list[Any] | None = None) -> set[str]:
+    """``bound_reads`` for a plain array or an associate alias, by name."""
+    semantics = scope.semantics
+    if semantics is None:
+        return set()
+    declared = semantics.declaration(name) or {}
+    dims = scope.alias_dims.get(name) or declared.get("dims") or ()
+    return bound_reads(dims, subscripts)
+
+
+def component_bound_reads(data_ref: Any, scope: Scope) -> set[str]:
+    """``root%comp(subs)``: what its subscripts read through the component's
+    allocated -- or declared -- lower bounds, resolved the way the
+    translation resolves them (``_component_dims``: the root's type record,
+    the component's ``allocated_dims``). ELM's ``col_pp%z(c, 1)`` is
+    ``z[c - 1, (1) - (-nlevsno + 1)]`` on the target side, a read of
+    ``nlevsno`` the source made through the declaration alone; counted
+    only for aliases before, so every direct component subscript over a
+    rebased axis failed the gate (#107)."""
+    if not isinstance(data_ref, f03.Data_Ref) or len(data_ref.children) != 2:
+        return set()
+    component = data_ref.children[1]
+    if not (isinstance(component, f03.Part_Ref) and component.children[1] is not None):
+        return set()
+    dims = _selector_dims(data_ref, scope)
+    if not dims:
+        return set()
+    return bound_reads(dims, _subscript_items(component.children[1]))
 
 
 def expr_reads(node: Any, scope: Scope) -> set[str]:
@@ -305,9 +352,9 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
         ),
     ):
         fname = str(node.children[0]).lower()
+        items: list[Any] = []
         if node.children[1] is not None:
-            args = node.children[1]
-            items = list(args.children) if hasattr(args, "children") else [args]
+            items = _subscript_items(node.children[1])
             if fname in KIND_ARG_FNS:
                 items = _without_kind_argument(fname, items)
             for item in items:
@@ -319,7 +366,7 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
             # and reading `gamma(i,k)` is dataflow, not a call to GAMMA. An
             # associate alias of an array component is an array here too.
             reads.add(fname)
-            reads |= lower_bound_reads(fname, scope)
+            reads |= lower_bound_reads(fname, scope, items)
             return reads
         known = (
             fname in scope.subprograms
@@ -346,10 +393,12 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
     if isinstance(node, f03.Data_Ref):
         # The root object is the read; component names are attributes of it,
         # which the target side spells the same way and also does not count.
+        # A subscripted component reads its axes' lower bounds like any array.
         reads |= expr_reads(node.children[0], scope)
         for comp in node.children[1:]:
             if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
                 reads |= expr_reads(comp.children[1], scope)
+        reads |= component_bound_reads(node, scope)
         return reads
 
     for child in getattr(node, "children", []) or []:
@@ -484,10 +533,16 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             for comp in actual.children[1:]:
                 if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
                     reads.update(expr_reads(comp.children[1], scope))
+            reads.update(component_bound_reads(actual, scope))
         elif isinstance(actual, f03.Part_Ref):
             writes.add(str(actual.children[0]).lower())
             for child in actual.children[1:]:
                 reads.update(expr_reads(child, scope))
+            reads.update(
+                lower_bound_reads(
+                    str(actual.children[0]).lower(), scope, _subscript_items(actual.children[1])
+                )
+            )
 
     def write_target(target: Any) -> None:
         """Record an assignment target: the root is written, subscripts are read."""
@@ -498,10 +553,11 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             for comp in target.children[1:]:
                 if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
                     reads.update(expr_reads(comp.children[1], scope))
+            reads.update(component_bound_reads(target, scope))
         else:
             root = str(target.children[0]).lower()
             writes.add(root)
-            reads.update(lower_bound_reads(root, scope))
+            reads.update(lower_bound_reads(root, scope, _subscript_items(target.children[1])))
             for child in target.children[1:]:
                 reads.update(expr_reads(child, scope))
 

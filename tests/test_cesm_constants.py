@@ -325,6 +325,31 @@ def test_the_declared_kinds_are_placed(tmp_path: Path) -> None:
         assert resolved[name]["kind_dtype"] == "str", name
 
 
+def test_the_search_path_is_indexed_once_per_revision(tmp_path: Path) -> None:
+    """A stand-in resolves each of its names on its own; the harvest of the
+    search path and the kind tables are built once for all of them, and a
+    source edited under the same path is read again."""
+    from recast.fortran.expr import render
+    from recast.fortran.use import harvest
+
+    consts = tmp_path / "consts.f90"
+    consts.write_text(
+        "module consts\n  implicit none\n  integer, parameter :: n = 3\n"
+        "  integer, parameter :: m = n * 2\nend module consts\n"
+    )
+    assert harvest(consts) is harvest(consts)
+    first = resolve(["m"], [consts])
+    assert [r["name"] for r in first] == ["n", "m"]
+    assert [r["name"] for r in resolve(["n"], [consts])] == ["n"]
+    consts.write_text(
+        "module consts\n  implicit none\n  integer, parameter :: n = 4  ! edited\n"
+        "  integer, parameter :: m = n * 2\nend module consts\n"
+    )
+    plain = {"real": str, "real32": str, "integer": str, "name": str, "call": None, "dtype": str}
+    edited = {r["name"]: r for r in resolve(["m"], [consts])}
+    assert render(edited["n"]["expr"], **plain) == "4"
+
+
 @pytest.mark.xfail(strict=True, raises=UnsupportedExpression, reason="logical literal initializer")
 def test_a_logical_parameter_is_not_resolved_yet(tmp_path: Path) -> None:
     """``logical, parameter :: l_diag = .false.`` is common in CLUBB's flag

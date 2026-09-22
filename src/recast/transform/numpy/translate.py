@@ -449,6 +449,17 @@ class NumpyTranslation(Transform):
             ).names.as_protocol_table()
             for record in facts.interface["subprograms"]
         }
+        # What this candidate computes with recast's own reference
+        # implementation where the source called a library, and which
+        # subprograms' numbers pass through it (#109). A reference that
+        # builds from the same tree stands the same procedure in on its
+        # side and the gate says so; one that replays a recording ran the
+        # library, and the gate needs this to say which points were never
+        # going to be the library's bits.
+        stood_in = references.stood_in(
+            [facts.interface, *records], facts.provenance.get("externals", {})
+        )
+        reaches = references.reaching([facts.interface, *records], set(stood_in))
         return Candidate(
             unit=unit.uid,
             transform=self.name,
@@ -491,6 +502,18 @@ class NumpyTranslation(Transform):
                 "renames": renames,
                 "rwset": self._rwset_protocol(
                     unit, facts, report, renames, f"{module}_numpy.py", assembler
+                ),
+                **(
+                    {
+                        "references": {
+                            "stood_in": {
+                                name: sorted(s for s, via in reaches.items() if via == name)
+                                for name in stood_in
+                            }
+                        }
+                    }
+                    if stood_in
+                    else {}
                 ),
             },
         )

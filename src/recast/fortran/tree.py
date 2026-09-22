@@ -23,8 +23,11 @@ __all__ = [
     "SUFFIXES",
     "integer_parameters",
     "module_sources",
+    "modules_defined",
     "named_extents",
     "parameter_names",
+    "revision",
+    "source_text",
     "use_imports",
 ]
 
@@ -41,15 +44,61 @@ def sources(root: Path) -> list[Path]:
     return [p for p in sorted(root.rglob("*")) if p.suffix.lower() in SUFFIXES and p.is_file()]
 
 
+_TEXTS: dict[Path, tuple[tuple[int, int], str, frozenset[str]]] = {}
+
+
+def _revision_of(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _text_entry(path: Path) -> tuple[tuple[int, int], str, frozenset[str]]:
+    """``(revision, text, modules defined)`` for one file, read once per
+    revision. The planner asks which file defines a module a few hundred
+    times per unit, and each asking used to read and scan the whole tree;
+    the answer changes only when a file does, which its size and mtime say."""
+    stamp = _revision_of(path)
+    cached = _TEXTS.get(path)
+    if cached is None or cached[0] != stamp:
+        text = path.read_text(errors="replace")
+        defined = frozenset(m.group(1).lower() for m in MODULE_DEFINITION.finditer(text))
+        cached = _TEXTS[path] = (stamp, text, defined)
+    return cached
+
+
+def source_text(path: Path) -> str:
+    """The file's text, decoded with replacement, cached per revision."""
+    return _text_entry(path)[1]
+
+
+def modules_defined(path: Path) -> frozenset[str]:
+    """The lower-case names of the modules ``path`` defines, cached per revision."""
+    return _text_entry(path)[2]
+
+
+def revision(root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Every Fortran file under ``root`` with its size and mtime, in a fixed
+    order: what a cache of tree-level answers keys on. A file added, removed
+    or edited under the root changes it; nothing else does."""
+    entries: list[tuple[str, int, int]] = []
+    for path in sources(root):
+        try:
+            stamp = _revision_of(path)
+        except OSError:
+            continue
+        entries.append((str(path.relative_to(root)), *stamp))
+    return tuple(entries)
+
+
 def module_sources(root: Path, modules: frozenset[str]) -> list[Path]:
     """The files under ``root`` that define one of ``modules`` (lower-case names)."""
     found: list[Path] = []
     for path in sources(root):
         try:
-            text = path.read_text(errors="replace")
+            defined = modules_defined(path)
         except OSError:
             continue
-        if any(m.group(1).lower() in modules for m in MODULE_DEFINITION.finditer(text)):
+        if defined & modules:
             found.append(path)
     return found
 

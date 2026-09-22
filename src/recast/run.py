@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from recast import OUTPUT_DIRNAME, WORKSPACE_DIRNAME, __version__
 from recast.errors import ConfigError, InputProfileError, RecastError, ScannerUnavailable
@@ -54,6 +54,7 @@ from recast.observe import RunEvent, RunEventAction, RunEventEntity, RunObserver
 from recast.plugins.recipe import Recipe, Stage
 from recast.plugins.store import FindingStore
 from recast.registry import REGISTRY, Registry
+from recast.workspace_resources import resolve_workspace_resources
 
 __all__ = [
     "RecipeRun",
@@ -557,8 +558,14 @@ def _run_recipe(
     emitted: list[Path] = []  # each walked unit's candidate directory, in walk order
 
     def stage_config(stage: Stage) -> dict[str, Any]:
-        """The operator's per-stage table over the recipe's own."""
-        return {**stage.config, **config.get("stages", {}).get(stage.plugin, {})}
+        """The operator's per-stage table over the recipe's own.
+
+        Workspace declarations are resolved here and nowhere earlier: what a
+        stage is *told* is a path, what a recipe and a plan *carry* is the
+        portable ``{"$workspace": "..."}`` form.
+        """
+        merged = {**stage.config, **config.get("stages", {}).get(stage.plugin, {})}
+        return cast(dict[str, Any], resolve_workspace_resources(merged, workspace))
 
     def call_config(stage: Stage) -> dict[str, Any]:
         """Per-call stages also learn where the source tree is; a plugin that

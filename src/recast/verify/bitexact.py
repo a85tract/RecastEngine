@@ -836,13 +836,29 @@ class BitexactVerifier(Verifier):
         # with the library the source names, and a reader of this verdict has
         # no other way to know it.
         substituted = dict(handle.get("substituted") or {})
-        if not ungated and not substituted:
+        # ... and one the candidate defines that way while the reference ran
+        # the library -- a recording, or a build that linked it (#109). The
+        # comparison put those on the metrics with the subprograms whose
+        # numbers pass through them; the policy on them is ``_award``'s, the
+        # naming is every gate's.
+        stood_in = dict(verdict.metrics.get("stood_in") or {})
+        if not ungated and not substituted and not stood_in:
             return verdict
         detail = verdict.detail
         if substituted:
             detail += (
                 f"; {len(substituted)} external(s) stood in for by recast's own "
                 "reference implementation, on both sides: " + ", ".join(sorted(substituted))
+            )
+        if stood_in:
+            detail += (
+                f"; {len(stood_in)} external(s) stood in for by recast's own reference "
+                "implementation on the candidate side only, the reference having run the "
+                "library's: "
+                + ", ".join(
+                    f"{name} (reached by {', '.join(entry['subprograms'])})"
+                    for name, entry in sorted(stood_in.items())
+                )
             )
         if ungated:
             detail += f"; {len(ungated)} subprogram(s) ungated, no reference: " + ", ".join(
@@ -1249,6 +1265,9 @@ class BitexactVerifier(Verifier):
                 f"{totals['nan_mismatch']} point(s) where one side produced NaN "
                 "and the other a number",
             )
+        stood_in = self._stood_in(candidate, handle, per_subprogram)
+        if stood_in:
+            metrics["stood_in"] = stood_in
         # What a gate needs to come back to the comparison: the loaded
         # candidate, the table, the recorded samples, the staged files.
         context = {
@@ -1292,6 +1311,58 @@ class BitexactVerifier(Verifier):
                 f"{totals['points']} points across {len(per_subprogram)} "
                 f"subprogram(s), all bit-exact" + _redrawn_note(totals),
             )
+        # A subprogram whose numbers pass through a library procedure the
+        # candidate stood in for and the reference did not (#109) cannot be
+        # bit-exact against it: the stand-in does the library's arithmetic in
+        # textbook order and the library does not. When every differing
+        # point is downstream of one, the rest of the unit is bit-exact and
+        # says so, and the operator may grant those subprograms a relative
+        # tolerance -- ``stood_in_rtol`` -- stated on the verdict. Never a
+        # default, and never for a difference anywhere else.
+        stood_in = metrics.get("stood_in") or {}
+        attribution = ""
+        if stood_in:
+            reached = {name for entry in stood_in.values() for name in entry["subprograms"]}
+            elsewhere = [
+                name
+                for name, out in per_subprogram.items()
+                if name not in reached and "error" not in out and out["bit_exact"] != out["points"]
+            ]
+            externals = ", ".join(sorted(stood_in))
+            through = {
+                "points": sum(entry["points"] for entry in stood_in.values()),
+                "bit_exact": sum(entry["bit_exact"] for entry in stood_in.values()),
+                "max_rel": max(entry["max_rel"] for entry in stood_in.values()),
+            }
+            granted = config.get("stood_in_rtol")
+            if not elsewhere and granted is not None and through["max_rel"] <= float(granted):
+                outside = len(per_subprogram) - len(reached)
+                return self._verdict(
+                    candidate,
+                    Confidence.TOLERANCED,
+                    {**metrics, "stood_in_rtol": float(granted)},
+                    (
+                        f"{totals['points'] - through['points']} points across {outside} "
+                        f"subprogram(s) bit-exact; the {len(reached)} reaching {externals}"
+                        if outside
+                        else f"all {len(reached)} compared subprogram(s) reach {externals}"
+                    )
+                    + f", stood in for on the candidate side only: {through['bit_exact']}/"
+                    f"{through['points']} bit-exact with max_rel={through['max_rel']:.3e} "
+                    f"within stood_in_rtol={granted}" + _redrawn_note(totals),
+                )
+            if not elsewhere:
+                attribution = (
+                    f"; every differing point is downstream of {externals}, stood in for by "
+                    "recast's own reference implementation on the candidate side only, the "
+                    f"reference having run the library's (max_rel={through['max_rel']:.3e} "
+                    "there), and "
+                    + (
+                        "no stood_in_rtol excuses them"
+                        if granted is None
+                        else f"stood_in_rtol={granted} does not reach them"
+                    )
+                )
         if rtol is not None and worst_rel <= float(rtol):
             return self._verdict(
                 candidate,
@@ -1305,8 +1376,51 @@ class BitexactVerifier(Verifier):
             Confidence.FAILED,
             metrics,
             f"{totals['points'] - totals['bit_exact']}/{totals['points']} points differ "
-            f"(max {totals['max_ulp']} ULP, max_rel={worst_rel:.3e}) and no rtol excuses them",
+            f"(max {totals['max_ulp']} ULP, max_rel={worst_rel:.3e}) and no rtol excuses them"
+            + attribution,
         )
+
+    @staticmethod
+    def _stood_in(
+        candidate: Candidate, handle: dict[str, Any], per_subprogram: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """Compared subprograms whose numbers pass through a library procedure
+        the candidate stood in for and the reference did not, per procedure,
+        with the comparison's numbers over them.
+
+        The transform names what it stood in for and which subprograms reach
+        it (``notes["references"]["stood_in"]``, #109); a reference that stood
+        the same procedure in on its side names that too (``substituted``),
+        and then both sides ran the same arithmetic and there is nothing to
+        attribute. A ``<name>_flat`` adapter reaches whatever its subprogram
+        reaches.
+        """
+        table = (candidate.notes.get("references") or {}).get("stood_in") or {}
+        both_sides = set(handle.get("substituted") or {})
+        found: dict[str, dict[str, Any]] = {}
+        for external, reaches in sorted(table.items()):
+            if external in both_sides:
+                continue
+            reached = {str(name).lower() for name in reaches}
+            names = sorted(
+                name
+                for name, out in per_subprogram.items()
+                if "error" not in out
+                and (
+                    name in reached or (name.endswith("_flat") and name[: -len("_flat")] in reached)
+                )
+            )
+            if not names:
+                continue
+            outcomes = [per_subprogram[name] for name in names]
+            found[external] = {
+                "subprograms": names,
+                "points": sum(out["points"] for out in outcomes),
+                "bit_exact": sum(out["bit_exact"] for out in outcomes),
+                "max_ulp": max(out["max_ulp"] for out in outcomes),
+                "max_rel": max(out["max_rel"] for out in outcomes),
+            }
+        return found
 
     @staticmethod
     def _run_setup(

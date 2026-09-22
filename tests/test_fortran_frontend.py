@@ -136,6 +136,32 @@ def test_analyze_is_reproducible_for_one_revision(fe, tree) -> None:
     assert a.provenance["digest"] == b.provenance["digest"]
 
 
+def test_analysis_is_shared_per_tree_revision_and_dropped_on_an_edit(fe, tree) -> None:
+    """The transforms rebuild a frontend from a unit's provenance to analyze
+    each companion, for the NumPy bundling and again for the JAX port; the
+    Facts are the same, and are handed out once per tree revision. Any file
+    under the root changing is a new revision -- a sibling's edit changes
+    what this unit's companions say."""
+    unit = next(u for u in fe.discover(tree) if u.uid == "fortran:micro_mg2_0")
+    first = fe.analyze(unit, tree)
+    assert fe.analyze(unit, tree) is first
+    assert factory(**fe.configuration()).analyze(unit, tree) is first
+    assert factory(kind_assumptions={"r8": "float32"}).analyze(unit, tree) is not first
+    (tree / "sub" / "broken.f90").write_text("module broken\nend module broken\n")
+    assert fe.analyze(unit, tree) is not first
+
+
+def test_the_interface_record_is_extracted_once_per_revision(tree) -> None:
+    from recast.fortran import interface
+
+    path = tree / "micro_mg.F90"
+    first = interface.extract(path, kind_assumptions={"r8": "float64"})
+    assert interface.extract(path, kind_assumptions={"r8": "float64"}) is first
+    assert interface.extract(path, kind_assumptions={"r8": "float32"}) is not first
+    path.write_text(SOURCE + "\n! edited\n")
+    assert interface.extract(path, kind_assumptions={"r8": "float64"}) is not first
+
+
 def test_provenance_records_what_was_assumed(fe, tree) -> None:
     """A kind assumption changes the dtypes analysis reports, so a Facts record
     that does not carry it cannot be checked by anyone reading it later."""

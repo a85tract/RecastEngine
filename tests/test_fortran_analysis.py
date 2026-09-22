@@ -2193,6 +2193,76 @@ def test_a_subscript_reads_the_names_in_its_declared_lower_bound(tmp_path: Path)
     assert all("b" in b["reads"] for b in blocks), blocks
 
 
+def _use_it_blocks(tmp_path: Path, body: str, extra_decl: str = "") -> list[dict[str, Any]]:
+    """``use_it(b, p, v)`` over ``rho(b%mxpft:2*b%mxpft)`` with ``body`` as its statements."""
+    from recast.fortran import rwset
+
+    source = REBASED_COMPONENT.replace(
+        "  subroutine init(this, begp, endp)\n",
+        "  subroutine use_it(b, p, v)\n    type(con_t), intent(in) :: b\n"
+        "    integer, intent(in) :: p\n    real(r8), intent(out) :: v\n"
+        f"    real(r8) :: rho(b%mxpft:2*b%mxpft)\n{extra_decl}{body}"
+        "  end subroutine use_it\n\n  subroutine init(this, begp, endp)\n",
+    ).replace(
+        "    real(r8), allocatable :: slatop(:)\n",
+        "    real(r8), allocatable :: slatop(:)\n    integer :: mxpft\n",
+    )
+    src = _write(tmp_path, "lb.f90", source)
+    record = interface.extract(src, kind_assumptions=KINDS)
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower() == "use_it"
+    )
+    return rwset.block_rwsets(node, rwset.scope_for(record, "use_it"))
+
+
+def test_a_bare_section_reads_no_lower_bound(tmp_path: Path) -> None:
+    """``rho(:) = 1`` over an axis declared ``b%mxpft:`` is emitted as
+    ``rho[:] = 1``: no shift, so no read of ``b``. The element ``rho(p)`` on
+    the next line still shifts and still reads it (#107: ELM's
+    ``bmatrix(begc:endc, :, :) = 0`` was scored a read of ``nlevsno`` the
+    translation does not make)."""
+    blocks = _use_it_blocks(tmp_path, "    rho(:) = 1._r8\n    v = rho(p)\n")
+    whole, element = blocks[0], blocks[1]
+    assert "b" not in whole["reads"], whole
+    assert "b" in element["reads"], element
+
+
+def test_a_direct_component_subscript_reads_its_allocated_lower_bound(tmp_path: Path) -> None:
+    """``con%tbi(p, 1)`` over a component allocated ``(begp:endp, -mxpft+1:mxpft)``
+    is ``tbi[p - 1, (1) - (-mxpft + 1)]`` on the target side: a read of
+    ``mxpft`` through the second axis's origin, which the source made only
+    through the declaration. Counted for an associate alias since the
+    rebased-component rule, and for the direct reference now; a bare ``:``
+    on that axis reads nothing (#107: ELM's ``col_pp%z(c, 1)``)."""
+    from recast.fortran import rwset
+
+    source = REBASED_COMPONENT.replace(
+        "    allocate (this%tbi(begp:endp, 0:mxpft))\n",
+        "    allocate (this%tbi(begp:endp, -mxpft+1:mxpft))\n",
+    ).replace(
+        "  subroutine init(this, begp, endp)\n",
+        "  subroutine use_con(p, v, w)\n    integer, intent(in) :: p\n"
+        "    real(r8), intent(out) :: v, w\n"
+        "    v = con%tbi(p, 1)\n    w = sum(con%tbi(p, :))\n    con%tbi(p, 1) = v\n"
+        "  end subroutine use_con\n\n  subroutine init(this, begp, endp)\n",
+    )
+    src = _write(tmp_path, "con.f90", source)
+    record = interface.extract(src, kind_assumptions=KINDS)
+    assert record["types"]["con_t"]["tbi"]["allocated_dims"][1]["lb"].replace(" ", "") == "-mxpft+1"
+    node = next(
+        s
+        for s in walk(parse(src), (f03.Subroutine_Subprogram, f03.Function_Subprogram))
+        if str(walk(s, (f03.Subroutine_Stmt, f03.Function_Stmt))[0].children[1]).lower()
+        == "use_con"
+    )
+    element, section, written = rwset.block_rwsets(node, rwset.scope_for(record, "use_con"))
+    assert {"con", "p", "mxpft"} <= set(element["reads"]), element
+    assert "mxpft" not in section["reads"] and "con" in section["reads"], section
+    assert "mxpft" in written["reads"] and "con" in written["writes"], written
+
+
 def test_an_interface_bodys_dummies_are_not_module_state(tmp_path):
     """``interface / subroutine func(x, val)`` declares the interface's
     dummies, not module variables; a subprogram with its own dummy ``x``

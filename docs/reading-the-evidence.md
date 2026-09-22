@@ -113,6 +113,7 @@ its metrics deserve a closer look:
 | `integer_points` | how many of the compared values were integers (an `integer` result or out-argument). They are compared for equality, and never contribute to `max_ulp` or `max_rel`. |
 | `integer_mismatch` | how many of those integer values differed. Any non-zero value fails the check. |
 | `skipped` | public procedures the oracle offered that the check did not try: one the harness cannot generate inputs for (a `character` argument), or one left out of `subprograms` in your `recast.json`. Not a pass -- see `uncovered`. |
+| `stood_in` | library procedures the translation defines with recast's own reference implementation (`dgbsv`, `dgesv`) while the reference ran the real library, with the procedures whose numbers pass through them and the comparison's numbers over those alone. Absent when the reference stood the same procedure in (`substituted` names that) or nothing was stood in for. See the LAPACK page for what `stood_in_rtol` grants. |
 | `uncovered` | translated public procedures nobody compared, by name. Any entry here fails the check: a procedure that was translated and never checked is a claim without evidence. Private helpers do not appear -- they run inside the public procedures that call them -- and a procedure the oracle listed as `ungated` (with its reason) is reported on the verdict rather than counted here. |
 
 For `static.rwset`: `blocks_checked` is how many blocks were compared,
