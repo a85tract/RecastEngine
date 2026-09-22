@@ -28,7 +28,6 @@ pytest.importorskip("numpy", reason="needs recast-engine[translate]")
 from recast.executors.local import LocalExecutor
 from recast.model import Candidate, Confidence, OracleRef, Unit
 from recast.verify.bitexact import BitexactVerifier
-from recast.verify.tolerance import ToleranceVerifier
 
 MODULE = """\
 import numpy as np
@@ -214,7 +213,11 @@ def test_a_candidate_that_stood_nothing_in_is_unchanged(tmp_path: Path) -> None:
 
 def test_the_tolerance_gate_names_the_stand_in_and_keeps_its_own_tiers(tmp_path: Path) -> None:
     """``port-elm`` judges JAX at the ULP tiers already; the stand-in is
-    named on its verdict and its policy is untouched."""
+    named on its verdict and its policy is untouched. The tolerance gate is
+    an optional module, so an installation without it skips this one."""
+    ToleranceVerifier = pytest.importorskip(
+        "recast.verify.tolerance", reason="the tolerance gate is not installed here"
+    ).ToleranceVerifier
     verdict = _judge(
         tmp_path,
         _candidate(solve_edit="    y = np.nextafter(y, np.inf)"),
