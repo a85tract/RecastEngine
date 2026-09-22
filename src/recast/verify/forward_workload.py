@@ -118,16 +118,16 @@ __all__ = [
     "ChainIdentity",
     "ForwardWorkloadReport",
     "InheritedObjectives",
-    "TimingBaselineReference",
-    "TransformationBoundaryReceipt",
     "RecordedSourceBoundaryReceipt",
     "RecordedSourceEvidence",
     "RecordedSourceFile",
-    "recorded_source_coverage_digest",
+    "TimingBaselineReference",
+    "TransformationBoundaryReceipt",
     "WorkloadSubject",
     # A caller building an adapter configuration needs to compute the same
     # source digests the engine will check it against.
     "adapter_source_digest",
+    "recorded_source_coverage_digest",
     "verify_bundle_forward_objectives",
 ]
 
@@ -1459,11 +1459,13 @@ def _require_anchor(
 
     if anchor.kind == "recorded-tape" and anchor.tape_digest != declaration.fixtures.tape_digest:
         raise ConfigError("workload anchor tape differs from the declared observation authority")
-    if type(receipt) is RecordedSourceBoundaryReceipt:
+    if isinstance(receipt, RecordedSourceBoundaryReceipt):
         if links:
             raise ConfigError("a recorded source boundary cannot claim intermediate links")
         if declaration.boundary_receipt_digest != receipt.digest():
-            raise ConfigError("the recorded source receipt is not the one the declaration authorized")
+            raise ConfigError(
+                "the recorded source receipt is not the one the declaration authorized"
+            )
         if source_root is None:
             raise ConfigError("a recorded source boundary needs the actual source root")
         engine = candidate.saved.engine
@@ -1912,7 +1914,11 @@ def verify_bundle_forward_objectives(
             engine=installed_engine,
         )
         _require_anchor(
-            original_anchor, boundary_receipt, candidate, declaration, tuple(boundary_links),
+            original_anchor,
+            boundary_receipt,
+            candidate,
+            declaration,
+            tuple(boundary_links),
             recorded_source_evidence=recorded_source_evidence,
             source_root=Path(root),
         )

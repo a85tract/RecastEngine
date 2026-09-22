@@ -30,7 +30,6 @@ from recast.workspace_resources import (
     resolve_workspace_resources,
     workspace_resource,
 )
-
 from tests.test_phases import (  # the existing minimal plugins
     PhaseTransform,
     _engine,
@@ -103,10 +102,15 @@ class PinnedRecordingOracle(Oracle):
         digest = hashlib.sha256(payloads[0].read_bytes()).hexdigest()
         if digest != config["pin"]:
             raise ConfigError(
-                f"the recording at {directory} is {digest[:16]}, not the pinned {config['pin'][:16]}"
+                f"the recording at {directory} is {digest[:16]}, "
+                f"not the pinned {config['pin'][:16]}"
             )
-        return OracleRef(unit=unit.uid, oracle=self.name, key=self.key(unit, None, config),
-                         handle={"input_source": "recorded", "samples": []})
+        return OracleRef(
+            unit=unit.uid,
+            oracle=self.name,
+            key=self.key(unit, None, config),
+            handle={"input_source": "recorded", "samples": []},
+        )
 
 
 class RecordingRecipe(Recipe):
@@ -194,11 +198,11 @@ def test_only_the_operational_workspace_changes_nothing_portable(tmp_path: Path)
     assert first.digest() == second.digest()
     assert first.semantic_config_digest == second.semantic_config_digest
     assert first.verification_plan == second.verification_plan
-    plan_config = [
+    plan_config = next(
         dict(stage.config)
         for stage in first.verification_plan.stages
         if stage.plugin == "phase.recording"
-    ][0]
+    )
     assert dict(plan_config["dumps"]) == {WORKSPACE_MARKER: RECORDING}, (
         "the frozen plan keeps the declaration, not a path"
     )
@@ -247,7 +251,9 @@ def test_a_missing_recording_is_refused(tmp_path: Path) -> None:
 
 def test_a_different_recording_is_refused(tmp_path: Path) -> None:
     bundle, _ = transform_at(tmp_path, "lease-a")
-    report = verify_at(tmp_path, bundle, "verify-other", payload=b"# PROBE example.unit:\nINPUT: 2\n")
+    report = verify_at(
+        tmp_path, bundle, "verify-other", payload=b"# PROBE example.unit:\nINPUT: 2\n"
+    )
     assert report.accepted is False
 
 
@@ -274,8 +280,11 @@ class ExecutorResourceRecipe(RecordingRecipe):
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         stages = super().stages(config)
         return [
-            Stage("executor", "phase.resource-executor",
-                  config={"scratch": workspace_resource("vendor/executor")})
+            Stage(
+                "executor",
+                "phase.resource-executor",
+                config={"scratch": workspace_resource("vendor/executor")},
+            )
             if stage.kind == "executor"
             else stage
             for stage in stages

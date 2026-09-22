@@ -66,8 +66,13 @@ class RecordedSourceBoundaryReceipt:
         for name in ("downstream_engine_id", "provider_id"):
             _identifier(getattr(self, name), name)
         for name in (
-            "anchor_digest", "downstream_source_artifact_digest", "recording_provenance_digest",
-            "tape_digest", "policy_digest", "observation_keys_digest", "provider_digest",
+            "anchor_digest",
+            "downstream_source_artifact_digest",
+            "recording_provenance_digest",
+            "tape_digest",
+            "policy_digest",
+            "observation_keys_digest",
+            "provider_digest",
             "profile_digest",
         ):
             _digest(getattr(self, name), name)
@@ -135,8 +140,12 @@ class RecordedSourceEvidence:
         if sum(item.size for item in self.source_files) > MAX_SOURCE_BYTES:
             raise ConfigError("recorded source evidence files exceed the total bound")
         for name in (
-            "recording_manifest_digest", "recording_run_digest", "origin_source_digest", "producer_digest",
-            "checker_digest", "coverage_digest",
+            "recording_manifest_digest",
+            "recording_run_digest",
+            "origin_source_digest",
+            "producer_digest",
+            "checker_digest",
+            "coverage_digest",
         ):
             _digest(getattr(self, name), name)
 
@@ -148,22 +157,24 @@ def recorded_source_coverage_digest(declaration: WorkloadDeclaration) -> str:
     """Scientific extent, independent of candidate entry-point reconstruction."""
 
     fixture = declaration.fixtures
-    return _hash({
-        "case": fixture.case,
-        "probe": fixture.probe,
-        "first_sequence": fixture.first_sequence,
-        "final_sequence": fixture.final_sequence,
-        "steps": fixture.steps,
-        "required_inputs": list(fixture.required_inputs),
-        "required_outputs": list(fixture.required_outputs),
-        "outputs": list(declaration.interface.outputs),
-        "static_signatures": list(declaration.interface.static_signatures),
-        "coverage_labels": list(fixture.coverage_labels),
-        "states": list(fixture.states),
-        "state_digests": dict(fixture.state_digests),
-        "observation_keys_digest": fixture.observation_keys_digest,
-        "observation_key_count": fixture.observation_key_count,
-    })
+    return _hash(
+        {
+            "case": fixture.case,
+            "probe": fixture.probe,
+            "first_sequence": fixture.first_sequence,
+            "final_sequence": fixture.final_sequence,
+            "steps": fixture.steps,
+            "required_inputs": list(fixture.required_inputs),
+            "required_outputs": list(fixture.required_outputs),
+            "outputs": list(declaration.interface.outputs),
+            "static_signatures": list(declaration.interface.static_signatures),
+            "coverage_labels": list(fixture.coverage_labels),
+            "states": list(fixture.states),
+            "state_digests": dict(fixture.state_digests),
+            "observation_keys_digest": fixture.observation_keys_digest,
+            "observation_key_count": fixture.observation_key_count,
+        }
+    )
 
 
 def require_recorded_source_files(root: Path, evidence: RecordedSourceEvidence) -> None:
@@ -180,7 +191,8 @@ def require_recorded_source_files(root: Path, evidence: RecordedSourceEvidence) 
         if not path.is_file() or path.stat().st_size != item.size:
             raise ConfigError(f"recorded source file {item.path!r} differs from its inventory")
         payload = path.read_bytes()
-        if len(payload) != item.size or "sha256:" + hashlib.sha256(payload).hexdigest() != item.digest:
+        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if len(payload) != item.size or digest != item.digest:
             raise ConfigError(f"recorded source file {item.path!r} differs from its content digest")
 
 
@@ -205,7 +217,9 @@ def require_recorded_source_boundary(
         raise ConfigError("recorded source boundary names a different actual source artifact")
     if engine_id is None or receipt.downstream_engine_id != engine_id:
         raise ConfigError("recorded source boundary names a different installed engine")
-    if receipt.tape_digest != declaration.fixtures.tape_digest or receipt.tape_digest != anchor.tape_digest:
+    if receipt.tape_digest != declaration.fixtures.tape_digest or (
+        receipt.tape_digest != anchor.tape_digest
+    ):
         raise ConfigError("recorded source boundary names a different physical tape")
     if receipt.policy_digest != declaration.policy_digest:
         raise ConfigError("recorded source boundary names a different numerical policy")
