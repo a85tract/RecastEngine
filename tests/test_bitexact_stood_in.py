@@ -215,14 +215,14 @@ def test_the_tolerance_gate_names_the_stand_in_and_keeps_its_own_tiers(tmp_path:
     """``port-elm`` judges JAX at the ULP tiers already; the stand-in is
     named on its verdict and its policy is untouched. The tolerance gate is
     an optional module, so an installation without it skips this one."""
-    ToleranceVerifier = pytest.importorskip(
+    tolerance = pytest.importorskip(
         "recast.verify.tolerance", reason="the tolerance gate is not installed here"
-    ).ToleranceVerifier
+    )
     verdict = _judge(
         tmp_path,
         _candidate(solve_edit="    y = np.nextafter(y, np.inf)"),
         _oracle(),
-        gate=ToleranceVerifier(),
+        gate=tolerance.ToleranceVerifier(),
     )
     assert verdict.confidence is Confidence.ULP_BOUNDED, verdict.detail
     assert verdict.metrics["tier"] == "ulp"
