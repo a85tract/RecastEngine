@@ -36,7 +36,7 @@ from typing import Any
 
 from recast.errors import ConfigError
 
-__all__ = ["WORKSPACE_MARKER", "workspace_resource", "resolve_workspace_resources"]
+__all__ = ["WORKSPACE_MARKER", "resolve_workspace_resources", "workspace_resource"]
 
 #: The single key that marks a workspace-relative declaration.
 WORKSPACE_MARKER = "$workspace"

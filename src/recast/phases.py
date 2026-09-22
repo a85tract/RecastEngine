@@ -35,7 +35,6 @@ from recast.model import Candidate, Facts, Patch, Unit, Verdict
 from recast.observe import RunEventAction, RunEventEntity, RunObserver
 from recast.plugins.recipe import Recipe, Stage
 from recast.registry import REGISTRY, Registry
-from recast.workspace_resources import resolve_workspace_resources
 from recast.run import (
     StageOutcome,
     UnitRun,
@@ -46,6 +45,7 @@ from recast.run import (
     output_root,
     run_recipe,
 )
+from recast.workspace_resources import resolve_workspace_resources
 
 __all__ = [
     "BindingCheck",
