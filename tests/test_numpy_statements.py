@@ -731,12 +731,13 @@ def test_a_descending_section_carries_its_declared_lower_bound(
     sources: dict[str, Path],
 ) -> None:
     """The stop edge underflows at the first element, and an array declared
-    from 0 shifts by 0, not by 1 -- so the runtime is handed the bound and
-    either edge may be left implied."""
+    from 0 shifts by 0, not by 1 -- so the runtime is handed the bound. An
+    implied edge is the bound it stands for whatever the step's sign:
+    ``a(:n:-1)`` is ``a(1:n:-1)``, empty unless ``n`` is 1 (FNP-D0001)."""
     statements, nodes = build(sources["emit_mod"], "sections")
     rendered = [statements.render(node, 1)[0] for node in nodes[:3]]
     assert rendered[0] == "    a[_f_rstep_lb(n, 1, (-1), 1)] = 0.0"
-    assert rendered[1] == "    a[_f_rstep_lb(None, n, (-1), 1)] = 1.0"
+    assert rendered[1] == "    a[_f_rstep_lb(1, n, (-1), 1)] = 1.0"
     assert rendered[2] == "    b[_f_rstep_lb(I_9, 0, (-1), 0)] = F_2P0"
 
 
@@ -747,12 +748,13 @@ def test_a_section_stepped_by_a_variable_is_sliced_by_the_runtime(
     with the grid's direction, which the emitter cannot read. Spelled
     ascending, ``lo:hi+1:step`` stopped one short under a negative step and
     was empty at the first element; the runtime reads the sign (#75). A
-    literal positive step keeps the plain slice."""
+    literal positive step keeps the plain slice, its stop edge kept from
+    counting from the end when ``k2`` goes below zero (FNP-D0037)."""
     statements, nodes = build(sources["emit_mod"], "stepped")
     rendered = [statements.render(node, 1)[0] for node in nodes[:3]]
     assert rendered[0] == "    a[_f_rstep_any(k1, k2, st, 1)] = 0.0"
-    assert rendered[1] == "    b[_f_rstep_any(None, k2, st, 0)] = 1.0"
-    assert rendered[2] == "    a[k1 - 1:k2:2] = F_2P0"
+    assert rendered[1] == "    b[_f_rstep_any(0, k2, st, 0)] = 1.0"
+    assert rendered[2] == "    a[k1 - 1:max(0, k2):2] = F_2P0"
 
 
 def test_an_implied_do_in_an_array_constructor_is_a_comprehension(
@@ -941,9 +943,11 @@ def test_a_goto_with_no_structuring_pattern_is_refused(sources: dict[str, Path])
 
 
 def test_allocate_takes_the_declared_dtype(sources: dict[str, Path]) -> None:
+    """The extent is clamped at zero: ``allocate(buf(n))`` with ``n < 0`` is
+    an empty ``buf``, not a negative dimension (FNP-D0050)."""
     statements, nodes = build(sources["emit_mod"], "alloc")
-    assert statements.render(nodes[0], 1) == ["    buf = np.zeros((n,), dtype=np.float64)"]
-    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((n,), dtype=np.int32)"]
+    assert statements.render(nodes[0], 1) == ["    buf = np.zeros((max(0, n),), dtype=np.float64)"]
+    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((max(0, n),), dtype=np.int32)"]
 
 
 def test_an_allocate_is_undefined_memory_too_and_is_poisoned_with_the_rest(
@@ -956,12 +960,14 @@ def test_an_allocate_is_undefined_memory_too_and_is_poisoned_with_the_rest(
     defect here.
     """
     statements, nodes = build(sources["emit_mod"], "alloc", poison=True)
-    assert statements.render(nodes[0], 1) == ["    buf = np.full((n,), np.nan, dtype=np.float64)"]
-    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((n,), dtype=np.int32)"]
+    assert statements.render(nodes[0], 1) == [
+        "    buf = np.full((max(0, n),), np.nan, dtype=np.float64)"
+    ]
+    assert statements.render(nodes[1], 1) == ["    idx = np.zeros((max(0, n),), dtype=np.int32)"]
 
     statements, nodes = build(sources["emit_mod"], "alloc", poison=True, poison_integers=True)
     assert statements.render(nodes[1], 1) == [
-        f"    idx = np.full((n,), {INT_SENTINEL}, dtype=np.int32)"
+        f"    idx = np.full((max(0, n),), {INT_SENTINEL}, dtype=np.int32)"
     ]
 
 
@@ -970,7 +976,7 @@ def test_an_allocated_lower_bound_shifts_later_subscripts(sources: dict[str, Pat
     shift by 0, not by the 1 its declaration would suggest."""
     statements, nodes = build(sources["emit_mod"], "alloc")
     assert statements.render(nodes[2], 1) == [
-        "    off = np.zeros(((n) - (0) + 1,), dtype=np.float64)"
+        "    off = np.zeros((max(0, (n) - (0) + 1),), dtype=np.float64)"
     ]
     assert statements.render(nodes[3], 1) == ["    off[(i) - (0)] = 0.0"]
 
@@ -1321,7 +1327,8 @@ def test_writes_split_on_where_the_records_go(sources: dict[str, Path]) -> None:
     whole translation (see the ADVANCE= test below)."""
     statements, nodes = build(sources["emit_mod"], "io")
     assert statements.render(nodes[1], 1) == ["    pass  # write(*,...) log — no dataflow"]
-    assert statements.render(nodes[2], 1) == ["    line = _f_list_write(s, a[0])"]
+    # The record fills ``line``, blank-padded to its declared length.
+    assert statements.render(nodes[2], 1) == ["    line = (_f_list_write(s, a[0])).ljust(32)[:32]"]
     with pytest.raises(REFUSED):
         statements.render(nodes[3], 1)  # iostat= is control flow, not logging
 

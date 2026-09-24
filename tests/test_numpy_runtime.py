@@ -293,23 +293,21 @@ def test_huge_distinguishes_real_from_integer() -> None:
 
 
 def test_epsilon_and_tiny_are_float64_only() -> None:
-    """A known limitation, pinned so it is a documented answer rather than a
-    surprise. Fortran's EPSILON and TINY depend on the argument's kind; these
-    return the double-precision value whatever they are handed.
-
-    Harmless where it is used -- CESM physics is ``r8`` throughout -- and wrong
-    the day a single-precision kernel asks. Left as it was rather than changed
-    under cover of moving the file: the emitted runtime should change in a
-    commit that is about changing it.
-    """
+    """Without the declared kind these return the double-precision value
+    whatever they are handed, which was the known limitation pinned here.
+    The emitter now passes the kind (FNP-D0008), and with it the answer is
+    the kind's."""
     assert runtime._f_epsilon(np.float64(1.0)) == np.finfo(np.float64).eps
     assert runtime._f_epsilon(np.float32(1.0)) == np.finfo(np.float64).eps
     assert runtime._f_tiny(np.float32(1.0)) == np.finfo(np.float64).tiny
+    assert runtime._f_epsilon(1.0, "float32") == np.finfo(np.float32).eps
+    assert runtime._f_tiny(1.0, "float32") == np.finfo(np.float32).tiny
 
 
 def test_lbound_is_one_for_a_translated_array() -> None:
-    """The arrays are NumPy's, so every lower bound is 1 after the shift the
-    rules apply. Reporting 0 here would double-count the shift."""
+    """Without the declared lower bounds -- an array expression, a section,
+    an array based at one -- every axis answers 1. The emitter hands any
+    other axis's bound over (FNP-D0006, ``tests/test_fnp_intrinsics.py``)."""
     assert list(runtime._f_lbound(np.zeros((3, 4)))) == [1, 1]
     assert runtime._f_lbound(np.zeros((3, 4)), 1) == 1
 
@@ -374,7 +372,8 @@ def test_copy_out_writes_the_overlap_and_leaves_the_rest() -> None:
     assert list(buffer) == [1.0, 2.0, -1.0, -1.0]
     two_d = np.zeros((3, 3))
     runtime._f_copy_out(two_d, np.ones((2, 2)))
-    assert two_d.sum() == 4.0 and two_d[2, 2] == 0.0
+    # The first four cells of the storage, column-major (FNP-D0016).
+    assert np.ravel(two_d, order="F").tolist() == [1.0] * 4 + [0.0] * 5
     same = np.zeros(2)
     runtime._f_copy_out(same, np.array([5.0, 6.0]))
     assert list(same) == [5.0, 6.0]
@@ -666,40 +665,52 @@ def test_seq_tail_is_the_column_major_storage_from_the_element_on() -> None:
     """``a(i, 1)`` for ``dx(*)``: Fortran hands the callee the memory from
     that element to the end of the array in column-major order. A view of a
     Fortran-contiguous actual, so the callee's writes land in the caller's
-    array; ``x(2, *)`` folds it onto the leading extent with the last axis
-    taking the whole columns left."""
+    array; ``x(2, *)`` folds it onto the leading extent, and the last axis
+    takes every column the storage reaches, the partial last one included
+    (FNP-D0045) -- a copy, then, since no view can end half-way down a
+    column."""
     a = np.asfortranarray(np.arange(1.0, 13.0).reshape(3, 4, order="F"))
     tail = runtime._f_seq_tail(a, 1)  # a(2, 1) onward: 2, 3, 4, ..., 12
     assert tail.tolist() == list(range(2, 13))
     assert np.shares_memory(tail, a)
     tail[0] = -1.0
     assert a[1, 0] == -1.0
-    folded = runtime._f_seq_tail(a, 1, 2)  # 11 elements: five whole columns of 2
-    assert folded.shape == (2, 5)
+    whole = runtime._f_seq_tail(a, 2, 2)  # 10 elements: five whole columns of 2
+    assert whole.shape == (2, 5)
+    assert whole[:, 0].tolist() == [3.0, 4.0]
+    assert np.shares_memory(whole, a)
+    folded = runtime._f_seq_tail(a, 1, 2)  # 11 elements: five columns and a half
+    assert folded.shape == (2, 6)
     assert folded[:, 0].tolist() == [-1.0, 3.0]
-    assert np.shares_memory(folded, a)
+    assert folded[0, 5] == 12.0
+    assert not np.shares_memory(folded, a)
     assert runtime._f_seq_tail(a, 0).tolist() == [-1.0 if v == 2.0 else v for v in range(1, 13)]
 
 
-def test_seq_tail_with_the_matrix_s_own_leading_extent_is_the_matrix_from_that_row() -> None:
+def test_seq_tail_with_the_matrix_s_own_leading_extent_is_the_storage_from_that_row() -> None:
     """``h12(..., a(i, 1), mda, ...)`` walks row ``i`` with the matrix's own
     leading extent: ``u(1, j)`` is ``a(i, j)`` for every column, the last
-    one included though the storage from ``a(i, 1)`` holds only part of it.
-    That is the slice ``a[i-1:, :]``, a view in either memory order, where
-    folding onto whole columns lost the last column altogether (SLSQP's
-    ``hfti``)."""
+    one included though the storage from ``a(i, 1)`` holds only part of it,
+    and ``u(r, j)`` past the bottom of column ``j`` is the top of column
+    ``j + 1`` (FNP-D0044). Folding onto whole columns lost the last column
+    (SLSQP's ``hfti``); the slice ``a[i-1:, :]`` that replaced it lost the
+    wrap. The storage, padded to whole columns, has both -- as a copy, whose
+    changed elements alone go back, so the writes a second view of the same
+    matrix made in the same call stand."""
     for order in ("F", "C"):
         a = np.array(np.arange(1.0, 13.0).reshape(3, 4, order="F"), order=order)
         u = runtime._f_seq_tail(a, 1, 3)  # a(2, 1) with iue = mda = 3
-        assert u.shape == (2, 4)
+        assert u.shape == (3, 4)
         assert u[0].tolist() == a[1].tolist()
-        assert np.shares_memory(u, a)
-        u[0, 3] = -4.0
-        assert a[1, 3] == -4.0
-        c = runtime._f_seq_tail(a, 1, 3)
-        c[0, 0] = 0.0
-        runtime._f_seq_tail_out(a, 1, c)  # a view already: nothing to redo
-        assert a[1, 0] == 0.0 and a[1, 3] == -4.0
+        assert u[2, 0] == a[0, 1]  # u(3, 1): past the bottom of column 1
+        c = runtime._f_seq_tail(a, 6, 3)  # a(1, 3) onward: two whole columns
+        assert np.shares_memory(c, a) == (order == "F")
+        u[0, 3] = -4.0  # the callee writes u(1, 4) = a(2, 4) ...
+        c[0, 0] = -6.0  # ... and a(1, 3) through the other tail
+        runtime._f_seq_tail_out(a, 6, c)
+        runtime._f_seq_tail_out(a, 1, u)  # u still holds a(1, 3)'s old value
+        assert a[1, 3] == -4.0 and a[0, 2] == -6.0
+        assert np.ravel(a, order="F").tolist()[:6] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
 
 def test_seq_tail_out_reaches_a_c_ordered_matrix() -> None:
@@ -727,9 +738,13 @@ def test_seq_tail_out_reaches_a_c_ordered_matrix() -> None:
         (3, 1, -1, 1, [3, 2, 1]),  # down to the first element: the stop edge underflows
         (1, 3, 1, 1, [1, 2, 3]),  # a(1:3:1)
         (2, 9, 3, 1, [2, 5, 8]),  # a(2:9:3)
-        (None, 2, -1, 1, [10, 9, 8, 7, 6, 5, 4, 3, 2]),  # a(:2:-1) over a(10)
-        (None, 4, 1, 0, [0, 1, 2, 3, 4]),  # b(:4) over b(0:9)
-        (7, None, -2, 0, [7, 5, 3, 1]),  # b(7::-2) over b(0:9)
+        (10, 2, -1, 1, [10, 9, 8, 7, 6, 5, 4, 3, 2]),  # a(10:2:-1)
+        # An implied edge is the axis's bound whatever the step's sign, and
+        # the emitter spells it (FNP-D0001): a(:2:-1) is a(1:2:-1), empty.
+        (1, 2, -1, 1, []),  # a(:2:-1) over a(10)
+        (0, 4, 1, 0, [0, 1, 2, 3, 4]),  # b(:4) over b(0:9)
+        (7, 9, -2, 0, []),  # b(7::-2) over b(0:9): b(7:9:-2)
+        (7, 0, -2, 0, [7, 5, 3, 1]),  # b(7:0:-2)
     ],
 )
 def test_a_step_of_either_sign_enumerates_what_fortran_does(

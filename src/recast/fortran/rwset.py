@@ -24,6 +24,7 @@ allowed to under-report one.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,7 +32,12 @@ from recast.fortran._parse import f03, f08, walk
 from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.intrinsics import ALL as INTRINSICS
 from recast.fortran.intrinsics import STATE_QUERY, TRANSFORMATIONAL
-from recast.fortran.semantics import Semantics, Unanalyzable, for_subprogram
+from recast.fortran.semantics import (
+    DERIVED_TYPE_MARKER,
+    Semantics,
+    Unanalyzable,
+    for_subprogram,
+)
 
 KIND_ARG_FNS = frozenset(
     {"real", "dble", "int", "nint", "aint", "anint", "floor", "ceiling", "cmplx", "float"}
@@ -249,6 +255,374 @@ def _bare_section(item: Any) -> bool:
     return isinstance(item, f03.Subscript_Triplet) and all(c is None for c in item.children)
 
 
+def _designator_base(designator: Any) -> str | None:
+    """The variable a designator names: ``a`` of ``a``, ``a(i)``, ``a%b(i)``."""
+    while isinstance(designator, (f03.Part_Ref, f03.Data_Ref)):
+        designator = designator.children[0]
+    return str(designator).lower() if isinstance(designator, f03.Name) else None
+
+
+def written_names(statements: Any, functions: Collection[str] = ()) -> set[str]:
+    """Every variable a statement list may store to, by the name at its base.
+
+    Assignment targets, the actuals of every CALL (whatever the callee does
+    with them) and of every reference to one of ``functions``, the unit of a
+    WRITE (an internal one assigns it), READ items, DO variables, ALLOCATE
+    and DEALLOCATE objects. Over-approximate on purpose: it decides where an
+    ASSOCIATE name has to be written through to its selector, and which
+    SAVEd locals outlive a call, and a name wrongly left out of it is a
+    write the translation drops.
+
+    A store to an ASSOCIATE name is a store to its selector's variable as
+    well, and both are counted: ``associate (t => cnt); t = t + 1`` changes
+    ``cnt``, and counted as a store to ``t`` alone, the SAVEd ``cnt`` was
+    re-initialized at every call (FNP-D0014 through an associate name). A
+    parenthesized name is only a function reference where the caller says
+    so -- this has no declarations, and ``a(i)`` is an element far more
+    often -- which is what ``functions`` is for.
+    """
+    return {name for target in _stores(statements, functions) for name in store_chain(target)}
+
+
+def written_through_names(statements: Any, functions: Collection[str] = ()) -> set[str]:
+    """The variables a statement list stores to through an ASSOCIATE name:
+    ``g`` of ``associate (t => g); t = t + 1``.
+
+    What a body's own targets do not say. The frontend's module-state
+    record read ``t`` there, found no module variable, and left ``g`` off
+    the subprogram's ``global`` line, so the respelled ``g = (g + 1.0)``
+    made ``g`` a function local and raised ``UnboundLocalError``.
+    """
+    return {name for target in _stores(statements, functions) for name in store_chain(target)[1:]}
+
+
+def store_chain(designator: Any) -> list[str]:
+    """The name a store's target is at its base, then -- where that is an
+    associate name -- its selector's variable, and so on outwards."""
+    chain: list[str] = []
+    base, node = _designator_base(designator), designator
+    while base is not None:
+        chain.append(base)
+        construct = associated_by(node, base)
+        if construct is None:
+            break
+        base, node = _designator_base(associations(construct)[base]), construct
+    return chain
+
+
+def _stores(statements: Any, functions: Collection[str]) -> list[Any]:
+    """The targets ``written_names`` reads, as designators."""
+    stores: list[Any] = []
+    add = stores.append
+    for statement in statements:
+        for assignment in walk(statement, (f03.Assignment_Stmt, f03.Pointer_Assignment_Stmt)):
+            add(assignment.children[0])
+        for call in walk(statement, f03.Call_Stmt):
+            for item in _subscript_items(call.children[1]):
+                add(item.children[1] if isinstance(item, f03.Actual_Arg_Spec) else item)
+        for reference in walk(statement, (f03.Part_Ref, f03.Function_Reference)):
+            if str(reference.children[0]).lower() not in functions:
+                continue
+            for item in _subscript_items(reference.children[1]):
+                item = item.children[1] if isinstance(item, f03.Actual_Arg_Spec) else item
+                if isinstance(item, (f03.Name, f03.Part_Ref, f03.Data_Ref)):
+                    add(item)
+        for write in walk(statement, f03.Write_Stmt):
+            for spec in walk(write.children[0], f03.Io_Control_Spec):
+                keyword, value = spec.children
+                if keyword is None or str(keyword).upper() == "UNIT":
+                    add(value)
+                    break
+        for read in walk(statement, f03.Read_Stmt):
+            items = read.children[2] if len(read.children) > 2 else None
+            for name in walk(items, f03.Name):
+                add(name)
+        for control in walk(statement, f03.Loop_Control):
+            if control.children[1] is not None:
+                add(control.children[1][0])
+        for allocation in walk(statement, (f03.Allocation, f03.Deallocate_Stmt)):
+            if isinstance(allocation, f03.Allocation):
+                add(allocation.children[0])
+            else:
+                for name in walk(allocation, f03.Name):
+                    add(name)
+    return stores
+
+
+def associations(construct: Any) -> dict[str, Any]:
+    """An ASSOCIATE construct's own associations: name -> selector."""
+    return {
+        str(alias).lower(): selector
+        for alias, _, selector in (a.children for a in walk(construct.children[0], f03.Association))
+    }
+
+
+def associated_by(node: Any, name: str) -> Any | None:
+    """The innermost ASSOCIATE construct around ``node`` that makes ``name``
+    an associate name, or ``None`` where ``name`` is the variable itself.
+
+    A nested construct's name shadows an outer one's; a selector is read in
+    the scope outside its own construct, so resolving one goes on from the
+    construct's parent, not from the selector.
+    """
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if isinstance(parent, f03.Associate_Construct) and name in associations(parent):
+            return parent
+        parent = getattr(parent, "parent", None)
+    return None
+
+
+def written_through(construct: Any, semantics: Semantics | None) -> dict[str, Any]:
+    """The associations of an ASSOCIATE construct that are spelled as their
+    selector: associate name -> selector.
+
+    ``associate (t => x)`` makes ``t`` another name for the variable ``x``:
+    a store to ``t`` is a store to ``x`` and a store to ``x`` changes ``t``.
+    Bound once as a Python local, ``t = x``, the two drift apart the moment
+    either is written -- ``t = t + 1`` rebound the local and left ``x`` as it
+    was (FNP-D0015). So where the body writes the name or its variable, the
+    translation spells the name as the selector throughout the body instead,
+    and this function is the one place that decides where: the emitter and
+    the read/write sets above have to draw the line identically.
+
+    Only a scalar *variable* is spelled that way -- a name, an array element,
+    a structure component -- and only when nothing the selector's subscripts
+    read is written in the body, because a selector is evaluated once, at
+    the ASSOCIATE, and a respelled one is evaluated wherever it is read. An
+    array selector binds a NumPy view, which writes through already.
+    """
+    if semantics is None or not construct.children:
+        return {}
+    body = [
+        child
+        for child in construct.children
+        if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
+    ]
+    written = written_names(body)
+    parameters = {p["name"] for p in semantics.subprogram.get("local_parameters") or ()} | {
+        p["name"] for p in semantics.module.get("module_parameters") or ()
+    }
+    found: dict[str, Any] = {}
+    for association in walk(construct.children[0], f03.Association):
+        alias, _, selector = association.children
+        name, base = str(alias).lower(), _designator_base(selector)
+        if base is None or (name not in written and base not in written):
+            continue
+        if base in parameters or not scalar_variable(selector, semantics):
+            continue
+        subscripts = [
+            part.children[1]
+            for part in [selector, *walk(selector, f03.Part_Ref)]
+            if isinstance(part, f03.Part_Ref)
+        ]
+        if any(str(n).lower() in written for s in subscripts for n in walk(s, f03.Name)):
+            continue
+        found[name] = selector
+    return found
+
+
+def scalar_variable(designator: Any, semantics: Semantics) -> bool:
+    """Whether a designator certainly names one scalar variable.
+
+    A declared scalar, an element of a declared array, or a structure
+    component the type record says is scalar -- or an element of one it
+    says is an array. ``Semantics.rank`` reads a bare component as scalar
+    whatever its type declares, which is the right default for an
+    expression and the wrong one here: ``associate (cp => inst%cp)`` over an
+    array component is a view, and respelling it would be harmless while
+    refusing it would not.
+    """
+    base = _designator_base(designator)
+    declared = semantics.declaration(base) if base is not None else None
+    if declared is None or declared.get("procedure"):
+        return False
+    if isinstance(designator, f03.Name):
+        return not declared.get("dims")
+    if isinstance(designator, f03.Part_Ref):
+        if not semantics.is_array(base or ""):
+            return False  # a function reference, or a substring
+    elif isinstance(designator, f03.Data_Ref):
+        last = designator.children[-1]
+        if len(designator.children) != 2 or declared.get("dims"):
+            return False
+        component = str(last.children[0] if isinstance(last, f03.Part_Ref) else last).lower()
+        match = re.match(r"UNKNOWN\(TYPE\((\w+)\)\)", str(declared.get("dtype", "")), re.I)
+        record = semantics.types.get(match.group(1).lower(), {}).get(component) if match else None
+        if not record:
+            return False
+        dims = record.get("allocated_dims") or record.get("dims")
+        if isinstance(last, f03.Name):
+            return not dims
+        if not dims:
+            return False  # a substring of a character component
+    else:
+        return False
+    try:
+        return semantics.rank(designator) == 0
+    except Unanalyzable:
+        return False
+
+
+LENGTH_TEXT = re.compile(r"(?!.*[A-Za-z_]\w*\s*\()[\w\s+\-*/()]+")
+"""A declared CHARACTER length made of names, numbers and arithmetic only:
+``len=len(s)`` or ``len=max(n, 1)`` is computed where the variable is
+created, which nothing redoes."""
+
+
+def declared_length(name: str, semantics: Semantics | None) -> str | None:
+    """The length a CHARACTER variable is fitted to on assignment, as source
+    text: digits, arithmetic over named constants, or ``*`` for an assumed
+    length the variable carries in; ``None`` for no fitting.
+
+    ``*`` is only an answer for a scalar dummy the caller passes in -- an
+    ``intent(out)`` one never reaches the callee under the return
+    convention -- and a deferred length ``len=:`` is whatever was last
+    stored. The emitter spells the answer and the read/write sets count
+    what it reads, so both take it from here (FNP-D0021).
+    """
+    declared = semantics.declaration(name) if semantics is not None else None
+    if declared is None or declared.get("dtype") != "str":
+        return None
+    length = str(declared.get("char_len") or "").strip()
+    if length.isdigit():
+        return length
+    if length == "*":
+        arguments = semantics.subprogram["args"] if semantics is not None else []
+        argument = next((a for a in arguments if a["name"] == name), None)
+        if argument is None or argument["intent"] == "OUT" or declared.get("dims"):
+            return None
+        return length
+    if not length or length == ":" or not LENGTH_TEXT.fullmatch(length):
+        return None
+    depth = 0
+    for character in length:
+        depth += {"(": 1, ")": -1}.get(character, 0)
+        if depth < 0:
+            return None
+    return length if depth == 0 else None
+
+
+def fitted_length(target: Any, value: Any, semantics: Semantics | None) -> str | None:
+    """``declared_length`` of what a store to ``target`` fits: a CHARACTER
+    scalar, an element, section or the whole of a CHARACTER array, or a
+    CHARACTER component of a derived-type object. A substring is none of
+    those, nor is an internal WRITE (``value`` ``None``) to an array, whose
+    records are its elements.
+
+    Whether the value is fitted as one string or element by element is the
+    emitter's, from the value's rank: ``a = b`` of a ``len=2`` ``b`` into a
+    ``len=4`` ``a`` pads every element, where the whole-array store from a
+    scalar was the only array store fitted and ``a(1) // '|'`` was ``xy|``
+    for gfortran's ``xy  |``."""
+    if semantics is None:
+        return None
+    if isinstance(target, f03.Data_Ref):
+        return _component_length(target, semantics)
+    if not isinstance(target, (f03.Name, f03.Part_Ref)):
+        return None
+    name = _designator_base(target)
+    declared = semantics.declaration(name) if name is not None else None
+    if name is None or declared is None:
+        return None
+    dims = declared.get("dims")
+    if isinstance(target, f03.Part_Ref) and not dims:
+        return None  # a substring of a scalar
+    try:
+        rank = semantics.rank(target)
+        if value is not None:
+            semantics.rank(value)
+    except Unanalyzable:
+        return None
+    if dims and value is None and rank != 0:
+        # An internal WRITE to a whole array or a section. One to an
+        # element is one record, and fills it: ``associate (c => a(2));
+        # write (c, '(i3)') 42`` is `` 42   `` in a ``len=6`` ``a``.
+        return None
+    return declared_length(name, semantics)
+
+
+def _component_length(target: Any, semantics: Semantics) -> str | None:
+    """The declared length of the CHARACTER component ``t%nm`` names, or of
+    an element or the whole of a CHARACTER array component, found through
+    the types the frontend recorded.
+
+    A component holds its declared length as a variable does: gfortran's
+    ``len(t%nm)`` of a ``character(len=8) :: nm`` is 8 after ``t%nm = 'ab'``,
+    where the store was never fitted and the Python said 2 (FNP-D0021).
+    Only a length of digits or of named constants is one: a type parameter
+    is not known here. A component reached through an array of objects is
+    left alone, as is anything whose type this file does not describe.
+    """
+    parts = list(target.children)
+    base = _designator_base(parts[0])
+    if base is None or len(parts) < 2:
+        return None
+    declared = semantics.declaration(base)
+    type_name = semantics.derived_type_of(base)
+    if declared is None or type_name is None or declared.get("dims"):
+        return None
+    record: dict[str, Any] | None = None
+    for position, part in enumerate(parts[1:], start=1):
+        name = part.children[0] if isinstance(part, f03.Part_Ref) else part
+        if not isinstance(name, f03.Name) or type_name is None:
+            return None
+        record = semantics.types.get(type_name, {}).get(str(name).lower())
+        if record is None:
+            return None
+        last = position == len(parts) - 1
+        if not last:
+            if record.get("dims"):
+                return None
+            match = DERIVED_TYPE_MARKER.match(str(record.get("dtype") or ""))
+            type_name = match.group(1).lower() if match else None
+        elif isinstance(part, f03.Part_Ref) and not record.get("dims"):
+            return None  # a substring of a scalar component
+    if record is None or record.get("dtype") != "str":
+        return None
+    length = str(record.get("char_len") or "").strip()
+    if length.isdigit():
+        return length
+    names = re.findall(r"[A-Za-z_]\w*", length)
+    if (
+        not names
+        or not LENGTH_TEXT.fullmatch(length)
+        or not all(n.lower() in semantics.parameters for n in names)
+    ):
+        return None
+    return length
+
+
+def returned_length(formal: dict[str, Any], actual: Any, semantics: Semantics | None) -> str | None:
+    """``fitted_length`` of the caller's ``actual`` that what an
+    ``intent(out)`` ``len=*`` dummy hands back is fitted to, or ``None``.
+
+    The dummy has the actual's length, and the return convention never
+    hands that length in: the callee's ``s = 'hello'`` came back as five
+    characters, and a caller's ``character(len=8)`` bound to it had ``len``
+    5 where gfortran has 8 (FNP-D0021). A dummy of any other intent was
+    passed the caller's value, and fitted to its length in the callee.
+    """
+    if formal.get("intent") != "OUT" or str(formal.get("char_len") or "").strip() != "*":
+        return None
+    return fitted_length(actual, None, semantics)
+
+
+def fitted_length_reads(target: Any, value: Any, semantics: Semantics | None) -> set[str]:
+    """What fitting a store to ``target`` reads: the named constants of its
+    length, or -- an assumed length -- the variable's own."""
+    return length_reads(fitted_length(target, value, semantics), target)
+
+
+def length_reads(length: str | None, target: Any) -> set[str]:
+    """What fitting to ``length``, a store to ``target``, reads."""
+    if length is None:
+        return set()
+    if length == "*":
+        return {str(_designator_base(target))}
+    return {token.lower() for token in re.findall(r"[A-Za-z_]\w*", length)}
+
+
 def bound_reads(dims: Any, subscripts: list[Any] | None = None) -> set[str]:
     """The names a subscript list reads through the declared lower bounds of
     the axes it indexes.
@@ -281,13 +655,69 @@ def bound_reads(dims: Any, subscripts: list[Any] | None = None) -> set[str]:
 
 
 def lower_bound_reads(name: str, scope: Scope, subscripts: list[Any] | None = None) -> set[str]:
-    """``bound_reads`` for a plain array or an associate alias, by name."""
+    """``bound_reads`` for a plain array or an associate alias, by name.
+
+    A declared lower bound over a variable the body can change is read
+    once, on entry, into a local of the translation's own (``captured``);
+    a subscript over it reads that local and not the variable, and so does
+    the source, whose bounds were fixed on entry (F2018 10.1.11)."""
     semantics = scope.semantics
     if semantics is None:
         return set()
-    declared = semantics.declaration(name) or {}
-    dims = scope.alias_dims.get(name) or declared.get("dims") or ()
+    dims = scope.alias_dims.get(name)
+    if not dims:
+        declared = (semantics.declaration(name) or {}).get("dims") or ()
+        dims = [{**d, "lb": "1"} if captured(d.get("lb"), semantics) else d for d in declared]
     return bound_reads(dims, subscripts)
+
+
+def captured(lower: Any, semantics: Semantics) -> bool:
+    """Whether an array's lower bound is held in a local of its own.
+
+    An array's bounds are the values its bound expressions had when it came
+    into being -- on entry for an explicit-shape dummy or an automatic
+    local (F2018 10.1.11), at its ALLOCATE for an allocatable (F2018
+    9.7.1.2) -- and redefining a variable they name does not move them.
+    Where the subprogram can redefine one, the translation reads the bound
+    into a local then, and every subscript and inquiry reads that; where it
+    cannot, the bound text is as good as its value and is spelled as it
+    always was. A literal is neither.
+    """
+    text = str(lower or "").strip()
+    return bool(text) and not re.fullmatch(r"-?\d+", text) and not kept_from_entry(text, semantics)
+
+
+def kept_from_entry(text: str, semantics: Semantics) -> bool:
+    """Whether every variable a bound expression names keeps its value.
+
+    An array's bounds are the values its bound expressions had on entry,
+    and redefining a variable they name does not change them (F2018
+    10.1.11). So ``a(1:n)`` of an ``a(n)`` whose body has since set
+    ``n = n - 4`` can be empty, and its stop edge, below zero, counts
+    from the end -- ``sum(a(1:n))`` with ``n`` gone from 3 to -1 summed
+    three elements, not none. A name is kept when this subprogram cannot
+    have changed it: an intent(in) dummy, declared or inferred read-only;
+    a local the body never stores; module state the subprogram does not
+    write; a constant, and anything else the record does not list as a
+    variable. An array named inside an inquiry keeps its shape.
+    """
+    subprogram = getattr(semantics, "subprogram", None) or {}
+    dummies = {a["name"].lower(): a for a in subprogram.get("args") or ()}
+    variables = {v["name"].lower(): v for v in subprogram.get("locals") or ()}
+    written = {str(n).lower() for n in subprogram.get("module_state_written") or ()}
+    for match in re.finditer(r"\b([a-z_]\w*)\b(?!\s*\()", text.lower()):
+        name = match.group(1)
+        if name in dummies:
+            if dummies[name].get("dims") or semantics.is_array(name):
+                continue
+            if str(dummies[name].get("intent", "")).upper() != "IN":
+                return False
+        elif name in variables:
+            if variables[name].get("written"):
+                return False
+        elif name in written:
+            return False
+    return True
 
 
 def component_bound_reads(data_ref: Any, scope: Scope) -> set[str]:
@@ -359,6 +789,11 @@ def expr_reads(node: Any, scope: Scope) -> set[str]:
                 items = _without_kind_argument(fname, items)
             for item in items:
                 reads |= expr_reads(item, scope)
+            if fname in ("lbound", "ubound") and items and isinstance(items[0], f03.Name):
+                # The inquiry answers with the array's declared lower bounds,
+                # which the translation spells out (``_f_lbound(a, 1, (lo,))``)
+                # and the source reads through the declaration.
+                reads |= lower_bound_reads(str(items[0]).lower(), scope)
         reads |= host_reads(fname, scope)
         if scope.ranks.get(fname, 0) > 0 or fname in scope.alias_dims:
             # A declared array shadows an intrinsic name -- the same rule the
@@ -507,6 +942,28 @@ def _unit_position(specifiers: list[tuple[str | None, Any]]) -> int:
     return -1
 
 
+def target_rwset(target: Any, scope: Scope) -> tuple[set[str], set[str]]:
+    """``(reads, writes)`` of storing to ``target``: the root is written, its
+    subscripts -- and the lower bounds they are shifted by -- are read."""
+    reads: set[str] = set()
+    writes: set[str] = set()
+    if isinstance(target, f03.Name):
+        writes.add(str(target).lower())
+    elif isinstance(target, f03.Data_Ref):
+        writes.add(str(target.children[0]).lower())
+        for comp in target.children[1:]:
+            if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
+                reads.update(expr_reads(comp.children[1], scope))
+        reads.update(component_bound_reads(target, scope))
+    else:
+        root = str(target.children[0]).lower()
+        writes.add(root)
+        reads.update(lower_bound_reads(root, scope, _subscript_items(target.children[1])))
+        for child in target.children[1:]:
+            reads.update(expr_reads(child, scope))
+    return reads, writes
+
+
 def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
     """``(reads, writes)`` for one statement or construct."""
     reads: set[str] = set()
@@ -546,20 +1003,9 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
 
     def write_target(target: Any) -> None:
         """Record an assignment target: the root is written, subscripts are read."""
-        if isinstance(target, f03.Name):
-            writes.add(str(target).lower())
-        elif isinstance(target, f03.Data_Ref):
-            writes.add(str(target.children[0]).lower())
-            for comp in target.children[1:]:
-                if isinstance(comp, f03.Part_Ref) and comp.children[1] is not None:
-                    reads.update(expr_reads(comp.children[1], scope))
-            reads.update(component_bound_reads(target, scope))
-        else:
-            root = str(target.children[0]).lower()
-            writes.add(root)
-            reads.update(lower_bound_reads(root, scope, _subscript_items(target.children[1])))
-            for child in target.children[1:]:
-                reads.update(expr_reads(child, scope))
+        target_reads, target_writes = target_rwset(target, scope)
+        reads.update(target_reads)
+        writes.update(target_writes)
 
     def io_output(value: Any) -> None:
         """Where an I/O statement puts an answer. ``ERR=``/``END=`` name a
@@ -696,6 +1142,8 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                 reads.update(expr_reads(actual, scope))
             if formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)
+                returned = returned_length(formal, actual, scope.semantics)
+                reads.update(length_reads(returned, actual))
             if formal.get("optional") and formal["intent"] == "OUT":
                 hands_on_presence(actual)
 
@@ -721,6 +1169,8 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
         for formal, actual in zip(callee["args"], _bind_actuals(callee, items), strict=False):
             if actual is not None and formal["intent"] in ("OUT", "INOUT"):
                 _write_actual(actual)
+                returned = returned_length(formal, actual, scope.semantics)
+                reads.update(length_reads(returned, actual))
 
     def visit(stmt: Any) -> None:
         if isinstance(stmt, f08.Block_Construct):
@@ -758,6 +1208,7 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
                     return  # a statement-function definition, not dataflow
             write_target(lhs)
             reads.update(expr_reads(rhs, scope))
+            reads.update(fitted_length_reads(lhs, rhs, scope.semantics))
             function_writes(rhs)
 
         elif isinstance(stmt, f03.If_Stmt):
@@ -834,8 +1285,18 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             # call does not make, and failed the block over it.
             control, items = stmt.children
             units = [str(n).lower() for n in walk(control, f03.Name)]
-            if units and units[0] in scope.chars:
+            # ``associate (c => s); write (c, ...)`` writes ``s``, a CHARACTER
+            # variable the associate name is spelled as: the name is the
+            # unit, and its selector's length is the one the record fills.
+            construct = associated_by(stmt, units[0]) if units else None
+            selector = associations(construct)[units[0]] if construct is not None else None
+            if units and (
+                units[0] in scope.chars
+                or (selector is not None and _designator_base(selector) in scope.chars)
+            ):
                 writes.add(units[0])
+                unit = walk(control, f03.Name)[0] if selector is None else selector
+                reads.update(fitted_length_reads(unit, None, scope.semantics))
                 specifiers = _io_specifiers(control)
                 for at, (keyword, value) in enumerate(specifiers):
                     if at == _unit_position(specifiers):
@@ -949,15 +1410,36 @@ def rwset(node: Any, scope: Scope) -> tuple[set[str], set[str]]:
             # through to the fallback below instead reported every name in
             # the whole construct as a read and none as a write, which failed
             # every block of a model whose physics is written this way.
+            #
+            # A name the body writes through to a scalar variable is spelled
+            # as that variable instead (``written_through``): no binding, a
+            # read of the name is a read of the selector and a store to it
+            # a store to the selector.
+            through = written_through(stmt, scope.semantics)
             for child in stmt.children:
                 if isinstance(child, f03.Associate_Stmt):
                     for association in walk(child, f03.Association):
                         alias, _, selector = association.children
+                        if str(alias).lower() in through:
+                            continue
                         writes.add(str(alias).lower())
                         reads.update(expr_reads(selector, scope))
                         dims = _selector_dims(selector, scope)
                         if dims:
                             scope.alias_dims[str(alias).lower()] = dims
+                elif through and not isinstance(child, f03.End_Associate_Stmt):
+                    inner_reads, inner_writes = rwset(child, scope)
+                    for alias, selector in through.items():
+                        if alias in inner_reads:
+                            inner_reads.discard(alias)
+                            inner_reads.update(expr_reads(selector, scope))
+                        if alias in inner_writes:
+                            inner_writes.discard(alias)
+                            target_reads, target_writes = target_rwset(selector, scope)
+                            inner_reads.update(target_reads)
+                            inner_writes.update(target_writes)
+                    reads.update(inner_reads)
+                    writes.update(inner_writes)
                 elif not isinstance(child, f03.End_Associate_Stmt):
                     visit(child)
 

@@ -96,7 +96,8 @@ def test_save_initializers_render_by_form(source: Path, renderer: Modules) -> No
     assert "count = 3" + tail % "int32" in body
     assert "ready = False" + tail % "bool" in body
     assert "weight = np.float64('2.5')" + tail % "float64" in body
-    assert "tag = 'abc'" + tail % "str" in body
+    # A ``character(len=8)`` holds eight characters from the start.
+    assert "tag = 'abc     '" + tail % "str" in body
     assert "biggest = np.finfo(np.float64).max  # HUGE(real(r8))" + tail % "float64" in body
     assert "eps_v = np.finfo(np.float64).eps  # EPSILON" + tail % "float64" in body
     assert "ratio = np.float64(0.2857142857142857)" + tail % "float64" in body

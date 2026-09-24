@@ -19,14 +19,20 @@ differently here is a wrong answer nothing downstream re-checks.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import re
 from pathlib import PurePath, PurePosixPath
 from typing import Any
 
 from recast.fortran.expr import (
+    PYTHON_POWER,
+    PYTHON_QUOTIENT,
     Expr,
     UnsupportedExpression,
     fold_check,
+    int_div,
+    int_pow,
     python_call,
     render,
     typed,
@@ -34,6 +40,7 @@ from recast.fortran.expr import (
 )
 
 __all__ = [
+    "constant_expression",
     "constants_module",
     "defined_module_parameters",
     "np_int_literal",
@@ -83,7 +90,7 @@ def constants_module(record: dict[str, Any], *, extern: tuple[tuple[str, int], .
         entry = record["hoisted_literals"][name]
         lines.append(_hoisted(name, entry))
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join(_with_helpers(lines, 5))
 
 
 def defined_module_parameters(record: dict[str, Any]) -> set[str]:
@@ -100,6 +107,55 @@ def defined_module_parameters(record: dict[str, Any]) -> set[str]:
         for parameter in record["module_parameters"]
         if not _module_parameter(parameter, "").startswith("# SKIPPED")
     }
+
+
+def constant_expression(text: str, record: dict[str, Any], dtype: str) -> str | None:
+    """A constant expression outside a parameter declaration, spelled the way
+    the constants file spells a parameter's and converted to ``dtype``, or
+    ``None``.
+
+    A component's default initialization is one -- ``cnt = n + 1_wi``, the
+    "not yet seeded" sentinel mt19937's state starts at -- and nothing but
+    this route knows how to spell an expression over the module's own
+    parameters. Classified by the same classifier over the parameters the
+    constants file defines (``record`` is the frontend's constants record),
+    and typed as a parameter's initializer is (``_typed_expression``); a
+    literal or a lone name is left to the caller's own forms, and anything
+    the classifier refuses is ``None``.
+
+    The value is then the thing it initializes, as Fortran's intrinsic
+    assignment converts it (F2018 10.2.1.3): ``integer :: kk = grav * 2``
+    is 19, truncated, and ``real :: sx = c4 * 3`` the single nearest 0.3 --
+    the expression's own value, 19.62 and a double, was what the component
+    held. An INTEGER target of a real expression is its ``int``, and one
+    whose operands' kinds are not known is ``None``: truncating an integer
+    is harmless, but not truncating a real is the wrong number. A single
+    is rounded to single before it is widened, as ``_stored`` rounds a
+    single parameter; a double given an integer expression is its float64.
+    """
+    from recast.fortran.constants import Kinds, classify_init
+
+    parameters = record.get("module_parameters") or []
+    known = {p["name"] for p in parameters if p.get("kind") != "skip"}
+    dtypes = {p["name"]: p.get("dtype") for p in parameters}
+    kind, payload = classify_init(text, known, kinds=Kinds(dtypes=dtypes))
+    if kind != "expr":
+        return None
+    spelled = _typed_expression(payload)
+    try:
+        tree = ast.parse(spelled, mode="eval")
+    except SyntaxError:
+        return None
+    valued = _IntegerArithmetic(_token_types(payload)).kind(tree.body)
+    if dtype.startswith("int"):
+        if valued is None:
+            return None
+        return spelled if valued == "int" else f"int({spelled})"
+    if dtype == "float32":
+        return _stored(spelled, {"dtype": "float32", "kind": "expr"})
+    if dtype == "float64" and valued == "int":
+        return f"np.float64({spelled})"
+    return spelled
 
 
 def np_int_literal(value: int) -> str:
@@ -184,7 +240,7 @@ def _module_parameter(parameter: dict[str, Any], source: str) -> str:
             return f"# SKIPPED {name} = {parameter['init_expr']}  ({quotient[1]}) {where}"
         if quotient is not None:
             return f"{name} = {quotient[0]}  {where}"
-        return f"{name} = {_stored(_expression(payload), parameter)}  {where}"
+        return f"{name} = {_stored(_typed_expression(payload), parameter)}  {where}"
     return f"# SKIPPED {name} = {parameter['init_expr']}  ({payload}) {where}"
 
 
@@ -208,7 +264,7 @@ def _local_parameter(parameter: dict[str, Any]) -> str:
     if kind == "str":
         return f"{constant} = {payload!r}  {about}"
     if kind in ("ref", "expr"):
-        value = _stored(payload.upper() if kind == "ref" else _expression(payload), parameter)
+        value = _stored(payload.upper() if kind == "ref" else _typed_expression(payload), parameter)
         # The F77 PARAMETER-statement form historically emitted these bare;
         # the declaration form carries its comment. Kept apart because the
         # emitted files are diffed byte-for-byte against the pipeline's.
@@ -270,16 +326,20 @@ INTRINSIC_SPELLING = {
     "log10": "np.log10",
     "max": "max",
     "min": "min",
-    "mod": "np.mod",
+    "mod": "np.fmod",
     "modulo": "np.mod",
-    "nint": "np.rint",
     "real": "np.float64",
-    "sign": "np.sign",
     "sin": "np.sin",
     "sqrt": "np.sqrt",
     "tan": "np.tan",
 }
-"""Intrinsic -> how this target spells it in a constant expression."""
+"""Intrinsic -> how this target spells it in a constant expression.
+
+``mod`` is ``np.fmod``, the remainder with the dividend's sign that
+Fortran's MOD is (F2018 16.9, MOD); ``modulo`` is ``np.mod``, the floored
+one. Both were ``np.mod``, so ``mod(-7, 3)`` was 2 where gfortran folds -1
+(FNP-D0025). ``nint`` and ``sign`` are not here: neither has a NumPy
+function that means it, and ``_call`` spells them."""
 
 INQUIRY_SPELLING = {
     "digits": "53",
@@ -288,7 +348,12 @@ INQUIRY_SPELLING = {
     "radix": "2",
     "tiny": "np.finfo(np.float64).tiny",
 }
-"""Type inquiries: the argument only says which type is being asked about."""
+"""Type inquiries: the argument only says which type is being asked about.
+Spelled for a double here, and by ``_inquiry`` for the kind the classifier
+recorded as asked about."""
+
+DIGITS = {"float32": "24", "float64": "53", "int32": "31", "int64": "63"}
+"""DIGITS per kind: a real's mantissa bits, an integer's magnitude bits."""
 
 
 def _expression(tokens: list[dict[str, Any]]) -> str:
@@ -321,6 +386,134 @@ def _expression(tokens: list[dict[str, Any]]) -> str:
     return " ".join(spelled)
 
 
+def _typed_expression(tokens: list[dict[str, Any]]) -> str:
+    """``_expression``, with Fortran's integer arithmetic where the operands
+    are integers.
+
+    The token route passes every operator through, and two of them mean
+    something else in Python over two integers. ``/`` truncates in Fortran,
+    so ``1.0_r8 * (7/2)`` is 3.0 and was emitted as 3.5 (FNP-D0023); ``**``
+    of a negative exponent is an integer there too, so ``2 ** (-1)`` is 0
+    and was 0.5 (FNP-D0024). The rendered text is parsed and typed -- an
+    integer literal, a reference to a constant declared INTEGER, ``int(...)``
+    and arithmetic over those are integers; a real literal or reference, a
+    conversion or a real-valued call is real; a name of unknown kind is
+    neither -- and only a quotient or power whose operands are *both* known
+    integers is respelled, as the helpers ``_with_helpers`` defines. An
+    expression with neither is returned exactly as ``_expression`` spells
+    it, so no constant that was right changes its text.
+    """
+    text = _expression(tokens)
+    if "/" not in text and "**" not in text:
+        return text
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return text
+    marker = _IntegerArithmetic(_token_types(tokens))
+    body = marker.visit(tree.body)
+    return ast.unparse(body) if marker.changed else text
+
+
+def _token_types(tokens: list[dict[str, Any]]) -> dict[str, str | None]:
+    """Upper-case name -> ``"int"`` / ``"real"`` / ``None``, for every constant
+    the tokens refer to, from the declared dtype the classifier recorded."""
+    types: dict[str, str | None] = {}
+    for token in tokens:
+        if token["t"] in ("ref", "index"):
+            dtype = str(token.get("dtype") or "")
+            real = dtype.startswith(("float", "complex"))
+            types[token["v"].upper()] = "int" if dtype == "int" else "real" if real else None
+        for nested in (*token.get("args", ()), *token.get("elements", ())):
+            types.update(_token_types(nested))
+    return types
+
+
+_INTEGER_CALLS = frozenset({"int", "np.int32", "np.int64", PYTHON_QUOTIENT, PYTHON_POWER})
+_PROMOTING_CALLS = frozenset({"max", "min", "abs", "np.abs", "np.sign", "np.mod", "np.fmod"})
+
+
+class _IntegerArithmetic(ast.NodeTransformer):
+    """Respell ``/`` and ``**`` between two integer operands as Fortran's
+    integer division and integer power; see ``_typed_expression``."""
+
+    def __init__(self, types: dict[str, str | None]) -> None:
+        self.types = types
+        self.changed = False
+
+    def kind(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, int | float):
+                return None
+            return "int" if isinstance(node.value, int) else "real"
+        if isinstance(node, ast.Name):
+            return self.types.get(node.id)
+        if isinstance(node, ast.Subscript):
+            return self.kind(node.value)
+        if isinstance(node, ast.UnaryOp):
+            return self.kind(node.operand)
+        if isinstance(node, ast.BinOp):
+            return _promote(self.kind(node.left), self.kind(node.right))
+        if isinstance(node, ast.IfExp):
+            return _promote(self.kind(node.body), self.kind(node.orelse))
+        if isinstance(node, ast.Attribute):
+            # ``np.finfo(np.float64).max`` and the like: a real kind's
+            # constant; ``np.iinfo(np.int32).max`` an integer kind's, which
+            # ``huge(0)`` is spelled as -- read as unknown, ``huge(0)/2`` in a
+            # REAL constant stayed Python's true division, 1073741823.5.
+            spelled = ast.unparse(node)
+            return "real" if "finfo" in spelled else "int" if "iinfo" in spelled else None
+        if isinstance(node, ast.Call):
+            function = ast.unparse(node.func)
+            if function in _INTEGER_CALLS:
+                return "int"
+            if function in _PROMOTING_CALLS:
+                kinds = [self.kind(a) for a in node.args]
+                return _promote(*kinds) if kinds else None
+            if function.startswith("np.") and function != "np.array":
+                return "real"  # a conversion to a real kind, or a real function
+        return None
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        self.generic_visit(node)
+        if self.kind(node.left) != "int" or self.kind(node.right) != "int":
+            return node
+        if isinstance(node.op, ast.Div):
+            helper = PYTHON_QUOTIENT
+        elif isinstance(node.op, ast.Pow) and _signed_exponent(node.right):
+            helper = PYTHON_POWER
+        else:
+            return node
+        self.changed = True
+        return ast.Call(
+            func=ast.Name(id=helper, ctx=ast.Load()), args=[node.left, node.right], keywords=[]
+        )
+
+
+def _integer_valued(tokens: list[dict[str, Any]]) -> bool:
+    """Whether an argument's tokens are integer-valued, by the same typing."""
+    try:
+        tree = ast.parse(_expression(tokens), mode="eval")
+    except SyntaxError:
+        return False
+    return _IntegerArithmetic(_token_types(tokens)).kind(tree.body) == "int"
+
+
+def _promote(*kinds: str | None) -> str | None:
+    """Fortran's promotion, over what ``_IntegerArithmetic.kind`` knows."""
+    if "real" in kinds:
+        return "real"
+    if kinds and all(k == "int" for k in kinds):
+        return "int"
+    return None
+
+
+def _signed_exponent(node: ast.AST) -> bool:
+    """Whether an exponent may be negative: anything but a literal integer
+    of its own sign -- the ``**`` it always was is exact there."""
+    return not (isinstance(node, ast.Constant) and isinstance(node.value, int) and node.value >= 0)
+
+
 def _integer_quotient(
     tokens: list[dict[str, Any]], parameter: dict[str, Any]
 ) -> tuple[str | None, str] | None:
@@ -328,9 +521,13 @@ def _integer_quotient(
     token route spelled Python's real division (``HBS = FBS / 2`` is 1.5
     where the compiler has 1; ledger #32 row 18). The one shape this flat
     token list can spell exactly is a single quotient of two integer
-    operands, ``int(A / B)`` (truncation toward zero, exact below 2**53);
-    anything richer is refused with the reason rather than folded wrong.
-    ``None`` when the expression is not an integer quotient at all."""
+    operands, ``int(_f_int_div(A, B))``: truncation toward zero, exact for
+    every integer, and the Python ``int`` it always was. It was
+    ``int(A / B)``, which divides in binary64 -- ``k8 / 1_i8`` with ``k8 =
+    2**53 + 1`` came out 2**53, where the same quotient inside a REAL
+    constant already went through ``_f_int_div``. Anything richer is refused
+    with the reason rather than folded wrong. ``None`` when the expression
+    is not an integer quotient at all."""
     declared = str(parameter.get("dtype") or parameter.get("base_type") or "").lower()
     if not declared.startswith("int"):
         return None
@@ -341,7 +538,8 @@ def _integer_quotient(
         t["t"] in ("int", "ref", "index") and t.get("dtype", "int") == "int" for t in operands
     )
     if len(tokens) == 3 and tokens[1] == {"t": "op", "v": "/"} and plain:
-        return f"int({_expression(tokens[:1])} / {_expression(tokens[2:])})", ""
+        numerator, denominator = _expression(tokens[:1]), _expression(tokens[2:])
+        return f"int({PYTHON_QUOTIENT}({numerator}, {denominator}))", ""
     return None, "integer division inside a larger expression: not spelled by this renderer"
 
 
@@ -349,17 +547,65 @@ def _call(token: dict[str, Any]) -> str:
     name = token["v"]
     dtype = token.get("dtype")
     if name in INQUIRY_SPELLING:
-        # Of the kind the argument had, which the classifier settled; the
-        # 64-bit spelling stands for a record made without kinds.
-        if dtype == "float32":
-            return INQUIRY_SPELLING[name].replace("np.float64", "np.float32")
-        return INQUIRY_SPELLING[name]
+        return _inquiry(name, token.get("asked") or dtype)
     arguments = ", ".join(_expression(argument) for argument in token["args"])
+    if name == "nint":
+        return _nint(_expression(token["args"][0]), token.get("kind") or "int32")
+    if name == "sign":
+        return _sign(token["args"])
     if name in ("real", "float", "dble") and dtype == "float32":
         # ``real(x)`` is the default real: single, then widened by whatever
         # arithmetic it meets -- exact, where ``np.float64(x)`` was not.
         return f"np.float32({arguments})"
     return f"{INTRINSIC_SPELLING.get(name, name)}({arguments})"
+
+
+def _inquiry(name: str, asked: str | None) -> str:
+    """An inquiry, of the kind the argument had, which the classifier
+    settled; the 64-bit spelling stands for a record made without kinds.
+
+    An integer kind is a question about an integer: ``huge(0)`` is
+    ``np.iinfo(np.int32).max`` and ``digits(0)`` 31, where both were the
+    double's answers (FNP-D0026, FNP-D0046); ``digits`` of a single is 24,
+    where it was 53 too.
+    """
+    if name == "digits" and asked in DIGITS:
+        return DIGITS[asked]
+    if name == "huge" and asked in ("int32", "int64"):
+        return f"np.iinfo(np.{asked}).max"
+    if asked == "float32":
+        return INQUIRY_SPELLING[name].replace("np.float64", "np.float32")
+    return INQUIRY_SPELLING[name]
+
+
+def _nint(x: str, kind: str) -> str:
+    """Fortran NINT, as an integer of ``kind``: the nearest integer, a half
+    away from zero (F2018 16.9, NINT).
+
+    ``np.rint`` -- what this was -- rounds a half to even and answers a
+    float, so ``nint(2.5_r8)`` was 2.0 where gfortran folds 3 (FNP-D0025).
+    Nor ``floor(x + 0.5)``: the addition rounds, and 0.49999999999999994
+    comes out 1. ``trunc(x)`` and ``x - trunc(x)`` are exact in binary
+    floating point, doubling the fraction is exact, and its truncation is
+    -1, 0 or 1 exactly as the fraction reaches a half.
+    """
+    return f"np.{kind}(np.trunc({x}) + np.trunc(2 * (({x}) - np.trunc({x}))))"
+
+
+def _sign(arguments: list[list[dict[str, Any]]]) -> str:
+    """Fortran SIGN(a, b): ``|a|`` with the sign of ``b`` (F2018 16.9, SIGN).
+
+    ``np.sign`` takes one argument and reads a second as the array to write
+    into, so ``sign(3.0_r8, -1.0_r8)`` raised when the constants file was
+    imported. Over reals it is ``copysign`` -- gfortran gives ``-0.0`` the
+    minus sign, as the translated body's ``_f_sign`` does -- and over
+    integers a comparison, which keeps the result an integer and makes
+    ``b = 0`` positive.
+    """
+    a, b = (_expression(argument) for argument in arguments)
+    if all(_integer_valued(argument) for argument in arguments):
+        return f"(abs({a}) if ({b}) >= 0 else -abs({a}))"
+    return f"np.copysign(np.abs({a}), {b})"
 
 
 def _stored(value: str, parameter: dict[str, Any]) -> str:
@@ -409,15 +655,35 @@ def use_constants_module(resolved: list[dict[str, Any]], module_name: str) -> st
         env[entry["name"]] = entry.get("dtype") or typed(entry["expr"], env)
         where = f"{PurePath(entry['source']).name}:{entry['line']}"
         lines.append(f"{entry['name'].upper()} = {value}  # {where}")
-    return "\n".join(lines) + "\n"
+    return "\n".join(_with_helpers(lines, 6)) + "\n"
+
+
+_HELPERS = {
+    name: inspect.getsource(function).replace(f"def {function.__name__}(", f"def {name}(", 1)
+    for name, function in ((PYTHON_QUOTIENT, int_div), (PYTHON_POWER, int_pow))
+}
+"""Fortran's integer division and integer power, as the definitions a
+generated constants file carries: ``expr.int_div`` and ``expr.int_pow``
+under the names a rendered quotient and power call, read out of the live
+functions so the tested helpers and the emitted ones cannot drift apart."""
+
+
+def _with_helpers(lines: list[str], at: int) -> list[str]:
+    """``lines`` with the definition of each helper they call inserted at
+    ``at``. The file stands alone -- the translated module's runtime is not
+    in it -- so a quotient it spells has to be defined in it; and only where
+    one is called, so a file without one is the text it always was."""
+    used = [name for name in _HELPERS if any(f"{name}(" in line for line in lines[at:])]
+    return [*lines[:at], *(_HELPERS[name] for name in used), *lines[at:]]
 
 
 def _python(expr: Expr, env: dict[str, str | None] | None = None) -> str:
     if expr.kind == "str":
         return repr(expr.text)  # no arithmetic to fold; a slash in it is text
     # Fortran divides two integers to an integer; ``with_integer_division``
-    # spells those quotients ``//`` from the tree's own types and the
-    # declared types of the constants before it.
+    # marks those quotients from the tree's own types and the declared types
+    # of the constants before it, and they truncate toward zero -- ``//``
+    # floors, which is a different integer for operands of opposite sign.
     return render(
         with_integer_division(expr, env=env),
         real=lambda text: f"np.float64('{text}')",
@@ -426,4 +692,6 @@ def _python(expr: Expr, env: dict[str, str | None] | None = None) -> str:
         name=lambda text: text.upper(),
         call=lambda fname, args, kind: python_call(fname, args, result_kind=kind),
         dtype=lambda kind: f"np.{kind}",
+        quotient=lambda a, b: f"{PYTHON_QUOTIENT}({a}, {b})",
+        power=lambda a, b: f"{PYTHON_POWER}({a}, {b})",
     )

@@ -38,8 +38,10 @@ from typing import Any
 from recast import references
 from recast.errors import ConfigError
 from recast.fortran._parse import f03, parse, walk
+from recast.fortran.expr import int_div
 from recast.fortran.interface import emit_name, subprogram_key
 from recast.transform.numpy import runtime
+from recast.transform.numpy.constants import constant_expression
 from recast.transform.numpy.subprograms import Subprograms
 from recast.transform.numpy.vocabulary import pysafe
 
@@ -57,6 +59,10 @@ corpus would have silently become float64 -- so it must keep doing so until
 a gate says otherwise."""
 
 INTEGER_TEXT = re.compile(r"-?\s*\d+")
+INTEGER_KIND_TEXT = re.compile(r"(-?\s*\d+)_\w+")
+"""An integer literal with a kind suffix, ``2_i4``. Apart from ``INTEGER_TEXT``
+because the spelling is the digits without it, and ahead of ``REAL_TEXT``,
+which matches it too -- a mantissa with no point -- and made it a float."""
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 CHARACTER_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
 
@@ -349,7 +355,20 @@ class Modules:
             safe = pysafe(name)
             dims = component.get("dims")
             shape = self.subprograms.component_shape(component) if dims else None
-            if shape is not None:
+            # A CHARACTER component starts at its length in blanks, or at a
+            # literal initializer fitted to it, as a module variable does.
+            character = (
+                self._character_value(component, str(component.get("init") or "").strip())
+                if component["dtype"] == "str" and (shape is not None or not dims)
+                else None
+            )
+            if character is not None and shape is not None:
+                lines.append(f"    o.{safe} = np.full(({shape},), {character}, dtype=object)")
+            elif character is not None:
+                lines.append(f"    o.{safe} = {character}")
+            elif component.get("init"):
+                lines.append(f"    o.{safe} = {self._component_default(component, shape)}")
+            elif shape is not None:
                 lines.append(f"    o.{safe} = np.zeros(({shape},))")
             elif dims:
                 lines.append(f"    o.{safe} = None")
@@ -364,6 +383,76 @@ class Modules:
         lines.append("    return o")
         lines.append("")
         return lines
+
+    def _component_default(self, component: dict[str, Any], shape: str | None) -> str:
+        """A component's default initialization, as the factory's value.
+
+        Every object of the type starts with it (F2018 7.5.4.6), and the
+        factory started every component at a zero of its type whatever the
+        type said -- ``real(r8) :: tol = 1.0d-6`` came out ``o.tol = 0.0``
+        (FNP-D0030). The initializer is rendered by the forms a module
+        variable's is, since it is the same kind of constant text: a scalar
+        through ``_state_value``, an array's broadcast through
+        ``_broadcast_fill``. A bare integer given to a REAL component is
+        that real, as Fortran's conversion makes it. What neither renders
+        -- an expression, an array whose shape is not static -- is ``None``
+        with the text beside it rather than the zero that was not the
+        source's: a ``None`` read before it is written raises, where a
+        zero is a wrong number nothing reports.
+        """
+        initializer = str(component["init"]).strip()
+        dtype = str(component.get("dtype") or "")
+        parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
+        unrendered = f"None  # default initialization not rendered: {initializer!r}"
+        if component.get("dims"):
+            if shape is None or initializer.lower() == "null()":
+                return "None" if initializer.lower() == "null()" else unrendered
+            fill = self._broadcast_fill(initializer.lower(), parameters)
+            if fill is not None:
+                return f"np.full(({shape},), {fill}, dtype={STATE_DTYPES.get(dtype, 'np.float64')})"
+            if dtype in ("int32", "int64") and ARRAY_TEXT.fullmatch(initializer):
+                # An integer constructor stays integer: ``_state_value``'s
+                # constructor rule reads ``1`` as a real before an integer.
+                items = [i.strip() for i in initializer[2:-2].split(",")]
+                if all(INTEGER_TEXT.fullmatch(i) for i in items):
+                    values = ", ".join(i.replace(" ", "") for i in items)
+                    return f"np.array([{values}], dtype=np.{dtype})"
+            value = self._state_value({"init_expr": initializer, "dtype": dtype}, parameters)
+            return unrendered if value.startswith("None") else value
+        whole = INTEGER_KIND_TEXT.fullmatch(initializer)
+        if dtype.startswith("float") and (whole or INTEGER_TEXT.fullmatch(initializer)):
+            digits = (whole.group(1) if whole else initializer).replace(" ", "")
+            return (
+                f"np.float64(np.float32({digits}))"
+                if dtype == "float32"
+                else f"np.float64({digits})"
+            )
+        value = self._state_value({"init_expr": initializer, "dtype": dtype}, parameters)
+        if value.startswith("None  # pointer"):
+            return "None"
+        if value.startswith("None"):
+            # An expression over the module's parameters -- ``n + 1_wi`` --
+            # spelled as the constants file spells a parameter's, and
+            # converted to the component's type: ``integer :: kk = grav * 2``
+            # is 19, where the expression's own value was 19.62.
+            spelled = constant_expression(initializer, self.subprograms.constants, dtype)
+            return unrendered if spelled is None else spelled
+        # A lone real given to an INTEGER component is converted the same
+        # way, and a double parameter given to a single one is rounded.
+        lowered = initializer.lower()
+        declared = {
+            p["name"]: str(p.get("dtype") or "")
+            for p in self.subprograms.constants.get("module_parameters") or []
+        }
+        literal = not whole and not INTEGER_TEXT.fullmatch(initializer)
+        real = (literal and REAL_TEXT.fullmatch(initializer) is not None) or declared.get(
+            lowered, ""
+        ).startswith("float")
+        if dtype.startswith("int") and real:
+            return f"int({value})"
+        if dtype == "float32" and declared.get(lowered) == "float64":
+            return f"np.float64(np.float32({value}))"
+        return value
 
     # -- module state ---------------------------------------------------------
 
@@ -441,9 +530,11 @@ class Modules:
                         if dtype == "object":
                             # A character array: np.zeros of dtype object is
                             # an array of the integer 0, and the first thing
-                            # done to it is a string comparison.
+                            # done to it is a string comparison. Its elements
+                            # are blanks of its length where that is known.
+                            blank = self._character_value(state) or "''"
                             return [
-                                f"{state['name']} = np.full(({shape},), '', dtype=object)"
+                                f"{state['name']} = np.full(({shape},), {blank}, dtype=object)"
                                 "  # module array state (str)"
                             ]
                         return [
@@ -459,6 +550,11 @@ class Modules:
             return [
                 f"{pysafe(state['name'])} = None  # allocatable/assumed module array, set by init"
             ]
+        if state["dtype"] == "str" and not state.get("dims"):
+            blanks = self._character_value(state, initializer)
+            if blanks is not None:
+                note = "Fortran save-init" if initializer else "set by init"
+                return [f"{pysafe(state['name'])} = {blanks}  # module state (str), {note}"]
         if state["init_expr"]:
             value = self._state_value(state, parameters)
             if value.startswith("None  # TODO"):
@@ -476,6 +572,31 @@ class Modules:
                 f"({state['dtype']}), set by init"
             ]
         return [f"{pysafe(state['name'])} = None  # module state ({state['dtype']}), set by init"]
+
+    def _character_value(self, entity: dict[str, Any], initializer: str = "") -> str | None:
+        """What a CHARACTER module variable or component starts as: its
+        declared length in blanks, or a character-literal ``initializer``
+        fitted to it; ``None`` for a length not known at module scope.
+
+        A ``character(len=6) :: ms`` holds six characters before any store
+        as after one, and ``ms = 'ab'`` leaves ``'ab    '``. The module
+        bound it to ``None`` and started a component at ``None`` too, and a
+        literal initializer kept its own length (FNP-D0021). A length is
+        known here when it is digits or one of the module's parameters,
+        which the module spells in capitals.
+        """
+        value = ""
+        if CHARACTER_TEXT.fullmatch(initializer):
+            value = initializer[1:-1].replace(initializer[0] * 2, initializer[0])
+        elif initializer:
+            return None
+        length = str(entity.get("char_len") or "").strip()
+        parameters = {p["name"] for p in self.subprograms.record["module_parameters"]}
+        if length.isdigit():
+            return repr(value.ljust(int(length))[: int(length)])
+        if length.lower() in parameters:
+            return f"({value!r}).ljust({length.upper()})[:{length.upper()}]"
+        return None
 
     def _broadcast_fill(self, expression: str, parameters: set[str]) -> str | None:
         """A scalar initializer simple enough to broadcast, or ``None``.
@@ -510,15 +631,32 @@ class Modules:
             return expression.upper()
         if INTEGER_TEXT.fullmatch(expression):
             return expression.replace(" ", "")
+        whole = INTEGER_KIND_TEXT.fullmatch(expression)
+        if whole:
+            # ``integer(i4) :: j = 2_i4`` is the integer 2. ``REAL_TEXT`` read
+            # it as a real, ``np.float64('2')``, and ``x(j)`` then raised --
+            # a float is no subscript.
+            return whole.group(1).replace(" ", "")
         if expression in (".true.", ".false."):
             return "True" if expression == ".true." else "False"
         if REAL_TEXT.fullmatch(expression):
             base = expression.replace(" ", "").split("_")[0].replace("d", "e")
+            if state.get("dtype") == "float32":
+                single = self._single(expression)
+                return (
+                    single or f"None  # TODO: real(4) init of unknown kind {state['init_expr']!r}"
+                )
             return f"np.float64('{base}')"
         if CHARACTER_TEXT.fullmatch(str(state["init_expr"]).strip()):
             return _character_literal(str(state["init_expr"]).strip())
         if expression == "null()":
             return "None  # pointer, null-init"
+        logical = re.fullmatch(r"\.(true|false)\.(?:_\w+)?", expression)
+        if logical:
+            # A LOGICAL literal of a named kind, ``.false._wi``: the value is
+            # the same whatever the kind, and the plain spelling above only
+            # knew the default one.
+            return "True" if logical.group(1) == "true" else "False"
         if re.fullmatch(r"huge\(1\)", expression):
             return "np.int32(2147483647)  # HUGE(default int)"
         if re.fullmatch(r"huge\(1\.0?_?\w*\)", expression):
@@ -546,12 +684,77 @@ class Modules:
                 return f"np.array([{', '.join(item.strip() for item in items)}], dtype=np.int32)"
             return f"None  # TODO: array init {state['init_expr']!r}"
         if DIVISION_TEXT.fullmatch(expression):
-            # An arithmetic constant expression: 2.0_r8 / 7.0_r8.
-            numerator, denominator = expression.split("/")
-            top = numerator.strip().split("_")[0].replace("d", "e")
-            bottom = denominator.strip().split("_")[0].replace("d", "e")
-            return f"np.float64({float(top) / float(bottom)!r})"
+            return self._quotient_value(expression, str(state.get("dtype") or ""))
         return f"None  # TODO: init {state['init_expr']!r}"
+
+    def _real_kind(self, literal: str) -> str | None:
+        """The dtype of a real literal: a ``d`` exponent is a double, no
+        suffix the default REAL, a single, and a suffix what the module's
+        kind map says it is -- ``None`` for one it does not name."""
+        mantissa, _, suffix = literal.replace(" ", "").lower().partition("_")
+        if not suffix:
+            return "float64" if "d" in mantissa else "float32"
+        kinds = {"4": "float32", "8": "float64", **(self.subprograms.record.get("kind_map") or {})}
+        found = kinds.get(suffix)
+        return found if found in ("float32", "float64") else None
+
+    def _single(self, literal: str) -> str | None:
+        """A real literal as a REAL(4) variable holds it, or ``None``.
+
+        The value is the single nearest the literal, widened: ``real :: s =
+        0.1`` holds 0.10000000149011612, where the ``np.float64('0.1')`` this
+        was holds 0.1. A double literal is rounded to double first, as the
+        compiler converts it; the default kind's is read as a single, as
+        the constants file's ``_real`` reads it.
+        """
+        base = literal.replace(" ", "").lower().split("_")[0].replace("d", "e")
+        kind = self._real_kind(literal)
+        if kind == "float32":
+            return f"np.float64(np.float32('{base}'))"
+        if kind == "float64":
+            return f"np.float64(np.float32(np.float64('{base}')))"
+        return None
+
+    def _quotient_value(self, expression: str, dtype: str) -> str:
+        """``a / b`` over two literals, as the variable it initializes holds it.
+
+        Fortran divides first, by the operands' types, and converts the
+        quotient to the variable's type after: ``real(r8) :: third = 1/3``
+        is an integer division, 0, and then 0.0 -- this folded every such
+        quotient as a real one, 0.333... (FNP-D0029). Two integer literals
+        truncate toward zero (``expr.int_div``, exact); a quotient with a
+        real operand is the real one it was; an INTEGER variable takes the
+        quotient truncated, as the assignment converts it. The sign is
+        read off the numerator with its spaces gone -- fparser writes
+        ``-7/2`` as ``- 7 / 2``, which ``float`` refused, and the whole unit
+        with it.
+
+        A REAL(4) variable holds the quotient rounded to single: ``real ::
+        ms = 1.0/3.0`` is 0.3333333432674408, and was the double third. Its
+        real quotient is spelled for NumPy to divide at the operands' kind --
+        two singles in single, a double operand in double, an integer at the
+        other side's -- and then rounded; an operand of a kind the module
+        does not name is not guessed at.
+        """
+        sides = [side.replace(" ", "") for side in expression.split("/")]
+        numerator, denominator = (side.split("_")[0].replace("d", "e") for side in sides)
+        integers = [bool(INTEGER_TEXT.fullmatch(side)) for side in (numerator, denominator)]
+        if all(integers):
+            value: float = int_div(int(numerator), int(denominator))
+        else:
+            value = float(numerator) / float(denominator)
+        if dtype.startswith("int"):
+            return str(int(value))  # the conversion truncates, as ``int`` does
+        if dtype == "float32":
+            if all(integers):
+                return f"np.float64(np.float32({int(value)}))"
+            kinds = {self._real_kind(s) for s, i in zip(sides, integers, strict=True) if not i}
+            if None in kinds:
+                return f"None  # TODO: real(4) init of unknown kind {expression!r}"
+            ctor = "np.float64" if "float64" in kinds else "np.float32"
+            quotient = f"{ctor}('{numerator}') / {ctor}('{denominator}')"
+            return f"np.float64(np.float32({quotient}))"
+        return f"np.float64({float(value)!r})"
 
     # -- the signature table --------------------------------------------------
 

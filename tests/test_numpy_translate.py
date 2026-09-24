@@ -364,7 +364,7 @@ def test_a_complex_is_spelled_at_its_kind_not_as_float64(tmp_path: Path) -> None
     candidate = NumpyTranslation().apply(unit, facts, {"root": tmp_path})
     module = candidate.files[Path("roots_mod_numpy.py")].decode()
     assert "roots = np.zeros((nz, 2,), dtype=np.complex128)" in module
-    assert "sqrt_det = np.zeros((nz,), dtype=np.complex128)" in module
+    assert "sqrt_det = np.zeros((max(0, nz),), dtype=np.complex128)" in module
     assert "np.sqrt(np.complex128(determinant))" in module
     assert "i_unit = np.complex128(complex(0.0, 1.0))" in module
     assert "-np.complex128(b_coef)" in module
@@ -831,7 +831,7 @@ def test_an_integer_parameter_quotient_truncates(tmp_path: Path) -> None:
     float64 1.5s where Fortran truncates (ledger #32 row 18); an integer
     initializer with a quotient takes the parse path and ``_f_int_div``.
     At module level the constants renderer spells the one shape its flat
-    tokens can, ``int(A / B)``, and refuses a quotient inside a larger
+    tokens can, ``int(_f_int_div(A, B))``, and refuses a quotient inside a larger
     expression rather than folding it wrong."""
     import importlib
     import sys
@@ -844,7 +844,7 @@ def test_an_integer_parameter_quotient_truncates(tmp_path: Path) -> None:
     body = candidate.files[Path("quot_mod_numpy.py")].decode()
     assert "_f_int_div(" in body, body
     constants = candidate.files[Path("quot_mod_constants.py")].decode()
-    assert "HBS = int(FBS / 2)" in constants, constants
+    assert "HBS = int(_f_int_div(FBS, 2))" in constants, constants
     assert "# SKIPPED MIXED" in constants and "integer division inside" in constants, constants
     out = tmp_path / "emitted"
     out.mkdir()

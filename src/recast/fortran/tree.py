@@ -223,7 +223,16 @@ def _evaluate(
     initialize it with something a parameter can be folded from."""
     # Lazy, like ``render`` above: ``expr`` parses, and this module is imported
     # by paths that must stay importable without the ``fortran`` extra.
-    from recast.fortran.expr import fold_check, python_call, typed, with_integer_division
+    from recast.fortran.expr import (
+        PYTHON_POWER,
+        PYTHON_QUOTIENT,
+        fold_check,
+        int_div,
+        int_pow,
+        python_call,
+        typed,
+        with_integer_division,
+    )
 
     try:
         records = resolve([name], files)
@@ -246,6 +255,8 @@ def _evaluate(
                 name=lambda t: t.upper(),
                 call=lambda f, a, k: python_call(f, a, real64="float", result_kind=k),
                 dtype=lambda k: k,
+                quotient=lambda a, b: f"{PYTHON_QUOTIENT}({a}, {b})",
+                power=lambda a, b: f"{PYTHON_POWER}({a}, {b})",
             )
             if storage == "single":
                 text = f"_f32({text})"
@@ -253,6 +264,8 @@ def _evaluate(
                 text = f"int({text})"  # an integer parameter over a real truncates
             scope = {"__builtins__": {}, "max": max, "min": min, "abs": abs, "int": int}
             scope.update({"float": float, "math": math, "sys": sys, "_f32": _single})
+            scope[PYTHON_QUOTIENT] = int_div
+            scope[PYTHON_POWER] = int_pow
             env[entry["name"].upper()] = eval(text, scope, dict(env))  # noqa: S307
             kinds[entry["name"]] = entry.get("dtype") or typed(entry["expr"], kinds)
     except Exception:  # an initializer shape the renderer has no rule for

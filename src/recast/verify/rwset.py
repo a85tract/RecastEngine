@@ -52,12 +52,21 @@ HOISTED_LITERAL = re.compile(r"(?:F32|[FI])_[0-9EMP]+")
 a variable read; ``F32_`` marks one written in Fortran's default real kind,
 which is a different value from the same digits suffixed."""
 
-DISCARD = re.compile(r"_wm\d*|_wn\d*|_we\d+_\d+|_do(?:lo|hi|st)_\w+|_|_g")
+DISCARD = re.compile(r"_wm\d*|_wn\d*|_we\d+_\d+|_do(?:lo|hi|st)_\w+|_lb_\w+|_f[ave]|_fresh|_|_g")
 """Scaffolding targets: a discarded value, the where-construct's masks (the
 branch mask ``_wm``, what no branch has claimed ``_wn``, a masked
 elsewhere's own ``_we<depth>_<n>``), the bounds a DO loop holds for its
-index's completion value (``_dolo_i``, ``_dohi_i``, ``_dost_i``), a region
-label."""
+index's completion value (``_dolo_i``, ``_dohi_i``, ``_dost_i``), an array's
+lower bound held from where it came into being (``_lb_a_1``, whose
+expression is read there, as the source reads it), a FORALL's active
+combinations, gathered values and the one being stored (``_fa``, ``_fv``,
+``_fe``), whether a subprogram with SAVEd locals is on its first call
+(``_fresh``), a region label."""
+
+FORALL_INDEX = re.compile(r"_fi_(\w+)")
+"""A FORALL's index, spelled apart from the variable of its name outside
+(``_fi_i``) because it has the construct's scope. It is the source's ``i``,
+which is what the source side reads and writes for it."""
 
 PRESENT_SENTINEL = re.compile(r"want_(\w+)")
 """``want_x`` is how an optional output argument is spelled on the target side;
@@ -179,6 +188,9 @@ class _Visitor(ast.NodeVisitor):
         """The source symbol an emitted name stands for, or ``None`` for none."""
         if DISCARD.fullmatch(name):
             return None
+        index = FORALL_INDEX.fullmatch(name)
+        if index:
+            return index.group(1)
         if name.endswith("_") and (
             keyword.iskeyword(name[:-1]) or name[:-1] in self.protocol.reserved
         ):

@@ -34,9 +34,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recast.fortran._parse import f03, walk
+from recast.fortran.frontend import INTRINSIC_MODULES
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
+from recast.fortran.intrinsics import STANDARD_FUNCTIONS
+from recast.fortran.rwset import captured, kept_from_entry
 from recast.fortran.semantics import F77_SPECIFIC_TO_GENERIC, Semantics, Unanalyzable
-from recast.transform.numpy.names import Names
+from recast.transform.numpy.names import USE_STATEMENT, Names
 from recast.transform.numpy.vocabulary import (
     ARITH_OPS,
     ARRAY_TRANSFORM,
@@ -123,6 +126,77 @@ KIND_CONVERSIONS = frozenset(
 imaginary part -- so its kind is third. Every other member's kind is second,
 and a ``kind=`` keyword drops the tail whichever member it is.
 """
+
+BIT_INTRINSICS = frozenset({"iand", "ior", "ieor", "ishft"})
+"""Bit operations whose result depends on the operand's width, which the
+emitter passes (``Expressions._bit_arguments``)."""
+
+MAPPED_OVER_ARRAYS = frozenset(
+    {"acos", "asin", "atan", "atan2", "cosh", "dim", "gamma", "mod", "sinh", "tan"}
+)
+"""Elemental intrinsics whose only spelling is a scalar one that an array
+breaks -- a ``math`` function, or a runtime helper that calls ``int`` or
+``max`` on its operands -- so over arrays they are mapped per element. The
+others without an array spelling either take arrays as they are (``np.imag``,
+``_f_modulo``), convert elementwise in the runtime (``_f_int``, ``_f_nint``),
+or are character and inquiry functions a substring or a whole array reaches
+with scalar meaning."""
+
+INTEGER_CONVERSIONS = frozenset({"int", "nint", "floor", "ceiling"})
+"""Conversions whose KIND decides the result's *range*, not its precision,
+so dropping it changes the number (``_integer_conversion``)."""
+
+KIND_BYTES = {"int32": 4, "int64": 8, "float32": 4, "float64": 8}
+"""A resolved kind's dtype -> the kind number gfortran gives it: its width in
+bytes, whichever type the kind parameter was written for."""
+
+_INTEGER_KIND_DTYPES = {4: "int32", 8: "int64"}
+"""The INTEGER kinds a dtype here spells. gfortran has 1, 2 and 16 as well,
+and none of them is an ``int32``."""
+
+
+def _selected_int_kind(digits: int) -> int:
+    """gfortran's ``selected_int_kind(r)``: the smallest kind holding every
+    integer of ``r`` decimal digits, -1 where none does. Not "4 unless it
+    needs 8": ``selected_int_kind(4)`` is the 2-byte kind, whose HUGE is
+    32767."""
+    for kind, most in ((1, 2), (2, 4), (4, 9), (8, 18), (16, 38)):
+        if digits <= most:
+            return kind
+    return -1
+
+
+INQUIRY_DTYPES = frozenset(
+    {"int32", "int64", "float32", "float64", "complex64", "complex128", "bool", "str"}
+)
+"""The dtypes a kind inquiry is answered for: every kind the frontend
+resolves a declaration to."""
+
+_NUMERIC = frozenset({"int32", "int64", "float32", "float64"})
+_REAL = frozenset({"float32", "float64"})
+
+KIND_INQUIRIES: dict[str, frozenset[str]] = {
+    "kind": INQUIRY_DTYPES,
+    "huge": _NUMERIC,
+    "tiny": _REAL,
+    "epsilon": _REAL,
+    "precision": _REAL | {"complex64", "complex128"},
+    "range": _NUMERIC | {"complex64", "complex128"},
+    "digits": _NUMERIC,
+    "maxexponent": _REAL,
+    "minexponent": _REAL,
+    "bit_size": frozenset({"int32", "int64"}),
+}
+"""Inquiries about a kind rather than a value, and the dtypes each is defined
+for (F2018 16.9: HUGE takes an integer or a real, TINY and EPSILON a real,
+PRECISION a real or a complex, RANGE any of the three, DIGITS an integer or
+a real, MAXEXPONENT and MINEXPONENT a real, BIT_SIZE an integer). Answered from the
+declaration (``Expressions._kind_inquiry``)."""
+
+
+NON_NEGATIVE_INQUIRIES = frozenset({"count", "index", "len", "len_trim", "scan", "size", "verify"})
+"""Intrinsics whose answer is never below zero: a section's stop edge that is
+one of them cannot count from the end of the axis."""
 
 MAX_EXPANDED_POWER = 16
 """Beyond this, expanding ``x**n`` to multiplications stops being worth reading
@@ -528,6 +602,15 @@ class Expressions:
     def _power(self, left: str, right: str, left_node: Any, right_node: Any) -> str | None:
         """``x**n``, which the reference compiler may have lowered two ways."""
         exponent = self.semantics.integer_literal(right_node)
+        if self._integer_power(left_node, right_node) and (exponent is None or exponent < 0):
+            # INTEGER ** INTEGER is integer arithmetic throughout: ``2**(-1)``
+            # is 1/2 in integer division, zero (F2018 10.1.5.2.2). Python's
+            # ``2 ** -1`` is 0.5, and so is gfortran's expansion ``1.0 /
+            # (x*x)`` that ``expand_power`` writes for a REAL base
+            # (FNP-D0012). A non-negative literal exponent is exact in
+            # Python already and keeps its spelling; a negative one, or one
+            # whose sign only the run knows, goes through the runtime.
+            return f"_f_ipow({left}, {right if exponent is None else exponent})"
         if exponent is None:
             exponent = self._folded_real_exponent(right_node)
         if exponent is not None and exponent != 0:
@@ -571,12 +654,19 @@ class Expressions:
         value = self.semantics.integral_real_literal(node)
         return value if value in FOLDED_REAL_EXPONENTS else None
 
+    def _integer_power(self, left_node: Any, right_node: Any) -> bool:
+        """An INTEGER raised to an INTEGER, which is not a ``pow`` at all."""
+        try:
+            return self.semantics.is_integer(left_node) and self.semantics.is_integer(right_node)
+        except Unanalyzable:
+            return False
+
     def _integer_exponent(self, left_node: Any, right_node: Any) -> bool:
         """A real raised to an integer, which is the case ``powi`` covers.
 
         An integer base is left alone: Fortran's integer power is its own
-        arithmetic (``2**(-1)`` is zero, not a half), and nothing here has
-        asked what the reference does with it.
+        arithmetic (``2**(-1)`` is zero, not a half), which ``_f_ipow``
+        spells above.
         """
         try:
             return self.semantics.is_integer(right_node) and not self.semantics.is_integer(
@@ -674,6 +764,12 @@ class Expressions:
                 # which is not a refusal but runnable, wrong code -- with the
                 # zero-based shift applied to what are arguments.
                 return f"{bound}({', '.join(arguments)})"
+            if self._unspelled_intrinsic(name, items):
+                # The standard's function, not an array: nothing in scope
+                # declares or imports the name, or its arguments are ones no
+                # subscript takes. ``digits(x)`` came out ``digits[x - 1]``,
+                # a NameError at best (FNP-D0027).
+                raise NoRule(f"intrinsic {name!r} has no spelling in this translation") from None
             # Neither a procedure this file declares, nor an intrinsic, nor
             # a name a USE statement bound: what is left is a subscript of
             # something it use-imports without the dimensions. Reading it as
@@ -696,6 +792,43 @@ class Expressions:
                 raise NoRule(f"unknown function or array {name!r}") from None
             return self.subscript(name, node.children[1])
 
+    def _unspelled_intrinsic(self, name: str, items: list[Any]) -> bool:
+        """Whether an unresolved ``name(...)`` is a standard intrinsic this
+        translation has no rule for, rather than an array it cannot see.
+
+        The subscript fallback exists for arrays a module use-imports
+        without their dimensions, so a name only a USE statement could have
+        brought in keeps it: an ONLY list that names it binds it, and a bare
+        USE of a module that is not intrinsic may. Even then, a keyword or a
+        non-integer argument is no subscript.
+        """
+        if name not in STANDARD_FUNCTIONS:
+            return False
+        if (
+            name in self.names.use_bindings
+            or name in self.names.use_parameters
+            or name in self.names.companion_globals
+        ):
+            return False
+        bare_use = False
+        for statement in self.semantics.module.get("use_statements", ()):
+            match = USE_STATEMENT.match(statement)
+            if match and not match.group(2) and match.group(1).lower() not in INTRINSIC_MODULES:
+                bare_use = True
+        if not bare_use:
+            return True
+
+        def no_subscript(item: Any) -> bool:
+            if isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec)):
+                return True
+            if isinstance(item, f03.Subscript_Triplet):
+                return False
+            # Definitely not integer, not merely untyped here: an index
+            # the scope cannot type is still an index.
+            return self.semantics._integral_or_unknown(item) is False
+
+        return any(no_subscript(item) for item in items)
+
     def _is_procedure_dummy(self, name: str, arglist: Any) -> bool:
         """Whether ``name(...)`` calls a callable this subprogram was passed.
 
@@ -713,21 +846,33 @@ class Expressions:
         argument = next((a for a in self.semantics.subprogram["args"] if a["name"] == name), None)
         return argument is not None and not argument.get("dims") and argument.get("dtype") != "str"
 
-    def bound(self, text: str) -> str:
+    def bound(self, text: str, substitutions: dict[str, str] | None = None) -> str:
         """Declared bound text -> Python. Bound texts are simple -- names,
         integers, ``+ - * /``, parentheses, ``size(a, n)`` -- by construction;
-        anything else refuses the statement that needed the bound."""
+        anything else refuses the statement that needed the bound.
+
+        ``substitutions`` is for a *callee's* bound read in its caller
+        (``extent``): a name that is one of the callee's dummies is the
+        actual the call binds to it, parenthesised, and one the call leaves
+        unbound refuses, as it does when it is the whole bound."""
 
         # An automatic array sized off another argument. UBOUND is the same
-        # question with unit lower bounds, which every translated array has,
-        # and the dimension may be written with or without ``dim=``.
+        # question on an axis based at one, and the dimension may be written
+        # with or without ``dim=``. On an axis declared from another lower
+        # bound, UBOUND is that bound plus the extent, less one (FNP-D0006).
         def extent(match: re.Match[str]) -> str:
             name = self.names.symbol(match.group(1).lower())
             dimension = match.group(2)
             if dimension is None:
                 return self.extent_of(name)
             axis = int(DIM_KEYWORD.sub("", dimension)) - 1
-            return self.extent_along(name, axis)
+            along = self.extent_along(name, axis)
+            if match.group(0).lower().startswith("ubound"):
+                origins = self._bound_origins(match.group(1).lower())
+                if origins is not None and axis < len(origins):
+                    if origins[axis] != indexing.UNIT_ORIGIN:
+                        return f"(({self._origin(origins[axis])}) + {along} - 1)"
+            return along
 
         if EXTENT.fullmatch(text):
             return EXTENT.sub(extent, text)
@@ -761,7 +906,13 @@ class Expressions:
                 rendered.append(piece.lower())
                 opens_intrinsic = True
             elif re.match(r"[A-Za-z_]", piece):
-                rendered.append(self.names.symbol(piece))
+                if substitutions is not None and piece.lower() in substitutions:
+                    actual = substitutions[piece.lower()]
+                    if not actual:
+                        raise NoRule(f"dummy dimension {text!r} is not bound by this call")
+                    rendered.append(f"({actual})")
+                else:
+                    rendered.append(self.names.symbol(piece))
             elif piece.isdigit() and piece not in ("0", "1", "2"):
                 hoisted = self.names.literals.get(piece)
                 if hoisted is None:
@@ -829,10 +980,25 @@ class Expressions:
                 "agree, or with one this subprogram cannot evaluate"
             )
         positions = indexing.describe(arglist, dims, rank_of=self.semantics.rank)
-        parts = [self._position(p) for p in positions]
-        return f"{self.names.symbol(name)}[{', '.join(parts)}]"
+        symbol = self.names.symbol(name)
+        parts = [self._position(p, symbol, axis, dims) for axis, p in enumerate(positions)]
+        return f"{symbol}[{', '.join(parts)}]"
 
-    def _position(self, position: indexing.Position) -> str:
+    def _position(
+        self,
+        position: indexing.Position,
+        array: str | None = None,
+        axis: int | None = None,
+        dims: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """One subscript position of ``array`` along zero-based ``axis``.
+
+        The array, axis and declared ``dims`` are only read by a section: one
+        whose edges the runtime works out, where an implied edge has to be
+        spelled as the bound it stands for, and one whose stop edge may have
+        to be kept from going negative. ``None`` for a caller with no array
+        to name.
+        """
         if position.kind is Kind.VECTOR:
             return f"(({self.render(position.index)}) - 1)"
         if position.kind is Kind.INDEX:
@@ -840,17 +1006,23 @@ class Expressions:
             if folded is not None:
                 return str(folded)
             return self._shift(self.render(position.index), position.origin)
-        return self._range(position)
+        dim = dims[axis] if dims and axis is not None and axis < len(dims) else None
+        return self._range(position, array, axis, dim)
 
-    def _range(self, position: indexing.Position) -> str:
+    def _range(
+        self,
+        position: indexing.Position,
+        array: str | None = None,
+        axis: int | None = None,
+        dim: dict[str, Any] | None = None,
+    ) -> str:
         """``lo:hi`` inclusive becomes ``lo':hi'+1`` exclusive."""
         step = self.render(position.step) if position.step is not None else None
         if step is not None and step.lstrip("(").startswith("-"):
             # A descending section: the runtime works the edges out, because
-            # either may be implied and the stop edge underflows at the first
-            # element. The declared lower bound goes with them.
-            lower = self.render(position.lower) if position.lower is not None else "None"
-            upper = self.render(position.upper) if position.upper is not None else "None"
+            # the stop edge underflows at the first element. The declared
+            # lower bound goes with them.
+            lower, upper = self._stepped_edges(position, array, axis)
             return f"_f_rstep_lb({lower}, {upper}, {step}, {self._origin(position.origin)})"
         if step is not None and not step.strip("()").isdigit():
             # A step whose sign this cannot read -- a dummy, a variable
@@ -858,8 +1030,7 @@ class Expressions:
             # the ascending spelling ``lo:hi+1:step`` stops one short when the
             # step turns out negative, and is empty at the first element. The
             # runtime reads the sign and builds the slice (#75).
-            lower = self.render(position.lower) if position.lower is not None else "None"
-            upper = self.render(position.upper) if position.upper is not None else "None"
+            lower, upper = self._stepped_edges(position, array, axis)
             return f"_f_rstep_any({lower}, {upper}, {step}, {self._origin(position.origin)})"
         start = ""
         if position.lower is not None:
@@ -869,15 +1040,120 @@ class Expressions:
                 if folded is not None
                 else self._shift(self.render(position.lower), position.origin)
             )
-        stop = ""
-        if position.upper is not None:
-            rendered = self.render(position.upper)
-            stop = (
-                rendered
-                if position.shifts_by_one
-                else f"({rendered}) - ({self._origin(position.origin)}) + 1"
-            )
+        stop = self._stop(position, dim) if position.upper is not None else ""
         return f"{start}:{stop}" + (f":{step}" if step is not None else "")
+
+    def _stop(self, position: indexing.Position, dim: dict[str, Any] | None) -> str:
+        """The exclusive stop edge of an ascending section, kept off zero's
+        far side.
+
+        A section whose upper subscript is below its lower one is empty, and
+        its subscripts need not be within the bounds (F2018 9.5.3.3.2):
+        ``a(1:-1)`` selects nothing, as does ``s(1:-1)`` of a string. Rendered
+        as it stood, the stop edge was ``-1`` and CPython counted it from the
+        end -- ``a[0:-1]`` is every element but the last, ``s[0:(-1)]`` the
+        string less its last character (FNP-D0037, FNP-D0043). A stop edge at
+        zero or above means what Fortran means, so the one that could go
+        below it is clamped there. Not where it cannot: a non-negative
+        literal (a negative one is folded to the ``0`` it clamps to), the
+        axis's own declared upper bound (below the lower one only on a
+        zero-size axis, where every slice is empty) while the variables it
+        names still hold the values the bounds took on entry, the section's
+        own lower edge (``a(i:i)`` is never empty), and an inquiry that
+        cannot answer below zero.
+        """
+        rendered = self.render(position.upper)
+        literal = self.semantics.integer_literal(position.upper)
+        low = _integer_text(position.origin)
+        if literal is not None and low is not None:
+            if literal - low + 1 < 0:
+                return "0"
+            if position.shifts_by_one:
+                return rendered
+        stop = (
+            rendered
+            if position.shifts_by_one
+            else f"({rendered}) - ({self._origin(position.origin)}) + 1"
+        )
+        if literal is not None and low is not None:
+            return stop
+        upper = _bound_text(position.upper)
+        if (
+            upper is not None
+            and upper == _bound_text((dim or {}).get("ub"))
+            and self._kept_from_entry(upper)
+        ) or (position.lower is not None and upper == _bound_text(position.lower)):
+            return stop
+        if (
+            position.shifts_by_one
+            and isinstance(position.upper, f03.Intrinsic_Function_Reference)
+            and str(position.upper.children[0]).lower() in NON_NEGATIVE_INQUIRIES
+        ):
+            return stop
+        return f"max(0, {stop})"
+
+    def _kept_from_entry(self, text: str) -> bool:
+        """Whether every variable a declared bound names keeps its value
+        (``rwset.kept_from_entry``, which the read/write sets draw on too)."""
+        return kept_from_entry(text, self.semantics)
+
+    def capture_bounds(
+        self, name: str, dims: list[dict[str, Any]], spelled: list[str]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """``dims`` with each lower bound that can move held in a local, and
+        the assignments that fill those locals.
+
+        An array's bounds are fixed when it comes into being -- on entry for
+        an explicit-shape dummy or an automatic local (F2018 10.1.11), at
+        its ALLOCATE for an allocatable (F2018 9.7.1.2) -- but a subscript
+        was shifted by the bound *text*, re-read at every use. ``allocate(
+        a(-n:n))``, then ``n = n + 1``, then ``a(0)``: the shift was
+        ``(0) - (- n)`` with the new ``n``, and the element read was
+        ``a(1)``; LBOUND and UBOUND answered -3 and 1 where gfortran says
+        -2 and 2 (FNP-D0049). Where the subprogram can redefine a name the
+        bound reads (``rwset.captured``), the bound's value is read once,
+        into ``_lb_<array>_<axis>``, and the returned dims name that local,
+        so the subscripts, LBOUND/UBOUND and section edges read it through
+        ``subscript`` and ``_bound_origins`` as they read a bound text. The
+        caller emits the assignments where the array comes into being.
+        ``spelled`` is each axis's lower bound as Python. A bound that
+        cannot move is left as it is, and so is its emitted text.
+        """
+        kept: list[dict[str, Any]] = []
+        assignments: list[str] = []
+        for axis, (dim, lower) in enumerate(zip(dims, spelled, strict=True)):
+            if not captured(dim.get("lb"), self.semantics):
+                kept.append(dim)
+                continue
+            hidden = f"_lb_{name.lower()}_{axis + 1}"
+            assignments.append(f"{hidden} = {lower}")
+            kept.append({**dim, "lb": hidden, "source_lb": dim["lb"]})
+        return kept, assignments
+
+    def _stepped_edges(
+        self, position: indexing.Position, array: str | None, axis: int | None
+    ) -> tuple[str, str]:
+        """Both edges of a section the runtime slices, implied ones spelled.
+
+        An omitted first subscript is the axis's lower bound and an omitted
+        second one its upper bound, whatever the sign of the step (F2018
+        9.5.3.3.2): ``a(::-1)`` is empty, and ``a(:1:-1)`` is ``a(1)`` alone.
+        Handed to the runtime as ``None``, an implied edge took Python's
+        meaning instead -- the end the step walks *from* -- so all three of
+        ``a(:1:-1)``, ``a(n::-1)`` and ``a(::-1)`` summed the whole array
+        reversed (FNP-D0001). The lower bound is the one the subscript
+        already shifts by; the upper bound is the lower one plus the axis's
+        extent less one, asked of the array the way every other extent is.
+        """
+        origin = self._origin(position.origin)
+        lower = self.render(position.lower) if position.lower is not None else origin
+        if position.upper is not None:
+            return lower, self.render(position.upper)
+        if array is None or axis is None:
+            raise NoRule("an implied upper edge of a stepped section, with no array to size it")
+        extent = self.extent_along(array, axis)
+        upper = extent if position.shifts_by_one else f"({origin}) + {extent} - 1"
+        return lower, upper
 
     def _origin(self, origin: str) -> str:
         """A declared lower bound, as Python.
@@ -919,7 +1195,11 @@ class Expressions:
                 positions = indexing.describe(
                     component.children[1], dims, rank_of=self.semantics.rank
                 )
-                parts.append(f"{head}[{', '.join(self._position(p) for p in positions)}]")
+                array = ".".join([*parts, head])
+                subscripts = ", ".join(
+                    self._position(p, array, axis, dims) for axis, p in enumerate(positions)
+                )
+                parts.append(f"{head}[{subscripts}]")
             elif isinstance(component, f03.Data_Ref):
                 # fparser nests them when the chain is long enough.
                 parts.append(self._data_ref(component))
@@ -1006,9 +1286,15 @@ class Expressions:
                 # ``vl(ldvl, *)`` handed a rank-1 ``vl``: the leading axes have
                 # the extents the call binds, and the assumed-size last axis
                 # takes whatever the actual's storage has left, in column-major
-                # order -- which is what ``-1`` asks NumPy for.
+                # order. ``-1`` asks NumPy for exactly that only when the
+                # storage fills whole columns, which a leading extent of 1
+                # always does; any other raised on the partial last column
+                # Fortran allows (``v(2, *)`` over five elements, FNP-D0045),
+                # and the runtime keeps it.
                 leading = [self.extent(d, substitutions) for d in formal_dims[:-1]]
-                return f"np.reshape({rendered}, ({', '.join(leading)}, -1), order='F')"
+                if all(axis == "1" for axis in leading):
+                    return f"np.reshape({rendered}, ({', '.join(leading)}, -1), order='F')"
+                return f"_f_seq_tail({', '.join([rendered, '0', *leading])})"
             if rank is not None and rank > len(formal_dims):
                 # A whole matrix handed to ``c(*)`` -- ``h12(..., a, mda, 1,
                 # i-1)``: the dummy spans all of its storage in column-major
@@ -1031,7 +1317,74 @@ class Expressions:
             return f"np.reshape({flat}[:{span}], ({', '.join(extents)},), order='F')"
         if element:
             return self.sequence_association(actual, formal_dims, substitutions)
+        if rank == len(formal_dims) and rank > 1 and isinstance(actual, f03.Name):
+            # A whole array of the dummy's rank. Where the dummy declares
+            # other extents -- ``y(3, 2)`` for ``x(2, 2)`` -- Fortran
+            # associates the leading part of the storage, and the array
+            # handed over in its own shape had the callee index the caller's
+            # axes: ``x(1, 2)`` read ``y(1, 2)``, not ``y(3, 1)`` (FNP-D0016).
+            # The run time folds the storage onto the dummy's extents, and an
+            # OUT or INOUT result goes back through ``_f_copy_out`` in the
+            # same order. Where the declarations show the extents agree --
+            # ``fjac(ldfjac, n)`` for ``a(lda, n)`` bound ``lda = ldfjac`` --
+            # the array goes over as it is, as it always did. One axis has
+            # no fold to get wrong: ``x(i)`` is the actual's ``i``-th element
+            # either way, and a rank-1 actual goes over as it is.
+            # A dummy extent the call does not bind is refused by ``extent``:
+            # neither side can then say where the dummy ends.
+            if not self._same_extents(str(actual).lower(), formal_dims, substitutions):
+                extents = [self._dummy_extent(d, substitutions) for d in formal_dims]
+                return f"_f_seq_shape({', '.join([rendered, *extents])})"
         return rendered
+
+    def _dummy_extent(self, dim: dict[str, Any], substitutions: dict[str, str]) -> str:
+        """One axis's extent of a callee's explicit-shape dummy, in the caller's names.
+
+        An integer literal is written as it is: the extent is a count the
+        runtime reads, not a value in the arithmetic, and the caller's module
+        need not have hoisted the callee's ``x(4)``.
+        """
+
+        def side(text: str) -> str:
+            return text if text.isdigit() else self.extent({"ub": text}, substitutions)
+
+        upper = side(str(dim["ub"]))
+        lower = str(dim.get("lb") or "1")
+        if lower == "1":
+            return upper
+        return f"({upper}) - ({side(lower)}) + 1"
+
+    def _same_extents(
+        self, name: str, formal_dims: list[dict[str, Any]], substitutions: dict[str, str]
+    ) -> bool:
+        """Whether the actual ``name`` is declared with the dummy's extents.
+
+        Read off the text, both sides in the caller's names: the same lower
+        and upper bound spelled the same way. Anything the text cannot show
+        -- an allocatable's or an assumed-shape array's axes, bounds spelled
+        differently -- is left to the run time, where an equal shape costs a
+        comparison and nothing else. So are bounds over a variable the body
+        can change: the actual's extent is the one it had on entry, and the
+        same text now may name another (FNP-D0049).
+        """
+        declared = (self.semantics.declaration(name) or {}).get("dims") or []
+        if name in self.allocated_bounds or len(declared) != len(formal_dims):
+            return False
+        try:
+            for mine, theirs in zip(declared, formal_dims, strict=True):
+                if not mine.get("ub") or str(mine["ub"]) in ("*", ":"):
+                    return False
+                if not self._kept_from_entry(f"{mine.get('lb') or 1} {mine['ub']}".lower()):
+                    return False
+                lower = self.bound(str(mine.get("lb") or "1"))
+                wanted = self.extent({"ub": str(theirs.get("lb") or "1")}, substitutions)
+                if lower != wanted or self.bound(str(mine["ub"])) != self.extent(
+                    theirs, substitutions
+                ):
+                    return False
+        except REFUSED:
+            return False
+        return True
 
     @staticmethod
     def _assumed_size(formal_dims: list[dict[str, Any]]) -> bool:
@@ -1049,8 +1402,9 @@ class Expressions:
         vector to ``x(2, *)`` -- goes through the runtime's ``_f_seq_tail``:
         the storage from the element on in column-major order, a view when
         the actual is Fortran-contiguous (the gate's inputs and every
-        reshaped window are), with a rank-2 dummy's leading extents folded
-        onto it the way Fortran lays it out. SLSQP's ``dcopy(n, a(i, 1),
+        reshaped window are) and the tail fills whole columns, with a rank-2
+        dummy's leading extents folded onto it the way Fortran lays it out,
+        partial last column included. SLSQP's ``dcopy(n, a(i, 1),
         la, ...)`` and ``h12(..., c(i, 1), lc, ..., c(j, 1), ...)`` were
         refused here, which deferred every block that recovers a matrix row.
         """
@@ -1263,9 +1617,13 @@ class Expressions:
         caller does not have.
 
         An axis the call did not bind is refused rather than guessed at, for
-        the same reason. Anything that is not one of the callee's arguments --
-        a module parameter, an arithmetic expression over them -- means the
-        same thing on both sides and goes through ``bound``.
+        the same reason. So is an arithmetic expression over the callee's
+        arguments, name by name: ``dbint4``'s ``w(5, ndata + 2)`` bound
+        ``ndata = nx`` is ``(nx) + 2`` in the caller, where it had been
+        spelled ``ndata + 2`` -- a name the caller does not have, which the
+        read/write gate reported and the call would have raised on. Anything
+        that is not one of the callee's arguments -- a module parameter --
+        means the same thing on both sides and goes through ``bound`` as it is.
         """
         text = str(dim["ub"])
         if text.lower() in substitutions:
@@ -1273,7 +1631,7 @@ class Expressions:
             if not substituted:
                 raise NoRule(f"dummy dimension {text!r} is not bound by this call")
             return substituted
-        return self.bound(text)
+        return self.bound(text, substitutions)
 
     def _arguments(self, items: list[Any]) -> list[str]:
         rendered = []
@@ -1396,6 +1754,10 @@ class Expressions:
         # refused and deferred to a human. Stubbing it here instead once
         # turned that whole IF construct into ``if False:`` -- emitted, dead,
         # and wrong in a way nothing downstream would notice.
+        if name in ("lbound", "ubound"):
+            return self._bound_inquiry(name, items)
+        if name in KIND_INQUIRIES:
+            return self._kind_inquiry(name, items)
         if name in ARRAY_TRANSFORM:
             return self._array_transform(name, items)
         if name in REDUCTIONS:
@@ -1415,9 +1777,329 @@ class Expressions:
             # with source one module over never got the chance to resolve.
             rank = 0
 
+        if name in INTEGER_CONVERSIONS:
+            return self._integer_conversion(name, items, arguments, rank)
+        mapped = rank > 0 and not self._substring_rank(items)
+        if name in BIT_INTRINSICS:
+            arguments = self._bit_arguments(name, items, arguments)
+            if mapped:
+                return f"_f_ecall({self.scalar_table[name]}, {', '.join(arguments)})"
+            return f"{self.scalar_table[name]}({', '.join(arguments)})"
+        if mapped and name in MAPPED_OVER_ARRAYS and name not in self.array_table:
+            # A scalar-only spelling handed an array: ``math.tan`` of one
+            # raises, ``_f_mod`` of one calls ``int`` on it (FNP-D0036). The
+            # scalar translation runs per element instead, which keeps the
+            # libm call the reference makes, the way an ELEMENTAL
+            # procedure's body is mapped over its actuals.
+            values = _without_kind(name, arguments)
+            return f"_f_ecall({self.scalar_table[name]}, {', '.join(values)})"
         if rank > 0:
             return self._over_arrays(name, arguments)
         return self._over_scalars(name, arguments)
+
+    def _substring_rank(self, items: list[Any]) -> bool:
+        """Whether the rank an argument has is only a substring's.
+
+        ``s(i:i)`` of a CHARACTER scalar ranks as a section here, so
+        ``index(letters, s(i:i))`` and ``ichar(s(i:i))`` reach the array
+        path with scalar strings. Their scalar spelling is the right one,
+        and mapping it would hand back a 0-d array where a number was.
+        """
+        for item in items:
+            for reference in walk(item, f03.Part_Ref):
+                declared = self.semantics.declaration(str(reference.children[0]))
+                if declared and declared.get("dtype") == "str" and not declared.get("dims"):
+                    return True
+        return False
+
+    def _integer_conversion(
+        self, name: str, items: list[Any], arguments: list[str], rank: int
+    ) -> str:
+        """``INT``/``NINT`` into the INTEGER kind the source asked for.
+
+        ``_without_kind`` drops a conversion's KIND, which for a REAL result
+        is the double this translation computes in anyway. For an INTEGER
+        one it is the *range*: ``k8 = int(x, kind=8)`` of 3.0d10 is
+        30000000000 in Fortran, and ``_f_int(x)`` -- a default-kind
+        conversion -- answered the int32 edge, -2147483648 (FNP-D0005). So
+        the kind is read, and a 64-bit one handed on; the default kind
+        keeps the spelling it always had. A kind this cannot resolve to 4
+        or 8 is refused rather than guessed at, because a guess is exactly
+        the defect.
+
+        ``FLOOR`` and ``CEILING`` the same over an array, whose spelling
+        converted into int32 whatever the KIND. A scalar one is
+        ``math.floor``, an unbounded Python int that holds an 8-byte result
+        already, so it keeps its spelling.
+        """
+        kind = self._conversion_kind(name, items)
+        values = _without_kind(name, arguments)
+        table = self.array_table if rank > 0 and name in self.array_table else self.scalar_table
+        if kind == 8 and table[name].startswith("_f_"):
+            values = [*values, "8"]
+        return f"{table[name]}({', '.join(values)})"
+
+    def _bit_arguments(self, name: str, items: list[Any], arguments: list[str]) -> list[str]:
+        """``IAND``/``IOR``/``IEOR``/``ISHFT`` within the operands' KIND.
+
+        The runtime reads the width off a NumPy dtype, and a literal or a
+        Python int has none, so the operation went unbounded:
+        ``ishft(1, 31)`` is -2147483648 in a default INTEGER and came out
+        2147483648 (FNP-D0009). The width is the declared kind's, known
+        here, so it is passed; an operand whose kind this cannot read
+        leaves the runtime's dtype reading as it was.
+        """
+        values = [
+            item.children[1]
+            if isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec))
+            else item
+            for item in items
+        ]
+        operands = values[:1] if name == "ishft" else values
+        widths = [self._integer_width(v) for v in operands]
+        known = [w for w in widths if w is not None]
+        if not known:
+            return arguments
+        keywords = any(isinstance(i, (f03.Actual_Arg_Spec, f03.Component_Spec)) for i in items)
+        return [*arguments, f"bits={max(known)}" if keywords else str(max(known))]
+
+    def _integer_width(self, node: Any) -> int | None:
+        """An integer expression's KIND in bits, where its declaration or its
+        literal spelling says -- a default one is 32 -- or ``None``.
+
+        A BOZ constant answers ``None`` on purpose: in a bit intrinsic it
+        takes the kind of the other operand.
+        """
+        while isinstance(node, f03.Parenthesis) or _signed(node):
+            node = node.children[1]
+        if isinstance(node, (f03.Hex_Constant, f03.Octal_Constant, f03.Binary_Constant)):
+            return None
+        if isinstance(node, (f03.Intrinsic_Function_Reference, f03.Part_Ref)) and not (
+            self.semantics.is_array(str(node.children[0]))
+        ):
+            called = str(node.children[0]).lower()
+            items = _items(node.children[1])
+            if called in INTEGER_CONVERSIONS:
+                return 64 if self._conversion_kind(called, items) == 8 else 32
+            if called in BIT_INTRINSICS:
+                inner = [self._integer_width(i) for i in items[: 1 if called == "ishft" else 2]]
+                known = [w for w in inner if w is not None]
+                return max(known) if known else None
+            return None
+        children = getattr(node, "children", None)
+        if children and len(children) == 3 and _is_arithmetic(children[1]):
+            left, right = self._integer_width(children[0]), self._integer_width(children[2])
+            return max(left, right) if left is not None and right is not None else None
+        return {"int32": 32, "int64": 64}.get(self.inquiry_dtype(node) or "")
+
+    def _conversion_kind(self, name: str, items: list[Any]) -> int | None:
+        """The KIND an ``INT``/``NINT`` asks for, as the number it is.
+
+        ``None`` for no KIND, which is the default. 4 or 8 otherwise -- the
+        two INTEGER kinds ``_f_int`` spells -- and a refusal for a kind that
+        is neither, or that nothing here can evaluate.
+        """
+        node = None
+        for at, item in enumerate(items):
+            if isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec)):
+                if str(item.children[0]).lower() == "kind":
+                    node = item.children[1]
+            elif at == 1:
+                node = item
+        if node is None:
+            return None
+        value = self._kind_value(node)
+        if value not in (4, 8):
+            raise NoRule(
+                f"{name} with KIND {node}: "
+                + ("not a kind this translation can evaluate" if value is None else f"kind {value}")
+                + "; only the 4- and 8-byte INTEGER kinds are spelled"
+            )
+        return value
+
+    def _kind_value(self, node: Any) -> int | None:
+        """A KIND expression's value, or ``None`` where this cannot tell.
+
+        A literal is its value, a kind parameter what ``_kind_named`` reads
+        it as, and ``selected_int_kind(r)`` with a literal range the kind
+        gfortran gives -- 2 for ``r = 4``, which the frontend's "int32
+        unless it needs int64" is not.
+        """
+        while isinstance(node, f03.Parenthesis):
+            node = node.children[1]
+        if isinstance(node, f03.Int_Literal_Constant):
+            return int(str(node).split("_")[0])
+        if isinstance(node, f03.Name):
+            return self._kind_named(str(node).lower())
+        if isinstance(node, (f03.Intrinsic_Function_Reference, f03.Part_Ref)):
+            called = str(node.children[0]).lower()
+            items = _items(node.children[1])
+            if called == "selected_int_kind" and len(items) == 1:
+                digits = self.semantics.integer_literal(items[0])
+                if digits is not None:
+                    return _selected_int_kind(digits)
+        return None
+
+    def _kind_named(self, name: str, depth: int = 4) -> int | None:
+        """The kind a kind parameter names, or ``None`` where this cannot tell.
+
+        Its initializer first, where this scope can see it: a bare number
+        is itself, ``selected_int_kind(r)`` and ``kind(1_8)`` what gfortran
+        makes of them, and another kind parameter what *that* names. The
+        frontend's kind map is the fallback, as the byte width of the dtype
+        it resolved the name to -- ``r8 = selected_real_kind(12)`` is 8 --
+        because gfortran numbers kinds by bytes, which is why ``int(x, r8)``
+        is a 64-bit integer. The map comes second because it reads an
+        integer kind as "int32 unless it needs int64": ``selected_int_kind(4)``
+        is ``int32`` there and kind 2 in gfortran.
+        """
+        declared = (
+            self.semantics.declaration(name) or self.semantics.companion_parameters.get(name) or {}
+        )
+        initializer = str(declared.get("init_expr") or "").lower().replace(" ", "")
+        if initializer.isdigit():
+            return int(initializer)
+        spelled = re.fullmatch(r"selected_int_kind\((?:r=)?(\d+)\)", initializer)
+        if spelled:
+            return _selected_int_kind(int(spelled.group(1)))
+        spelled = re.fullmatch(r"kind\([-+]?\d+(?:_(\w+))?\)", initializer)
+        if spelled:
+            suffix = spelled.group(1)
+            if suffix is None:
+                return 4
+            if suffix.isdigit():
+                return int(suffix)
+            return self._kind_named(suffix, depth - 1) if depth else None
+        if depth and initializer != name and re.fullmatch(r"[a-z]\w*", initializer):
+            aliased = self._kind_named(initializer, depth - 1)
+            if aliased is not None:
+                return aliased
+        return KIND_BYTES.get(self.kind_map.get(name, ""))
+
+    def _kind_inquiry(self, name: str, items: list[Any]) -> str:
+        """``KIND``, ``HUGE``, ``TINY``, ``EPSILON``, ``PRECISION``: facts
+        about the argument's *declared* kind, answered from the declaration.
+
+        The runtime used to decide by the Python type of the value it was
+        handed, and that is not the kind: ``kind(x4)`` of a ``real(4)``
+        answered 8 and ``huge(k8)`` of an ``integer(8)`` the int32 maximum,
+        because a float is a float and an int an int (FNP-D0007, FNP-D0008);
+        and a ``real(8)`` assigned the integer ``0`` holds a Python ``0``,
+        so ``huge(x)`` answered 2147483647 for it (FNP-D0039). The dtype is
+        a translation-time fact, so it is passed -- ``_f_huge(k8,
+        'int64')`` -- and the argument stays in the call because the source
+        reads it. A kind this cannot resolve, and an argument the inquiry
+        does not take, are refused.
+        """
+        values = [
+            item.children[1]
+            if isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec))
+            else item
+            for item in items
+        ]
+        if len(values) != 1:
+            raise NoRule(f"{name} takes one argument")
+        dtype = self.inquiry_dtype(values[0])
+        if dtype is None:
+            raise NoRule(f"{name}({values[0]}): the argument's kind is not one this resolves")
+        if dtype not in KIND_INQUIRIES[name]:
+            raise NoRule(f"{name} of a {dtype}")
+        return f"{self.scalar_table[name]}({self.render(values[0])}, {dtype!r})"
+
+    def inquiry_dtype(self, node: Any) -> str | None:
+        """The dtype of an inquiry's argument, from its declaration or its
+        literal spelling, or ``None`` where that is not settled.
+
+        Only what a declaration or a literal says: a computed expression's
+        kind is Fortran's promotion rules, and nothing here needs them.
+        ``real(4)`` reaches here as ``UNKNOWN_REAL_KIND(4)``, a kind spelled
+        by its number, which is the number; a kind *name* left unresolved
+        where it was declared is read through this unit's kind map.
+        """
+        while isinstance(node, f03.Parenthesis) or _signed(node):
+            node = node.children[1]
+        if isinstance(node, f03.Int_Literal_Constant):
+            kind = self._literal_kind(str(node))
+            return {None: "int32", 4: "int32", 8: "int64"}.get(kind)
+        if isinstance(node, f03.Real_Literal_Constant):
+            kind = self._literal_kind(str(node))
+            if kind is None:
+                kind = 8 if "d" in str(node).lower() else 4
+            return {4: "float32", 8: "float64"}.get(kind)
+        if isinstance(node, f03.Logical_Literal_Constant):
+            return "bool"
+        if isinstance(node, f03.Char_Literal_Constant):
+            return "str"
+        dtype: Any = None
+        record: dict[str, Any] | None = None
+        if isinstance(node, f03.Name):
+            dtype = self.semantics.scalar_target_dtype(node)
+            record = self.semantics.declaration(str(node))
+            subprogram = self.semantics.subprogram
+            if record is None and subprogram.get("result") == str(node).lower():
+                # A function's result is typed on the subprogram, not as a local.
+                record = (
+                    {"kind": subprogram.get("result_kind")} if "result_kind" in subprogram else None
+                )
+            companion = self.semantics.companion_parameters.get(str(node).lower())
+            if dtype is None and companion is not None:
+                # A parameter a sibling module declares: its kind is that
+                # module's declaration of it.
+                dtype, record = companion.get("dtype"), companion
+        elif isinstance(node, f03.Part_Ref) and self.semantics.is_array(str(node.children[0])):
+            dtype = self.semantics.declared_dtype(node)
+            record = self.semantics.declaration(str(node.children[0]))
+        elif isinstance(node, f03.Data_Ref) and len(node.children) == 2:
+            root, last = node.children
+            if isinstance(root, f03.Name) and isinstance(last, (f03.Name, f03.Part_Ref)):
+                component = last if isinstance(last, f03.Name) else last.children[0]
+                record = self.semantics.component(str(root), str(component))
+                dtype = record.get("dtype") if record else None
+        dtype = str(dtype or "")
+        if dtype in ("int32", "int64"):
+            return self._declared_integer_dtype(record)
+        spelled = re.fullmatch(r"UNKNOWN_REAL_KIND\((\w+)\)", dtype)
+        if spelled:
+            # A kind the declaring scope left unresolved: a number is itself,
+            # and a name is what it names here -- a companion analysed on
+            # its own does not see the kinds module its reader does
+            # (SLSQP's ``one`` is ``real(wp)`` in ``slsqp_support``).
+            name = spelled.group(1).lower()
+            resolved = {"4": "float32", "8": "float64"}.get(name) or self.kind_map.get(name)
+            return resolved if resolved in _REAL else None
+        return dtype if dtype in INQUIRY_DTYPES else None
+
+    def _declared_integer_dtype(self, record: dict[str, Any] | None) -> str | None:
+        """An INTEGER declaration's dtype, from the kind it spells.
+
+        Not the dtype the frontend typed it with: that is ``int32`` for
+        every INTEGER kind it could not resolve, with no marker, so
+        ``integer(kind(1_8))``, ``integer(2)`` and ``integer(1)`` all arrive
+        as ``int32``. Taken at its word, ``huge(a)`` of the first answered
+        2147483647 and ``ishft(a, 40)`` of 1 shifted within 32 bits to 0,
+        where Fortran says 9223372036854775807 and 1099511627776. So the
+        kind is read again: none, or one that is 4, is the default
+        ``int32``; one that is 8 is ``int64``; anything else, and a record
+        that does not say, is ``None``.
+        """
+        if record is None or "kind" not in record:
+            return None
+        kind = str(record.get("kind") or "").strip().lower()
+        if not kind:
+            return "int32"
+        number = int(kind) if kind.isdigit() else self._kind_named(kind)
+        return None if number is None else _INTEGER_KIND_DTYPES.get(number)
+
+    def _literal_kind(self, text: str) -> int | None:
+        """A literal's kind suffix as its number: ``1_8`` is 8, ``1.0_r8`` is
+        what ``r8`` names. ``None`` for no suffix; a suffix nothing here can
+        evaluate is 0, which no table answers for."""
+        if "_" not in text:
+            return None
+        suffix = text.rsplit("_", 1)[1].strip().lower()
+        if suffix.isdigit():
+            return int(suffix)
+        return self._kind_named(suffix) or 0
 
     def _present(self, argument: str) -> str:
         """``present(x)``: a sentinel for an optional output, ``is not None``
@@ -1432,6 +2114,80 @@ class Expressions:
             if declared["name"] == name and declared["optional"] and declared["intent"] == "OUT":
                 return f"want_{name}"
         return f"({argument} is not None)"
+
+    def _bound_inquiry(self, name: str, items: list[Any]) -> str:
+        """``LBOUND``/``UBOUND``: the bounds the subscripts are shifted by.
+
+        The runtime used to answer 1 for every LBOUND and the vocabulary
+        spelled UBOUND as the extent, which is right only on an axis based
+        at one: ``real(8) :: a(0:5)`` gave ``lbound(a, 1) = 1`` and
+        ``ubound(a, 1) = 6`` where Fortran says 0 and 5 (FNP-D0006). The
+        bounds reported are the ones ``subscript`` shifts by -- the
+        declaration's, or an ``allocate``'s -- so a loop from ``lbound`` to
+        ``ubound`` indexes exactly the elements it did in the source. An
+        array expression, a section, or an array this scope has no shape
+        for is based at one, as Fortran's own answer for them is.
+
+        The array is still handed to the runtime rather than folded away:
+        the inquiry reads it on both sides of the read/write check, and the
+        runtime needs its shape anyway -- an axis of zero extent answers 1
+        and 0 whatever its declaration says.
+        """
+        positional = [
+            i for i in items if not isinstance(i, (f03.Actual_Arg_Spec, f03.Component_Spec))
+        ]
+        keyword = {
+            str(i.children[0]).lower(): i.children[1]
+            for i in items
+            if isinstance(i, (f03.Actual_Arg_Spec, f03.Component_Spec))
+        }
+        array = keyword.get("array", positional[0] if positional else None)
+        dim = keyword.get("dim", positional[1] if len(positional) > 1 else None)
+        if array is None:
+            raise NoRule(f"{name} without an array")
+        rendered = self.render(array)
+        dimension = self.render(dim) if dim is not None else None
+        origins = self._bound_origins(array)
+        if origins is not None and any(o != indexing.UNIT_ORIGIN for o in origins):
+            lows = [self._origin(o) for o in origins]
+            lower = f"({lows[0]},)" if len(lows) == 1 else f"({', '.join(lows)})"
+            spelled = "_f_lbound" if name == "lbound" else "_f_ubound"
+            return f"{spelled}({rendered}, {dimension or 'None'}, {lower})"
+        if name == "lbound":
+            called = self.scalar_table["lbound"]
+            return f"{called}({rendered}, {dimension})" if dimension else f"{called}({rendered})"
+        if dimension is not None:
+            return self.axis_reduction(REDUCTIONS["ubound"], rendered, dimension)
+        # Without DIM the answer is a vector, one upper bound per axis;
+        # ``np.size`` of a rank-2 array is the element count.
+        return f"_f_ubound({rendered})"
+
+    def _bound_origins(self, array: Any) -> list[str] | None:
+        """The lower bound of each axis ``subscript`` shifts ``array`` by,
+        as source text, or ``None`` where it shifts by one throughout."""
+        if isinstance(array, str):
+            name = array
+        elif isinstance(array, f03.Name):
+            name = str(array).lower()
+        elif (
+            isinstance(array, f03.Data_Ref)
+            and len(array.children) == 2
+            and isinstance(array.children[1], f03.Name)
+        ):
+            dims = self._component_dims(array, 1, str(array.children[1]).lower())
+            return [_axis_origin(dims, axis) for axis in range(len(dims))] if dims else None
+        else:
+            return None
+        if not self.semantics.is_array(name):
+            return None
+        declaration = self.semantics.declaration(name) or {}
+        dims = self.allocated_bounds.get(name, declaration.get("dims"))
+        if dims == CONFLICTING_BOUNDS:
+            raise NoRule(
+                f"module allocatable {name!r} is allocated with lower bounds that do not "
+                "agree, or with one this subprogram cannot evaluate"
+            )
+        return [_axis_origin(dims, axis) for axis in range(len(dims))] if dims else None
 
     def _reduction(self, name: str, arguments: list[str]) -> str:
         if len(arguments) == 2 and arguments[1].startswith("dim="):
@@ -1566,25 +2322,40 @@ class Expressions:
                 return keyword[key]
             return positional[index] if len(positional) > index else None
 
+        def node(index: int, key: str) -> Any:
+            """The source node ``argument`` rendered, for asking its rank."""
+            for item in items:
+                if isinstance(item, f03.Actual_Arg_Spec) and str(item.children[0]).lower() == key:
+                    return item.children[1]
+            values = [item for item in items if not isinstance(item, f03.Actual_Arg_Spec)]
+            return values[index] if len(values) > index else None
+
         if name == "transpose":
             return f"np.asfortranarray({positional[0]}.T)"
         if name == "matmul":
             return f"np.matmul({positional[0]}, {positional[1]})"
         if name == "reshape":
-            shape = argument(1, "shape")
-            if shape is None:
-                raise NoRule("reshape without a shape")
-            return f"np.reshape({positional[0]}, {shape}, order='F')"
+            return self._reshape(items, argument)
         if name == "spread":
             source, dim, copies = argument(0, "source"), argument(1, "dim"), argument(2, "ncopies")
             if source is None or dim is None or copies is None:
                 raise NoRule("spread with missing arguments")
             return f"np.repeat(np.expand_dims({source}, ({dim}) - 1), {copies}, axis=({dim}) - 1)"
         if name == "pack":
-            mask = argument(1, "mask")
-            if mask is None:
-                raise NoRule("pack without a mask")
-            return f"({positional[0]})[({mask})]"
+            array, mask, vector = argument(0, "array"), argument(1, "mask"), argument(2, "vector")
+            if array is None or mask is None:
+                raise NoRule("pack without an array or a mask")
+            if vector is None and self._ranked(node(0, "array"), node(1, "mask")) == 1:
+                # Boolean indexing is PACK only here: it walks the selected
+                # elements in row-major order, which is array element order
+                # at rank 1 alone.
+                return f"({array})[({mask})]"
+            # A rank-2 array packed by boolean indexing came out by rows --
+            # 1 3 2 4 where Fortran packs 1 2 3 4 -- and VECTOR, which
+            # sizes the result and supplies its tail, was dropped
+            # (FNP-D0041, FNP-D0018). The runtime gathers column-major.
+            tail = f", vector={vector}" if vector is not None else ""
+            return f"_f_pack({array}, {mask}{tail})"
         if name == "unpack":
             mask, field_ = argument(1, "mask"), argument(2, "field")
             if mask is None or field_ is None:
@@ -1601,20 +2372,132 @@ class Expressions:
             if shift is None:
                 raise NoRule("eoshift without a shift")
             dim = argument(3, "dim") or "1"
-            return f"_f_eoshift({positional[0]}, {shift}, axis=({dim}) - 1)"
+            # EOSHIFT(ARRAY, SHIFT [, BOUNDARY, DIM]): the third argument is
+            # what fills the vacated end. Dropped, ``eoshift(a, 1, -1d0)``
+            # filled it with zero (FNP-D0019).
+            boundary = argument(2, "boundary")
+            fill = f", boundary={boundary}" if boundary is not None else ""
+            return f"_f_eoshift({positional[0]}, {shift}, axis=({dim}) - 1{fill})"
         if name in ("maxloc", "minloc"):
-            return self._locate(name, positional, keyword)
+            return self._locate(name, items, positional, keyword)
         raise NoRule(f"unhandled array transform {name!r}")
 
-    @staticmethod
-    def _locate(name: str, positional: list[str], keyword: dict[str, str]) -> str:
-        """``MAXLOC``/``MINLOC`` return 1-based positions, not 0-based ones."""
+    def _ranked(self, *nodes: Any) -> int | None:
+        """The one rank every node has, or ``None`` when they differ or one
+        of them the semantics cannot rank."""
+        try:
+            ranks = {self.semantics.rank(n) for n in nodes if n is not None}
+        except REFUSED:
+            return None
+        return ranks.pop() if len(ranks) == 1 and None not in nodes else None
+
+    def _reshape(self, items: list[Any], argument: Any) -> str:
+        """``RESHAPE(source, shape [, pad] [, order])``.
+
+        ``np.reshape`` is RESHAPE only when the source has exactly as many
+        elements as the shape asks for and neither PAD nor ORDER is given:
+        a larger source is legal Fortran (the result takes its leading
+        elements) and raised, and PAD and ORDER were dropped -- ``reshape(a,
+        [2, 3], order=[2, 1])`` came out column by column, and a short
+        source with a PAD raised (FNP-D0017, FNP-D0048). The runtime's
+        ``_f_reshape`` is the standard's definition; the NumPy call stays
+        where the two sizes are literals and agree, which is where it was
+        right.
+        """
+        source, shape = argument(0, "source"), argument(1, "shape")
+        if source is None or shape is None:
+            raise NoRule("reshape without a source or a shape")
+        pad, order = argument(2, "pad"), argument(3, "order")
+        values = [a for a in items if not isinstance(a, f03.Actual_Arg_Spec)]
+        wanted = _literal_product(values[1]) if len(values) > 1 else None
+        if pad is None and order is None and wanted is not None:
+            if wanted == self._literal_size(values[0]):
+                return f"np.reshape({source}, {shape}, order='F')"
+        keywords = [f"pad={pad}"] * (pad is not None) + [f"order={order}"] * (order is not None)
+        return f"_f_reshape({', '.join([source, shape, *keywords])})"
+
+    def _literal_size(self, node: Any) -> int | None:
+        """How many elements a whole array has, when its declared bounds are
+        integer literals, or an array constructor has, when every item is a
+        scalar -- ``[1d0, 2d0, 3d0, 4d0]``, the commonest RESHAPE source,
+        whose text ``np.reshape`` spelled before ``_f_reshape`` existed;
+        ``None`` for anything else."""
+        if isinstance(node, f03.Array_Constructor):
+            listed = node.children[1]
+            values = list(listed.children) if isinstance(listed, f03.Ac_Value_List) else [listed]
+            try:
+                scalar = all(
+                    not isinstance(v, (f03.Ac_Implied_Do, f03.Ac_Spec))
+                    and self.semantics.rank(v) == 0
+                    for v in values
+                )
+            except REFUSED:
+                return None
+            return len(values) if scalar else None
+        if not isinstance(node, f03.Name):
+            return None
+        name = str(node).lower()
+        dims = self.allocated_bounds.get(name, (self.semantics.declaration(name) or {}).get("dims"))
+        if not dims or dims == CONFLICTING_BOUNDS:
+            return None
+        size = 1
+        for dim in dims:
+            low = _integer_text(str(dim.get("lb") or "1"))
+            high = _integer_text(str(dim.get("ub") or ""))
+            if low is None or high is None:
+                return None
+            size *= max(high - low + 1, 0)
+        return size
+
+    def _locate(
+        self, name: str, items: list[Any], positional: list[str], keyword: dict[str, str]
+    ) -> str:
+        """``MAXLOC``/``MINLOC`` return 1-based positions, not 0-based ones.
+
+        Two argument lists share the name: ``(ARRAY, DIM [, MASK, KIND,
+        BACK])`` and ``(ARRAY [, MASK, KIND, BACK])``, told apart by the
+        second argument's type. MASK was read as a DIM when positional and
+        dropped when a keyword -- ``maxloc(a, mask=m)`` answered the whole
+        array's maximum (FNP-D0020) -- and the whole-array search took
+        NumPy's row-major first maximum where Fortran's is the first in
+        array element order, so a rank-2 tie came out at the other element
+        (FNP-D0042). The runtime's ``_f_loc`` searches column-major under
+        the mask. BACK, which asks for the last extremum, is refused;
+        KIND sizes the result's integers and changes no value.
+        """
+        values = [item for item in items if not isinstance(item, f03.Actual_Arg_Spec)]
+        array = positional[0] if values else keyword.get("array")
+        if array is None:
+            raise NoRule(f"{name} without an array")
+        dim, mask = keyword.get("dim"), keyword.get("mask")
+        back = keyword.get("back")
+        if len(values) > 1:
+            if self.semantics.is_logical_or_character(values[1]):
+                mask, back = positional[1], (positional[3] if len(values) > 3 else back)
+            elif self.semantics.is_integer(values[1]):
+                dim = positional[1]
+                mask = positional[2] if len(values) > 2 else mask
+                back = positional[4] if len(values) > 4 else back
+            else:
+                raise NoRule(f"{name}: cannot tell whether its second argument is DIM or MASK")
+        if back is not None and back != "False":
+            raise NoRule(f"{name} with BACK=, the last extremum rather than the first")
         find = "np.argmax" if name == "maxloc" else "np.argmin"
-        array = positional[0]
-        dim = keyword.get("dim", positional[1] if len(positional) > 1 else None)
+        if dim is not None and mask is not None:
+            raise NoRule(f"{name} with both DIM= and MASK=")
+        extremum = "max" if name == "maxloc" else "min"
+        # NumPy's search answers the first NaN, gfortran's skips them; only
+        # an INTEGER array, which holds none, keeps NumPy's spelling.
+        integer = bool(values) and self.semantics.is_integer(values[0])
         if dim is not None:
+            if not integer:
+                return f"_f_loc({array}, '{extremum}', dim={dim})"
             return f"({find}({array}, axis=({dim}) - 1) + 1)"
-        return f"(np.array(np.unravel_index({find}({array}), np.shape({array}))) + 1)"
+        if mask is None and integer and self._ranked(values[0]) == 1:
+            # One axis: row-major and array element order are the same order.
+            return f"(np.array(np.unravel_index({find}({array}), np.shape({array}))) + 1)"
+        tail = f", mask={mask}" if mask is not None else ""
+        return f"_f_loc({array}, '{extremum}'{tail})"
 
     # -- structure constructors -----------------------------------------------
 
@@ -1681,6 +2564,57 @@ class Expressions:
         # Nothing here defines a type of that name either, so it is a call,
         # which is what the source spelling says.
         return f"{self.names.symbol(name)}({', '.join(arguments)})"
+
+
+def _is_arithmetic(operator: Any) -> bool:
+    """``+ - * /`` between two operands, whose KIND is the wider one's."""
+    return isinstance(operator, str) and operator in ("+", "-", "*", "/")
+
+
+def _signed(node: Any) -> bool:
+    """``-x`` or ``+x``: fparser's unary form, a sign and an operand."""
+    children: Any = getattr(node, "children", None)
+    return (
+        bool(children)
+        and len(children) == 2
+        and isinstance(children[0], str)
+        and children[0] in ("+", "-")
+    )
+
+
+def _axis_origin(dims: list[dict[str, Any]], axis: int) -> str:
+    """One axis's declared lower bound as ``indexing.describe`` reads it."""
+    lower = dims[axis].get("lb")
+    return indexing.UNIT_ORIGIN if lower in (None, "", ":") else str(lower)
+
+
+def _integer_text(text: str) -> int | None:
+    """A declared bound that is an integer literal, as its value."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _literal_product(node: Any) -> int | None:
+    """The product of an array constructor of integer literals -- a shape
+    written out, ``[2, 3]`` -- or ``None``."""
+    if not isinstance(node, f03.Array_Constructor):
+        return None
+    values = _items(node.children[1])
+    if not values or not all(isinstance(v, f03.Int_Literal_Constant) for v in values):
+        return None
+    product = 1
+    for value in values:
+        product *= int(value.children[0])
+    return product
+
+
+def _bound_text(node: Any) -> str | None:
+    """Fortran text compared as text: case and blanks do not matter."""
+    if node is None:
+        return None
+    return str(node).replace(" ", "").lower()
 
 
 def _items(arglist: Any) -> list[Any]:

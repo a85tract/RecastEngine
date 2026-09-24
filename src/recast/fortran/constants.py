@@ -275,7 +275,23 @@ def _argument_tokens(
     return spelled
 
 
-_KIND_INQUIRIES = frozenset({"epsilon", "huge", "tiny"})
+_KIND_INQUIRIES = frozenset({"digits", "epsilon", "huge", "tiny"})
+"""Inquiries whose argument contributes its kind and no value.
+
+``digits`` is one as much as the other three: DIGITS of a real is its
+mantissa's width, of an integer its magnitude's, and nothing about the value
+passed. It was classified as an ordinary call over its argument, so the
+renderer spelled it by the call's promoted dtype and answered the double's
+53 for ``digits(0)`` (FNP-D0046) as it did for a single."""
+
+_INQUIRY_KINDS = {
+    "digits": frozenset({"float32", "float64", "int32", "int64"}),
+    "epsilon": frozenset({"float32", "float64"}),
+    "huge": frozenset({"float32", "float64", "int32", "int64"}),
+    "tiny": frozenset({"float32", "float64"}),
+}
+"""The kinds each inquiry has an answer for: EPSILON and TINY are defined
+for reals only; HUGE and DIGITS for integers too."""
 
 
 def _ref_token(name: str, aliases: dict[str, str] | None, kinds: Kinds) -> dict[str, Any]:
@@ -415,6 +431,18 @@ def _kind_selector_dtype(stripped: list[str], kinds: Kinds) -> str | None:
     return None
 
 
+def _integer_kind(spelling: str, kinds: Kinds) -> str | None:
+    """The integer dtype a kind spelling names -- ``4``/``8``, or a kind
+    parameter the module placed as one -- or ``None``."""
+    key = spelling.strip().lower()
+    if key in ("4", "int32"):
+        return "int32"
+    if key in ("8", "int64"):
+        return "int64"
+    dtype = kinds.kind_map.get(key)
+    return dtype if dtype in ("int32", "int64") else None
+
+
 def _intrinsic_call(
     tokens: list[str],
     at: int,
@@ -482,18 +510,31 @@ def _intrinsic_call(
         # The argument names nothing yet defined -- the constant itself,
         # legally -- and only its kind was ever asked for.
         stripped = [token for argument in kept for token in argument if token.strip()]
-        dtype = None
+        asked = None
         if len(stripped) == 1:
             token = stripped[0]
             if token.lower() == kinds.self_name:
-                dtype = kinds.self_dtype
+                asked = kinds.self_dtype
+            elif re.fullmatch(r"\d+(?:_\w+)?", token):
+                # An integer literal asks about an integer kind: its suffix's,
+                # or the default one. ``literal_kind`` reads every literal as
+                # a real, and ``huge(0)`` was the single's 3.4e38 where the
+                # compiler has 2147483647 (FNP-D0026).
+                asked = _integer_kind(token.split("_", 1)[1], kinds) if "_" in token else "int32"
             elif re.match(r"\d", token):
-                dtype = kinds.literal(token)
+                asked = kinds.literal(token)
             else:
-                dtype = kinds.dtypes.get(token.lower())
-        if dtype not in ("float32", "float64"):
+                asked = kinds.dtypes.get(token.lower())
+        if asked not in _INQUIRY_KINDS[name]:
+            # An integer name's record says ``int`` without the kind, and an
+            # inquiry of a width nobody placed has no answer.
             return None, end + 1
-        return {"t": "call", "v": name, "args": [], "dtype": dtype}, end + 1
+        # The call's own dtype is its result's; where that is not the kind
+        # asked about -- DIGITS is an integer whatever it asks of, HUGE of an
+        # integer kind an integer -- the record says which kind that was.
+        result = "int" if name == "digits" or asked.startswith("int") else asked
+        call = {"t": "call", "v": name, "args": [], "dtype": result}
+        return ({**call, "asked": asked} if asked != result else call), end + 1
     spelled_or_none = [
         _argument_tokens(argument, known_names, aliases, kinds, array_names) for argument in kept
     ]
@@ -501,6 +542,7 @@ def _intrinsic_call(
         return None, end + 1
     spelled = [text for text in spelled_or_none if text is not None]
     if name in CONVERSIONS:
+        dtype: str | None
         if saw_kind_selector:
             if kind_dtype is None:
                 return None, end + 1
@@ -514,6 +556,14 @@ def _intrinsic_call(
         return {"t": "call", "v": name, "args": spelled, "dtype": dtype}, end + 1
     if name == "int":
         return {"t": "call", "v": name, "args": spelled, "dtype": "int"}, end + 1
+    if name == "nint":
+        # An integer, of the kind a trailing argument names and the default
+        # one without it: the renderer spells the conversion into it, and a
+        # kind it cannot place -- or one written as an inquiry -- refuses.
+        kind = "int32" if kind_argument is None else _integer_kind(kind_argument, kinds)
+        if kind is None or saw_kind_selector:
+            return None, end + 1
+        return {"t": "call", "v": name, "args": spelled, "dtype": "int", "kind": kind}, end + 1
     return {
         "t": "call",
         "v": name,

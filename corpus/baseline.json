@@ -2,8 +2,8 @@
  "cases": {
   "bspline": {
    "bare_files": 0,
-   "blocks": 685,
-   "deferred": 4,
+   "blocks": 684,
+   "deferred": 5,
    "refusals": [
     [
      "size with a dim= or mask= keyword",
@@ -11,6 +11,10 @@
     ],
     [
      "seq-assoc target: w is not rank-N and not at a lower bound",
+     1
+    ],
+    [
+     "intrinsic 'X' has no spelling in this translation",
      1
     ],
     [
@@ -65,7 +69,7 @@
           "error": "18 draw(s) were declined (18 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "dnrm2": {
-          "error": "candidate raised: NameError: name 'minexponent' is not defined"
+          "error": "24 draw(s) were declined (24 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
          },
          "drotm": {
           "error": "31 draw(s) were declined (31 subscript past extent) to compare 10 trial(s); the trials compared are a minority of what the configured draw produces and are not evidence about the rest. Narrow the draw with `ranges`, or pin `dims`, to values the subprogram takes"
@@ -138,17 +142,17 @@
      "stopped_by": "differential.bitexact",
      "verdicts": {
       "differential.bitexact": {
-       "detail": "3 subprogram(s) could not be compared: defc: candidate raised: ValueError: cannot reshape array of size 0 into shape (0,newaxis); dfc: candidate raised: ValueEr",
+       "detail": "2 subprogram(s) could not be compared: dfc: candidate raised: ValueError: can only specify one unknown dimension; dcv: argument(s) w have UNKNOWN intent; this v",
        "metrics": {
-        "bit_exact": 0,
+        "bit_exact": 170,
         "declined": {},
         "input_profile": null,
         "integer_mismatch": 0,
-        "integer_points": 0,
+        "integer_points": 10,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 0,
+        "points": 170,
         "redrawn": 0,
         "reference_isolation": "process",
         "subprograms": {
@@ -156,7 +160,17 @@
           "error": "argument(s) w have UNKNOWN intent; this verifier cannot know whether their post-call values are outputs"
          },
          "defc": {
-          "error": "candidate raised: ValueError: cannot reshape array of size 0 into shape (0,newaxis)"
+          "bit_exact": 170,
+          "declined": {},
+          "integer_mismatch": 0,
+          "integer_points": 10,
+          "max_rel": 0.0,
+          "max_ulp": 0,
+          "nan_mismatch": 0,
+          "points": 170,
+          "redrawn": 0,
+          "reshaped": 0,
+          "shaped": 0
          },
          "dfc": {
           "error": "candidate raised: ValueError: can only specify one unknown dimension"
@@ -207,7 +221,7 @@
      }
     },
     "fortran:bspline_sub_module": {
-     "deferred": 4,
+     "deferred": 5,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -221,11 +235,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "313 blocks match",
+       "detail": "312 blocks match",
        "metrics": {
-        "blocks_checked": 313,
-        "blocks_deferred": 4,
-        "blocks_matched": 313,
+        "blocks_checked": 312,
+        "blocks_deferred": 5,
+        "blocks_matched": 312,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -853,12 +867,16 @@
   },
   "fortran-utils": {
    "bare_files": 0,
-   "blocks": 544,
-   "deferred": 50,
+   "blocks": 538,
+   "deferred": 56,
    "refusals": [
     [
      "call to external subroutine 'X'",
      44
+    ],
+    [
+     "intrinsic 'X' has no spelling in this translation",
+     6
     ],
     [
      "cmplx(x, y): the two-part form is not spelled; cmplx(x, kind=k) is",
@@ -1376,7 +1394,7 @@
      }
     },
     "fortran:special": {
-     "deferred": 16,
+     "deferred": 22,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -1389,11 +1407,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "1/95 blocks disagree: sphj/B007",
+       "detail": "1/89 blocks disagree: sphj/B007",
        "metrics": {
-        "blocks_checked": 95,
-        "blocks_deferred": 16,
-        "blocks_matched": 94,
+        "blocks_checked": 89,
+        "blocks_deferred": 22,
+        "blocks_matched": 88,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -1928,9 +1946,13 @@
   },
   "numfor": {
    "bare_files": 85,
-   "blocks": 898,
-   "deferred": 54,
+   "blocks": 856,
+   "deferred": 96,
    "refusals": [
+    [
+     "intrinsic 'X' has no spelling in this translation",
+     45
+    ],
     [
      "generic 'X': no match",
      11
@@ -1941,7 +1963,7 @@
     ],
     [
      "intrinsic subroutine 'X' has no rule",
-     8
+     6
     ],
     [
      "do with a loop control that is neither a count nor a condition",
@@ -1958,10 +1980,6 @@
     [
      "READ into 'X', which is not declared here",
      2
-    ],
-    [
-     "a keyword argument is not a subscript",
-     1
     ],
     [
      "internal READ: the unit is a character variable",
@@ -2199,7 +2217,7 @@
      }
     },
     "fortran:fitpack": {
-     "deferred": 8,
+     "deferred": 9,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2213,11 +2231,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "124 blocks match",
+       "detail": "123 blocks match",
        "metrics": {
-        "blocks_checked": 124,
-        "blocks_deferred": 8,
-        "blocks_matched": 124,
+        "blocks_checked": 123,
+        "blocks_deferred": 9,
+        "blocks_matched": 123,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -2226,7 +2244,7 @@
      }
     },
     "fortran:fstring": {
-     "deferred": 3,
+     "deferred": 5,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2240,11 +2258,11 @@
      "stopped_by": "f2py-golden",
      "verdicts": {
       "static.rwset": {
-       "detail": "28 blocks match",
+       "detail": "26 blocks match",
        "metrics": {
-        "blocks_checked": 28,
-        "blocks_deferred": 3,
-        "blocks_matched": 28,
+        "blocks_checked": 26,
+        "blocks_deferred": 5,
+        "blocks_matched": 26,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -2475,7 +2493,7 @@
      }
     },
     "fortran:mt95": {
-     "deferred": 3,
+     "deferred": 37,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -2495,184 +2513,158 @@
         "bit_exact": 0,
         "declined": {},
         "input_profile": null,
-        "integer_mismatch": 90,
-        "integer_points": 90,
+        "integer_mismatch": 0,
+        "integer_points": 0,
         "max_rel": 0.0,
         "max_ulp": 0,
         "nan_mismatch": 0,
-        "points": 90,
+        "points": 0,
         "redrawn": 0,
         "reference_isolation": "process",
         "subprograms": {
          "genrand_int31_0d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_1d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int31_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_0d": {
-          "bit_exact": 0,
-          "declined": {},
-          "integer_mismatch": 10,
-          "integer_points": 10,
-          "max_rel": 0.0,
-          "max_ulp": 0,
-          "nan_mismatch": 0,
-          "points": 10,
-          "redrawn": 0,
-          "reshaped": 0,
-          "shaped": 0
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_1d": {
-          "bit_exact": 0,
-          "declined": {},
-          "integer_mismatch": 80,
-          "integer_points": 80,
-          "max_rel": 0.0,
-          "max_ulp": 0,
-          "nan_mismatch": 0,
-          "points": 80,
-          "redrawn": 0,
-          "reshaped": 0,
-          "shaped": 0
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_int32_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_0d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_1d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real1_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_0d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_1d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real2_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_0d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_1d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_real3_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_0d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_1d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_2d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_3d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_4d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_5d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_6d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "genrand_res53_7d": {
-          "error": "candidate raised: NotImplementedError: intrinsic subroutine 'mvbits' has no rule"
-         },
-         "init_by_array": {
-          "error": "candidate raised: NameError: name 'ibits' is not defined"
-         },
-         "init_by_scalar": {
-          "error": "candidate raised: NameError: name 'ibits' is not defined"
+          "error": "candidate raised: NotImplementedError: intrinsic 'ibits' has no spelling in this translation"
          },
          "init_by_type": {
           "error": "unsupported declared dtype(s) argument 'put'='UNKNOWN(TYPE(GENRAND_STATE))', argument 'get'='UNKNOWN(TYPE(GENRAND_STATE))'; supported dtypes are bool, complex128, complex64, float32, float64, int32, int64"
@@ -2688,11 +2680,11 @@
        "passed": false
       },
       "static.rwset": {
-       "detail": "187 blocks match",
+       "detail": "153 blocks match",
        "metrics": {
-        "blocks_checked": 187,
-        "blocks_deferred": 3,
-        "blocks_matched": 187,
+        "blocks_checked": 153,
+        "blocks_deferred": 37,
+        "blocks_matched": 153,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },
@@ -3137,7 +3129,7 @@
      }
     },
     "fortran:strings": {
-     "deferred": 5,
+     "deferred": 10,
      "imports": true,
      "mechanical": false,
      "parses": true,
@@ -3150,11 +3142,11 @@
      "stopped_by": "static.rwset",
      "verdicts": {
       "static.rwset": {
-       "detail": "5/107 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
+       "detail": "5/102 blocks disagree: replace/B006, zarr2str/B002, dparr2str/B002, rarr2str/B002, iarr2str/B002",
        "metrics": {
-        "blocks_checked": 107,
-        "blocks_deferred": 5,
-        "blocks_matched": 102,
+        "blocks_checked": 102,
+        "blocks_deferred": 10,
+        "blocks_matched": 97,
         "blocks_waived": 0,
         "reads_excused_by_stubs": 0
        },

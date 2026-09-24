@@ -37,10 +37,11 @@ from recast.fortran._parse import f03, walk
 from recast.fortran.chunk import chunk_subprogram
 from recast.fortran.constants import is_default_real
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name, node_span, subprogram_key
+from recast.fortran.rwset import captured
 from recast.fortran.semantics import Semantics, for_subprogram
 from recast.transform.numpy.agentic import DeferredHandler, DeferredSite
-from recast.transform.numpy.expressions import Expressions, Remote, _integer_divisions
-from recast.transform.numpy.names import bind_use_statements
+from recast.transform.numpy.expressions import EXTENT, Expressions, Remote, _integer_divisions
+from recast.transform.numpy.names import bind_use_statements, kept_between_calls, saved_global
 from recast.transform.numpy.names import for_subprogram as names_for
 from recast.transform.numpy.statements import (
     REFUSED,
@@ -70,6 +71,7 @@ BOZ_TEXT = re.compile(r"[zboZBO]'([0-9a-fA-F]+)'")
 IDENTIFIER = re.compile(r"[a-zA-Z_]\w*")
 REAL_TEXT = re.compile(r"-?\s*(?:\d+\.?\d*|\.\d+)(?:[ed][+-]?\d+)?(?:_\w+)?", re.I)
 NEWFORM_ARRAY = re.compile(r"\[\s*(.*?)\s*\]", re.S)
+CHARACTER_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
 
 
 SINGLE_PRECISION = frozenset({"float32", "complex64"})
@@ -460,6 +462,7 @@ class Subprograms:
         span = subprogram["line_span"]
         lines.append(f'    """L{span[0]}-L{span[1]} {subprogram["kind"]} (machine-translated)."""')
 
+        written: list[str] = []
         if subprogram["module_state_written"]:
             shadowed = {a["name"] for a in subprogram["args"]} | {
                 local["name"] for local in subprogram.get("locals") or []
@@ -467,8 +470,13 @@ class Subprograms:
             written = sorted(
                 pysafe(n) for n in subprogram["module_state_written"] if n not in shadowed
             )
-            if written:
-                lines.append("    global " + ", ".join(written))
+        # A SAVEd local the body changes lives at module scope, beside the
+        # marker that says the subprogram has run (``_saved_locals``).
+        kept = statements.names.saved
+        if kept:
+            written += [saved_global(subprogram), *sorted(kept.values())]
+        if written:
+            lines.append("    global " + ", ".join(written))
 
         lines.extend(self._result_initializer(subprogram, semantics, statements))
 
@@ -516,7 +524,7 @@ class Subprograms:
             }
             before = len(lines)
             try:
-                lines.extend(statements.data_statement(statement, 1))
+                lines.extend(self._data_block(statement, statements))
                 data_entry["status"] = "mechanical"
             except REFUSED as refusal:
                 reason = f"DATA deferred: {refusal}"
@@ -830,6 +838,10 @@ class Subprograms:
             )
             return lines
 
+        # First, because an extent below may be asked of an array whose
+        # lower bound it holds (``ubound(a, 1)`` sizing an automatic local).
+        lines.extend(self._entry_bounds(subprogram, statements))
+
         # intent(out)-only arguments are NOT parameters (return convention):
         # the function owns their buffers. Arrays go through
         # ``undefined_array`` and scalars get the UB-guard zero.
@@ -907,14 +919,109 @@ class Subprograms:
                 continue
             lines.append(f"    {name} = {value}")
         parameter_names = {p["name"] for p in subprogram["local_parameters"]}
+        kept: list[str] = []
         for local in subprogram["locals"]:
             if local["name"] in parameter_names:
                 continue
             if self._types_an_intrinsic(local, statements):
                 continue
             pending = []
-            _emit(self._local(local, semantics, statements, pending), pending)
+            emitted = self._local(local, semantics, statements, pending)
+            if kept_between_calls(local) and not pending:
+                kept.extend(emitted)
+                continue
+            _emit(emitted, pending)
+        if statements.names.saved:
+            lines.extend(self._saved_locals(subprogram, kept))
         return lines
+
+    @staticmethod
+    def _entry_bounds(subprogram: dict[str, Any], statements: Statements) -> list[str]:
+        """The lower bounds of the explicit-shape dummies and automatic
+        locals that the body could move, read into locals on entry.
+
+        ``real(8), intent(in) :: a(-n:n)`` of an ``intent(inout) :: n``: the
+        bounds are n's value on entry, whatever the body later stores in n
+        (F2018 10.1.11), and ``a(0)`` after ``n = n + 1`` is still the middle
+        element. Spelled from the text at each use, it was ``a(1)``
+        (FNP-D0049). ``Expressions.capture_bounds`` says which, and makes
+        every later subscript and inquiry read the local. A bound the
+        emitter cannot spell is left to refuse where it is used.
+        """
+        expressions = statements.expressions
+        semantics = statements.semantics
+        lines: list[str] = []
+        for entity in [*subprogram["args"], *(subprogram.get("locals") or ())]:
+            name = str(entity["name"]).lower()
+            dims = entity.get("dims")
+            if not dims or name in expressions.allocated_bounds:
+                continue
+            if not any(captured(d.get("lb"), semantics) for d in dims):
+                continue
+            try:
+                spelled = [
+                    expressions.bound(str(d["lb"])) if captured(d.get("lb"), semantics) else ""
+                    for d in dims
+                ]
+            except REFUSED:
+                continue
+            bounds, assignments = expressions.capture_bounds(name, dims, spelled)
+            expressions.allocated_bounds[name] = bounds
+            lines.extend(f"    {assignment}" for assignment in assignments)
+        return lines
+
+    @staticmethod
+    def _saved_locals(subprogram: dict[str, Any], initializers: list[str]) -> list[str]:
+        """The initialization of the locals kept between calls, on the first
+        call only.
+
+        A local with an initializer, or named by SAVE or DATA, keeps its
+        value from one call to the next (F2018 8.5.16); ``integer :: calls
+        = 0`` counts the calls. Re-initialized at every entry, as every
+        other local is, ``calls = calls + 1`` answered 1 on the second call
+        where gfortran answers 2 (FNP-D0014). Such a local is a module
+        global instead (``Names.saved``), and its initializer -- the
+        declaration's value, or the UB-guard one -- runs when the marker
+        global says the subprogram has not run before. ``_fresh`` is that
+        answer, which a DATA block of such a local asks as well.
+        """
+        marker = saved_global(subprogram)
+        return [
+            f"    _fresh = {marker!r} not in globals()",
+            "    if _fresh:",
+            f"        {marker} = True",
+            *(f"    {line}" for line in initializers),
+        ]
+
+    @staticmethod
+    def _data_block(statement: Any, statements: Statements) -> list[str]:
+        """A DATA statement's assignments: every call, or the first only.
+
+        DATA initializes what it names once, before the first call, and the
+        objects are SAVEd by it. For objects the body never changes, running
+        the assignments at every entry is the same thing; for ones it does
+        change, they run under ``_fresh`` with the rest of the kept locals'
+        initialization. A statement naming both kinds would need splitting,
+        and is refused.
+        """
+        kept = statements.names.saved
+        objects: set[str] = set()
+        for group in walk(statement, f03.Data_Stmt_Object_List):
+            objects.update(str(r.children[0]).lower() for r in walk(group, f03.Part_Ref))
+            objects.update(
+                str(item).lower()
+                for item in getattr(group, "children", ())
+                if isinstance(item, f03.Name)
+            )
+        changed = objects & set(kept)
+        if not changed:
+            return statements.data_statement(statement, 1)
+        if changed != objects:
+            raise NoRule(
+                f"DATA initializes {', '.join(sorted(changed))}, which the body changes, "
+                f"beside {', '.join(sorted(objects - changed))}, which it does not"
+            )
+        return ["    if _fresh:", *statements.data_statement(statement, 2)]
 
     @staticmethod
     def _types_an_intrinsic(local: dict[str, Any], statements: Statements) -> bool:
@@ -1047,6 +1154,12 @@ class Subprograms:
             return [f"    {name} = {SCALAR_ZEROS[argument['dtype']]}"]
         if not dims and argument["dtype"] == "bool":
             return [f"    {name} = False"]
+        if not dims and argument["dtype"] == "str":
+            # Undefined on entry, and still of its declared length: blanks.
+            # A ``len=*`` one has the caller's length, which the return
+            # convention never hands in; it is left unbound as before.
+            blank = self._blank({"name": argument["name"]}, statements)
+            return [f"    {name} = {blank}"] if blank != "''" else []
         derived = DERIVED.match(str(argument["dtype"]))
         if not dims and derived is not None:
             # An INTENT(OUT) derived-type dummy is a fresh object at entry:
@@ -1096,14 +1209,16 @@ class Subprograms:
     ) -> list[str]:
         if refusals is None:
             refusals = []
-        name = pysafe(local["name"])
+        # The local's emitted name: its own, or the module global that keeps
+        # it between calls.
+        name = statements.names.symbol(local["name"])
         dims = local.get("dims")
         if dims:
             if any(d["ub"] is None for d in dims):
                 # Allocatable: None until its Allocate_Stmt (allocated() rule).
                 return [f"    {name} = None"]
             try:
-                shape = ", ".join(self._extent(d, statements) for d in dims)
+                extents = [self._automatic_extent(d, statements) for d in dims]
             except REFUSED as refusal:
                 reason = f"local array {local['name']}: extent not resolvable ({refusal})"
                 refusals.append(reason)
@@ -1111,16 +1226,13 @@ class Subprograms:
                     f"    # AGENT_QUEUE: {reason}",
                     f"    raise NotImplementedError({reason!r})",
                 ]
+            shape = ", ".join(extents)
             derived = DERIVED.match(str(local["dtype"]))
             if derived is not None:
                 # An array of a derived type: the elements exist the moment
                 # the array does, so they are constructed here rather than
                 # left as the ``None``s an object ``np.empty`` would hold.
-                filled = derived_array(
-                    derived.group(1).lower(),
-                    [self._extent(d, statements) for d in dims],
-                    semantics.types,
-                )
+                filled = derived_array(derived.group(1).lower(), extents, semantics.types)
                 if filled is not None:
                     return [f"    {name} = {filled}"]
             initializer = local.get("init_expr")
@@ -1149,6 +1261,12 @@ class Subprograms:
                     f"    # AGENT_QUEUE: {reason}",
                     f"    raise NotImplementedError({reason!r})",
                 ]
+            if local["dtype"] == "str":
+                # A CHARACTER array of a known length: its elements are that
+                # many blanks, not the zeros an object ``np.zeros`` holds.
+                blank = self._blank({"name": local["name"]}, statements)
+                if blank != "''":
+                    return [f"    {name} = np.full(({shape},), {blank}, dtype=object)"]
             return [f"    {name} = {undefined_array(self, f'({shape},)', dtype)}"]
         if local.get("array_spec"):
             return []
@@ -1186,8 +1304,29 @@ class Subprograms:
         if local["dtype"] == "bool":
             return [f"    {name} = False{note}"]
         if local["dtype"] == "str":
-            return [f"    {name} = ''"]
+            return [f"    {name} = {self._blank(local, statements)}"]
         return []
+
+    @staticmethod
+    def _blank(entity: dict[str, Any], statements: Statements) -> str:
+        """The UB-guard value of a CHARACTER scalar: its length in blanks.
+
+        A ``character(len=10)`` variable holds ten characters whether or not
+        it has been assigned, and ``len`` of it is 10 before the first store
+        as after it (FNP-D0021). A declared initializer that is a character
+        literal is that literal, fitted to the length; a length nothing
+        here can evaluate keeps the empty string it always had.
+        """
+        length = statements.character_length(entity["name"])
+        initializer = str(entity.get("init_expr") or "").strip()
+        value = ""
+        if CHARACTER_LITERAL.fullmatch(initializer):
+            value = initializer[1:-1].replace(initializer[0] * 2, initializer[0])
+        if length is None:
+            return repr(value)
+        if length.isdigit():
+            return repr(value.ljust(int(length))[: int(length)])
+        return f"({value!r}).ljust({length})[:{length}]"
 
     def _parameter_value(
         self,
@@ -1377,6 +1516,30 @@ class Subprograms:
         if lower in (None, "1", ":"):
             return upper
         return f"({upper}) - ({statements.bound(lower)}) + 1"
+
+    @classmethod
+    def _automatic_extent(cls, dim: dict[str, Any], statements: Statements) -> str:
+        """A local array's declared extent, kept off zero's far side.
+
+        ``real(8) :: w(lo:hi)`` with ``hi < lo`` is an automatic array of
+        zero size on that axis (F2018 8.5.8.2), as ``w(m)`` is with
+        ``m < 0``. The prologue allocated it with the bare extent, and NumPy
+        refuses a negative dimension: ``w(-n:n)`` entered with ``n = -1``
+        raised ValueError where gfortran runs on with an empty ``w``
+        (FNP-D0050). The rule is ALLOCATE's (``_allocated_extent``): clamp
+        at zero, except where the extent cannot go below it -- integer
+        literals that bound a non-negative extent, and an upper bound on an
+        axis based at one that is ``size(...)``.
+        """
+        extent = cls._extent(dim, statements)
+        upper = str(dim["ub"]).strip()
+        lower = str(dim.get("lb") or "1").strip()
+        if INTEGER_TEXT.fullmatch(upper) and INTEGER_TEXT.fullmatch(lower):
+            if int(upper.replace(" ", "")) - int(lower.replace(" ", "")) + 1 >= 0:
+                return extent
+        if lower == "1" and EXTENT.fullmatch(upper) and upper.lower().startswith("size"):
+            return extent
+        return f"max(0, {extent})"
 
 
 def _specification(node: Any) -> Any:

@@ -846,12 +846,14 @@ def test_a_formatted_internal_write_keeps_its_format(tmp_path: Path) -> None:
     src = _write(tmp_path, "fmt", FORMATTED_WRITE)
     statements, nodes = build(src, "fmt2")
     body = "\n".join(line for node in nodes for line in statements.render(node, 1))
-    assert "tmp = _f_fmt_write('(I2.2)', " in body
+    # Blank-padded to the variable's length, as every internal record is
+    # (FNP-D0021).
+    assert "tmp = (_f_fmt_write('(I2.2)', abs(code))).ljust(2)[:2]" in body
     assert "_f_list_write" not in body
 
     statements, nodes = build(src, "lw")
     body = "\n".join(line for node in nodes for line in statements.render(node, 1))
-    assert "s = _f_list_write(n)" in body
+    assert "s = (_f_list_write(n)).ljust(20)[:20]" in body
 
     statements, nodes = build(src, "dexp")
     with pytest.raises(NoRule, match="unsupported edit descriptor"):

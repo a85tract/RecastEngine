@@ -280,7 +280,7 @@ def test_locals_are_determinized(source: Path) -> None:
     undefined. An automatic array allocates off its declared extent, an
     allocatable waits as None, a derived type gets its factory."""
     lines, _ = build(source).render(node_of(source, "work"), "work")
-    assert "    scr = np.zeros((n,), dtype=np.float64)" in lines
+    assert "    scr = np.zeros((max(0, n),), dtype=np.float64)" in lines
     assert "    dyn = None" in lines
     assert "    box = _make_pack_t()" in lines
     assert "    i = 0" in lines
@@ -296,7 +296,7 @@ def test_poisoning_makes_a_read_before_write_visible(source: Path) -> None:
     compares and ``differential.bitexact`` counts it as ``nan_mismatch``.
     """
     lines, _ = build(source, poison=True).render(node_of(source, "work"), "work")
-    assert "    scr = np.full((n,), np.nan, dtype=np.float64)" in lines
+    assert "    scr = np.full((max(0, n),), np.nan, dtype=np.float64)" in lines
     # Unchanged: an allocatable is not undefined memory, it is unallocated,
     # and a scalar is outside what this covers.
     assert "    dyn = None" in lines
@@ -311,8 +311,8 @@ def test_the_integer_arm_is_a_second_switch(source: Path) -> None:
     both, _ = build(source, poison=True, poison_integers=True).render(
         node_of(source, "work"), "work"
     )
-    assert "    tally = np.zeros((n,), dtype=np.int32)" in plain
-    assert f"    tally = np.full((n,), {INT_SENTINEL}, dtype=np.int32)" in both
+    assert "    tally = np.zeros((max(0, n),), dtype=np.int32)" in plain
+    assert f"    tally = np.full((max(0, n),), {INT_SENTINEL}, dtype=np.int32)" in both
 
 
 def test_a_function_result_is_preinitialized(source: Path) -> None:
@@ -341,8 +341,11 @@ def test_an_extent_is_a_term_of_a_bound_not_only_a_whole_one(source: Path) -> No
     deferred as "extent not resolvable" and took its subprogram with it. The
     inquiry is one token now, comma and all."""
     lines, report = build(source).render(node_of(source, "sized_locals"), "sized_locals")
-    assert "    knots = np.zeros(((I_4) - (0) + 1, np.size(x) - 1,), dtype=np.float64)" in lines
-    assert "    band = np.zeros((I_5, 2 * np.size(c, 1),), dtype=np.float64)" in lines
+    assert (
+        "    knots = np.zeros(((I_4) - (0) + 1, max(0, np.size(x) - 1),), dtype=np.float64)"
+        in lines
+    )
+    assert "    band = np.zeros((I_5, max(0, 2 * np.size(c, 1)),), dtype=np.float64)" in lines
     assert [entry for entry in report if entry["status"] == "agent_queue"] == []
 
 

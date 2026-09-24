@@ -47,10 +47,11 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "alog10": "_f_log10",
     "amax0": "max",
     "amin0": "min",
-    "anint": "np.round",
+    "anint": "_f_anint",
     "asin": "math.asin",
     "atan": "math.atan",
     "atan2": "math.atan2",
+    "bit_size": "_f_bit_size",
     "c_loc": "_f_c_loc",
     "ceiling": "math.ceil",
     "char": "chr",
@@ -63,6 +64,7 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "dble": "np.float64",
     "dcos": "math.cos",
     "dexp": "math.exp",
+    "digits": "_f_digits",
     "dim": "_f_dim",
     "dlog": "_f_log",
     "dlog10": "_f_log10",
@@ -99,14 +101,17 @@ ELEMENTAL_SCALAR: dict[str, str] = {
     "log10": "_f_log10",
     "max": "_f_max",
     "max0": "max",
+    "maxexponent": "_f_maxexponent",
     "min": "_f_min",
     "min0": "min",
+    "minexponent": "_f_minexponent",
     "mod": "_f_mod",
     "modulo": "_f_modulo",
     "mvbits": "_f_mvbits",
     "nint": "_f_nint",
     "precision": "_f_precision",
     "radix": "_f_radix",
+    "range": "_f_range",
     "real": "np.float64",
     "scan": "_f_scan",
     "shape": "np.shape",
@@ -131,7 +136,7 @@ ELEMENTAL_ARRAY: dict[str, str] = {
     "abs": "np.abs",
     "achar": "_f_vachar",
     "aint": "np.trunc",
-    "anint": "np.round",
+    "anint": "_f_anint",
     "ceiling": "_f_vceil",
     "cos": "np.cos",
     "dble": "np.float64",
@@ -170,8 +175,8 @@ REDUCTIONS: dict[str, str] = {
     "product": "np.prod",
     "size": "np.size",
     "sum": "_f_vsum",
-    # With unit lower bounds -- which every translated array has -- the upper
-    # bound and the extent are the same number.
+    # On an axis based at one the upper bound and the extent are the same
+    # number; ``Expressions._bound_inquiry`` spells any other axis.
     "ubound": "np.size",
 }
 """Intrinsics that collapse an array. ``dot_product`` and ``sum`` are runtime

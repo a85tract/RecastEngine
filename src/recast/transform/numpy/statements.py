@@ -41,6 +41,7 @@ Transform catches to defer a block.
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,9 +50,24 @@ from recast import references
 from recast.fortran import intrinsics
 from recast.fortran._parse import f03, f08, walk
 from recast.fortran.interface import CONFLICTING_BOUNDS, emit_name
+from recast.fortran.rwset import (
+    associated_by,
+    associations,
+    declared_length,
+    fitted_length,
+    returned_length,
+    scalar_variable,
+    written_names,
+    written_through,
+)
 from recast.fortran.semantics import Semantics, Unanalyzable
 from recast.transform.numpy.calls import CallSite
-from recast.transform.numpy.expressions import REFUSED, Expressions, function_outputs
+from recast.transform.numpy.expressions import (
+    NON_NEGATIVE_INQUIRIES,
+    REFUSED,
+    Expressions,
+    function_outputs,
+)
 from recast.transform.numpy.names import Names
 from recast.transform.numpy.vocabulary import pysafe
 from recast.transform.rules import NoRule
@@ -343,6 +359,32 @@ def _loops_whose_index_is_read_after(subprogram: Any) -> set[int]:
                 marked.add(id(loop))
                 break
     return marked
+
+
+def _base_name(designator: Any) -> str | None:
+    """The variable a designator names: ``a`` of ``a``, ``a(i)``, ``a%b(i)``."""
+    while isinstance(designator, (f03.Part_Ref, f03.Data_Ref)):
+        designator = designator.children[0]
+    return str(designator).lower() if isinstance(designator, f03.Name) else None
+
+
+def _write_unit(write: Any) -> Any:
+    """The unit a WRITE names, as it is spelled."""
+    for spec in walk(write.children[0], f03.Io_Control_Spec):
+        keyword, value = spec.children
+        if keyword is None or str(keyword).upper() == "UNIT":
+            return value
+    return None
+
+
+def _subscripts_of(designator: Any) -> Any:
+    """A ``Part_Ref``'s subscript list, or ``None`` for anything else."""
+    return designator.children[1] if isinstance(designator, f03.Part_Ref) else None
+
+
+def _spelled(node: Any) -> str | None:
+    """Source text compared as text: blanks and case do not make it differ."""
+    return None if node is None else str(node).lower().replace(" ", "")
 
 
 @dataclass
@@ -734,6 +776,11 @@ class Statements:
             # OUT/INOUT dummies back beside its result, so the statement is
             # a call whose first output is the target (``_call``).
             return self._call(value, indent, result=target)
+        return [f"{pad}{self.target(target)} = {self._assigned_value(target, value)}"]
+
+    def _assigned_value(self, target: Any, value: Any) -> str:
+        """The right-hand side of ``target = value``, converted the way
+        Fortran converts on assignment."""
         rendered = self.expressions.render(value)
         if (
             self.semantics.is_scalar_integer_target(target)
@@ -750,8 +797,73 @@ class Statements:
             except Unanalyzable:
                 rank = 0
             if rank == 0 and not self.semantics.is_logical_or_character(value):
-                rendered = f"_f_int({rendered})"
-        return [f"{pad}{self.target(target)} = {rendered}"]
+                # Into the target's kind: an ``integer(8)`` holds what the
+                # default-kind conversion would saturate (FNP-D0005).
+                wide = self.semantics.scalar_target_dtype(target) == "int64"
+                rendered = f"_f_int({rendered}, 8)" if wide else f"_f_int({rendered})"
+        return self.fitted(target, rendered, value)
+
+    def fitted(self, target: Any, rendered: str, value: Any = None) -> str:
+        """A value stored into a fixed-length CHARACTER, padded or cut to it.
+
+        A ``character(len=10)`` variable always holds ten characters: Fortran
+        pads a shorter value with blanks and truncates a longer one on
+        assignment (F2018 10.2.1.3). The Python string kept whatever it was
+        given, so ``s = 'ab'`` then ``len(s)`` answered 2 where gfortran
+        answers 10, and ``t = 'abcdef'`` into a ``len=3`` kept all six
+        (FNP-D0021). Which stores are fitted, and to what, is
+        ``fitted_length``'s: the read/write sets count what the length reads.
+
+        An array value is fitted element by element -- ``a = b`` and
+        ``a = ['ab', 'cd']`` into a ``len=4`` ``a`` stored the two-character
+        strings as they were -- through ``np.frompyfunc``, which keeps the
+        value's shape and evaluates it once.
+        """
+        length = self._spelled_length(fitted_length(target, value, self.semantics), target)
+        if length is None:
+            return rendered
+        try:
+            elementwise = value is not None and self.semantics.rank(value) > 0
+        except Unanalyzable:
+            elementwise = False
+        if elementwise:
+            return f"np.frompyfunc(lambda _fe: _fe.ljust({length})[:{length}], 1, 1)({rendered})"
+        return f"({rendered}).ljust({length})[:{length}]"
+
+    def _returned_length(self, formal: dict[str, Any], actual: Any) -> str | None:
+        """``returned_length``, spelled: the length of the caller's CHARACTER
+        ``actual`` that what an ``intent(out)`` ``len=*`` dummy hands back is
+        fitted to, or ``None``.
+
+        ``s = 'hello'`` in the callee is stored and returned as five
+        characters, and the caller's ``character(len=8) :: s`` bound to it
+        had ``len(s)`` 5 and ``s // '|'`` ``hello|`` where gfortran has 8
+        and ``hello   |`` (FNP-D0021).
+        """
+        return self._spelled_length(returned_length(formal, actual, self.semantics), actual)
+
+    def character_length(self, name: str) -> str | None:
+        """The declared length of a CHARACTER variable, as Python, or ``None``.
+
+        ``declared_length``, spelled: digits as they are, a named constant
+        as this subprogram names it, an assumed length ``len=*`` as the
+        length of the value the dummy was passed.
+        """
+        return self._spelled_length(declared_length(name, self.semantics), name)
+
+    def _spelled_length(self, length: str | None, variable: Any) -> str | None:
+        if length is None:
+            return None
+        if length.isdigit():
+            return length
+        if length == "*":
+            return f"len({self.names.symbol(str(_base_name(variable) or variable))})"
+        spelled = re.sub(r"[A-Za-z_]\w*", lambda m: self.names.symbol(m.group(0)), length)
+        try:
+            ast.parse(spelled, mode="eval")
+        except SyntaxError:
+            return None
+        return spelled
 
     def _function_with_outputs(self, node: Any) -> dict[str, Any] | None:
         """The record of a function with source whose OUT/INOUT dummies the
@@ -928,32 +1040,205 @@ class Statements:
         return lines
 
     def _forall(self, node: Any, indent: int) -> list[str]:
-        """FORALL, as the nested loops it abbreviates."""
+        """FORALL: every value computed before any is stored.
+
+        A FORALL is not the nested loops it looks like. For each assignment
+        of its body, Fortran evaluates the right-hand side -- and the target's
+        subscripts -- for every active combination of the index values
+        first, and only then assigns (F2018 11.1.7.4.3); each assignment of
+        a construct completes over the whole index set before the next one
+        starts; and the scalar mask picks the active combinations once, up
+        front. Written as loops, ``forall (i = 2:n) a(i) = a(i-1)`` read the
+        ``a(i-1)`` the previous trip had just stored and smeared ``a(1)``
+        across the array, and the mask of ``forall (i = 1:n, a(i) > 0)`` was
+        dropped outright (FNP-D0002, FNP-D0003).
+
+        The loops are still what is emitted wherever they mean the same
+        thing -- no reference in the construct reads an element some
+        assignment of it stores, other than the very element the same trip
+        stores -- with the mask as an ``if`` around the body. Everywhere else
+        the active combinations are listed first (``_fa``), each assignment's
+        values gathered over them beside the combination they belong to
+        (``_fv``) and then stored; a body that is not all assignments has no
+        such form and is refused.
+        """
+        header = walk(node, f03.Forall_Header)[0]
         if isinstance(node, f03.Forall_Stmt):
-            header = walk(node, f03.Forall_Header)[0]
-            body = [c for c in node.children if isinstance(c, f03.Assignment_Stmt)]
+            body = [c for c in node.children if c is not None and c is not header]
         else:
-            header = walk(node, f03.Forall_Header)[0]
             body = [
                 c
                 for c in node.children
                 if not isinstance(c, (f03.Forall_Construct_Stmt, f03.End_Forall_Stmt))
             ]
+        mask = header.children[1] if len(header.children) > 1 else None
         triplets = walk(header, f03.Forall_Triplet_Spec)
-        lines = []
-        for depth, triplet in enumerate(triplets):
-            parts = [str(c).strip() for c in triplet.children if c is not None]
-            variable = parts[0].lower()
+        # An index has the construct's scope (F2018 19.4): a variable of its
+        # name outside is neither read nor changed by it. As the Python local
+        # of that name, ``i = 100; forall (i = 2:n) ...; k = i`` left ``k`` at
+        # the last index, 4, where gfortran gives 100. Within the construct
+        # the name is spelled as an index of its own, the way an ASSOCIATE
+        # name is spelled as its selector; the bounds are rendered first, and
+        # may not name the construct's own indices anyway.
+        indices = {
+            lowered: f"_fi_{lowered}" for lowered in (str(t.children[0]).lower() for t in triplets)
+        }
+        loops = []
+        for triplet in triplets:
+            variable = indices[str(triplet.children[0]).lower()]
             low = self.expressions.render(triplet.children[1]) if triplet.children[1] else "1"
             high = self.expressions.render(triplet.children[2])
             step = ""
+            stop = f"({high}) + 1"
             if triplet.children[3] is not None:
-                step = f", {self.expressions.render(triplet.children[3])}"
-            pad = "    " * (indent + depth)
-            lines.append(f"{pad}for {pysafe(variable)} in range({low}, ({high}) + 1{step}):")
+                rendered = self.expressions.render(triplet.children[3])
+                step = f", {rendered}"
+                # ``range`` stops short of its stop edge, which lies past
+                # ``high`` in the direction of the step: ``forall (i = n:1:-1)``
+                # as ``range(n, 1 + 1, -1)`` never visited ``i = 1``. A step
+                # spelled as an integer literal settles the direction here;
+                # any other waits for its value.
+                literal = re.fullmatch(r"([+-]?)\d+", str(triplet.children[3]).replace(" ", ""))
+                if literal is None:
+                    stop = f"({high}) + (1 if ({rendered}) > 0 else -1)"
+                elif literal.group(1) == "-":
+                    stop = f"({high}) - 1"
+            loops.append((variable, f"range({low}, {stop}{step})"))
+        associations = self.names.associations
+        shadowed = {name: associations.get(name) for name in indices}
+        associations.update(indices)
+        try:
+            return self._forall_lines(body, mask, loops, indent)
+        finally:
+            for name, outer in shadowed.items():
+                if outer is None:
+                    associations.pop(name, None)
+                else:
+                    associations[name] = outer
+
+    def _forall_lines(
+        self, body: list[Any], mask: Any, loops: list[tuple[str, str]], indent: int
+    ) -> list[str]:
+        """A FORALL's loops, or its gathered values, over ``loops``' indices."""
+        if not self._forall_depends(body, mask):
+            lines = []
+            for depth, (variable, span) in enumerate(loops):
+                lines.append(f"{'    ' * (indent + depth)}for {variable} in {span}:")
+            inner = indent + len(loops)
+            if mask is not None:
+                lines.append(f"{'    ' * inner}if {self.expressions.render(mask)}:")
+                inner += 1
+            for statement in body:
+                lines.extend(self.render(statement, inner))
+            return lines
+
+        if not all(isinstance(s, f03.Assignment_Stmt) for s in body):
+            kinds = sorted(
+                {type(s).__name__ for s in body if not isinstance(s, f03.Assignment_Stmt)}
+            )
+            raise NoRule(
+                f"FORALL whose values depend on its own stores, with a body of {', '.join(kinds)}"
+            )
+        pad = "    " * indent
+        names = ", ".join(variable for variable, _ in loops)
+        combination = names if len(loops) == 1 else f"({names})"
+        generators = " ".join(f"for {variable} in {span}" for variable, span in loops)
+        condition = f" if {self.expressions.render(mask)}" if mask is not None else ""
+        lines = [f"{pad}_fa = [{combination} {generators}{condition}]"]
         for statement in body:
-            lines.extend(self.render(statement, indent + len(triplets)))
+            target, _, value = statement.children
+            if self._function_with_outputs(value) is not None or (
+                isinstance(target, f03.Name) and self.semantics.derived_type_of(str(target))
+            ):
+                raise NoRule("FORALL assigning a derived type or through a function's outputs")
+            base = _base_name(target)
+            if base is not None and any(
+                str(name).lower() == base for name in walk(_subscripts_of(target), f03.Name)
+            ):
+                raise NoRule(f"FORALL whose target {base!r} is subscripted by its own elements")
+            value_text = self._assigned_value(target, value)
+            if self._forall_stores_sections(target, value):
+                # A section of an array is a view of it, not its values:
+                # ``a(i, :) = a(i-1, :)`` gathered views of the rows it then
+                # stored into, and each store changed what the next trip's
+                # "value" held (1 1 1 1 where gfortran gives 1 1 2 3).
+                value_text = f"np.array({value_text})"
+            lines.append(f"{pad}_fv = [({combination}, {value_text}) for {combination} in _fa]")
+            lines.append(f"{pad}for {combination}, _fe in _fv:")
+            lines.append(f"{pad}    {self.target(target)} = _fe")
         return lines
+
+    def _forall_stores_sections(self, target: Any, value: Any) -> bool:
+        """Whether a gathered FORALL assignment stores arrays, not elements.
+
+        The target settles it: Fortran lets only a scalar be stored into an
+        element, and indexing an element out of an array is already a
+        value. A target whose rank cannot be settled falls back on the
+        value's, and when neither can be the assignment is refused rather
+        than gathered as what may be a view.
+        """
+        for node in (target, value):
+            try:
+                return self.semantics.rank(node) > 0
+            except Unanalyzable:
+                continue
+        raise NoRule(f"FORALL assigning {target}, whose rank cannot be settled")
+
+    @staticmethod
+    def _forall_depends(body: list[Any], mask: Any) -> bool:
+        """Whether a FORALL's loops would read something its own stores changed.
+
+        The loops agree with FORALL when every reference to a stored array --
+        in a right-hand side, a target's subscripts, the mask -- names the
+        element the same trip stores: the same subscripts, spelled the same,
+        as the one assignment that stores that array. ``a(i) = 2*a(i)`` reads
+        only what this trip is about to overwrite; ``a(i) = a(i-1)`` reads
+        what the previous one wrote. Anything this cannot see that way -- a
+        whole-array or component reference to a stored name, two assignments
+        storing one array under different subscripts -- is a dependence.
+        """
+        assignments = [a for statement in body for a in walk(statement, f03.Assignment_Stmt)]
+        stored: dict[str, str | None] = {}
+        for assignment in assignments:
+            target = assignment.children[0]
+            base = _base_name(target)
+            if base is None:
+                return True
+            spelled = _spelled(_subscripts_of(target)) if isinstance(target, f03.Part_Ref) else None
+            if base in stored and stored[base] != spelled:
+                stored[base] = None
+            else:
+                stored.setdefault(base, spelled)
+        if not stored:
+            return False
+        read = [mask] if mask is not None else []
+        for assignment in assignments:
+            read.append(assignment.children[2])
+            read.append(_subscripts_of(assignment.children[0]))
+        for expression in read:
+            if expression is None:
+                continue
+            references = walk(expression, (f03.Name, f03.Part_Ref, f03.Data_Ref))
+            for reference in [expression, *references]:
+                if isinstance(reference, f03.Part_Ref):
+                    base = str(reference.children[0]).lower()
+                    if base in stored and (
+                        stored[base] is None or _spelled(_subscripts_of(reference)) != stored[base]
+                    ):
+                        return True
+                elif isinstance(reference, f03.Data_Ref):
+                    if _base_name(reference) in stored:
+                        return True
+                elif isinstance(reference, f03.Name):
+                    parent = getattr(reference, "parent", None)
+                    heads = isinstance(parent, f03.Part_Ref) and parent.children[0] is reference
+                    if (
+                        str(reference).lower() in stored
+                        and not heads
+                        and not isinstance(parent, f03.Data_Ref)
+                    ):
+                        return True
+        return False
 
     def _note_dropped_reads(self, items: list[Any]) -> None:
         """Every name in a stubbed call's actual arguments, keywords aside."""
@@ -998,27 +1283,35 @@ class Statements:
             target, shape = allocation.children[0], allocation.children[1]
             extents = []
             bounds = []
+            lows = []
             for spec in walk(shape, f03.Allocate_Shape_Spec):
                 low, high = spec.children
                 if low is not None and str(low) != "1":
                     bounds.append({"lb": str(low), "ub": str(high)})
-                    extents.append(
-                        f"({self.expressions.render(high)}) - ({self.expressions.render(low)}) + 1"
-                    )
+                    lows.append(self.expressions.render(low))
+                    extent = f"({self.expressions.render(high)}) - ({lows[-1]}) + 1"
                 else:
                     bounds.append({"lb": "1", "ub": str(high)})
-                    extents.append(self.expressions.render(high))
+                    lows.append("1")
+                    extent = self.expressions.render(high)
+                extents.append(self._allocated_extent(extent, low, high))
+            captures: list[str] = []
             if isinstance(target, f03.Name) and any(d["lb"] != "1" for d in bounds):
                 key = str(target).lower()
                 previous = self.expressions.allocated_bounds.get(key)
                 if previous is not None and (
                     previous == CONFLICTING_BOUNDS  # type: ignore[comparison-overlap]
-                    or [d["lb"] for d in previous] != [d["lb"] for d in bounds]
+                    or [d.get("source_lb", d["lb"]) for d in previous] != [d["lb"] for d in bounds]
                 ):
                     # The module-wide record already found two ALLOCATEs
                     # that disagree, or one no other subprogram can
                     # evaluate; this allocation cannot settle it either.
                     raise NoRule(f"conflicting allocate lower bounds for {key}")
+                # The bounds are the values the expressions have here, at
+                # the ALLOCATE (F2018 9.7.1.2): one the body can change later
+                # is held in a local, set again by every ALLOCATE of the
+                # array, a loop's included (FNP-D0049).
+                bounds, captures = self.expressions.capture_bounds(key, bounds, lows)
                 self.expressions.allocated_bounds[key] = bounds
             if isinstance(target, f03.Name):
                 rendered = self.names.symbol(str(target))
@@ -1046,12 +1339,14 @@ class Statements:
             )
             if filled is not None:
                 lines.append(f"{pad}{rendered} = {filled}")
+                lines.extend(pad + capture for capture in captures)
                 continue
             # A component (``obj%arr``) has no declaration here and keeps the
             # float64 the pipeline gave it; a declared name is built as it
             # was declared or refused.
             dtype = allocated_dtype(declaration["dtype"]) if declaration else "np.float64"
             lines.append(f"{pad}{rendered} = {undefined_array(self, shape_text, dtype)}")
+            lines.extend(pad + capture for capture in captures)
         if not lines:
             # `allocate(x)` with no shape: a scalar allocatable, which for a
             # derived type is the object coming into existence.
@@ -1063,6 +1358,31 @@ class Statements:
         if not lines:
             raise NoRule("allocate without shape specs")
         return lines
+
+    def _allocated_extent(self, extent: str, low: Any, high: Any) -> str:
+        """One axis's extent in an ALLOCATE shape, kept off zero's far side.
+
+        ``allocate(a(lo:hi))`` with ``hi < lo`` allocates an array of zero
+        size on that axis (F2018 9.7.1.2), as ``allocate(a(n))`` does with
+        ``n < 0``. The shape was the bare ``(hi) - (lo) + 1``, and NumPy
+        refuses a negative dimension outright: ``allocate(a(-n:n))`` with
+        ``n = -1`` raised ValueError where gfortran has an empty ``a``
+        (FNP-D0050). So the extent is clamped at zero. Not where it cannot
+        go below it: integer literals that bound a non-negative extent, and
+        an upper bound on an axis based at one that is an inquiry never
+        below zero (``allocate(b(size(a)))``).
+        """
+        upper = self.semantics.integer_literal(high)
+        lower = 1 if low is None or str(low) == "1" else self.semantics.integer_literal(low)
+        if upper is not None and lower is not None and upper - lower + 1 >= 0:
+            return extent
+        if (
+            lower == 1
+            and isinstance(high, f03.Intrinsic_Function_Reference)
+            and str(high.children[0]).lower() in NON_NEGATIVE_INQUIRIES
+        ):
+            return extent
+        return f"max(0, {extent})"
 
     def _deallocate(self, node: Any, pad: str) -> list[str]:
         # Allocatable tracking: only DIRECT variables go back to None (the
@@ -1142,6 +1462,15 @@ class Statements:
                 format_ = value
             position += 1
         name = str(unit).strip().lower() if unit is not None else "*"
+        if isinstance(unit, f03.Name) and name in self.names.associations:
+            # ``associate (c => s); write (c, '(i4)') n`` writes ``s``: the
+            # name is spelled as its selector (``written_through``), and it
+            # is the selector's declaration that says the unit is internal.
+            # Read by the name's, which is none, the write was a log and
+            # the store was dropped.
+            through = self._write_through(node, unit, name, items, format_, record_bound, pad)
+            if through is not None:
+                return through
         declaration = self.semantics.declaration(name) if UNIT_NAME.fullmatch(name) else None
         subprogram = self.semantics.subprogram
         # A character function's result is an internal unit too: ``write(str,
@@ -1154,21 +1483,8 @@ class Statements:
         if internal:
             if not record_bound:
                 raise NoRule("internal write with ADVANCE= control")
-            arguments = ", ".join(
-                self.expressions.render(item)
-                for item in (items.children if hasattr(items, "children") else [items])
-            )
-            spelled = str(format_).strip() if format_ is not None else "*"
-            if spelled == "*":
-                return [f"{pad}{pysafe(name)} = _f_list_write({arguments})"]
-            # A formatted internal write: the FMT decides the layout, so the
-            # list-directed shim would be a silently wrong string (#16). The
-            # format need not be a literal -- ``_f_fmt_write`` parses it where
-            # it stands, which is where a dummy argument carrying one is
-            # known -- but a literal is checked here, while the descriptors
-            # are still in front of the emitter.
-            fmt = self._io_format(format_, "formatted internal write")
-            return [f"{pad}{pysafe(name)} = _f_fmt_write({fmt}, {arguments})"]
+            record = self._internal_record(unit, items, format_)
+            return [f"{pad}{pysafe(name)} = {record}"]
         if name not in set(subprogram.get("file_units") or ()):
             return [f"{pad}pass  # write({name},...) log — no dataflow"]
         rendered_items = [
@@ -1181,6 +1497,61 @@ class Statements:
             f"{pad}_f_write({self.expressions.render(unit)}, "
             f"{self._io_format(format_, 'WRITE')}, [{', '.join(rendered_items)}]{settings})"
         ]
+
+    def _internal_record(self, unit: Any, items: Any, format_: Any) -> str:
+        """The record an internal write puts in ``unit``, blank-padded to its
+        length."""
+        arguments = ", ".join(
+            self.expressions.render(item)
+            for item in (items.children if hasattr(items, "children") else [items])
+        )
+        spelled = str(format_).strip() if format_ is not None else "*"
+        record = f"_f_list_write({arguments})"
+        if spelled != "*":
+            # A formatted internal write: the FMT decides the layout, so the
+            # list-directed shim would be a silently wrong string (#16). The
+            # format need not be a literal -- ``_f_fmt_write`` parses it where
+            # it stands, which is where a dummy argument carrying one is
+            # known -- but a literal is checked here, while the descriptors
+            # are still in front of the emitter.
+            fmt = self._io_format(format_, "formatted internal write")
+            record = f"_f_fmt_write({fmt}, {arguments})"
+        # The record fills the variable, blank-padded to its length.
+        length = self._spelled_length(fitted_length(unit, None, self.semantics), unit)
+        if length is not None:
+            record = f"({record}).ljust({length})[:{length}]"
+        return record
+
+    def _write_through(
+        self,
+        node: Any,
+        unit: Any,
+        name: str,
+        items: Any,
+        format_: Any,
+        record_bound: bool,
+        pad: str,
+    ) -> list[str] | None:
+        """A WRITE whose unit is an ASSOCIATE name spelled as its selector:
+        an internal write to the selector's variable, ``None`` for a unit
+        number, or refused.
+
+        A CHARACTER variable or an element of a CHARACTER array is an
+        internal unit, and gets the record. An integer variable is a unit
+        number, and the write the log it always was. A component could be
+        either, and is refused rather than guessed at.
+        """
+        construct = associated_by(node, name)
+        selector = associations(construct)[name] if construct is not None else None
+        declaration = self.semantics.declaration(_base_name(selector) or "") or {}
+        if isinstance(selector, f03.Name) and not self.semantics.is_character(selector):
+            return None
+        if not isinstance(selector, (f03.Name, f03.Part_Ref)) or declaration.get("dtype") != "str":
+            raise NoRule(f"WRITE to ASSOCIATE name {name}, whose selector {selector} is not typed")
+        if not record_bound:
+            raise NoRule("internal write with ADVANCE= control")
+        record = self._internal_record(selector, items, format_)
+        return [f"{pad}{self.expressions.render(unit)} = {record}"]
 
     def _print(self, node: Any, pad: str) -> list[str]:
         """PRINT writes a record to standard output and *reads* its item
@@ -2051,40 +2422,107 @@ class Statements:
 
         A plain assignment is right for the reads and for writes through a
         whole-array or component target, which is what the physics corpora use it
-        for -- the body sees the same object. It is *not* right for a scalar
-        target written through the association, where Fortran writes back to
-        the selector and Python would rebind the local; nothing in the corpus
-        does that, and it is a refusal worth having when something does.
+        for -- the body sees the same object, a NumPy view or the structure
+        itself. It is *not* right for a scalar variable written through the
+        association: Fortran's ``t`` is another name for ``x``, so ``t = t +
+        1`` stores to ``x``, and the local ``t = x`` it was bound as was
+        rebound instead, leaving ``x`` as it was (FNP-D0015). Such a name is
+        spelled as its selector for the body's duration and bound to nothing
+        (``written_through`` decides where, for this and for the read/write
+        sets). A write the translation still cannot carry to the selector --
+        through the name of an expression, which Fortran does not allow
+        either, of an element whose subscripts the body changes, or a
+        whole-array store that would rebind a view -- is refused, as is a
+        body that writes a scalar variable its snapshot would then disagree
+        with.
         """
         pad = "    " * indent
         lines = []
         inherited: dict[str, Any] = {}
-        for association in walk(node, f03.Association):
+        body_nodes = [
+            child
+            for child in node.children
+            if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
+        ]
+        through = written_through(node, self.semantics)
+        written = written_names(body_nodes)
+        spelled: dict[str, str] = {}
+        for association in walk(node.children[0], f03.Association):
             alias, _, selector = association.children
-            name = pysafe(str(alias).lower())
+            lowered = str(alias).lower()
+            if lowered in through:
+                spelled[lowered] = self.expressions.render(selector)
+                continue
+            self._refuse_lost_association(lowered, selector, body_nodes, written)
+            name = pysafe(lowered)
             lines.append(f"{pad}{name} = {self.expressions.render(selector)}")
             dims = self.expressions.selector_dims(selector)
             if dims:
-                inherited[str(alias).lower()] = dims
+                inherited[lowered] = dims
         # The alias subscripts like its selector for the body's duration: a
         # component allocated from zero keeps its zero through the alias.
         bounds = self.expressions.allocated_bounds
         previous = {name: bounds.get(name) for name in inherited}
         bounds.update(inherited)
+        associations = self.names.associations
+        shadowed = {name: associations.get(name) for name in spelled}
+        associations.update(spelled)
         try:
-            body = [
-                line
-                for child in node.children
-                if not isinstance(child, (f03.Associate_Stmt, f03.End_Associate_Stmt))
-                for line in self.render(child, indent)
-            ]
+            body = [line for child in body_nodes for line in self.render(child, indent)]
         finally:
             for name, before in previous.items():
                 if before is None:
                     bounds.pop(name, None)
                 else:
                     bounds[name] = before
+            for name, outer in shadowed.items():
+                if outer is None:
+                    associations.pop(name, None)
+                else:
+                    associations[name] = outer
         return lines + (body or [f"{pad}pass"])
+
+    def _refuse_lost_association(
+        self, alias: str, selector: Any, body: list[Any], written: set[str]
+    ) -> None:
+        """Refuse an association bound as a local that the body's writes
+        would make disagree with its selector.
+
+        Two ways that happens once ``written_through`` has respelled what it
+        can. A store to the bare name rebinds the local -- whether the
+        selector is an expression, which Fortran does not let be defined
+        through its name at all, a component whose shape this cannot read, or
+        an array whose view the store would replace. And a scalar variable
+        the body changes, through the name or around it, while a subscript
+        of the selector changes too, has no one spelling that is the element
+        Fortran associated.
+        """
+        if (alias in written or _base_name(selector) in written) and scalar_variable(
+            selector, self.semantics
+        ):
+            raise NoRule(
+                f"ASSOCIATE name {alias} selects {selector}, whose subscripts the body changes"
+            )
+        if any(
+            isinstance(a.children[0], f03.Name) and str(a.children[0]).lower() == alias
+            for statement in body
+            for a in walk(statement, f03.Assignment_Stmt)
+        ):
+            raise NoRule(
+                f"assignment to ASSOCIATE name {alias}, whose selector {selector} is not a "
+                "scalar variable the store can be carried to"
+            )
+        # An internal WRITE to the name is the same store; one to an integer
+        # is to a unit number, a log that stores nothing.
+        if not self.semantics.is_integer(selector) and any(
+            isinstance(unit, f03.Name) and str(unit).lower() == alias
+            for statement in body
+            for unit in (_write_unit(w) for w in walk(statement, f03.Write_Stmt))
+        ):
+            raise NoRule(
+                f"WRITE to ASSOCIATE name {alias}, whose selector {selector} is not a "
+                "scalar variable the store can be carried to"
+            )
 
     def _block(self, node: Any, indent: int) -> list[str]:
         """``block ... end block``: its declarations, then its statements.
@@ -2337,6 +2775,9 @@ class Statements:
         # flat window onto it, so the value is laid out in Fortran's order
         # before it is copied back.
         flattened: set[int] = set()
+        # Output positions stored into a CHARACTER variable of the caller's
+        # that what comes back has to be fitted to (``_returned_length``).
+        fits: dict[int, str] = {}
         for formal, actual in zip(record["args"], actuals, strict=True):
             if actual is None:  # an unsupplied optional
                 if not formal["optional"]:
@@ -2362,6 +2803,9 @@ class Statements:
                 target, flat = self._output_target(formal, actual, substitutions)
                 if flat:
                     flattened.add(len(outputs))
+                length = self._returned_length(formal, actual)
+                if length is not None and not flat and "[...]" not in target and "{}" not in target:
+                    fits[len(outputs)] = length
                 outputs.append(target)
 
         elemental = any("ELEMENTAL" in str(p).upper() for p in (record.get("prefixes") or []))
@@ -2398,6 +2842,12 @@ class Statements:
             # bound above follow it, so their positions move up by one.
             outputs.insert(0, self.target(result))
             flattened = {position + 1 for position in flattened}
+            fits = {position + 1: length for position, length in fits.items()}
+            # A scalar result is stored as ``result = f(...)`` is anywhere
+            # else: fitted to the target's length (``fitted``).
+            length = self._spelled_length(fitted_length(result, node, self.semantics), result)
+            if length is not None and scalar_variable(result, self.semantics):
+                fits[0] = length
         # Python takes no positional argument after a keyword one, and
         # Fortran's optionals can leave a gap anywhere in the list.
         inputs = [a for a in inputs if "=" not in a] + [a for a in inputs if "=" in a]
@@ -2424,17 +2874,23 @@ class Statements:
             def copied(index: int, target: str) -> bool:
                 return "[...]" in target or "{}" in target or index in flattened
 
+            def fit(index: int, text: str) -> str:
+                length = fits.get(index)
+                return text if length is None else f"({text}).ljust({length})[:{length}]"
+
             has_array = any(copied(i, target) for i, target in enumerate(outputs))
             if has_array and len(outputs) == 1:
                 return [copy_out(outputs[0], value(0, call))]
-            if has_array:
+            if has_array or (fits and len(outputs) > 1):
                 lines = [f"{pad}_out = {call}"]
                 for i, target in enumerate(outputs):
                     if copied(i, target):
                         lines.append(copy_out(target, value(i, f"_out[{i}]")))
                     else:
-                        lines.append(f"{pad}{target} = _out[{i}]")
+                        lines.append(f"{pad}{target} = {fit(i, f'_out[{i}]')}")
                 return lines
+            if fits:
+                return [f"{pad}{outputs[0]} = {fit(0, call)}"]
             return [f"{pad}{', '.join(outputs)} = {call}"]
         return [f"{pad}{call}"]
 
