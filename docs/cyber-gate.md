@@ -135,9 +135,18 @@ and a run of the public `audit` recipe always has `ai_audit: not_configured`.
 4. Run `dynamic.asan` with a real `ifx`, and submit `scripts/pbs/asan_cam.sh`
    on Derecho. After 2. Neither has happened; the tests use fake compilers.
 5. Run `llm-audit` against the real API. After 2; the tests script the model.
-6. CC-Test step 9d (`docs/CORRECTNESS-ORGANIZATION.md` there): CC-Test's
-   `tools/`, `hooks/`, `templates/` become thin wrappers over the above. After
-   1 and 2. Not started, because CC-Test is not being edited right now.
+6. CC-Test step 9d (`docs/CORRECTNESS-ORGANIZATION.md` there). First half
+   done 2026-09-25 (CC-Test PR #7): `tools/devsecops-local.sh`,
+   `tools/install-config.sh` and `hooks/pre-push` are wrappers over this
+   engine's recipe, installer and hook, keeping hpc-devsecops's flags, report
+   directory and exit contract; `tools/engine.sh` there finds the engine
+   (`RECAST_BIN`, `RECAST_HOME`) and chooses the recipe (`RECAST_AUDIT_RECIPE`,
+   PR #122; else `audit-cesm` for a repository carrying the old opt-in
+   `.github/scripts/ai_audit.py`, fail-closed when that recipe is missing;
+   else `audit`). Second half, after 2: `tools/asan.sh`, `tools/test-ai-audit.py`
+   and `hpc/asan-cam.pbs` over `dynamic.asan`, `llm-audit` and the PBS job;
+   the `--staged` / `--worktree` patch modes if the `secret` scanner gains
+   them (the wrapper refuses them today). Then a run in place on Derecho.
 7. CC-Test step 9e: delete the wrappers, `hpc/`, `templates/`, and the
    `summary.json` reader; keep CC-Test's `SECURITY.md` for its own disclosure
    policy. After 6 has run in place.
