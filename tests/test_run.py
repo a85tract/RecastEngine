@@ -1913,3 +1913,218 @@ def test_the_summary_names_a_ports_host_calls_and_refusals_and_a_translation_has
     )
     assert _host_calls(translated) == {}
     assert _host_calls(None) == {}
+
+
+# --- the Cyber gate summary ----------------------------------------------------
+#
+# ``hpc-devsecops`` (CC-Test) writes a ``summary.json``: a state beside every
+# count, per scan, and a PASS / FINDINGS / INCOMPLETE status. CC-Test's
+# ``make_manifest.py`` reads exactly that file into an acceptance record's
+# ``security`` block. ``RecipeRun.gate_summary`` writes the same shape, so the
+# engine's ``audit`` recipe can stand where the script stood.
+
+
+class SecretFake(Scanner):
+    name = "fake.secret"
+    family = "secret"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        yield Finding(
+            uid=f"{unit.uid.replace(':', '_')}-secret",
+            unit=unit.uid,
+            scanner=self.name,
+            title="a committed credential",
+            severity=Severity.HIGH,
+        )
+
+
+class CompositionFake(Scanner):
+    """One High CVE: reported as a number, not blocking -- the script's bar."""
+
+    name = "fake.composition"
+    family = "composition"
+    blocks_on = Severity.CRITICAL
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        yield Finding(
+            uid=f"{unit.uid.replace(':', '_')}-cve",
+            unit=unit.uid,
+            scanner=self.name,
+            title="CVE-0000-0001 in a dependency",
+            severity=Severity.HIGH,
+        )
+
+
+class QuietSecretFake(SecretFake):
+    name = "fake.secret.quiet"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        return []
+
+
+class QuietCompositionFake(CompositionFake):
+    name = "fake.composition.quiet"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        return []
+
+
+class ToolMissingFake(Scanner):
+    name = "fake.secret.absent"
+    family = "secret"
+
+    def scan(
+        self, unit: Unit, facts: Facts, workspace: Path, executor: Any, config: dict[str, Any]
+    ):
+        raise ScannerUnavailable("gitleaks is not on PATH", missing_tool="gitleaks")
+        yield  # pragma: no cover
+
+
+def _summary_registry() -> Registry:
+    registry = _incomplete_registry()
+    for scanner in (
+        SecretFake,
+        CompositionFake,
+        QuietSecretFake,
+        QuietCompositionFake,
+        ToolMissingFake,
+    ):
+        registry.register("scanner", scanner.name, scanner)
+    return registry
+
+
+def _summary_stages(*scanners: str, gate: bool = True) -> list[Stage]:
+    return [
+        Stage("executor", "fake-exec"),
+        Stage("frontend", "fake-frontend"),
+        *(Stage("scanner", name, gate=gate) for name in scanners),
+        Stage("store", "fake-findings"),
+    ]
+
+
+def test_the_gate_summary_has_the_devsecops_shape(tmp_path: Path) -> None:
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.secret", "fake.composition")),
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    doc = run.gate_summary()
+    assert doc["schema"] == 1
+    assert doc["tool"] == "recast audit"
+    assert doc["repo"] == tmp_path.resolve().name
+    assert doc["commit"] == "unknown"  # tmp_path is not a checkout; never a guess
+    assert doc["mode"] == "repository" and doc["range"] is None
+    assert set(doc["scans"]) == {"secrets", "cve", "ai_audit"}
+    # A secret blocks at any severity: the plane says findings.
+    assert doc["scans"]["secrets"] == {"state": "findings", "findings": len(run.units)}
+    # A High CVE is a number beside a passed state: only Critical blocks.
+    assert doc["scans"]["cve"] == {
+        "state": "passed",
+        "critical": 0,
+        "high": len(run.units),
+        "scope": "full-repository",
+    }
+    # No audit-family scanner in the recipe: the script's word for that.
+    assert doc["scans"]["ai_audit"] == {"state": "not_configured", "high": 0}
+    assert doc["status"] == "FINDINGS"
+
+
+def test_a_clean_gate_is_pass_and_an_absent_plane_does_not_spoil_it(tmp_path: Path) -> None:
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.secret.quiet", "fake.composition.quiet")),
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    doc = run.gate_summary(range="origin/main..HEAD")
+    assert doc["status"] == "PASS"
+    assert doc["scans"]["secrets"]["state"] == "passed"
+    assert doc["scans"]["cve"]["state"] == "passed"
+    assert doc["scans"]["ai_audit"]["state"] == "not_configured"
+    assert doc["mode"] == "range" and doc["range"] == "origin/main..HEAD"
+
+
+def test_a_scanner_that_could_not_run_makes_the_gate_incomplete(tmp_path: Path) -> None:
+    """The script keeps two words for this and so does the summary: the tool is
+    not there (``unavailable``), or it was there and the scan still did not run
+    (``error``). Either way INCOMPLETE, and INCOMPLETE beats FINDINGS."""
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.secret.absent", "fake.composition")),
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    doc = run.gate_summary()
+    assert doc["scans"]["secrets"] == {"state": "unavailable", "findings": 0}
+    assert doc["status"] == "INCOMPLETE"
+
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.missing", "fake.secret")),  # raises without a tool name
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    doc = run.gate_summary()
+    assert doc["scans"]["ai_audit"]["state"] == "error"  # fake.missing is audit-family
+    assert doc["scans"]["secrets"]["state"] == "findings"
+    assert doc["status"] == "INCOMPLETE"
+
+
+def test_a_non_gating_scanner_still_reports_to_the_summary(tmp_path: Path) -> None:
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.secret", gate=False)),
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    assert run.passed  # not a gate, so the run does not fail on it
+    assert run.gate_summary()["scans"]["secrets"]["state"] == "findings"
+
+
+def test_the_gate_summary_names_the_checked_out_commit(tmp_path: Path) -> None:
+    from recast.run import _git_head
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n")
+    assert _git_head(tmp_path) == sha
+
+    (git / "refs" / "heads" / "main").unlink()
+    (git / "packed-refs").write_text(f"# pack-refs with: peeled\n{sha} refs/heads/main\n")
+    assert _git_head(tmp_path) == sha
+
+    (git / "HEAD").write_text(sha[::-1] + "\n")  # detached
+    assert _git_head(tmp_path) == sha[::-1]
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {git}\n")
+    assert _git_head(worktree) == sha[::-1]
+
+    assert _git_head(tmp_path / "not-a-checkout") is None
+
+
+def test_the_cli_writes_the_gate_summary_where_asked(tmp_path: Path, monkeypatch: Any) -> None:
+    import json
+
+    import recast.cli as cli
+    import recast.run as run_module
+
+    run = run_recipe(
+        FakeRecipe(_summary_stages("fake.secret.quiet", "fake.composition.quiet")),
+        tmp_path,
+        registry=_summary_registry(),
+    )
+    # ``_cmd_run`` imports ``run_recipe`` from ``recast.run`` when called.
+    monkeypatch.setattr(run_module, "run_recipe", lambda recipe, root, config: run)
+    out = tmp_path / "gate" / "summary.json"
+    assert cli.main(["run", "audit", str(tmp_path), "--gate-summary", str(out)]) == 0
+    doc = json.loads(out.read_text())
+    assert doc["schema"] == 1 and doc["status"] == "PASS"
+    assert doc["scans"]["ai_audit"]["state"] == "not_configured"

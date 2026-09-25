@@ -61,7 +61,17 @@ class ScannerUnavailable(RecastError):
     ``skipped``. That is a declaration the operator made when they left it out
     of the environment; this is a plugin that is installed, was asked, and could
     not answer.
+
+    ``missing_tool`` names the binary that was not on PATH, when that is why.
+    The gate summary (``RecipeRun.gate_summary``) reports that case as
+    ``unavailable`` and every other failure to run as ``error`` -- the two
+    states ``hpc-devsecops`` keeps apart, because "install gitleaks" and "look
+    at gitleaks.err" are different instructions.
     """
+
+    def __init__(self, message: str, *, missing_tool: str | None = None) -> None:
+        super().__init__(message)
+        self.missing_tool = missing_tool
 
 
 class AccessViolation(RecastError):

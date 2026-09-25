@@ -56,6 +56,16 @@ CC-Test owns `evidence-manifest.v1.json`. `Evidence.to_manifest()` is the only
 place the two vocabularies meet. If CC-Test revises the schema, change the
 mapping there — do not reshape the engine's model to match.
 
+The gate summary is the second interface shared with CC-Test.
+`RecipeRun.gate_summary()` (`src/recast/run.py`), written by `recast run
+--gate-summary PATH`, has the shape of `hpc-devsecops`'s `summary.json` (per-scan
+state and counts for `secrets`, `cve`, `ai_audit`; a `PASS` / `FINDINGS` /
+`INCOMPLETE` status; the scanned commit) plus `"schema": 1`. CC-Test's
+`correctness/make_manifest.py --security-summary` reads it into an acceptance
+record's `security` block. A change to its keys, state vocabulary or roll-up is
+a change CC-Test has to follow: bump `schema` and tell them. It never carries a
+finding.
+
 ## Commits
 
 Imperative subject: `Add oracle cache key`, `Split translate rules from emitter`.
