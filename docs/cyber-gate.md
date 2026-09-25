@@ -58,7 +58,10 @@ tree when there is no remote HEAD, deletions skipped. It passes `--config
 <repo>/.recast-audit.json` only when that file exists, and leaves each check's
 gate summary under `RECAST_AUDIT_ROOT` (default `~/audits/recast`) as
 `<repo>/<timestamp>-<pid>/<branch>/summary.json`, printing the path. A missing
-`recast` blocks the push (exit 2), as a missing tool blocked yours.
+`recast` blocks the push (exit 2), as a missing tool blocked yours. The recipe
+is `audit` unless `RECAST_AUDIT_RECIPE` names another: CC-Test's wrapper sets
+`audit-cesm` when the extension is installed, which is how the LLM audit plane
+reaches a push.
 
 `templates/.gitleaks.toml` is your file made site-neutral on purpose: the
 hygiene check forbids the site's filesystem prefix and the allocation-account
@@ -89,6 +92,7 @@ ASan matters.
   requested.
 - The `HPC_DEVSECOPS_*` environment names. Now: `RECAST_BIN` (the executable,
   if not on PATH), `RECAST_AUDIT_ROOT` (where the hook leaves summaries),
+  `RECAST_AUDIT_RECIPE` (the hook's recipe, default `audit`),
   `RECAST_FINDINGS_HOME` (where findings go).
 
 ## Where the findings go

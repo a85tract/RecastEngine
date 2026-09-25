@@ -144,6 +144,35 @@ def test_a_missing_recast_blocks_rather_than_waves_through(repo: Path, tmp_path:
     assert "not found -- blocking push" in result.stderr
 
 
+def test_the_recipe_is_audit_unless_the_environment_names_another(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A domain extension's gate (`audit-cesm`, with the LLM audit plane) is
+    the same hook with RECAST_AUDIT_RECIPE set; what CC-Test's wrapper does."""
+    record = _fake_recast(tmp_path, 0)
+    _commit(repo, "b.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"], cwd=repo, capture_output=True, text=True
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert argv[argv.index("run") + 1] == "audit"
+
+    _commit(repo, "c.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"],
+            cwd=repo,
+            env={**os.environ, "RECAST_AUDIT_RECIPE": "audit-cesm"},
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert argv[argv.index("run") + 1] == "audit-cesm"
+
+
 def test_install_refuses_to_overwrite_a_foreign_hook(tmp_path: Path) -> None:
     work = tmp_path / "w"
     _git(tmp_path, "init", "-q", str(work))

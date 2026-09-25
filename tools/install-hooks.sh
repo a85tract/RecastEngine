@@ -39,4 +39,4 @@ ln -sfn "$HOOK" "$DEST" 2>/dev/null || {
 chmod +x "$HOOK" "$DEST" 2>/dev/null || true
 
 echo "installed pre-push hook -> $DEST"
-echo "'git push' from $REPO now runs 'recast run audit' over the pushed range first."
+echo "'git push' from $REPO now runs 'recast run ${RECAST_AUDIT_RECIPE:-audit}' over the pushed range first."
