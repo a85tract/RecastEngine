@@ -162,3 +162,8 @@ somewhere specific.
 scheduler rejected the job has not passed; it has not run, and `recast run` is
 what CI and the pre-push hook call, so the exit status has to tell them apart.
 `--report-only` is the opt-out, for when you want the report without the block.
+The hook (`tools/pre-push`, installed by `tools/install-hooks.sh`) also passes
+`--gate-summary`, leaving each check's summary under `RECAST_AUDIT_ROOT`
+(default `~/audits/recast`) as `<repo>/<timestamp>-<pid>/<branch>/summary.json`
+and printing the path; `tools/install-config.sh` installs the per-repository
+config it reads (`.recast-audit.json`, `.gitleaks.toml`, `.vex/openvex.json`).

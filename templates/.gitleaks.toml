@@ -1,0 +1,72 @@
+# gitleaks configuration for a modernized scientific-software repository.
+#
+# Installed by tools/install-config.sh (RecastEngine; from hpc-devsecops, CESM-CC-Test).
+# Tune it in the target repo — this is a
+# starting point, not a finished policy. Without this file gitleaks still runs,
+# but on default rules with no project-specific allowlisting, so benign HPC
+# paths and account codes show up as findings and real ones get lost in them.
+
+title = "recast audit secret scan"
+
+[extend]
+# Keep every upstream rule; the sections below only add and allow.
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Project-specific rules
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key (used by the AI audit)"
+regex = '''sk-ant-[a-zA-Z0-9_-]{20,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "netrc-password"
+description = "Password in a .netrc-style line (data services)"
+regex = '''(?i)\bpassword\s+[^\s]{6,}'''
+keywords = ["password"]
+[rules.allowlist]
+regexes = ['''(?i)password\s+(<|\$|\{|your|example|xxx|\.\.\.)''']
+
+# ---------------------------------------------------------------------------
+# Global allowlist
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Paths and literals that are not secrets in this codebase"
+
+paths = [
+  # Model input and output. High-entropy binary that trips generic rules, and
+  # far too large to scan usefully.
+  '''\.nc$''',
+  '''\.nc4$''',
+  '''\.grb2?$''',
+  '''\.h5$''',
+  # Vendored upstream sources and build artefacts.
+  '''(^|/)externals/''',
+  '''(^|/)(bld|build)/''',
+  '''(^|/)\.git/''',
+  # Captured run logs and timing output.
+  '''(^|/)timing/''',
+  '''cesm\.log\.''',
+  '''\.pbs\.o[0-9]+$''',
+]
+
+regexes = [
+  # PBS/PBS Pro account codes look like generic API keys but are public
+  # allocation identifiers (four letters, four digits).
+  '''\b(PBS_ACCOUNT|#PBS -A|--account[= ])\s*[A-Z]{4}[0-9]{4}\b''',
+  # Site filesystem paths (scratch, work, campaign) are not secrets. The
+  # site's own prefix belongs in the domain extension's copy of this file,
+  # not here: this template is generic on purpose.
+  # Fortran and C hexadecimal literals, IEEE bit patterns, and the fixed-format
+  # dumps the correctness comparator comments about.
+  '''\b0[xX][0-9a-fA-F]{16,}\b''',
+  '''Z"[0-9A-Fa-f]{8,}"''',
+  # Per-variable md5 digests recorded in validation notes and manifests.
+  '''\b[0-9a-f]{32}\b''',
+  # Obvious placeholders.
+  '''(?i)(your|example|placeholder|redacted|changeme|xxxx+)[-_]?(key|token|secret|password)''',
+]
