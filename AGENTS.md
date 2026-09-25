@@ -52,9 +52,16 @@ exactly when it would otherwise slip in.
 
 ## Evidence format
 
-CC-Test owns `evidence-manifest.v1.json`. `Evidence.to_manifest()` is the only
-place the two vocabularies meet. If CC-Test revises the schema, change the
-mapping there — do not reshape the engine's model to match.
+The engine's per-verdict record is its own format, `recast.evidence.v1`, written
+by `Evidence.to_record()` and checked by `recast.conformance.evidence_record`.
+CC-Test's acceptance record (its `evidence-manifest.v1`) describes a released product version and is
+assembled by CC-Test's `make_manifest.py` from the run's `--summary` file
+(`RecastRun.summary`, `schema: 1`) under a `unit-differential` benchmark. The
+summary's shape is therefore a published interface: a change to it is a change
+CC-Test has to follow (`CC-Test/correctness/make_manifest.py`,
+`schemas/acceptance.v1.json`), and its `schema` number is what says so. Do not
+label any engine document a CC-Test acceptance record or manifest; that mislabel is what this
+section replaced on 2026-09-24.
 
 The gate summary is the second interface shared with CC-Test.
 `RecipeRun.gate_summary()` (`src/recast/run.py`), written by `recast run

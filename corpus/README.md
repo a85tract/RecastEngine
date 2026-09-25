@@ -315,8 +315,9 @@ and writes the evidence manifests under `output/toy_physics/evidence/`.
 Two records come out of that, and they are for different readers.
 
 `output/toy_physics/evidence/` holds the **manifests**: one immutable, content-addressed
-CC-Test document per verdict per run, append-only, carrying the full metrics
-and the environment. That is the audit trail, and it accumulates a file per
+`recast.evidence.v1` record per verdict per run, append-only, carrying the full
+metrics and the environment. (Not a CC-Test acceptance record: CC-Test builds that from
+`verification.json`, below.) That is the audit trail, and it accumulates a file per
 attempt -- including the attempts that failed, which is the point of an audit
 trail and the reason it is not committed.
 

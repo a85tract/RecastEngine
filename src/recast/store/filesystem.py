@@ -1,8 +1,9 @@
 """Filesystem-backed stores. Content-addressed, append-only.
 
-Deliberately boring. Evidence is JSON on disk laid out so a CC-Test pull request
-can be opened directly from it, and so ``git`` provides the audit trail rather
-than a database nobody else can inspect.
+Deliberately boring. Evidence is JSON on disk, one ``recast.evidence.v1`` record
+per verdict, so that ``git`` or ``ls`` provides the audit trail rather than a
+database nobody else can inspect. These records are not what CC-Test files; the
+run's ``--summary`` is what CC-Test's ``make_manifest.py`` reads.
 """
 
 from __future__ import annotations
@@ -27,29 +28,24 @@ def _digest(payload: dict[str, Any]) -> str:
 
 @dataclass
 class FilesystemEvidenceStore(EvidenceStore):
-    """Writes CC-Test evidence manifests under ``root/<unit>/<digest>.json``."""
+    """Writes ``recast.evidence.v1`` records under ``root/<unit>/<digest>.json``."""
 
     root: Path
     name: str = "fs-evidence"
     max_access: Access = Access.PUBLIC
-    cc_test: dict[str, Any] | None = None
-    """``{version, commit}`` of the CC-Test revision whose schema is being met."""
 
     def put(self, evidence: Evidence) -> str:
-        manifest = evidence.to_manifest(
-            cc_test=self.cc_test or {"version": "unknown", "commit": "unknown"},
-            timestamp=evidence.meta.get("timestamp", ""),
-        )
-        digest = _digest(manifest)
+        record = evidence.to_record(timestamp=evidence.meta.get("timestamp", ""))
+        digest = _digest(record)
         path = self.root / evidence.unit.replace(":", "_").replace("/", "_") / f"{digest}.json"
         if path.exists():
             return path.as_uri()  # identical content, idempotent
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        path.write_text(json.dumps(record, indent=2, sort_keys=True))
         return path.as_uri()
 
     def get(self, uri: str) -> Evidence:
-        raise NotImplementedError("P2: rehydrate Evidence from a CC-Test manifest")
+        raise NotImplementedError("P2: rehydrate Evidence from a recast.evidence.v1 record")
 
     def query(self, **selectors: Any) -> Iterable[Evidence]:
         raise NotImplementedError("P2: index manifests by unit/recipe/confidence")
