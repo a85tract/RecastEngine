@@ -34,6 +34,7 @@ ELEMENTAL = frozenset(
         "asin",
         "atan",
         "atan2",
+        "bit_size",
         "c_loc",
         "ceiling",
         "char",
@@ -46,6 +47,7 @@ ELEMENTAL = frozenset(
         "dble",
         "dcos",
         "dexp",
+        "digits",
         "dim",
         "dlog",
         "dlog10",
@@ -82,14 +84,17 @@ ELEMENTAL = frozenset(
         "log10",
         "max",
         "max0",
+        "maxexponent",
         "min",
         "min0",
+        "minexponent",
         "mod",
         "modulo",
         "mvbits",
         "nint",
         "precision",
         "radix",
+        "range",
         "real",
         "scan",
         "shape",
@@ -208,6 +213,45 @@ renders ``call random_number(x)`` as ``pass``, and ``x`` then keeps whatever
 it held while the read/write gate is told nothing happened. Naming them here
 lets a call to one refuse as the intrinsic it is rather than as somebody
 else's missing library.
+"""
+
+STANDARD_FUNCTIONS = frozenset(
+    {
+        # F2018 Table 16.1, the intrinsic functions (not the subroutines).
+        *"""abs achar acos acosh adjustl adjustr aimag aint all allocated anint
+        any asin asinh associated atan atan2 atanh bessel_j0 bessel_j1
+        bessel_jn bessel_y0 bessel_y1 bessel_yn bge bgt bit_size ble blt btest
+        ceiling char cmplx command_argument_count conjg cos cosh coshape count
+        cshift dble digits dim dot_product dprod dshiftl dshiftr eoshift
+        epsilon erf erfc erfc_scaled exp exponent extends_type_of findloc floor
+        fraction gamma huge hypot iachar iall iand iany ibclr ibits ibset ichar
+        ieor image_index image_status index int ior iparity is_contiguous
+        is_iostat_end is_iostat_eor ishft ishftc kind lbound lcobound leadz len
+        len_trim lge lgt lle llt log log10 log_gamma logical maskl maskr matmul
+        max maxexponent maxloc maxval merge merge_bits min minexponent minloc
+        minval mod modulo nearest new_line nint norm2 not null num_images
+        out_of_range pack parity popcnt poppar precision present product radix
+        range rank real reduce repeat reshape rrspacing same_type_as scale scan
+        selected_char_kind selected_int_kind selected_real_kind set_exponent
+        shape shifta shiftl shiftr sign sin sinh size spacing spread sqrt
+        storage_size sum tan tanh team_number this_image tiny trailz transfer
+        transpose trim ubound ucobound unpack verify""".split(),
+        # The FORTRAN 77 specific names still in the standard.
+        *"""alog alog10 amax0 amax1 amin0 amin1 amod cabs ccos cexp clog csin
+        csqrt dabs dacos dasin datan datan2 dcos dcosh ddim dexp dint dlog
+        dlog10 dmax1 dmin1 dmod dnint dsign dsin dsinh dsqrt dtan dtanh float
+        iabs idim idint idnint ifix isign max0 max1 min0 min1 sngl""".split(),
+    }
+)
+"""Every intrinsic function the standard defines, whether or not anything
+here spells it.
+
+Not part of ``ALL`` and not consulted by the analysis, for the reason the
+module docstring gives: ``ALL`` is what the sources call and a translation
+exists for. This set is the other question -- is ``name(...)`` the standard's
+function at all -- which is what lets the emitter refuse ``digits(x)`` rather
+than read a function it has no spelling for as a subscript of an array
+nobody declared (FNP-D0027).
 """
 
 ALL = ELEMENTAL | TRANSFORMATIONAL | STATE_QUERY | LOCATION | RESHAPING

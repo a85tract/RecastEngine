@@ -3,7 +3,7 @@
   "schema": 1,
   "units": [
     {
-      "candidate": "f3daf912d664ae2c004ea10f80639dd519d32ba65daef6620fe7626fd615d0e4",
+      "candidate": "a9bbdc2fe8a715947ed9193a449a2653678aba6eb9da56dce1156894d00b01fa",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,
@@ -53,7 +53,7 @@
       ]
     },
     {
-      "candidate": "c3cf7e8b65df60152caa65016a540bf176ac667ba6945129edb4818256f46e1e",
+      "candidate": "b225ad755520ca42bdb2ac6ab64e95d17ac89af49690dc9d7af1a5563524b883",
       "deferred": 0,
       "oracle": "f2py-golden",
       "stopped_by": null,

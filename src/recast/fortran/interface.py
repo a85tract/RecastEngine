@@ -418,21 +418,40 @@ def parse_decl_stmt(decl: Any) -> dict[str, Any]:
             }
         )
 
-    char_len_spec: str | None = None
-    if base_type and base_type.upper() == "CHARACTER":
-        m = re.search(r"len\s*=\s*([^),]+)", str(type_spec), re.I)
-        if m:
-            char_len_spec = m.group(1).strip()
-
     return {
         "base_type": base_type,
         "kind": kind,
         "intent": intent,
         "attrs": attrs,
         "entities": entities,
-        "char_len_spec": char_len_spec,
+        "char_len_spec": character_length_spec(base_type, type_spec),
         "line": stmt_line(decl),
     }
+
+
+def character_length_spec(base_type: str | None, type_spec: Any) -> str | None:
+    """The length a CHARACTER type spec declares, as source text, or ``None``.
+
+    Shared by variable declarations and derived-type components: a
+    ``character(len=8) :: nm`` component holds eight characters exactly as
+    a variable does, and a length recorded for one but not the other left
+    ``t%nm = 'ab'`` unfitted (FNP-D0021).
+    """
+    if not base_type or base_type.upper() != "CHARACTER":
+        return None
+    m = re.search(r"len\s*=\s*([^),]+)", str(type_spec), re.I)
+    # ``character*8`` and ``character*(n)``, F77's spellings of the same
+    # length; a ``character`` with no selector at all is length 1. Left
+    # unrecorded, both read as "length unknown", and an assignment could
+    # not be fitted to a length nobody knew.
+    star = re.fullmatch(r"CHARACTER\s*\*\s*\(?\s*([^()]+?)\s*\)?", str(type_spec).strip(), re.I)
+    if m:
+        return m.group(1).strip()
+    if star:
+        return star.group(1).strip()
+    if isinstance(type_spec, f03.Intrinsic_Type_Spec) and type_spec.children[1] is None:
+        return "1"
+    return None
 
 
 def collect_decls(spec_part: Any) -> list[dict[str, Any]]:
@@ -1025,6 +1044,7 @@ def _record_of(
                 "dims": e["dims"],
                 "char_len": e["char_len"] or d["char_len_spec"],
                 "init_expr": e["init_expr"],
+                "save": "SAVE" in d["attrs"],
                 "line": d["line"],
             }
             ent_info[e["name"]] = info
@@ -1033,6 +1053,7 @@ def _record_of(
                     {
                         "name": e["name"],
                         "dtype": info["dtype"],
+                        "kind": info["kind"],
                         "dims": info.get("dims"),
                         "init_expr": e["init_expr"],
                         "line": d["line"],
@@ -1165,10 +1186,12 @@ def _record_of(
         )
 
     result_dtype: str | None = None
+    result_kind: str | None = None
     result_dims: list[dict[str, Any]] | None = None
     if is_function:
         if result_name in ent_info:
             result_dtype = ent_info[result_name]["dtype"]
+            result_kind = ent_info[result_name].get("kind")
             result_dims = ent_info[result_name].get("dims")
         elif prefix is not None:  # type in the prefix: `real(r8) function f(...)`
             for t in walk(prefix, f03.Intrinsic_Type_Spec):
@@ -1177,11 +1200,32 @@ def _record_of(
                     k = str(nm)
                     break
                 result_dtype = dtype_of(str(t.children[0]), k, scope_kinds)
+                result_kind = k
 
+    saved = _saved_names(spec, execution)
+    # The internal procedures' bodies too: a host's local they store to by
+    # host association is changed by the host's call as surely as by its own
+    # statements.
+    #
+    # A parenthesized name is a function reference where it is a procedure
+    # of the module or of the subprogram, or a name the scope declares
+    # without dimensions (an F77 ``integer incf``): anything else is an
+    # array element, whose subscripts are not stored to.
+    functions = (
+        set(module_sub_names)
+        | {sub_name_of(f) for f in walk(sub, f03.Function_Subprogram)}
+        | {n for n, i in ent_info.items() if not i.get("dims")}
+    )
+    written, stored_through = _stored_names(
+        [c for c in sub.children if not isinstance(c, f03.Specification_Part)], functions
+    )
     locals_ = [
         {
             "name": n,
             "dtype": i["dtype"],
+            # As spelled, beside the dtype: an INTEGER kind nothing resolved
+            # still types as ``int32``, and a kind inquiry has to tell.
+            "kind": i.get("kind"),
             "array_spec": i["array_spec"],
             "dims": i.get("dims"),
             # ``character(len=80) :: line``: the length an A edit descriptor
@@ -1190,6 +1234,13 @@ def _record_of(
             # ``real(r8) :: x = -2._r8``: the declaration's value, which the
             # prologue emits instead of its UB-guard zero.
             "init_expr": i.get("init_expr"),
+            # Whether the local keeps its value from one call to the next --
+            # a SAVE attribute or statement, or implied by an initializer or
+            # a DATA statement (F2018 8.5.16) -- and whether the body may
+            # change it. The two together are a local the translation has to
+            # keep between calls (FNP-D0014).
+            "save": bool(i.get("save") or i.get("init_expr") or n in saved or "" in saved),
+            "written": n in written,
         }
         for n, i in ent_info.items()
         if n not in arg_names and n != result_name and not i["parameter"]
@@ -1266,6 +1317,12 @@ def _record_of(
             if call.children[1] is not None:
                 state_written |= set(names_in(call.children[1])) & module_state_names
                 other_written |= set(names_in(call.children[1])) & module_state_names
+        # A store to an ASSOCIATE name is a store to its selector's variable:
+        # ``associate (t => g); t = t + 1`` writes the module's ``g``, which
+        # the translation spells ``g`` and has to name on the ``global``
+        # line, or the store makes it a function local.
+        state_written |= stored_through & module_state_names
+        other_written |= stored_through & module_state_names
         # reads in non-assignment contexts (if conditions, call arguments)
         state_read |= (used & module_state_names) - state_written
         # Overwritten: every occurrence is the target of a top-level
@@ -1306,6 +1363,7 @@ def _record_of(
         "prefixes": prefixes,
         "result": result_name if is_function else None,
         "result_dtype": result_dtype,
+        "result_kind": result_kind,
         "result_dims": result_dims,
         "line_span": list(node_span(sub)),
         "args": args,
@@ -1458,7 +1516,8 @@ def _derived_types(
     mod_spec: Any, kind_map: dict[str, str], scope: Any = None, visible: set[str] | None = None
 ) -> dict[str, Any]:
     """``{type_name: {component: {dtype, dims, allocatable, pointer}}}``,
-    plus ``allocated_dims`` on a component whose ALLOCATE re-bases it."""
+    plus ``allocated_dims`` on a component whose ALLOCATE re-bases it and
+    ``init`` on one the type initializes by default."""
     types: dict[str, Any] = {}
     if mod_spec is None:
         return types
@@ -1491,6 +1550,9 @@ def _derived_types(
                 cname = str(ent.children[0]).lower()
                 comps[cname] = {
                     "dtype": dtype_of(base, kind, kind_map),
+                    # As spelled: an INTEGER kind nothing resolved still types
+                    # as ``int32``, and a kind inquiry has to tell the two.
+                    "kind": kind,
                     # The entity's own shape wins where it has one: Fortran
                     # lets ``dimension(4) :: a, b(7)`` give ``b`` a different
                     # one from the attribute's.
@@ -1498,6 +1560,19 @@ def _derived_types(
                     "allocatable": "ALLOCATABLE" in attrs,
                     "pointer": "POINTER" in attrs,
                 }
+                length = ent.children[2]
+                length_spec = character_length_spec(base, tspec)
+                if length is not None or length_spec is not None:
+                    comps[cname]["char_len"] = str(length) if length is not None else length_spec
+                initialization = ent.children[3]
+                if initialization is not None:
+                    # The default initialization every object of the type
+                    # starts with (``real(r8) :: tol = 1.0d-6``), as source
+                    # text like a module variable's; ``=> null()`` is a
+                    # pointer's. Without it the factory started ``tol`` at
+                    # 0.0, where Fortran starts it at 1.0e-6 (FNP-D0030).
+                    operator, value = initialization.children
+                    comps[cname]["init"] = "null()" if operator == "=>" else str(value)
                 if cname in allocated:
                     comps[cname]["allocated_dims"] = allocated[cname]
         if tname:
@@ -1713,6 +1788,10 @@ def _extract(
                     # (ELM's ``elm_varsur`` arrays are pointers).
                     "pointer": "POINTER" in d["attrs"],
                 }
+                # The length a module CHARACTER variable is fitted to, as a
+                # subprogram's own is (FNP-D0021); only CHARACTER carries one.
+                if e["char_len"] or d["char_len_spec"]:
+                    rec["char_len"] = e["char_len"] or d["char_len_spec"]
                 if "PARAMETER" in d["attrs"]:
                     module_parameters.append(rec)
                 else:
@@ -2081,16 +2160,165 @@ def emit_name(record: dict[str, Any]) -> str:
     return str(record.get("emit_name") or record["name"])
 
 
+def _saved_names(spec: Any, execution: Any) -> set[str]:
+    """The names a SAVE statement or a DATA statement of this scope names.
+
+    ``""`` stands for a bare ``SAVE``, which saves every local. A DATA object
+    is saved by being initialized (F2018 8.6.7): the array of an element or
+    an implied-DO, not the implied-DO's own index.
+    """
+    saved: set[str] = set()
+    for statement in walk(spec, f03.Save_Stmt) if spec is not None else []:
+        entities = statement.children[1]
+        if entities is None:
+            saved.add("")
+        else:
+            saved.update(str(n).lower() for n in walk(entities, f03.Name))
+    for part in (spec, execution):
+        for data in walk(part, f03.Data_Stmt) if part is not None else []:
+            for objects in walk(data, f03.Data_Stmt_Object_List):
+                saved.update(str(r.children[0]).lower() for r in walk(objects, f03.Part_Ref))
+                saved.update(
+                    str(item).lower()
+                    for item in getattr(objects, "children", ())
+                    if isinstance(item, f03.Name)
+                )
+    return saved
+
+
+def _stored_names(parts: list[Any], functions: set[str]) -> tuple[set[str], set[str]]:
+    """What a body may store to, for the locals record (``written``), and
+    what it stores to through an ASSOCIATE name, for its module state.
+
+    ``recast.fortran.rwset.written_names`` and ``written_through_names``, the
+    over-approximation that also decides where an ASSOCIATE name is written
+    through; imported here rather than at the top because that module reads
+    this one's records. ``functions`` are the names a parenthesized
+    reference calls: ``z = incf(cnt)`` changes a SAVEd ``cnt`` through an
+    ``intent(inout)`` dummy as surely as a CALL would, and read as neither,
+    ``cnt`` was re-initialized at every call.
+    """
+    from recast.fortran.rwset import written_names, written_through_names
+
+    return written_names(parts, functions), written_through_names(parts, functions)
+
+
 def _intent_inferable(dtype: Any) -> bool:
-    """Numeric and logical scalars, the kinds an intent can be inferred for.
+    """Every kind of data a dummy can be: numeric, logical, character,
+    complex and derived types -- the kinds an intent can be inferred for.
 
     A REAL whose kind name did not resolve is still a REAL scalar: excluding
     it left exactly the F77 sources this rule exists for -- the ones that
-    spell their kind through a module parameter -- without an intent.
+    spell their kind through a module parameter -- without an intent. The
+    rule once stopped at numeric and logical, and a CHARACTER or derived-type
+    dummy the body assigned stayed UNKNOWN, which the return convention reads
+    as "pass it in, never hand it back": ``s = 'hello'`` in a routine with no
+    declared intent reached no caller (FNP-D0047). A dummy procedure, or a
+    name no declaration typed, is still not data this can reason about.
     """
-    return dtype in ("float64", "float32", "int32", "int64", "bool") or str(dtype).startswith(
-        "UNKNOWN_REAL_KIND("
+    return str(dtype) not in ("PROCEDURE", "UNDECLARED", "None") and not str(dtype).startswith(
+        "UNKNOWN(PROCEDURE"
     )
+
+
+JUMPS = (
+    f03.Return_Stmt,
+    f03.Goto_Stmt,
+    f03.Computed_Goto_Stmt,
+    f03.Arithmetic_If_Stmt,
+)
+"""Statements that can leave a body, or skip ahead in it, before a later
+statement runs."""
+
+
+def _internal_unit(write: Any) -> str | None:
+    """The variable a WRITE names as its unit, which is the variable it writes
+    when that is a CHARACTER one; ``None`` for ``*`` or a number."""
+    unit = _unit_of(write)
+    return str(unit).lower() if isinstance(unit, f03.Name) else None
+
+
+def _unit_of(write: Any) -> Any:
+    """The unit a WRITE names, as it is spelled."""
+    for spec in walk(write.children[0], f03.Io_Control_Spec):
+        keyword, value = spec.children
+        if keyword is None or str(keyword).upper() == "UNIT":
+            return value
+    return None
+
+
+def _definitely_written(node: Any, name: str, dims: list[dict[str, Any]], callees: Any) -> bool:
+    """Whether every path through a body stores the whole of ``name`` before
+    it can return.
+
+    What ``intent(out)`` needs of a dummy the source left undeclared: the
+    return convention discards the caller's value and hands back whatever
+    the body left, so a path that leaves the dummy alone hands back the
+    prologue's zero where Fortran, passing by reference, left the caller's
+    value in place. ``if (x < 0d0) ierr = 1`` is only a conditional write
+    (FNP-D0031). Answered for the body's own statements in order: a store
+    of the whole dummy at the top level -- an assignment to it, one to its
+    elements in DO loops over its declared bounds, a CALL handing it whole
+    to an ``intent(out)`` dummy -- settles it, unless a RETURN or a jump in
+    that statement or an earlier one can get past it first. Anything
+    subtler (both arms of an IF writing it) is not a definite write here,
+    and the dummy stays ``intent(inout)``, which is never wrong.
+    """
+    for exec_part in (c for c in node.children if isinstance(c, f03.Execution_Part)):
+        for statement in exec_part.children:
+            if _stores_whole(statement, name, dims, callees) and not walk(statement, JUMPS):
+                return True
+            if walk(statement, JUMPS):
+                return False
+    return False
+
+
+def _stores_whole(statement: Any, name: str, dims: list[dict[str, Any]], callees: Any) -> bool:
+    """Whether a top-level statement certainly stores the whole of ``name``."""
+    if isinstance(statement, f03.Assignment_Stmt):
+        target = statement.children[0]
+        if isinstance(target, f03.Part_Ref):
+            # ``whole(:) = 1.0``: a section spanning the declared bounds.
+            return (
+                bool(dims)
+                and str(target.children[0]).lower() == name
+                and _writes_whole_array(target, dims)
+            )
+        return isinstance(target, f03.Name) and str(target).lower() == name
+    if isinstance(statement, f03.Write_Stmt):
+        # Counted as a store only where the unit is a CHARACTER dummy, which
+        # is the only way a WRITE reaches this question.
+        return _internal_unit(statement) == name
+    if isinstance(statement, f03.Call_Stmt):
+        dummies = callees.get(str(statement.children[0]).lower())
+        if dummies is None:
+            return False
+        arguments = statement.children[1]
+        items = (
+            list(arguments.children)
+            if arguments is not None and type(arguments).__name__.endswith("_List")
+            else ([arguments] if arguments is not None else [])
+        )
+        for position, item in enumerate(items):
+            if isinstance(item, f03.Actual_Arg_Spec):
+                keyword = str(item.children[0]).lower()
+                intent = next((i for d, i in dummies if d == keyword), None)
+                item = item.children[1]
+            else:
+                intent = dummies[position][1] if position < len(dummies) else None
+            if isinstance(item, f03.Name) and str(item).lower() == name and intent == "OUT":
+                return True
+        return False
+    if dims and isinstance(
+        statement, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)
+    ):
+        return any(
+            isinstance(a.children[0], f03.Part_Ref)
+            and str(a.children[0].children[0]).lower() == name
+            and _writes_whole_array(a.children[0], dims)
+            for a in walk(statement, f03.Assignment_Stmt)
+        )
+    return False
 
 
 def _infer_domains(subs: list[Any], records: list[dict[str, Any]]) -> None:
@@ -2185,6 +2413,9 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
     dummy only *passed on* to a procedure this file does not describe stays
     UNKNOWN: its fate is the callee's, and is not decidable here.
     """
+    # Imported here: ``recast.fortran.rwset`` reads this module's records.
+    from recast.fortran.rwset import store_chain
+
     by_name = {sub_name_of(s): s for s in subs}
     intents_of = _callee_intents(records)
     for record in records:
@@ -2208,6 +2439,7 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
         assigned: dict[str, int] = {}
         partial: set[str] = set()  # arrays some write leaves partly unwritten
         dims_of = {a["name"]: a.get("dims") or [] for a in candidates}
+        characters = {a["name"] for a in candidates if a.get("dtype") == "str"}
 
         def base_of(node: Any) -> str | None:
             while node is not None and not isinstance(node, f03.Name):
@@ -2217,6 +2449,23 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
                 node = children[0]
             return str(node).lower() if isinstance(node, f03.Name) else None
 
+        def stored(target: Any, partial: set[str] = partial) -> str | None:
+            """The variable a store to ``target`` changes: the name at its
+            base, or -- where that is an ASSOCIATE name -- its selector's.
+
+            ``associate (t => x); t = 5`` stores to ``x``. Counted as a store
+            to ``t``, the dummy ``x`` had none, stayed UNKNOWN, and was
+            passed in and never handed back (FNP-D0047 through an associate
+            name). Through a name the store is never a top-level one, and
+            the name's own reads are not ``x``'s mentions, so it counts as
+            partial: ``intent(inout)``, which is never wrong.
+            """
+            chain = store_chain(target)
+            if len(chain) > 1:
+                partial.add(chain[-1])
+                return chain[-1]
+            return base_of(target)
+
         for exec_part in exec_parts:
             for name in walk(exec_part, f03.Name):
                 mentioned = str(name).lower()
@@ -2225,14 +2474,28 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
                 # ``x = ``, ``buf(1) = ``, ``buf(:) = ``: the name at the base
                 # of the target is what the statement writes.
                 target = assignment.children[0]
-                written_name = base_of(target)
+                written_name = stored(target)
                 if written_name is None:
                     continue
                 assigned[written_name] = assigned.get(written_name, 0) + 1
-                if written_name in dims_of and not _writes_whole_array(
+                if isinstance(target, f03.Data_Ref) or (
+                    isinstance(target, f03.Part_Ref) and not dims_of.get(written_name)
+                ):
+                    # A component of a structure, a substring of a string:
+                    # the rest of it is still the caller's.
+                    partial.add(written_name)
+                elif written_name in dims_of and not _writes_whole_array(
                     target, dims_of[written_name]
                 ):
                     partial.add(written_name)
+            for write in walk(exec_part, f03.Write_Stmt):
+                # ``write (s, '(i0)') n`` assigns the internal unit, whole --
+                # a CHARACTER one; an integer unit is a unit number.
+                unit = _internal_unit(write)
+                if unit is not None:
+                    unit = stored(_unit_of(write))
+                if unit is not None and unit in characters:
+                    assigned[unit] = assigned.get(unit, 0) + 1
             for call in walk(exec_part, f03.Call_Stmt):
                 callee = base_of(call.children[0])
                 dummies = intents_of.get(callee or "")
@@ -2253,7 +2516,7 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
                         intent = dummies[position][1] if position < len(dummies) else None
                     if not isinstance(item, (f03.Name, f03.Part_Ref)):
                         continue
-                    actual = base_of(item)
+                    actual = stored(item)
                     if actual is None or intent not in ("OUT", "INOUT"):
                         continue
                     assigned[actual] = assigned.get(actual, 0) + 1
@@ -2272,6 +2535,18 @@ def _infer_write_only_intents(subs: list[Any], records: list[dict[str, Any]]) ->
             # body reads. CLUBB's ``lhs(i, 2:nzm-1)`` beside its boundary
             # rows; a scalar write is always whole.
             if argument["name"] in partial:
+                write_only = False
+            # An assumed-length CHARACTER dummy's length is the actual's,
+            # and only a dummy passed in carries it: inferred OUT, ``s =
+            # 'hey'`` stored three characters and ``len(s)`` in the callee
+            # was 3 where gfortran's is the caller's 8.
+            if argument.get("dtype") == "str" and str(argument.get("char_len")).strip() == "*":
+                write_only = False
+            if write_only and not _definitely_written(
+                node, argument["name"], dims_of[argument["name"]], intents_of
+            ):
+                # Written, never read -- but not on every path: the caller's
+                # value is what the others leave behind.
                 write_only = False
             argument["intent"] = "OUT" if write_only else "INOUT"
             argument["intent_inferred"] = True
@@ -2321,6 +2596,12 @@ def _writes_whole_array(target: Any, dims: list[dict[str, Any]]) -> bool:
             # rule does not read arms, and says the conservative thing.)
             return False
         if isinstance(parent, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct)):
+            if walk(parent, (f03.Cycle_Stmt, f03.Exit_Stmt)):
+                # ``if (i == 2) cycle`` skips an element, ``if (i > 2) exit``
+                # the rest of them: read as whole, the dummy was inferred
+                # ``intent(out)`` and the caller's unwritten elements came
+                # back as the fresh buffer's zeros (FNP-D0031 in a loop).
+                return False
             control = walk(parent, f03.Loop_Control)
             if control and control[0].children[1] is not None:
                 variable, bounds = control[0].children[1]

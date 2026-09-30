@@ -282,6 +282,15 @@ class Semantics:
     parameters: frozenset[str] = frozenset()
     """Names that are compile-time constants, including companions'."""
 
+    companion_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """A companion module's parameters, by name, with their declared dtype.
+
+    Kept out of ``declaration`` -- which types this module's arithmetic and
+    has never consulted them -- and read only where a question is about the
+    parameter's *kind*: ``huge(one)`` over SLSQP's ``one`` from
+    ``slsqp_support`` is the double's HUGE because that is how
+    ``slsqp_support`` declares it."""
+
     statement_functions: frozenset[str] = frozenset()
     """Names defined by a statement function, which is scalar by definition.
 
@@ -674,6 +683,27 @@ class Semantics:
             )
         return False
 
+    def scalar_target_dtype(self, node: Any) -> str | None:
+        """The declared dtype of the scalar ``is_scalar_integer_target``
+        answered for, or ``None`` where it had no declaration to read.
+
+        The conversion on assignment is into the *target's* kind: a REAL
+        stored into an ``integer(8)`` holds values an ``integer`` does not,
+        and converting it as a default integer saturates it at the int32
+        edge (FNP-D0005)."""
+        if isinstance(node, f03.Name):
+            name = str(node).lower()
+            declared = self.declaration(name)
+            if declared is not None:
+                return declared.get("dtype")
+            if self.subprogram.get("result") == name:
+                return self.subprogram.get("result_dtype")
+            return None
+        if isinstance(node, f03.Data_Ref):
+            component = self._dataref_component(node)
+            return component.get("dtype") if component is not None else None
+        return None
+
     def is_logical_or_character(self, node: Any) -> bool:
         """Whether an expression is LOGICAL or CHARACTER valued.
 
@@ -1053,6 +1083,7 @@ def for_subprogram(
     types = dict(record["types"])
     parameters = {p["name"] for p in record["module_parameters"]}
     companion_state: dict[str, dict[str, Any]] = {}
+    companion_parameters: dict[str, dict[str, Any]] = {}
     for other in companions:
         procedures.update({s["name"]: s for s in other["subprograms"]})
         # A module that declares a procedure through an explicit INTERFACE
@@ -1068,6 +1099,8 @@ def for_subprogram(
         companion_generics.update(other["generics"])
         types.update(other["types"])
         parameters |= {p["name"] for p in other["module_parameters"]}
+        for parameter in other["module_parameters"]:
+            companion_parameters.setdefault(str(parameter["name"]).lower(), parameter)
         for state in other.get("module_state", ()):
             companion_state.setdefault(str(state["name"]).lower(), state)
 
@@ -1099,6 +1132,7 @@ def for_subprogram(
         companion_generics=companion_generics,
         types=types,
         companion_state=companion_state,
+        companion_parameters=companion_parameters,
         parameters=frozenset(parameters),
         statement_functions=statement_functions,
     )

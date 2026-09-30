@@ -73,11 +73,13 @@ class Expr:
     """One node of a constant initializer.
 
     ``kind`` is ``real``, ``int``, ``str``, ``name``, ``paren``, ``unary``,
-    ``binary`` or ``call``. ``text`` carries the literal text, the identifier,
-    the operator, or the intrinsic's lower-case name. A ``str`` node's text is
-    the character constant's *value*, the Fortran quoting undone (``'it''s'``
-    -> ``it's``), so a renderer quotes it for its own language and never
-    re-parses Fortran's.
+    ``binary`` or ``call`` -- and ``quotient`` and ``power``, which no parse
+    produces: ``with_integer_division`` puts them where a ``/`` is Fortran's
+    integer division and a ``**`` its integer power. ``text`` carries the
+    literal text, the identifier, the operator, or the intrinsic's lower-case
+    name. A ``str`` node's text is the character constant's *value*, the
+    Fortran quoting undone (``'it''s'`` -> ``it's``), so a renderer quotes it
+    for its own language and never re-parses Fortran's.
     """
 
     kind: str
@@ -335,6 +337,8 @@ def render(
     call: Callable[[str, list[str], str | None], str] | None = None,
     real32: Callable[[str], str] | None = None,
     dtype: Callable[[str], str] | None = None,
+    quotient: Callable[[str, str], str] | None = None,
+    power: Callable[[str, str], str] | None = None,
 ) -> str:
     """Fold an ``Expr`` to text, given how to spell its four kinds of atom
     and, optionally, an intrinsic call over already-rendered arguments.
@@ -343,14 +347,19 @@ def render(
     a quoting that never re-parses the Fortran one. ``call`` receives the
     intrinsic's name, its rendered arguments and the call's own kind
     (``float32`` for ``real(x)``, the argument's for ``epsilon(x)``);
-    ``real32`` spells a single-precision literal where the target can, and
-    ``dtype`` spells the kind an inquiry asks about.
+    ``real32`` spells a single-precision literal where the target can,
+    ``dtype`` spells the kind an inquiry asks about, and ``quotient`` and
+    ``power`` spell Fortran's integer division and integer power over their
+    two rendered operands -- the nodes ``with_integer_division`` marks,
+    which a language whose ``/`` does not truncate, and whose ``**`` of a
+    negative exponent is a fraction, has no operator for.
 
     Grouping and spacing are fixed here so that every target language brackets
     the arithmetic identically. That is the whole point: two renderings of one
     tree can differ in how a literal is spelled and not in what is multiplied
     by what. A renderer given no ``call`` refuses a tree with one in it
-    rather than guessing a spelling.
+    rather than guessing a spelling, and one given no ``quotient`` or
+    ``power`` a node of that kind.
     """
     if expr.kind == "real":
         # A single-precision literal is spelled as one when the renderer
@@ -380,6 +389,8 @@ def render(
             call=call,
             real32=real32,
             dtype=dtype,
+            quotient=quotient,
+            power=power,
         )
         for a in expr.args
     ]
@@ -387,6 +398,14 @@ def render(
         if call is None:
             raise UnsupportedExpression(f"no rendering for intrinsic {expr.text!r} in this target")
         return call(expr.text, sub, expr.dtype)
+    if expr.kind == "quotient":
+        if quotient is None:
+            raise UnsupportedExpression("no rendering for an integer quotient in this target")
+        return quotient(sub[0], sub[1])
+    if expr.kind == "power":
+        if power is None:
+            raise UnsupportedExpression("no rendering for an integer power in this target")
+        return power(sub[0], sub[1])
     if expr.kind == "paren":
         return f"({sub[0]})"
     if expr.kind == "unary":
@@ -517,13 +536,26 @@ def typed(expr: Expr, env: dict[str, str | None] | None = None) -> str | None:
 def with_integer_division(
     expr: Expr, *, default_integer: bool | None = None, env: dict[str, str | None] | None = None
 ) -> Expr:
-    """The tree with every integer ``/`` spelled ``//``.
+    """The tree with every integer ``/`` made a ``quotient`` node, and every
+    integer ``**`` whose exponent may be negative a ``power`` node.
 
     Fortran divides two integers to an integer: ``nrk = runge_kutta_type / 10``
     is 4, not 4.1. A quotient whose operands are both known integers is
     marked; one with a name in it is typed by ``env`` (the declared types
     of the constants resolved so far) and otherwise falls back to
     ``default_integer``, which the caller sets from the whole initializer.
+
+    Marked, not respelled: the division truncates toward zero, and Python's
+    ``//`` -- what this spelled it as -- floors, so ``a / 2`` over ``a = -7``
+    was -4 where the compiler has -3 (FNP-D0013). How a target truncates is
+    the renderer's ``quotient`` to say; ``PYTHON_QUOTIENT`` is the Python
+    one.
+
+    An integer raised to a negative integer is an integer too, the
+    reciprocal's integer part: ``2 ** (-1)`` is 0, where Python's ``**``
+    answers 0.5 (FNP-D0024). Only a power whose exponent is not a literal
+    -- which has no sign of its own -- is marked, and only where both
+    operands are known integers; the rest are the ``**`` they always were.
     """
     if default_integer is None:
         default_integer = typed(expr, env) != "real"
@@ -532,12 +564,64 @@ def with_integer_division(
     args = tuple(
         with_integer_division(a, default_integer=default_integer, env=env) for a in expr.args
     )
-    text = expr.text
     if expr.kind == "binary" and expr.text == "/":
         kinds = {typed(a, env) for a in args}
         if kinds == {"int"} or ("real" not in kinds and default_integer):
-            text = "//"
-    return Expr(expr.kind, text, args, expr.dtype)
+            return Expr("quotient", "/", args, expr.dtype)
+    if expr.kind == "binary" and expr.text == "**" and _signed(args[1]):
+        if {typed(a, env) for a in args} == {"int"}:
+            return Expr("power", "**", args, expr.dtype)
+    return Expr(expr.kind, expr.text, args, expr.dtype)
+
+
+def _signed(exponent: Expr) -> bool:
+    """Whether an exponent may be negative: anything but a literal, which is
+    unsigned in the tree (``-1`` is a ``unary`` over it), bracketed or not."""
+    while exponent.kind == "paren":
+        exponent = exponent.args[0]
+    return exponent.kind != "int"
+
+
+PYTHON_QUOTIENT = "_f_int_div"
+"""What a Python rendering of a marked quotient calls: ``_f_int_div(a, b)``,
+defined by ``int_div`` below's source wherever the rendering is executed."""
+
+PYTHON_POWER = "_f_ipow"
+"""What a Python rendering of a marked integer power calls, ``int_pow``."""
+
+
+def int_pow(a: int, n: int) -> int:
+    """Fortran's integer power over Python integers, exactly.
+
+    A negative exponent gives the integer part of the reciprocal power
+    (F2018 10.1.5.2.1): 0 for any base but 1 and -1, which are 1 and
+    +-1. Python's ``**`` answers a float there -- ``2 ** -1`` is 0.5 -- and
+    NumPy's integers refuse it outright. Zero to a negative power has no
+    value in either language, and raises. A non-negative exponent is the
+    ``**`` it always was.
+    """
+    if n >= 0:
+        power: int = a**n
+        return power
+    if a == 0:
+        raise ZeroDivisionError("zero raised to a negative integer power")
+    if a == 1:
+        return 1
+    if a == -1:
+        return 1 if n % 2 == 0 else -1
+    return 0
+
+
+def int_div(a: int, b: int) -> int:
+    """Fortran's integer division over Python integers: toward zero, exactly.
+
+    Not ``int(a / b)``: that divides in binary64 and is a different integer
+    once an operand passes 2**53, where ``//`` -- which this replaces for
+    its sign, not its magnitude -- was exact. The magnitudes' floor is the
+    magnitude of the truncated quotient, and the sign is the operands'.
+    """
+    q = abs(a) // abs(b)
+    return q if (a < 0) == (b < 0) else -q
 
 
 def names_used(expr: Expr) -> list[str]:

@@ -1837,7 +1837,8 @@ end module escapes
     assert intents["b"] == "IN"  # a subscript of a module array
     assert intents["c"] == "IN"  # a subscript of a local array
     assert intents["buf"] == "UNKNOWN"  # the internal unit of a WRITE
-    assert intents["d"] == "UNKNOWN"  # assigned through its ASSOCIATE alias
+    # Assigned through its ASSOCIATE alias: a store to ``d``, handed back.
+    assert intents["d"] == "INOUT"
     assert intents["e"] == "IN"  # ``e + 1.0`` is a temporary; g cannot write e
     assert intents["out"] == "OUT"
 
@@ -3057,7 +3058,7 @@ def test_a_character_parameter_is_a_resolvable_use_constant(tmp_path: Path) -> N
     assert records["path"] == Expr("str", "a/b'c")
     assert render(records["namep"], real=str, integer=str, name=str) == "'pft'"
     assert _python(records["path"]) == repr("a/b'c")
-    assert _python(records["half"]) == "(3 // 2)"
+    assert _python(records["half"]) == "_f_int_div(3, 2)"
 
 
 def test_a_transformational_intrinsic_is_not_a_read(tmp_path: Path) -> None:

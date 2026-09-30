@@ -111,6 +111,29 @@ def _f_powi(x: Any, n: Any) -> Any:
     return 1.0 / result if count < 0 else result
 
 
+def _f_ipow(x: Any, n: Any) -> Any:
+    """Fortran INTEGER ** INTEGER, which stays an integer for any exponent.
+
+    A negative exponent is ``1 / x**|n|`` in integer division
+    (F2018 10.1.5.2.2): zero for every base but 1 and -1, which give 1 and
+    +-1, and a division by zero for 0 -- the reference traps, and so does
+    this. Python's ``2 ** -1`` is the float 0.5 (FNP-D0012). A non-negative
+    exponent is ``x ** n`` exactly as it was, types included; arrays take
+    the same answer elementwise, in the base's dtype.
+    """
+    if np.ndim(x) == 0 and np.ndim(n) == 0:
+        if n >= 0:
+            return x**n
+        if x == 0:
+            raise ZeroDivisionError("0 ** a negative integer")
+        return x ** (-n % 2) if x in (1, -1) else x * 0
+    base, power = np.asarray(x), np.asarray(n)
+    if np.any((base == 0) & (power < 0)):
+        raise ZeroDivisionError("0 ** a negative integer")
+    exponent = np.where(power >= 0, power, -power % 2).astype(base.dtype)
+    return np.where((power >= 0) | (np.abs(base) == 1), base**exponent, 0)
+
+
 def _f_cfold(fn: Any, *args: Any) -> Any:
     """gfortran evaluates constant-argument intrinsics at COMPILE time
     with MPFR (correctly rounded) — that value matches no runtime libm
@@ -131,14 +154,17 @@ def _f_vachar(x: Any) -> Any:
     return np.array([chr(int(v)) for v in np.ravel(x)], dtype=object).reshape(np.shape(x))
 
 
-def _f_vceil(x: Any) -> Any:
-    """Fortran CEILING returns default INTEGER."""
-    return np.ceil(x).astype(np.int32)
+def _f_vceil(x: Any, kind: Any = None) -> Any:
+    """Fortran CEILING returns an INTEGER of ``kind``, the default one
+    unless the source asks for 8."""
+    return np.ceil(x).astype(np.int64 if int(kind or 4) == 8 else np.int32)
 
 
-def _f_vfloor(x: Any) -> Any:
-    """Fortran FLOOR returns default INTEGER; np.floor returns float."""
-    return np.floor(x).astype(np.int32)
+def _f_vfloor(x: Any, kind: Any = None) -> Any:
+    """Fortran FLOOR returns an INTEGER of ``kind``; np.floor returns float,
+    and ``astype(np.int32)`` of 3.0d10 is the int32 edge where
+    ``floor(x, kind=8)`` holds 30000000000 (FNP-D0005)."""
+    return np.floor(x).astype(np.int64 if int(kind or 4) == 8 else np.int32)
 
 
 class _FLoopExit(Exception):
@@ -179,18 +205,45 @@ def _f_ecall(fn: Any, *args: Any, **kw: Any) -> Any:
     """ELEMENTAL procedure broadcast over array actuals: run the scalar
     translation per element (keeps the strict-libm scalar paths and the
     scalar control flow intact). Keywords (optional/want_ sentinels)
-    broadcast alongside."""
+    broadcast alongside.
+
+    ``np.vectorize`` settles its result type by calling ``fn`` on the first
+    element, and a zero-size section -- a zero-trip ``a(1:n)``, ordinary
+    Fortran -- has none: it raised where gfortran does nothing. The result
+    is as empty as the actuals, of their type.
+
+    The bit intrinsics are mapped here too, and ``np.vectorize`` hands them
+    Python ints, which carry no dtype for ``_int_bits`` to read. So the
+    width they were not given is read off the arrays, and the result kept
+    in it -- their Python ints came back int64 whatever the operands were.
+    """
+    arrays = [a for a in (*args, *kw.values()) if isinstance(a, np.ndarray)]
+    if any(a.size == 0 for a in arrays):
+        shape = np.broadcast_shapes(*(a.shape for a in arrays))
+        return np.empty(shape, dtype=np.result_type(*arrays))
+    if fn in (_f_iand, _f_ior, _f_ieor, _f_ishft) and len(args) >= 2:
+        operands = args[:1] if fn is _f_ishft else args[:2]
+        bits = (args[2] if len(args) > 2 else kw.get("bits")) or _int_bits(*operands)
+        mapped = np.vectorize(fn, excluded={"bits"})(args[0], args[1], bits=bits)
+        return mapped.astype(f"int{bits}") if bits in (8, 16, 32, 64) else mapped
     return np.vectorize(fn)(*args, **kw)
 
 
 def _f_copy_out(dst: Any, src: Any) -> None:
     """Copy a callee's returned OUT array into the caller's buffer.
 
-    ``dst[...] = src`` when the shapes agree; when they do not -- a
-    ``pcols``-wide buffer receiving an ``ncol``-wide result, or a rank-1
-    buffer receiving a section -- the overlap is copied and the rest left as
-    it was, which is what Fortran's by-reference OUT did. ``None`` is an
-    unsupplied optional, and nothing is written."""
+    ``dst[...] = src`` when the shapes agree. When they do not -- a
+    ``pcols``-wide buffer receiving an ``ncol``-wide result, a rank-1
+    buffer receiving a section, a ``y(3, 2)`` handed to a dummy declared
+    ``x(2, 2)`` -- the dummy was the leading part of the buffer's storage
+    (F2018 15.5.2.11): the callee's elements land on the buffer's first
+    column-major positions, and the rest is left as it was, which is what
+    Fortran's by-reference OUT did. Not a box of the leading rows and
+    columns, which is where a rank-2 mismatch used to put them, and not in
+    C order, which is how a rank mismatch used to walk them -- through a
+    ``ravel`` that is a copy of any buffer but a C-contiguous one, so the
+    write went nowhere. ``None`` is an unsupplied optional, and nothing is
+    written."""
     if dst is None:
         return
     if not isinstance(src, np.ndarray):
@@ -199,12 +252,47 @@ def _f_copy_out(dst: Any, src: Any) -> None:
     if src.shape == dst.shape:
         dst[...] = src
         return
-    if src.ndim == dst.ndim and src.ndim > 1:
-        slices = tuple(slice(0, min(s, d)) for s, d in zip(src.shape, dst.shape, strict=True))
-        dst[slices] = src[slices]
-    else:
-        n = min(src.size, dst.size)
-        dst.ravel()[:n] = src.ravel()[:n]
+    flat = np.ravel(dst, order="F")
+    n = min(src.size, flat.size)
+    flat[:n] = np.ravel(src, order="F")[:n]
+    if not np.may_share_memory(flat, dst):
+        dst[...] = np.reshape(flat, np.shape(dst), order="F")
+
+
+def _f_seq_shape(arr: Any, *extents: Any) -> Any:
+    """A whole array actual as the explicit-shape dummy it is handed to sees it.
+
+    The dummy is the leading part of the actual's storage, in array element
+    order, whatever extents it declares (F2018 15.5.2.11): ``z(3, 2)`` to
+    ``x(2, 2)`` makes ``x(1, 2)`` the actual's third element, ``z(3, 1)``,
+    where the array itself, handed over in its own shape, answers ``z(1, 2)``
+    -- and a whole-array operation in the callee spans all six. So the
+    caller's first elements in column-major order, folded onto the dummy's
+    extents, and a view wherever one exists, which the callee's in-place
+    writes reach: the leading columns when the leading extents agree --
+    ``z(3, 4)`` to ``x(3, 2)`` -- whatever the actual's layout, and the fold
+    of a Fortran-contiguous actual. Otherwise a copy, which the call's
+    copy-out (``_f_copy_out``, storage order) puts back. The array itself
+    when the shapes agree, which is every call a caller can see the extents
+    of, and when it is too short to hold the dummy, which Fortran does not
+    allow."""
+    shape = tuple(max(int(e), 0) for e in extents)
+    if not isinstance(arr, np.ndarray) or arr.shape == shape:
+        return arr
+    span = math.prod(shape)
+    if span > arr.size or len(shape) != arr.ndim:
+        return arr
+    if shape[:-1] == arr.shape[:-1]:
+        return arr[..., : shape[-1]]
+    return np.reshape(np.ravel(arr, order="F")[:span], shape, order="F")
+
+
+class _FSeqCopy(np.ndarray):
+    """A storage tail ``_f_seq_tail`` could not hand out as a view, and so
+    copied: ``_f_taken`` is what it was copied from, which is how
+    ``_f_seq_tail_out`` tells what the callee changed in it."""
+
+    _f_taken: Any = None
 
 
 def _f_seq_tail(arr: Any, start: Any, *leading: Any) -> Any:
@@ -212,30 +300,49 @@ def _f_seq_tail(arr: Any, start: Any, *leading: Any) -> Any:
 
     The caller's storage from 0-based column-major position ``start`` to the
     end of ``arr``, which is what ``x(*)`` spans when ``a(i, j)`` is passed
-    for it. A view when ``arr`` is Fortran-contiguous -- every array the gate
-    draws and every reshaped window is -- so the callee's in-place writes
-    land in the caller's array; otherwise a copy, which ``_f_seq_tail_out``
-    writes back.
+    for it. ``leading`` are the extents of the dummy's leading axes, ``u(iue,
+    *)``: the storage folds onto them in column-major order, and its last
+    column is the partial one Fortran's storage has, padded out here to a
+    whole one nobody may read.
 
-    ``leading`` are the extents of a rank-2 dummy's leading axes, ``u(iue,
-    *)``. The BLAS idiom ``h12(..., a(i, 1), mda, ...)`` -- a row of the
-    matrix walked with the matrix's own leading extent -- is the matrix from
-    that row and column on, ``a[i-1:, :]``: a view whatever the memory order,
-    and its last column is the partial one Fortran's storage has. Any other
-    leading extent folds the tail in column-major order onto as many whole
-    columns as the storage holds."""
+    A view wherever one is exact -- a Fortran-contiguous actual whose tail
+    fills whole columns -- so the callee's in-place writes land in the
+    caller's array. Anything else is a copy: a C-ordered actual, and a tail
+    that ends in a partial column, which is the BLAS row walk ``h12(...,
+    a(i, 1), mda, ...)`` whenever ``i > 1``. A view of rows ``i`` onwards
+    answered ``u(1, j)`` but lost every element past the bottom of a column,
+    which Fortran finds at the top of the next one, and a view of whole
+    columns lost the partial last one. The copy remembers what it was made
+    from, and ``_f_seq_tail_out`` puts back only what the callee changed in
+    it: the same call may hand the callee another view of the same storage
+    -- ``h12``'s ``c(i, 1)`` and ``c(j, 1)`` -- whose writes a wholesale copy
+    back would undo."""
     at = int(start)
     extents = [int(e) for e in leading]
-    if len(extents) == 1 and np.ndim(arr) == 2 and extents[0] == np.shape(arr)[0] > 0:
-        return arr[at % extents[0] :, at // extents[0] :]
-    flat = np.ravel(arr, order="F")[at:]
-    if not extents:
-        return flat
-    block = 1
-    for extent in extents:
-        block *= extent
-    whole = (flat.size // block) * block if block else 0
-    return np.reshape(flat[:whole], (*extents, -1), order="F")
+    tail = np.ravel(arr, order="F")[at:]
+    if extents:
+        block = math.prod(extents)
+        columns = -(-tail.size // block) if block else 0
+        short = columns * block - tail.size
+        if short > 0:
+            tail = np.concatenate([tail, np.zeros(short, dtype=tail.dtype)])
+        tail = np.reshape(tail[: columns * block], (*extents, columns), order="F")
+    if np.may_share_memory(tail, arr):
+        return tail
+    copy = tail.view(_FSeqCopy)
+    copy._f_taken = np.array(tail, copy=True)
+    return copy
+
+
+def _f_changed(after: Any, before: Any) -> Any:
+    """Which elements of ``after`` differ from ``before``, to the bit: a NaN
+    left alone is unchanged, and ``-0.0`` written over ``0.0`` is not."""
+    after, before = np.ascontiguousarray(after), np.ascontiguousarray(before)
+    if after.dtype != before.dtype or after.dtype.hasobject:
+        return np.asarray(after != before, dtype=bool)
+    width = after.dtype.itemsize
+    bits = after.view(np.uint8).reshape(-1, width) != before.view(np.uint8).reshape(-1, width)
+    return np.any(bits, axis=1)
 
 
 def _f_seq_tail_out(dst: Any, start: Any, src: Any) -> None:
@@ -243,9 +350,13 @@ def _f_seq_tail_out(dst: Any, start: Any, src: Any) -> None:
     ``_f_seq_tail(dst, start, ...)`` handed it.
 
     Where the tail was a view the callee wrote the caller's array in place
-    and there is nothing to do; where ``dst`` is not Fortran-contiguous the
-    tail was a copy, and the callee's writes reach ``dst`` only through
-    here, at the same column-major positions."""
+    and there is nothing to do. Where it was a copy the callee's writes
+    reach ``dst`` only through here, at the same column-major positions --
+    those it changed, when the copy says what it was made from, so a write
+    made meanwhile through another view of the same storage stands; all of
+    them when it does not, as for the array a callee builds for a whole
+    actual of another rank. Padding past the end of the storage is
+    dropped."""
     if dst is None or not isinstance(src, np.ndarray):
         return
     if np.may_share_memory(src, dst):
@@ -256,7 +367,12 @@ def _f_seq_tail_out(dst: Any, start: Any, src: Any) -> None:
     n = min(values.size, max(flat.size - at, 0))
     if n <= 0:
         return
-    flat[at : at + n] = values[:n]
+    taken = getattr(src, "_f_taken", None)
+    if taken is not None and np.shape(taken) == np.shape(src):
+        changed = _f_changed(values[:n], np.ravel(taken, order="F")[:n])
+        flat[at : at + n][changed] = values[:n][changed]
+    else:
+        flat[at : at + n] = values[:n]
     if not np.may_share_memory(flat, dst):
         dst[...] = np.reshape(flat, np.shape(dst), order="F")
 
@@ -270,7 +386,16 @@ def _f_rstep(lo: Any, hi: Any, st: Any) -> Any:
 def _f_rstep_lb(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
     """Fortran lo:hi:st (st<0, inclusive) with declared lower bound lb.
 
-    Either edge may be None: Fortran lets a section leave one implied."""
+    The emitter spells both edges: an implied one is the axis's bound, not
+    the end a negative step walks from, so ``a(::-1)`` is empty. ``None``
+    still means Python's open edge, for a caller that means that.
+
+    Counting down from below where it stops, the section is empty, and its
+    edges need not be within the bounds: ``a(0:3:-1)`` is nothing, where
+    the slice it spells starts at ``-1`` -- the last element -- and walks
+    down to the third."""
+    if lo is not None and hi is not None and lo < hi:
+        return slice(0, 0, st)
     start = None if lo is None else lo - lb
     stop = None
     if hi is not None:
@@ -281,11 +406,16 @@ def _f_rstep_lb(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
 
 def _f_rstep_any(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
     """Fortran lo:hi:st with a step of either sign (a variable the source
-    reads at run time), inclusive edges, declared lower bound lb; either
-    edge may be implied. Ascending, the stop edge is one past ``hi``;
-    descending, ``_f_rstep_lb`` works it out (#75)."""
+    reads at run time), inclusive edges, declared lower bound lb; the
+    emitter spells an implied edge as the bound it stands for. Ascending,
+    the stop edge is one past ``hi``; descending, ``_f_rstep_lb`` works it
+    out (#75)."""
     if st < 0:
         return _f_rstep_lb(lo, hi, st, lb)
+    if lo is not None and hi is not None and hi < lo:
+        # Empty, and its stop edge may be below zero, where Python counts
+        # from the end of the axis.
+        return slice(0, 0, st)
     start = None if lo is None else lo - lb
     stop = None if hi is None else hi - lb + 1
     return slice(start, stop, st)
@@ -293,16 +423,26 @@ def _f_rstep_any(lo: Any, hi: Any, st: Any, lb: Any) -> Any:
 
 def _f_vdot(a: Any, b: Any) -> Any:
     """Fortran DOT_PRODUCT accumulates in order; np.dot (BLAS/pairwise)
-    rounds differently."""
+    rounds differently.
+
+    The accumulator starts at the operands' own zero. It started at
+    ``0.0``, so the DOT_PRODUCT of two INTEGER arrays was a float, and
+    wherever the emitter's typing did not wrap it -- a subscript,
+    ``c(dot_product(a, b))`` -- NumPy refused it as an index (FNP-D0040).
+    For REAL operands ``float64(0) + x*y`` is ``0.0 + x*y`` to the bit. A
+    COMPLEX first operand is conjugated, as F2018 16.9.66 has it."""
+    x_, y_ = np.asarray(a), np.asarray(b)
+    if np.iscomplexobj(x_):
+        x_ = np.conj(x_)
     if _LIBM_STRICT:
-        s = 0.0
+        s = np.result_type(x_, y_).type(0)
         # Unchecked on purpose: this is the emitted runtime, and it has
         # been through bit-exact gates in this form. A length mismatch is
         # invalid Fortran that never reaches here.
-        for x, y in zip(np.ravel(a), np.ravel(b)):  # noqa: B905
+        for x, y in zip(np.ravel(x_), np.ravel(y_)):  # noqa: B905
             s += x * y
         return s
-    return np.dot(a, b)
+    return np.dot(x_, y_)
 
 
 def _f_vsum(a: Any, axis: Any = None) -> Any:
@@ -412,6 +552,15 @@ def _f_int(x: Any, kind: Any = None) -> Any:
     limit = _INT32_LIMIT * (2**32 if dtype is np.int64 else 1)
     if isinstance(x, (int, np.integer)):
         return dtype(x)
+    if isinstance(x, np.ndarray):
+        # ``int`` of an array elementwise, the same conversion per element;
+        # ``float(x)`` below raised on any array of more than one (FNP-D0036).
+        if np.issubdtype(x.dtype, np.integer):
+            return x.astype(dtype)
+        values = x.astype(np.float64)
+        with np.errstate(invalid="ignore"):
+            inside = (values >= -limit) & (values < limit)
+            return np.where(inside, np.trunc(np.where(inside, values, 0.0)), -limit).astype(dtype)
     value = float(x)
     if not -limit <= value < limit:  # NaN compares false and lands here too
         return dtype(-limit)
@@ -461,13 +610,53 @@ def _f_vmax(a: Any, b: Any) -> Any:
     return np.fmax(a, b)
 
 
-def _f_nint(x: Any) -> Any:
+def _f_anint(x: Any) -> Any:
+    """Fortran ANINT: the nearest whole number, halves away from zero, as a
+    REAL of the argument's kind -- C's ``round``, which is what gfortran
+    calls.
+
+    ``np.round`` -- the spelling this replaced -- rounds halves to *even*:
+    ``anint(2.5)`` came out 2.0 and ``anint(-2.5)`` -2.0 where Fortran says
+    3.0 and -3.0 (FNP-D0004). ``floor(x + 0.5)`` is not the fix either: the
+    addition rounds, so 0.49999999999999994 + 0.5 is 1.0 and the "nearest"
+    whole number of something below a half would be one. The fractional
+    part ``x - trunc(x)`` is exact in binary floating point, so comparing
+    *it* with a half decides without rounding anything. A NaN compares
+    false and stays NaN; an infinity's fraction is NaN and it stays itself;
+    ``-0.3`` keeps its sign, as ``round`` does.
+
+    Scalars and arrays alike, so the one name serves the scalar and the
+    array spelling and the JAX shim can answer for it.
+    """
+    t = np.trunc(x)
+    if np.ndim(x) == 0:
+        return t + math.copysign(1.0, x) if math.isfinite(x) and abs(x - t) >= 0.5 else t
+    with np.errstate(invalid="ignore"):  # inf - inf, whose NaN picks ``t``
+        return np.where(np.abs(x - t) >= 0.5, t + np.copysign(1.0, x), t)
+
+
+def _f_nint(x: Any, kind: Any = None) -> Any:
     """Fortran NINT: round half away from zero (not banker's rounding).
     Python round() uses banker's rounding: round(0.5)=0, round(2.5)=2.
-    Fortran NINT: NINT(0.5)=1, NINT(2.5)=3."""
-    if isinstance(x, (float, np.floating)):
-        return np.int32(math.floor(x + 0.5)) if x >= 0 else np.int32(math.ceil(x - 0.5))
-    return np.int32(x)
+    Fortran NINT: NINT(0.5)=1, NINT(2.5)=3.
+
+    Rounded by ``_f_anint`` and converted by ``_f_int``: ``floor(x + 0.5)``,
+    which this used to be, rounds 0.49999999999999994 up to 1 and an odd
+    integer above 2**52 up to the next even one, and ``math.floor`` of a NaN
+    raised where the compiled ``lround`` answers INT64_MIN. ``kind`` is the
+    result's, 4 or 8, as for ``_f_int``.
+
+    gfortran computes even a default-kind NINT as that 64-bit ``lround``
+    and keeps its low 32 bits, so the default kind is not ``_f_int``'s
+    saturating conversion: ``nint(3.0d10)`` is -64771072, not -2147483648,
+    and ``nint`` of a NaN -- INT64_MIN, whose low half is zero -- is 0."""
+    if isinstance(x, (float, np.floating)) or (
+        isinstance(x, np.ndarray) and not np.issubdtype(x.dtype, np.integer)
+    ):
+        # An array too: ``np.int32`` of a REAL array truncates, silently.
+        wide = _f_int(_f_anint(x), 8)
+        return wide if int(kind or 4) == 8 else wide.astype(np.int32)
+    return np.int64(x) if int(kind or 4) == 8 else np.int32(x)
 
 
 def _f_sign(a: Any, b: Any) -> Any:
@@ -486,7 +675,27 @@ def _f_mod(a: Any, p: Any) -> Any:
 
 
 def _f_int_div(a: Any, b: Any) -> Any:
-    """Fortran integer division truncates toward zero; Python // floors."""
+    """Fortran integer division truncates toward zero; Python // floors.
+
+    In integers throughout: ``int(a / b)`` rounds the quotient to a double
+    first, and past 2**53 that is a different integer -- ``(2**53 + 1) / 1``
+    came back 2**53 (FNP-D0035). The magnitude's floor is the truncated
+    quotient, negated when the signs differ. Arrays elementwise, where
+    ``int`` of one raised (FNP-D0036). A scalar result stays a Python int, as
+    it always was; an operand that is not an integer at all -- which Fortran
+    typing says cannot happen here -- keeps the old spelling."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        x, y = np.asarray(a), np.asarray(b)
+        if not (np.issubdtype(x.dtype, np.integer) and np.issubdtype(y.dtype, np.integer)):
+            return np.trunc(x / y)
+        if np.any(y == 0):
+            raise ZeroDivisionError("integer division by zero")
+        quotients = np.abs(x.astype(np.int64)) // np.abs(y.astype(np.int64))
+        signed = np.where((x < 0) != (y < 0), -quotients, quotients)
+        return signed.astype(np.result_type(x, y))
+    if isinstance(a, (int, np.integer)) and isinstance(b, (int, np.integer)):
+        q = abs(int(a)) // abs(int(b))
+        return -q if (a < 0) != (b < 0) else q
     return int(a / b)
 
 
@@ -687,6 +896,80 @@ def _fmt_one(u: str, v: Any) -> str:
     raise ValueError(f"_f_fmt_write: descriptor {u}")
 
 
+def _f_reshape(source: Any, shape: Any, pad: Any = None, order: Any = None) -> Any:
+    """Fortran RESHAPE (F2018 16.9.163), where ``np.reshape`` is not it.
+
+    The result takes the source's elements in array element order --
+    column-major -- and only as many as it has room for: a source larger
+    than ``PRODUCT(SHAPE)`` is legal, and ``np.reshape`` raises on it. A
+    shorter one is filled out with copies of PAD, taken in its own array
+    element order and repeated as often as needed. ORDER permutes the
+    subscripts the elements are laid down along: ``order=[2, 1]`` varies
+    the second subscript fastest, so a 2-by-3 result is filled row by row.
+    """
+    extents = [int(e) for e in np.ravel(shape)]
+    size = math.prod(extents)
+    flat = np.ravel(source, order="F")
+    if flat.size < size:
+        if pad is None or np.size(pad) == 0:
+            raise ValueError(f"RESHAPE: {flat.size} source elements for {size}, and no PAD")
+        fill = np.resize(np.ravel(pad, order="F"), size - flat.size)
+        flat = np.concatenate([flat, fill])
+    flat = flat[:size]
+    if order is None:
+        return np.reshape(flat, extents, order="F")
+    axes = [int(o) - 1 for o in np.ravel(order)]
+    laid = np.reshape(flat, [extents[a] for a in axes], order="F")
+    return np.asfortranarray(np.transpose(laid, np.argsort(axes)))
+
+
+def _f_pack(array: Any, mask: Any, vector: Any = None) -> Any:
+    """Fortran PACK (F2018 16.9.145): the elements MASK selects, in array
+    element order -- column-major, where boolean indexing walks a rank-2
+    array by rows -- and, given VECTOR, a result as long as VECTOR whose
+    tail past the packed elements is VECTOR's own. A scalar MASK selects
+    every element or none."""
+    values = np.asarray(array)
+    chosen = np.ravel(np.broadcast_to(mask, values.shape), order="F")
+    packed = np.ravel(values, order="F")[chosen]
+    if vector is None:
+        return packed
+    result = np.array(np.ravel(vector, order="F"), dtype=values.dtype)
+    result[: packed.size] = packed
+    return result
+
+
+def _f_loc(array: Any, extremum: str, mask: Any = None, dim: Any = None) -> Any:
+    """Fortran MAXLOC/MINLOC of a whole array: the 1-based subscripts of the
+    first maximum (minimum) in array element order -- column-major, where
+    ``np.argmax`` breaks a rank-2 tie by rows -- among the elements MASK
+    selects; zeros when it selects none or the array is empty.
+
+    A NaN is no element's extremum: ``np.argmax`` answers the first NaN it
+    meets, where gfortran skips them and answers the first number that is
+    the extremum -- ``maxloc([NaN, 2, 7, 7])`` is 3, not 1 -- and answers
+    the first selected element only when every selected one is a NaN. With
+    DIM, the same search along each line of that axis."""
+    values = np.asarray(array)
+    if dim is not None:
+        axis = int(dim) - 1
+        if values.ndim == 1:
+            return _f_loc(values, extremum)[0]
+        if values.size == 0:
+            return np.zeros(np.delete(values.shape, axis), dtype=np.int64)
+        return np.apply_along_axis(lambda line: _f_loc(line, extremum)[0], axis, values)
+    chosen = np.ones(values.shape, dtype=bool) if mask is None else mask
+    where = np.flatnonzero(np.ravel(np.broadcast_to(chosen, values.shape), order="F"))
+    if where.size == 0:
+        return np.zeros(values.ndim, dtype=np.int64)
+    picked = np.ravel(values, order="F")[where]
+    numbers = ~np.isnan(picked) if picked.dtype.kind == "f" else None
+    if numbers is not None and numbers.any() and not numbers.all():
+        where, picked = where[numbers], picked[numbers]
+    first = np.argmax(picked) if extremum == "max" else np.argmin(picked)
+    return np.array(np.unravel_index(where[first], values.shape, order="F")) + 1
+
+
 def _f_unpack(vector: Any, mask: Any, field: Any) -> Any:
     """Fortran UNPACK: scatter vector elements into field where mask is True."""
     result = field.copy()
@@ -694,11 +977,16 @@ def _f_unpack(vector: Any, mask: Any, field: Any) -> Any:
     return result
 
 
-def _f_eoshift(array: Any, shift: Any, axis: Any = 0) -> Any:
-    """Fortran EOSHIFT: shift and fill with zeros (no wrap-around)."""
+def _f_eoshift(array: Any, shift: Any, axis: Any = 0, boundary: Any = None) -> Any:
+    """Fortran EOSHIFT: shift, no wrap-around, and fill the vacated end with
+    BOUNDARY -- a scalar, or for rank > 1 an array of one value per line
+    along ``axis`` -- or with zero when it is absent. A shift longer than
+    the axis vacates all of it."""
     result = np.zeros_like(array)
+    if boundary is not None:
+        result[...] = np.expand_dims(boundary, axis) if np.ndim(boundary) else boundary
     n = array.shape[axis]
-    s = int(shift)
+    s = max(-n, min(n, int(shift)))
     if s > 0:
         slc_src = [slice(None)] * array.ndim
         slc_dst = [slice(None)] * array.ndim
@@ -722,21 +1010,35 @@ def _f_index(string: str, substring: str) -> int:
     return p + 1 if p >= 0 else 0
 
 
-def _f_huge(x: Any) -> Any:
-    """Fortran HUGE: largest representable value of same type."""
-    if isinstance(x, (float, np.floating)):
-        return np.finfo(np.float64).max
-    return np.iinfo(np.int32).max
+def _f_huge(x: Any, dtype: Any = None) -> Any:
+    """Fortran HUGE: largest representable value of the argument's kind.
+
+    ``dtype`` is the kind as the declaration gives it, which the emitter
+    passes: the Python type of ``x`` is not the kind -- an ``integer(8)``
+    holds a Python int, and so does a ``real(8)`` assigned ``0`` -- and
+    guessing from it answered the int32 maximum for both (FNP-D0008,
+    FNP-D0039). Without one, the old guess. A REAL answer is a float64,
+    the precision this translation computes in, holding the kind's value
+    exactly."""
+    if dtype is None:
+        if isinstance(x, (float, np.floating)):
+            return np.finfo(np.float64).max
+        return np.iinfo(np.int32).max
+    if str(dtype).startswith("int"):
+        return int(np.iinfo(dtype).max)
+    return np.float64(np.finfo(dtype).max)
 
 
-def _f_tiny(x: Any) -> Any:
-    """Fortran TINY: smallest positive normalized value."""
-    return np.finfo(np.float64).tiny
+def _f_tiny(x: Any, dtype: Any = None) -> Any:
+    """Fortran TINY: smallest positive normalized value of the argument's
+    kind (``dtype``, as for ``_f_huge``; float64 without one)."""
+    return np.float64(np.finfo(dtype or np.float64).tiny)
 
 
-def _f_epsilon(x: Any) -> Any:
-    """Fortran EPSILON: smallest difference from 1.0 of same type."""
-    return np.finfo(np.float64).eps
+def _f_epsilon(x: Any, dtype: Any = None) -> Any:
+    """Fortran EPSILON: smallest difference from 1.0 of the argument's kind
+    (``dtype``, as for ``_f_huge``; float64 without one)."""
+    return np.float64(np.finfo(dtype or np.float64).eps)
 
 
 def _f_modulo(a: Any, p: Any) -> Any:
@@ -770,29 +1072,34 @@ def _wrap_signed(v: Any, bits: int | None) -> Any:
     return v
 
 
-def _f_iand(a: Any, b: Any) -> Any:
-    bits = _int_bits(a, b)
+def _f_iand(a: Any, b: Any, bits: Any = None) -> Any:
+    """``bits`` is the operands' declared KIND in bits, which the emitter
+    passes where it knows it (FNP-D0009); otherwise it is read off their
+    dtypes, as ``_int_bits`` says."""
+    bits = bits or _int_bits(a, b)
     m = (1 << bits) - 1 if bits is not None else -1
     return _wrap_signed((int(a) & m) & (int(b) & m), bits)
 
 
-def _f_ior(a: Any, b: Any) -> Any:
-    bits = _int_bits(a, b)
+def _f_ior(a: Any, b: Any, bits: Any = None) -> Any:
+    bits = bits or _int_bits(a, b)
     m = (1 << bits) - 1 if bits is not None else -1
     return _wrap_signed((int(a) & m) | (int(b) & m), bits)
 
 
-def _f_ieor(a: Any, b: Any) -> Any:
-    bits = _int_bits(a, b)
+def _f_ieor(a: Any, b: Any, bits: Any = None) -> Any:
+    bits = bits or _int_bits(a, b)
     m = (1 << bits) - 1 if bits is not None else -1
     return _wrap_signed((int(a) & m) ^ (int(b) & m), bits)
 
 
-def _f_ishft(i: Any, shift: Any) -> Any:
+def _f_ishft(i: Any, shift: Any, bits: Any = None) -> Any:
     """Fortran ISHFT: a LOGICAL shift (zero-fill), positive = left, negative
-    = right, within the operand's bit width (#15)."""
+    = right, within the operand's bit width (#15) -- ``bits`` where the
+    emitter knows the declared kind, which a literal ``1`` has and a dtype
+    does not say (FNP-D0009)."""
     s = int(shift)
-    bits = _int_bits(i)
+    bits = bits or _int_bits(i)
     v = int(i)
     if bits is not None:
         v &= (1 << bits) - 1  # the unsigned view, for a logical shift
@@ -808,7 +1115,25 @@ def _f_scan(string: str, set_chars: str) -> int:
     return 0
 
 
-def _f_kind(x: Any) -> Any:
+_F_KINDS = {
+    "int32": 4,
+    "int64": 8,
+    "float32": 4,
+    "float64": 8,
+    "complex64": 4,
+    "complex128": 8,
+    "bool": 4,
+    "str": 1,
+}
+"""gfortran's kind numbers: the byte width, of a complex's parts."""
+
+
+def _f_kind(x: Any, dtype: Any = None) -> Any:
+    """Fortran KIND of the argument's declared ``dtype``, which the emitter
+    passes (``real(4)`` is 4 whatever float holds it, FNP-D0007); without
+    one, the old guess from the Python type."""
+    if dtype is not None:
+        return _F_KINDS[str(dtype)]
     if isinstance(x, (float, np.floating)):
         return 8
     if isinstance(x, (int, np.integer)):
@@ -816,8 +1141,46 @@ def _f_kind(x: Any) -> Any:
     return 1
 
 
-def _f_precision(x: Any) -> Any:
-    return 15
+def _f_precision(x: Any, dtype: Any = None) -> Any:
+    """Fortran PRECISION: decimal digits of the argument's kind -- 6 for a
+    single, 15 for a double, a complex's that of its parts (``dtype``, as
+    for ``_f_kind``; a double without one)."""
+    return int(np.finfo(dtype or np.float64).precision)
+
+
+def _f_digits(x: Any, dtype: Any) -> Any:
+    """Fortran DIGITS of the argument's declared kind (the emitter passes
+    it, FNP-D0027): the model's significant binary digits -- 31 and 63 for
+    the integers, 24 and 53 for the reals."""
+    if str(dtype).startswith("int"):
+        return int(np.iinfo(dtype).bits) - 1
+    return int(np.finfo(dtype).nmant) + 1
+
+
+def _f_range(x: Any, dtype: Any) -> Any:
+    """Fortran RANGE: the decimal exponent range of the declared kind --
+    9 and 18 for the integers, 37 and 307 for the reals and their complexes."""
+    if str(dtype).startswith("int"):
+        return int(math.log10(np.iinfo(dtype).max))
+    info = np.finfo(dtype)
+    return min(int(math.log10(info.max)), int(-math.log10(info.tiny)))
+
+
+def _f_maxexponent(x: Any, dtype: Any) -> Any:
+    """Fortran MAXEXPONENT of the declared real kind: 128, 1024."""
+    return int(np.finfo(dtype).maxexp)
+
+
+def _f_minexponent(x: Any, dtype: Any) -> Any:
+    """Fortran MINEXPONENT of the declared real kind: -125, -1021. One above
+    NumPy's ``minexp``: Fortran's model puts the significand in [1/2, 1),
+    IEEE's in [1, 2)."""
+    return int(np.finfo(dtype).minexp) + 1
+
+
+def _f_bit_size(x: Any, dtype: Any) -> Any:
+    """Fortran BIT_SIZE of the declared integer kind: 32, 64."""
+    return int(np.iinfo(dtype).bits)
 
 
 def _f_radix(x: Any) -> Any:
@@ -841,11 +1204,32 @@ def _f_is_iostat_end(stat: int) -> bool:
     return stat < 0
 
 
-def _f_lbound(arr: Any, dim: Any = None) -> Any:
-    """Fortran LBOUND is always 1 for standard arrays."""
+def _f_lbound(arr: Any, dim: Any = None, lower: Any = None) -> Any:
+    """Fortran LBOUND: the lower bound of each axis, or of axis ``dim``.
+
+    ``lower`` is the declared (or allocated) lower bound of every axis, as
+    the emitter shifts subscripts by; absent, every axis is based at one,
+    which is what an array expression, a section and an undeclared-bound
+    array are. An axis of zero extent answers 1 whatever it was declared
+    with (F2018 16.9.109)."""
+    shape = np.shape(arr)
+    lows = [1] * len(shape) if lower is None else [int(b) for b in lower]
+    lows = [low if extent else 1 for low, extent in zip(lows, shape, strict=False)]
     if dim is not None:
-        return 1
-    return np.ones(arr.ndim, dtype=np.int32)
+        return lows[int(dim) - 1]
+    return np.array(lows, dtype=np.int32)
+
+
+def _f_ubound(arr: Any, dim: Any = None, lower: Any = None) -> Any:
+    """Fortran UBOUND: the lower bound plus the extent, less one, per axis
+    or along ``dim`` -- the extent itself only on an axis based at one. An
+    axis of zero extent answers 0 (F2018 16.9.196)."""
+    shape = np.shape(arr)
+    lows = [1] * len(shape) if lower is None else [int(b) for b in lower]
+    highs = [low + extent - 1 if extent else 0 for low, extent in zip(lows, shape, strict=False)]
+    if dim is not None:
+        return highs[int(dim) - 1]
+    return np.array(highs, dtype=np.int32)
 
 
 def _f_c_loc(x: Any) -> Any:

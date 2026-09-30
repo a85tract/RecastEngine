@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recast.fortran.frontend import INTRINSIC_MODULES
+from recast.fortran.interface import emit_name
 from recast.fortran.semantics import Semantics
 from recast.transform.numpy.vocabulary import (
     WHITELIST_INT,
@@ -30,7 +31,7 @@ from recast.transform.numpy.vocabulary import (
 )
 from recast.transform.rules import NoRule
 
-__all__ = ["Names", "bind_use_statements", "for_subprogram"]
+__all__ = ["Names", "bind_use_statements", "for_subprogram", "kept_between_calls", "saved_global"]
 
 
 @dataclass
@@ -72,6 +73,20 @@ class Names:
     checking its own arithmetic rather than the translation.
     """
 
+    associations: dict[str, str] = field(default_factory=dict)
+    """ASSOCIATE name -> its selector as emitted, while the construct's body
+    is rendered: a name the body writes through to a scalar variable is that
+    variable (``recast.fortran.rwset.written_through``). A FORALL's index is
+    here too, as ``_fi_<name>``: it has the construct's scope, and the
+    variable of its name outside keeps its value. Innermost of all, because
+    either shadows every other meaning of its spelling for the construct's
+    duration."""
+
+    saved: dict[str, str] = field(default_factory=dict)
+    """A local kept from one call to the next -> the module global that keeps
+    it (``saved_global``). A SAVEd local the body changes is not a Python
+    local at all, which forgets it on return; see ``Subprograms``."""
+
     def symbol(self, name: str) -> str:
         """The emitted name for a Fortran symbol.
 
@@ -81,6 +96,10 @@ class Names:
         through to a constant the rest of the program shares.
         """
         lowered = name.lower()
+        if lowered in self.associations:
+            return self.associations[lowered]
+        if lowered in self.saved:
+            return self.saved[lowered]
         subprogram = self.semantics.subprogram
         if any(p["name"] == lowered for p in subprogram["local_parameters"]):
             return pysafe(lowered)
@@ -139,6 +158,7 @@ class Names:
         table = {emitted: source for source, emitted in self.module_parameters.items()}
         table.update({emitted: source for source, emitted in self.use_parameters.items()})
         table.update({emitted: source for source, emitted in self.local_constants.items()})
+        table.update({emitted: source for source, emitted in self.saved.items()})
         return table
 
 
@@ -177,7 +197,33 @@ def for_subprogram(
             for p in record.get("local_parameters", ())
             if p["subprogram"] == name
         },
+        saved={
+            local["name"]: saved_global(semantics.subprogram, local["name"])
+            for local in semantics.subprogram.get("locals") or ()
+            if kept_between_calls(local)
+        },
     )
+
+
+def kept_between_calls(local: dict[str, Any]) -> bool:
+    """Whether a local has to outlive the call: SAVEd, and changed by the body.
+
+    A SAVE the body never changes holds its initial value on every call,
+    which re-initializing it at every entry reproduces exactly; only a local
+    the body can change needs the value it was left with (FNP-D0014).
+    """
+    return bool(local.get("save") and local.get("written"))
+
+
+def saved_global(subprogram: dict[str, Any], local: str | None = None) -> str:
+    """The module global that keeps a SAVEd local of ``subprogram``, or --
+    with no local -- the marker that says the subprogram has run before.
+
+    A leading underscore no Fortran name can have, so it cannot collide
+    with module state or with another subprogram's local.
+    """
+    stem = f"_saved_{emit_name(subprogram)}"
+    return stem if local is None else f"{stem}__{local}"
 
 
 INTRINSIC_MODULE_NAMES: dict[str, tuple[str, ...]] = {
