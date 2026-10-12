@@ -122,10 +122,11 @@ class RefactorRecipe(Recipe):
     executor, and that is a property of the work, not a limitation to route
     around.
 
-    The ``-todo`` suffix is the incompleteness made visible: all four of its
-    workload slots -- ``refactor.carve``, ``static.no-numerics-moved``,
-    ``pinned-run``, ``fullmodel.bitwise`` -- name plugins nothing ships yet.
-    The suffix comes off when they land.
+    The four workload slots -- ``refactor.carve``, ``static.no-numerics-moved``,
+    ``pinned-run``, ``fullmodel.bitwise`` -- and the ``carve`` frontend read a
+    carve-out manifest the project writes; where those plugins are not
+    installed, ``recast plan`` shows the slots unfilled. The ``-todo`` suffix
+    stays until every installation carries them.
     """
 
     name = "refactor-todo"
@@ -134,7 +135,7 @@ class RefactorRecipe(Recipe):
     def stages(self, config: dict[str, Any]) -> list[Stage]:
         return [
             Stage("executor", config.get("executor", "local")),
-            Stage("frontend", config.get("frontend", "fortran")),
+            Stage("frontend", config.get("frontend", "carve")),
             # One transform, one Candidate: the adapters and the ordered
             # patches are halves of a single carve-out, and a Candidate carries
             # both -- ``files`` for what is generated, ``patches`` for what is
