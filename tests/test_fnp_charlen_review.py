@@ -1,6 +1,6 @@
 """CHARACTER lengths on the store paths the first fix of FNP-D0021 missed.
 
-The RecastEngine-Pro-Lean audit's FNP-D0021 is a ``character(len=n)``
+The formal audit's FNP-D0021 is a ``character(len=n)``
 variable that did not hold ``n`` characters. Fitting a store to a local
 scalar or element fixed the audit's probe; an independent review then ran
 gfortran against four more ways a CHARACTER variable is stored -- the

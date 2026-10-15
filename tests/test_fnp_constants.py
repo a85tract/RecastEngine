@@ -1,6 +1,6 @@
 """The constants pipelines against the defects the Lean audit refuted them on.
 
-Each test names its record in the RecastEngine-Pro-Lean audit (``FNP-Dxxxx``)
+Each test names its record in the formal audit (``FNP-Dxxxx``)
 and asserts the value gfortran gives the constant, not the spelling that
 produced it: the defects were all spellings that ran and were a different
 number.

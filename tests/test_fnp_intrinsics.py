@@ -1,6 +1,6 @@
 """Intrinsics and arithmetic the formal audit refuted, held to Fortran's value.
 
-Each test here is one defect of the RecastEngine-Pro-Lean audit (``FNP-Dxxxx``,
+Each test here is one defect of the formal audit (``FNP-Dxxxx``,
 against the rule ``FNP-Rxxxx`` it refutes): a construct the translation
 accepted and emitted as runnable Python that computes a different number from
 the Fortran. They translate a small module through the real frontend and

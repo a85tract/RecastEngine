@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FORBIDDEN = ("docs", "corpus", ".github", "AGENTS.md")
+FORBIDDEN = ("docs", "corpus", ".github", "AGENTS.md", "formal")
 
 
 def test_the_sdist_names_what_it_ships_and_what_it_must_not() -> None:

@@ -116,7 +116,7 @@ include = [
 # Named as well as omitted: corpus/ holds other projects' sources under
 # their own licences, and an include list that grew a path by accident
 # would otherwise ship them.
-exclude = ["corpus", "docs", ".github", "AGENTS.md"]
+exclude = ["corpus", "docs", ".github", "AGENTS.md", "formal"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/recast"]

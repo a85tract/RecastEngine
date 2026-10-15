@@ -48,3 +48,6 @@ recast-engine.cdx.json
 # Anything site-specific belongs in a case repo, not here
 .env
 config.local.*
+
+# Optional formal tooling downloads sources and writes build products here.
+formal/.build/
