@@ -177,7 +177,7 @@ ran the real library, and the translation's stand-in does the same
 elimination in textbook order, which a blocked LAPACK does not -- so the
 subprograms whose numbers pass through the solve cannot be bit-exact against
 it, however right the translation around it is. ELM's `SoilTemperature` is
-the case (RecastEngine-Pro #109): 1,926,692 of 1,929,936 points bit-exact,
+the case: 1,926,692 of 1,929,936 points bit-exact,
 the 3,244 that were not all downstream of `dgbsv` at 1.9e-11 relative. The
 transform records which procedures it stood in for and which subprograms
 reach them (`notes["references"]["stood_in"]`), and the gate reports them
