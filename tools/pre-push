@@ -10,13 +10,22 @@
 # Exit codes are `recast run`'s: 2 incomplete, 1 findings, 0 clean. Git treats
 # any non-zero as "do not push". Emergency bypass: `git push --no-verify`.
 #
-# RECAST_BIN names the recast executable if it is not on PATH.
+# RECAST_BIN names the recast executable if it is not on PATH. The recipe is
+# `audit` unless RECAST_AUDIT_RECIPE names another (a domain extension's
+# `audit-cesm`, which adds the LLM audit plane); the recipe has to exist in
+# the environment that has recast, or recast itself refuses. Each check also
+# leaves the gate summary hpc-devsecops's runner wrote -- the file CC-Test's
+# make_manifest.py reads into an acceptance record's security block -- under
+# RECAST_AUDIT_ROOT (default ~/audits/recast), one directory per push and ref,
+# and prints where. .recast-audit.json in the repository, if present, is the
+# run config (tools/install-config.sh writes a starting one).
 
 set -uo pipefail
 
 REMOTE_NAME="${1:-origin}"
 REPO="$(git rev-parse --show-toplevel)" || exit 2
 RECAST="${RECAST_BIN:-recast}"
+RECIPE="${RECAST_AUDIT_RECIPE:-audit}"
 ZERO=0000000000000000000000000000000000000000
 
 if ! command -v "$RECAST" >/dev/null 2>&1; then
@@ -48,8 +57,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   echo "recast pre-push: checking $local_ref -> $remote_ref ($range)"
-  "$RECAST" run audit "$REPO" --range "$range" --config "$REPO/.recast-audit.json"
+  config=()
+  [ -f "$REPO/.recast-audit.json" ] && config=(--config "$REPO/.recast-audit.json")
+  summary="${RECAST_AUDIT_ROOT:-$HOME/audits/recast}/$(basename "$REPO")/$(date -u +%Y%m%dT%H%M%SZ)-$$/${local_ref##*/}/summary.json"
+  "$RECAST" run "$RECIPE" "$REPO" --range "$range" ${config[@]+"${config[@]}"} --gate-summary "$summary"
   rc=$?
+  [ -f "$summary" ] && echo "recast pre-push: gate summary $summary"
   [ "$rc" -eq 0 ] || exit "$rc"
 done
 

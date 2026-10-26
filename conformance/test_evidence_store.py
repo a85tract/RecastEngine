@@ -1,7 +1,8 @@
-"""EvidenceStore: append-only, and what it writes is a CC-Test manifest.
+"""EvidenceStore: append-only, and what it writes is a ``recast.evidence.v1`` record.
 
-Append-only is not a preference. CC-Test's Layer-2 check asks whether an
-existing package has been altered, and a store that lets one URI mean two
+Append-only is not a preference. The record is an audit trail, and CC-Test's
+Layer-2 check asks the same question of what is filed from it -- whether an
+existing package has been altered -- so a store that lets one URI mean two
 different documents makes that question unanswerable. A content-addressed
 store satisfies this by construction -- different content lands under a
 different URI -- and so does a store that refuses the second write. Both are
@@ -15,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from recast.conformance.manifest import check_manifest
+from recast.conformance.evidence_record import check_record
 
 
 def test_putting_the_same_record_twice_is_one_record(
@@ -53,12 +54,12 @@ def test_a_uri_never_denotes_two_documents(
     )
     if evidence_store_case.read_manifest is not None:
         kept = evidence_store_case.read_manifest(store, uri)
-        assert kept["result"]["metrics"] == {"bit_exact": 8, "total_points": 8}, (
+        assert kept["verdict"]["metrics"] == {"bit_exact": 8, "total_points": 8}, (
             "the first document changed under its own URI"
         )
 
 
-def test_what_was_written_is_an_evidence_manifest(
+def test_what_was_written_is_an_evidence_record(
     evidence_store_case: Any, sample_evidence: Any, scratch: Path
 ) -> None:
     if evidence_store_case.read_manifest is None:
@@ -68,5 +69,5 @@ def test_what_was_written_is_an_evidence_manifest(
         )
     store = evidence_store_case.build(scratch)
     uri = store.put(sample_evidence())
-    problems = check_manifest(evidence_store_case.read_manifest(store, uri))
-    assert not problems, "not an evidence-manifest.v1:\n" + "\n".join(problems)
+    problems = check_record(evidence_store_case.read_manifest(store, uri))
+    assert not problems, "not a recast.evidence.v1 record:\n" + "\n".join(problems)

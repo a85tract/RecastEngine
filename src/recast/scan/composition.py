@@ -73,7 +73,8 @@ class CompositionScanner(Scanner):
         absent = [b for b in (syft, grype) if shutil.which(b) is None]
         if absent:
             raise ScannerUnavailable(
-                f"{' and '.join(absent)} not on PATH; no composition scan was performed"
+                f"{' and '.join(absent)} not on PATH; no composition scan was performed",
+                missing_tool=", ".join(absent),
             )
         root = Path(config.get("root", workspace)).resolve()
 

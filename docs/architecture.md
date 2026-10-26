@@ -46,7 +46,7 @@ every field one of the four workloads does not need is a field that will drift.
 | `Candidate` | a proposed change — new files plus ordered patches. Not yet trusted |
 | `OracleRef` | a materialized reference implementation, cached by behavioural key |
 | `Verdict` | a comparison result with a `Confidence` level and the numbers behind it |
-| `Evidence` | an immutable record, rendered as a CC-Test `evidence-manifest.v1` |
+| `Evidence` | an immutable record of one verdict, `recast.evidence.v1`; CC-Test assembles its acceptance record (`evidence-manifest.v1`) from the run summary, not from these |
 | `Finding` | a security defect, with CWE, exploitability, disclosure state, access class |
 
 ### Confidence is a level, not a boolean

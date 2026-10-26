@@ -215,8 +215,11 @@ deliberately leaves out. The differential one for `satvap`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema": "recast.evidence.v1",
   "evidence_class": "complete",
+  "unit": "fortran:satvap",
+  "recipe": "translate",
+  "executor": "local",
   "artifact": {
     "name": "fortran:satvap",
     "transform": "recast.translate.fortran-to-numpy",
@@ -225,12 +228,12 @@ deliberately leaves out. The differential one for `satvap`:
   },
   "reference": {"oracle": "f2py-golden", "key": "f2py:satvap:8c6c49ccd27d2248"},
   "environment": {"engine": "recast 0.0.1", "platform": "macOS-26.5.2-arm64-arm-64bit", "python": "3.11.16"},
-  "cc_test": {"commit": "unknown", "version": "unknown"},
   "cases": [],
-  "result": {
+  "verdict": {
     "verifier": "differential.bitexact",
-    "verdict": "bit_exact",
+    "confidence": "bit_exact",
     "passed": true,
+    "candidate": "09093158b3e3553b1465378c7aa64c5119295e17ed343f1d9efcfecc2fa12985",
     "detail": "340 points across 2 subprogram(s), all bit-exact",
     "metrics": {
       "points": 340, "bit_exact": 340, "max_ulp": 0, "max_rel": 0.0, "nan_mismatch": 0, "trials": 20,
@@ -241,6 +244,7 @@ deliberately leaves out. The differential one for `satvap`:
       }
     }
   },
+  "artifacts": {},
   "timestamp": "2026-09-02T02:38:29.298123+00:00"
 }
 ```
@@ -256,7 +260,7 @@ What is here and not in the summary:
 | `metrics.subprograms` | the same numbers, **per procedure** |
 | `metrics.skipped` | procedures the check could not run and so did not judge |
 | `evidence_class` | `complete` when the engine drove every step itself, which is always the case for a local run |
-| `cc_test` | filled in when the run happens inside the CC-Test pipeline; `unknown` on your laptop |
+| `schema` | `recast.evidence.v1`: the engine's own record format. It is not a CC-Test acceptance record; CC-Test builds that from the summary file (section 3) when a product version is filed |
 
 The per-procedure breakdown and the `skipped` list are the two things to
 open a manifest for. The summary says 340 points passed; the manifest says

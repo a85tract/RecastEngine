@@ -1,4 +1,4 @@
-"""The intrinsics fixes of the RecastEngine-Pro-Lean audit, held to what
+"""The intrinsics fixes of the formal audit, held to what
 gfortran computes where an independent review ran it against them.
 
 Each test is a case the first round of fixes (``test_fnp_intrinsics``) left

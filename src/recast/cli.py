@@ -171,6 +171,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         summary.write_text(_json.dumps(run.summary(), indent=2, sort_keys=True) + "\n")
     if args.summary:
         print(f"summary: {args.summary}")
+    if args.gate_summary:
+        import json as _json
+
+        gate = Path(args.gate_summary)
+        gate.parent.mkdir(parents=True, exist_ok=True)
+        gate.write_text(_json.dumps(run.gate_summary(range=config.get("range")), indent=2) + "\n")
+        print(f"gate summary: {args.gate_summary}")
     for unit_run in run.units:
         print(f"{unit_run.unit.uid}")
         for outcome in unit_run.outcomes:
@@ -260,6 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary",
         help="write the run's verification status here -- one entry per unit and verifier, "
         "stable across runs over the same revisions, meant to be committed",
+    )
+    run.add_argument(
+        "--gate-summary",
+        help="write the Cyber gate's summary here, in hpc-devsecops's summary.json shape: "
+        "a state and counts per scan and a PASS / FINDINGS / INCOMPLETE status; what "
+        "CC-Test's make_manifest.py reads into an acceptance record's security block",
     )
     run.set_defaults(func=_cmd_run)
 

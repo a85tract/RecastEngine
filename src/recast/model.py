@@ -15,7 +15,6 @@ than Verdicts, and Findings carry an embargo. See ``Access``.
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -225,10 +224,16 @@ class Evidence:
     Evidence is the product SciRecast actually ships. A Candidate without
     Evidence is a draft, regardless of how good it looks.
 
-    RecastEngine does not define its own evidence format. CC-Test owns
-    ``schemas/evidence-manifest.v1.json``; this type is a producer of it, and
-    ``to_manifest`` is the only place the two vocabularies meet. If CC-Test
-    revises the schema, change the mapping here -- not the engine's model.
+    This is the engine's own record of one verdict, rendered by ``to_record`` as
+    a ``recast.evidence.v1`` document. It is *not* a CC-Test acceptance record:
+    that document describes a released product version -- product repository
+    and commit, benchmark, machine and compiler -- none of which one verdict
+    knows. CC-Test assembles its ``evidence-manifest.v1`` from the run's
+    ``--summary`` file (``RecastRun.summary``, ``schema: 1``) with its own
+    ``make_manifest.py`` under a ``unit-differential`` benchmark, so the summary's
+    shape is the interface the two repositories share. Until 2026-09-24 this
+    type claimed to render CC-Test's format and produced a document CC-Test's
+    schema rejected; the schema name below exists so that cannot recur.
     """
 
     unit: str
@@ -237,20 +242,20 @@ class Evidence:
     executor: str
 
     artifact: dict[str, Any] = field(default_factory=dict)
-    """CC-Test ``artifact``: ``{name, repo, commit, version}`` of what was produced."""
+    """What was judged: ``{name, digest, transform, files}`` of the candidate."""
 
     reference: dict[str, Any] = field(default_factory=dict)
-    """CC-Test ``reference``: ``{model, commit_or_tag, provenance}`` -- the oracle."""
+    """What it was judged against: ``{oracle, key}`` -- the oracle's name and cache key."""
 
     environment: dict[str, Any] = field(default_factory=dict)
-    """CC-Test ``environment``: machine, compiler, mpi, python, cuda, jax, numba, modules.
+    """Where: engine version, Python, platform, and whatever the executor adds.
 
     Under-reporting this is the single most common way a bit-exact claim stops
     being reproducible. Executors are expected to fill it in, not the operator.
     """
 
     cases: list[dict[str, Any]] = field(default_factory=list)
-    """CC-Test ``cases``: the per-case comparison rows behind ``result``."""
+    """Per-case rows behind the verdict, when a verifier judges more than one."""
 
     artifacts: dict[str, str] = field(default_factory=dict)
     """Label -> store URI (logs, dumps, PBS job output, plots)."""
@@ -258,40 +263,34 @@ class Evidence:
     meta: dict[str, Any] = field(default_factory=dict)
     """Engine version, plugin versions, host, timestamp -- injected by the store."""
 
-    def to_manifest(self, *, cc_test: dict[str, Any], timestamp: str) -> dict[str, Any]:
-        """Render as a CC-Test ``evidence-manifest.v1`` document.
+    SCHEMA = "recast.evidence.v1"
+
+    def to_record(self, *, timestamp: str) -> dict[str, Any]:
+        """Render as a ``recast.evidence.v1`` document.
 
         ``evidence_class`` is ``complete`` only when the engine drove every step
         itself. Anything reconstructed from logs after the fact must say so.
         """
         return {
-            "schema_version": 1,
+            "schema": self.SCHEMA,
             "evidence_class": self.meta.get("evidence_class", "complete"),
+            "unit": self.unit,
+            "recipe": self.recipe,
+            "executor": self.executor,
             "artifact": self.artifact,
             "reference": self.reference,
-            "cc_test": cc_test,
             "environment": self.environment,
             "cases": self.cases,
-            "result": {
-                "verdict": self.verdict.confidence.value,
-                "passed": self.verdict.passed,
+            "verdict": {
                 "verifier": self.verdict.verifier,
+                "confidence": self.verdict.confidence.value,
+                "passed": self.verdict.passed,
+                "candidate": self.verdict.candidate,
                 "metrics": self.verdict.metrics,
                 "detail": self.verdict.detail,
             },
+            "artifacts": self.artifacts,
             "timestamp": timestamp,
-            "notes": json.dumps(
-                {
-                    "recast": {
-                        "unit": self.unit,
-                        "recipe": self.recipe,
-                        "executor": self.executor,
-                        "candidate": self.verdict.candidate,
-                        "artifacts": self.artifacts,
-                    }
-                },
-                sort_keys=True,
-            ),
         }
 
 

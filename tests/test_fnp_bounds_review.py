@@ -1,6 +1,6 @@
 """An array's bounds, as they were when the array came into being.
 
-Two defects the RecastEngine-Pro-Lean audit's review found in how the
+Two defects the formal audit's review found in how the
 translation spells an array's bounds: an ALLOCATE of a zero-sized axis, and
 bounds re-read from variables the body has since redefined. Each case is
 translated whole, the emitted module imported and run, and the value asserted

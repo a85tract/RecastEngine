@@ -6,7 +6,7 @@ Two stores, because SciRecast has two audiences:
     FindingStore    vulnerabilities      -> Sec-Track, restricted, embargoed
 
 Keeping them as separate ABCs rather than one store with a flag is deliberate.
-It makes ``publish an evidence package`` and ``file a 0-day`` different calls
+It makes ``publish evidence`` and ``file a 0-day`` different calls
 against different objects, so the dangerous one cannot be reached by passing the
 wrong argument to the safe one.
 """

@@ -14,3 +14,4 @@ before signing.
 |---|---|---|---|---|---|
 | Yueqi Chen | yueqi.chen@colorado.edu, yueqichen.0x0@gmail.com | lewisychen | 2026-09-07 | 1.0 | first commit |
 | Qinrun Dai | mouseisnotalwaysmouse@outlook.com, dai@derecho2.hsn.de.hpc.ucar.edu | second5t | 2026-09-08 | 1.0 | 2aa9a82 |
+| Ruitong Liu | cnitlrt@gmail.com, ruitong.liu@colorado.edu | cnitlrt | 2026-10-12 | 1.0 | e736cf9 |

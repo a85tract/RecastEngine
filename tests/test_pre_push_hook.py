@@ -144,6 +144,35 @@ def test_a_missing_recast_blocks_rather_than_waves_through(repo: Path, tmp_path:
     assert "not found -- blocking push" in result.stderr
 
 
+def test_the_recipe_is_audit_unless_the_environment_names_another(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A domain extension's gate (`audit-cesm`, with the LLM audit plane) is
+    the same hook with RECAST_AUDIT_RECIPE set; what CC-Test's wrapper does."""
+    record = _fake_recast(tmp_path, 0)
+    _commit(repo, "b.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"], cwd=repo, capture_output=True, text=True
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert argv[argv.index("run") + 1] == "audit"
+
+    _commit(repo, "c.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"],
+            cwd=repo,
+            env={**os.environ, "RECAST_AUDIT_RECIPE": "audit-cesm"},
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert argv[argv.index("run") + 1] == "audit-cesm"
+
+
 def test_install_refuses_to_overwrite_a_foreign_hook(tmp_path: Path) -> None:
     work = tmp_path / "w"
     _git(tmp_path, "init", "-q", str(work))
@@ -160,3 +189,39 @@ def test_install_refuses_to_overwrite_a_foreign_hook(tmp_path: Path) -> None:
     )
     assert forced.returncode == 0
     assert (hooks / "pre-push").resolve() == (_TOOLS / "pre-push").resolve()
+
+
+def test_the_hook_leaves_a_gate_summary_and_passes_the_config_only_when_present(
+    repo: Path, tmp_path: Path
+) -> None:
+    """hpc-devsecops's runner wrote summary.json per check; so does the hook,
+    through `recast run --gate-summary`, under RECAST_AUDIT_ROOT. And a
+    repository without .recast-audit.json must still be pushable: the config
+    is the operator's, not a requirement."""
+    record = _fake_recast(tmp_path, 0)
+    audit_root = tmp_path / "audits"
+    _commit(repo, "b.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"],
+            cwd=repo,
+            env={**os.environ, "RECAST_AUDIT_ROOT": str(audit_root)},
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert "--config" not in argv
+    summary = Path(argv[argv.index("--gate-summary") + 1])
+    assert summary.parent.parent.parent == audit_root / repo.name
+    assert summary.name == "summary.json" and summary.parent.name == "main"
+
+    (repo / ".recast-audit.json").write_text('{"stages": {}}\n')
+    _commit(repo, "c.txt")
+    with on_path(tmp_path / "bin"):
+        result = subprocess.run(
+            ["git", "push", "-q", "origin", "main"], cwd=repo, capture_output=True, text=True
+        )
+    assert result.returncode == 0, result.stderr
+    argv = record.read_text().splitlines()
+    assert argv[argv.index("--config") + 1] == str(repo / ".recast-audit.json")

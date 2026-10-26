@@ -146,6 +146,7 @@ somewhere specific.
 | `--config PATH` | the object above, `.json` or `.toml` |
 | `--unit UID` | one unit, repeatable |
 | `--summary PATH` | write the verification status per unit and verifier — stable across runs over the same revisions, meant to be committed. CI gates on `git diff --exit-code` over it |
+| `--gate-summary PATH` | write the Cyber gate's summary in `hpc-devsecops`'s `summary.json` shape: a state and counts per scan (`secrets`, `cve`, `ai_audit`) and a `PASS` / `FINDINGS` / `INCOMPLETE` status, plus `schema: 1`. CC-Test's `make_manifest.py` reads it into an acceptance record's `security` block. No finding is in it |
 | `--report-only` | print the outcome and exit 0 regardless |
 | `--range REV..REV` | scope history-reading scanners to a revision range; what the pre-push hook passes |
 
@@ -161,3 +162,9 @@ somewhere specific.
 scheduler rejected the job has not passed; it has not run, and `recast run` is
 what CI and the pre-push hook call, so the exit status has to tell them apart.
 `--report-only` is the opt-out, for when you want the report without the block.
+The hook (`tools/pre-push`, installed by `tools/install-hooks.sh`) runs the
+`audit` recipe, or the one `RECAST_AUDIT_RECIPE` names, and also passes
+`--gate-summary`, leaving each check's summary under `RECAST_AUDIT_ROOT`
+(default `~/audits/recast`) as `<repo>/<timestamp>-<pid>/<branch>/summary.json`
+and printing the path; `tools/install-config.sh` installs the per-repository
+config it reads (`.recast-audit.json`, `.gitleaks.toml`, `.vex/openvex.json`).

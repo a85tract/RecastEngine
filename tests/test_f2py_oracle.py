@@ -1967,7 +1967,7 @@ def test_the_example_runs_through_the_cli(tmp_path: Path) -> None:
     # it was generated from.
     manifests = list((output_root(staged, {}) / "evidence").rglob("*.json"))
     assert len(manifests) == 3  # rwset, bitexact, notary
-    results = {json.loads(m.read_text())["result"]["verdict"] for m in manifests}
+    results = {json.loads(m.read_text())["verdict"]["confidence"] for m in manifests}
     assert results == {"sampled", "bit_exact", "symbolic"}
 
 

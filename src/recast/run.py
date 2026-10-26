@@ -201,6 +201,36 @@ class StageOutcome:
 
 
 @dataclass
+class ScanReport:
+    """What one scanner stage did, in the terms the Cyber gate summary uses.
+
+    ``hpc-devsecops`` (CC-Test, by Chien-Wei Huang) reports each scan as a
+    state beside its counts, and its ``summary.json`` is what CC-Test's
+    ``make_manifest.py`` reads into an acceptance record's ``security`` block.
+    This is the per-stage record that ``RecipeRun.gate_summary`` folds into
+    that shape; the vocabulary is the script's, so nothing downstream changes.
+    """
+
+    plugin: str
+    family: str
+    """``secret`` | ``composition`` | ``audit`` | ``dynamic`` -- the summary's plane."""
+
+    state: str
+    """``passed`` | ``findings`` | ``unavailable`` | ``error``.
+
+    ``findings`` means at or above the scanner's ``blocks_on`` bar, which is
+    the script's reading too: any secret, only a Critical CVE. ``unavailable``
+    is the tool not on PATH; ``error`` is every other way the scan did not run.
+    """
+
+    findings: int = 0
+    critical: int = 0
+    high: int = 0
+    """``high`` counts findings at or above HIGH, so the audit plane's
+    ``high`` matches the script's count of SARIF ``error``-level results."""
+
+
+@dataclass
 class UnitRun:
     """Everything that happened to one Unit."""
 
@@ -224,6 +254,9 @@ class UnitRun:
     rules. A run has one or the other in practice: the ``audit`` recipe fills
     this, the modernization recipes fill ``verdicts``.
     """
+
+    scans: list[ScanReport] = field(default_factory=list)
+    """One entry per scanner stage that was asked, run or not."""
 
     evidence: list[str] = field(default_factory=list)
     """Store URIs, one per recorded Verdict."""
@@ -277,6 +310,12 @@ class RecipeRun:
     example subprograms) a top-level Candidate is expected to cover.
     """
 
+    scanners: dict[str, str] = field(default_factory=dict)
+    """Scanner plugin -> family, for every scanner stage the recipe declared.
+
+    Kept so ``gate_summary`` can tell a plane that was declared and never ran
+    (``skipped``) from one the recipe does not have (``not_configured``)."""
+
     @property
     def status(self) -> RunStatus:
         """The worst of the units, and ``INCOMPLETE`` when there are none.
@@ -294,6 +333,88 @@ class RecipeRun:
     @property
     def passed(self) -> bool:
         return self.status is RunStatus.PASSED
+
+    def gate_summary(
+        self, *, tool: str = "recast audit", range: str | None = None
+    ) -> dict[str, Any]:
+        """The Cyber gate's summary, in the shape ``hpc-devsecops`` writes.
+
+        CC-Test's ``make_manifest.py`` reads exactly this file
+        (``summary.json``) into an acceptance record's ``security`` block, so
+        the shape is the script's -- planes ``secrets``, ``cve``, ``ai_audit``,
+        a state beside every count, ``status`` PASS / FINDINGS / INCOMPLETE --
+        plus one ``schema`` field naming the version. No finding is in here:
+        those go to the finding store, and reach Sec-Track only after
+        adjudication and a human's disclosure decision.
+
+        Roll-up is the script's: any plane that could not run (``unavailable``
+        or ``error``) makes the gate INCOMPLETE, else any plane with findings
+        makes it FINDINGS, else PASS. A plane the recipe does not declare is
+        ``not_configured`` and, as in the script, does not make the gate
+        incomplete; a declared scanner that never ran is ``skipped``.
+        """
+        reports: dict[str, list[ScanReport]] = {}
+        for unit_run in self.units:
+            for report in unit_run.scans:
+                reports.setdefault(report.family, []).append(report)
+        declared = set(self.scanners.values())
+
+        def plane(family: str, clean: str) -> dict[str, Any]:
+            found = reports.get(family, [])
+            if not found:
+                state = "skipped" if family in declared else "not_configured"
+            elif any(r.state == "error" for r in found):
+                state = "error"
+            elif any(r.state == "unavailable" for r in found):
+                state = "unavailable"
+            elif any(r.state == "findings" for r in found):
+                state = "findings"
+            else:
+                state = clean
+            return {
+                "state": state,
+                "findings": sum(r.findings for r in found),
+                "critical": sum(r.critical for r in found),
+                "high": sum(r.high for r in found),
+            }
+
+        secrets = plane("secret", "passed")
+        cve = plane("composition", "passed")
+        audit = plane("audit", "reviewed")
+        scans: dict[str, Any] = {
+            "secrets": {"state": secrets["state"], "findings": secrets["findings"]},
+            "cve": {
+                "state": cve["state"],
+                "critical": cve["critical"],
+                "high": cve["high"],
+                "scope": "full-repository",
+            },
+            "ai_audit": {"state": audit["state"], "high": audit["high"]},
+        }
+        if "dynamic" in declared or "dynamic" in reports:
+            dynamic = plane("dynamic", "passed")
+            scans["dynamic"] = {"state": dynamic["state"], "findings": dynamic["findings"]}
+
+        states = [p["state"] for p in scans.values()]
+        if any(s in ("unavailable", "error") for s in states):
+            status = "INCOMPLETE"
+        elif "findings" in states:
+            status = "FINDINGS"
+        else:
+            status = "PASS"
+        return {
+            "schema": 1,
+            "tool": tool,
+            "status": status,
+            "repo": self.root.resolve().name,
+            "commit": _git_head(self.root) or "unknown",
+            "mode": "range" if range else "repository",
+            "base": None,
+            "range": range,
+            "diff_lines": None,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "scans": scans,
+        }
 
     def summary(self) -> dict[str, Any]:
         """The run's verification status, as a record worth committing.
@@ -834,6 +955,7 @@ def _run_recipe(
     # out of the per-unit walks below; neither is recorded as skipped on the
     # other's subject, because it was not asked.
     repository_scanners = _repository_scanners([stage for _, stage in walked], registry)
+    run.scanners = _scanner_families([stage for _, stage in walked], registry)
     if repository_scanners:
         tree = Unit(uid=f"repository:{root.resolve().name}", kind="repository")
         tree_run = UnitRun(unit=tree)
@@ -1197,6 +1319,7 @@ def _walk_stage(
 
     if stage.kind == "scanner":
         scanner = factory()
+        family = getattr(scanner, "family", "audit")
         try:
             # Listed here rather than consumed lazily downstream: ``scan`` may
             # be a generator, and a generator that raises on its third item has
@@ -1204,14 +1327,35 @@ def _walk_stage(
             # status is decided.
             found = list(scanner.scan(unit, facts, workspace, executor, config))
         except ScannerUnavailable as error:
+            unit_run.scans.append(
+                ScanReport(
+                    stage.plugin,
+                    family,
+                    "unavailable" if getattr(error, "missing_tool", None) else "error",
+                )
+            )
             return _incomplete(stage, str(error), waived)
         unit_run.findings.extend(found)
-        if not stage.gate:
-            return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
         # A scanner declared as a gate is hpc-devsecops's shape: what it found
         # is the verdict, at the bar the scanner declares for its own tool.
+        # The bar also decides the gate summary's ``findings`` state, gate or
+        # not, so that a non-gating stage still reports what it saw.
         bar = Severity(config.get("blocks_on", scanner.blocks_on))
         blocking = [f for f in found if _SEVERITY_ORDER[f.severity] >= _SEVERITY_ORDER[bar]]
+        unit_run.scans.append(
+            ScanReport(
+                stage.plugin,
+                family,
+                "findings" if blocking else "passed",
+                findings=len(found),
+                critical=sum(f.severity is Severity.CRITICAL for f in found),
+                high=sum(
+                    _SEVERITY_ORDER[f.severity] >= _SEVERITY_ORDER[Severity.HIGH] for f in found
+                ),
+            )
+        )
+        if not stage.gate:
+            return StageOutcome(stage.kind, stage.plugin, "ok", f"{len(found)} finding(s)")
         return StageOutcome(
             stage.kind,
             stage.plugin,
@@ -1494,6 +1638,65 @@ def _repository_scanners(stages: list[Stage], registry: Registry) -> frozenset[s
         if getattr(registry.get("scanner", stage.plugin)(), "subject", "unit") == "repository":
             names.add(stage.plugin)
     return frozenset(names)
+
+
+def _scanner_families(stages: list[Stage], registry: Registry) -> dict[str, str]:
+    """Scanner plugin -> family for the declared, installed scanners.
+
+    Asked of the plugin for the same reason ``_repository_scanners`` asks: the
+    family is the scanner's declaration. Used by ``RecipeRun.gate_summary`` to
+    name the planes the recipe has, whether or not they got to run.
+    """
+    families: dict[str, str] = {}
+    for stage in stages:
+        if stage.kind != "scanner" or stage.plugin not in registry.names("scanner"):
+            continue
+        families[stage.plugin] = getattr(registry.get("scanner", stage.plugin)(), "family", "audit")
+    return families
+
+
+def _git_head(root: Path) -> str | None:
+    """The commit ``root`` is checked out at, read from ``.git`` without a process.
+
+    The gate summary names the commit it describes, as ``hpc-devsecops`` does
+    with ``git rev-parse HEAD``. Nothing here may leave the process without an
+    Executor, so this reads the files git keeps: ``HEAD``, the ref it points
+    at, ``packed-refs``, and for a worktree the ``gitdir`` and ``commondir``
+    indirections. ``None`` when ``root`` is not a checkout or the ref cannot be
+    resolved; the caller writes ``unknown``, never a guess.
+    """
+    git = root / ".git"
+    try:
+        if git.is_file():
+            text = git.read_text().strip()
+            if not text.startswith("gitdir:"):
+                return None
+            git = (root / text.split(":", 1)[1].strip()).resolve()
+        head = (git / "HEAD").read_text().strip()
+    except OSError:
+        return None
+    if not head.startswith("ref:"):
+        return head or None
+    ref = head.split(":", 1)[1].strip()
+    bases = [git]
+    try:
+        bases.append((git / (git / "commondir").read_text().strip()).resolve())
+    except OSError:
+        pass
+    for base in bases:
+        loose = base / ref
+        try:
+            if loose.is_file():
+                return loose.read_text().strip() or None
+            packed = base / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text().splitlines():
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref:
+                        return parts[0]
+        except OSError:
+            continue
+    return None
 
 
 def missing_tools(

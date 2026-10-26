@@ -58,7 +58,8 @@ class SecretScanner(Scanner):
         binary = config.get("gitleaks", "gitleaks")
         if shutil.which(binary) is None:
             raise ScannerUnavailable(
-                f"gitleaks is not on PATH (looked for {binary!r}); no secret scan was performed"
+                f"gitleaks is not on PATH (looked for {binary!r}); no secret scan was performed",
+                missing_tool=binary,
             )
         root = Path(config.get("root", workspace)).resolve()
         mode = _mode(root)

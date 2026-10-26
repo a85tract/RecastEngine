@@ -1,6 +1,6 @@
 """Statement-level defects the formal audit of this backend refuted.
 
-The RecastEngine-Pro-Lean audit states, rule by rule, what a translation must
+The formal audit states, rule by rule, what a translation must
 compute for the Fortran it accepts, and records a defect (``FNP-Dxxxx``)
 wherever the emitted Python computes something else. The ones here are
 statements -- FORALL, ASSOCIATE, a CHARACTER assignment, a SAVEd local, the

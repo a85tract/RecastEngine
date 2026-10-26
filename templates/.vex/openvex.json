@@ -1,0 +1,10 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/a85tract/RecastEngine/vex/template",
+  "author": "CESM modernization team",
+  "role": "Document Creator",
+  "timestamp": "2026-08-10T00:00:00Z",
+  "version": 1,
+  "tooling": "recast run audit (RecastEngine; from hpc-devsecops, CESM-CC-Test)",
+  "statements": []
+}
