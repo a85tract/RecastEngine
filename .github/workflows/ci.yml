@@ -113,6 +113,19 @@ jobs:
       # rule unable to judge anything.
       - run: uv run --extra dev --extra fortran --extra translate --extra verify pytest conformance/ -rs
 
+  # The Lean model of the NumPy emitter's rules: build it against the pinned
+  # Mathlib and audit every defect witness's axioms. No engine job depends on it.
+  # lean-action installs elan and fetches Mathlib's cache; locally, put an
+  # elan toolchain on PATH and the run step does the rest.
+  formal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal/proofs
+      - run: cd formal/proofs && lake build && python3 check_witnesses.py
+
   spine:
     runs-on: ubuntu-latest
     steps:

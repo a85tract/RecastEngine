@@ -1,0 +1,413 @@
+{
+  "schema": "recast.formal.witnesses.v1",
+  "witnesses": [
+    {
+      "id": "FNP-D0001",
+      "title": "Descending section with an implied edge selects the wrong elements",
+      "rules": [
+        "FNP-R0046",
+        "FNP-R0047"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = [1,2,4,8], n = 4: Fortran s1 = a(1) = 1.0, s2 = a(4) = 8.0, s3 = 0.0 (empty section); Python 15.0, 15.0, 15.0 (whole reversed array). Exact-model: Recast.Rules.FNP_R0046_refuted (Lean) exhibits `a(:1:-1)` on a 2-element array."
+    },
+    {
+      "id": "FNP-D0002",
+      "title": "FORALL is emitted as sequential nested loops (RHS of an element assignment reads the target)",
+      "rules": [
+        "FNP-R0121"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "a = [1,2,3,4]: Fortran [1,1,2,3]; Python [1,1,1,1]."
+    },
+    {
+      "id": "FNP-D0003",
+      "title": "FORALL scalar mask expression is dropped",
+      "rules": [
+        "FNP-R0121"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = [1,-1,2,-2], b = 9: Fortran b = [1,9,2,9]; Python b = [1,-1,2,-2]."
+    },
+    {
+      "id": "FNP-D0004",
+      "title": "ANINT is spelled np.round (round half to even, float result)",
+      "rules": [
+        "FNP-R0064",
+        "FNP-R0100"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "x = 2.5: Fortran 3.0, Python 2.0; x = -2.5: -3.0 vs -2.0. Lean: Recast.Exact.nintR_ne_roundHalfEven_example."
+    },
+    {
+      "id": "FNP-D0005",
+      "title": "INT(x, KIND=8) drops the kind: result saturates at the 32-bit limit",
+      "rules": [
+        "FNP-R0061"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "x = 3.0d10: Fortran 30000000000; Python -2147483648. The saturation is explicit code in `_f_int` (runtime.py:400-418), so it is part of the target's exact meaning, not a floating-point artifact."
+    },
+    {
+      "id": "FNP-D0006",
+      "title": "LBOUND is always 1 and UBOUND is the extent (non-unit declared lower bounds)",
+      "rules": [
+        "FNP-R0110",
+        "FNP-R0050"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran lo = 0, hi = 5; Python 1, 6."
+    },
+    {
+      "id": "FNP-D0007",
+      "title": "KIND(x) answers 8 for every real and 4 for every integer",
+      "rules": [
+        "FNP-R0086"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 4; Python 8 (also for an `integer(8)` argument: Fortran 8, Python 4)."
+    },
+    {
+      "id": "FNP-D0008",
+      "title": "HUGE/PRECISION/EPSILON/TINY answer for the default kinds only",
+      "rules": [
+        "FNP-R0087",
+        "FNP-R0088"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran huge(k8) = 9223372036854775807, precision(x4) = 6; Python 2147483647, 15."
+    },
+    {
+      "id": "FNP-D0009",
+      "title": "Bit intrinsics are unbounded when the operand carries no NumPy dtype (literals, Python ints)",
+      "rules": [
+        "FNP-R0093"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran -2147483648; Python 2147483648 (also for a caller-supplied Python int `i`; with an np.int32 argument the runtime agrees). Lean: Recast.Exact.ishftK_example vs ishftUnbounded_example."
+    },
+    {
+      "id": "FNP-D0010",
+      "title": "INTEGER parameter of a companion module is typed 'not integer': `/` becomes real division",
+      "rules": [
+        "FNP-R0013",
+        "FNP-R0017",
+        "FNP-R0018",
+        "FNP-R0183"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "Fortran x = 1.0 (n/2 = 1); Python 1.5."
+    },
+    {
+      "id": "FNP-D0011",
+      "title": "Kind-suffixed single-precision literal hoisted as np.float64('text') (no single rounding); name collision across kinds",
+      "rules": [
+        "FNP-R0004"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "Concrete: 0.1 vs 0.10000000149011612. Exact model: both denote 1/10 (precision casts are identities), so the exact-arithmetic rule is sound; this is a concrete-execution discrepancy only."
+    },
+    {
+      "id": "FNP-D0012",
+      "title": "INTEGER ** negative exponent becomes a Python float",
+      "rules": [
+        "FNP-R0020",
+        "FNP-R0024",
+        "FNP-R0025"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "j = 2: Fortran k = m = 0; Python 0.5, 0.5. Lean: Recast.Rules.FNP_R0020_refuted, FNP_R0024_refuted."
+    },
+    {
+      "id": "FNP-D0013",
+      "title": "Use-constants module spells integer quotients as Python `//` (floor) where Fortran truncates",
+      "rules": [
+        "FNP-R0012",
+        "FNP-R0175"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran -3; Python -4. Lean witness: Recast.Exact.tquot_ne_fquot_example."
+    },
+    {
+      "id": "FNP-D0015",
+      "title": "ASSOCIATE with a scalar selector: assignments through the alias do not reach the selector",
+      "rules": [
+        "FNP-R0124"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "x = 1: Fortran x = y = 2.0; Python x = y = 1.0."
+    },
+    {
+      "id": "FNP-D0017",
+      "title": "RESHAPE ignores ORDER= and PAD=",
+      "rules": [
+        "FNP-R0102"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = 1..6: Fortran b (column-major) = 1 4 2 5 3 6; Python 1 2 3 4 5 6. PAD: Fortran d = 1 2 3 4 0 0; Python raises ValueError (cannot reshape array of size 4 into shape (2,3)). Run: proofs/probes/reshape_order."
+    },
+    {
+      "id": "FNP-D0018",
+      "title": "PACK ignores VECTOR=",
+      "rules": [
+        "FNP-R0104"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran p = 1 3 30 40 50 60; Python raises `ValueError: could not broadcast input array from shape (2,) into shape (6,)` (loud); the value model has the target undefined where the source is defined."
+    },
+    {
+      "id": "FNP-D0019",
+      "title": "EOSHIFT ignores BOUNDARY=",
+      "rules": [
+        "FNP-R0106"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "Fortran e = 2 3 4 5 6 -1; Python 2 3 4 5 6 0 (confirmed by reading `_f_eoshift`; the concrete run aborts earlier at `pack`)."
+    },
+    {
+      "id": "FNP-D0020",
+      "title": "MAXLOC/MINLOC ignore MASK=",
+      "rules": [
+        "FNP-R0107"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = 1..6, m = [T,F,T,F,F,F]: Fortran 3; Python 6."
+    },
+    {
+      "id": "FNP-D0021",
+      "title": "Character assignment does not pad/truncate to the declared length; LEN returns the Python length",
+      "rules": [
+        "FNP-R0111",
+        "FNP-R0028",
+        "FNP-R0083"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran n1 = 10, n2 = 3; Python 2, 6."
+    },
+    {
+      "id": "FNP-D0022",
+      "title": "Character literal with a doubled quote is emitted with the doubled quote (Python implicit concatenation)",
+      "rules": [
+        "FNP-R0007"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "Fortran value `it's` (4 chars); Python `it''s` (5 chars)."
+    },
+    {
+      "id": "FNP-D0023",
+      "title": "Integer quotient nested inside a REAL constant expression is rendered as real division",
+      "rules": [
+        "FNP-R0171"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 3.0 (7/2 = 3); Python 3.5."
+    },
+    {
+      "id": "FNP-D0024",
+      "title": "Constant expression with a negative integer exponent (constants module path)",
+      "rules": [
+        "FNP-R0171"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 0; Python 0.5."
+    },
+    {
+      "id": "FNP-D0025",
+      "title": "NINT -> np.rint and MOD/MODULO -> np.mod in constant expressions",
+      "rules": [
+        "FNP-R0171"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 3 and -1; Python 2.0 and 2."
+    },
+    {
+      "id": "FNP-D0026",
+      "title": "HUGE(<integer literal>) in a constant expression is spelled as the REAL inquiry",
+      "rules": [
+        "FNP-R0171"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 2147483647; Python 3.4028235e38."
+    },
+    {
+      "id": "FNP-D0027",
+      "title": "DIGITS(x) has no spelling and falls through to a subscript of an undefined name",
+      "rules": [
+        "FNP-R0089"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran: 53 for a REAL(8) x. Python: NameError at run time (the value model: target undefined where the source is defined). Lean: Recast.Rules.FNP_R0089_refuted."
+    },
+    {
+      "id": "FNP-D0029",
+      "title": "Module-variable initializer `a/b` is rendered with true division",
+      "rules": [
+        "FNP-R0176"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 0.0 (integer 1/3 = 0, then converted); Python 0.333..."
+    },
+    {
+      "id": "FNP-D0031",
+      "title": "A scalar dummy assigned only under a condition is inferred INTENT(OUT): the caller's incoming value is replaced by the prologue zero",
+      "rules": [
+        "FNP-R0140",
+        "FNP-R0141"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "x >= 0 and ierr = 7 on entry: Fortran leaves ierr = 7; Python returns 0."
+    },
+    {
+      "id": "FNP-D0035",
+      "title": "_f_int_div uses a binary64 intermediate: int(a / b) is inexact beyond 2^53",
+      "rules": [
+        "FNP-R0017"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "_f_int_div(2**53 + 1, 1) == 2**53 in Python (helper executed in isolation); compiled Fortran int64 gives 2**53 + 1. Not a counterexample to the exact-arithmetic lemma (recorded per the handoff)."
+    },
+    {
+      "id": "FNP-D0036",
+      "title": "Integer array division `_f_int_div(A, B)` and scalar-only intrinsic spellings raise on array arguments",
+      "rules": [
+        "FNP-R0029",
+        "FNP-R0100"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "Python: TypeError ('only length-1 arrays can be converted to Python scalars'); Fortran: elementwise truncating quotient. The target is undefined where the source is defined (loud, not a wrong value)."
+    },
+    {
+      "id": "FNP-D0037",
+      "title": "Empty section with an edge below lb - 1 becomes a non-empty Python slice (negative-index wrap)",
+      "rules": [
+        "FNP-R0042",
+        "FNP-R0043",
+        "FNP-R0045",
+        "FNP-R0044",
+        "FNP-R0114"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "n = 3, a = [1,2,4]: Fortran 0.0; Python 3.0. Lean: Recast.Rules.FNP_R0042_refuted (a 2-element array, source extent 0 vs target shape 1)."
+    },
+    {
+      "id": "FNP-D0038",
+      "title": "WHERE evaluates the array RHS on every element before masking (exact-model definedness gap)",
+      "rules": [
+        "FNP-R0137",
+        "FNP-R0138",
+        "FNP-R0139"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "x = [0, 2]: Fortran y(2) = 0.5, y(1) unchanged; exact model: the target's `1.0 / x` is undefined at x(1) = 0, so the target is undefined where the source is defined. Concretely NumPy produces inf with a RuntimeWarning and masks it out: the observable values agree."
+    },
+    {
+      "id": "FNP-D0039",
+      "title": "HUGE(x) on a REAL variable that holds an integer-valued Python int answers the INTEGER huge",
+      "rules": [
+        "FNP-R0087"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "gfortran: 1.7976931348623157E+308; translation: 2147483647 (int). Lean: `FNP_R0087_refuted_realInt` (a REAL(8) variable related to the Python int 0)."
+    },
+    {
+      "id": "FNP-D0040",
+      "title": "DOT_PRODUCT of INTEGER arrays is a Python float (accumulator seeded with 0.0)",
+      "rules": [
+        "FNP-R0103"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "gfortran: `idot 11 110.0`; translation: IndexError (`only integers ... are valid indices`), `_f_vdot(a, b) = np.float64(11.0)`."
+    },
+    {
+      "id": "FNP-D0041",
+      "title": "PACK of a rank ≥ 2 array returns the elements in row-major order",
+      "rules": [
+        "FNP-R0104"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = reshape([1,2,3,4],[2,2]) (a(1,1)=1, a(2,1)=2, a(1,2)=3, a(2,2)=4), m = .true.: Fortran p = 1 2 3 4; Python 1 3 2 4."
+    },
+    {
+      "id": "FNP-D0042",
+      "title": "MAXLOC/MINLOC of a rank ≥ 2 array with ties picks the row-major first maximum",
+      "rules": [
+        "FNP-R0107"
+      ],
+      "lean_kind": "related_only",
+      "counterexample": "a = reshape([1,5,5,1],[2,2]) (a(2,1) = a(1,2) = 5): Fortran l = (2,1); Python (1,2)."
+    },
+    {
+      "id": "FNP-D0044",
+      "title": "_f_seq_tail's rank-2 view drops the column remainder of a sequence-associated element actual",
+      "rules": [
+        "FNP-R0057"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = 1..6 column-major: Fortran a = 1 103 105 107 5 6 (a(1,2) = 4 + 103); Python: IndexError (index 2 is out of bounds for axis 0 with size 2). Lean: Recast.Rules.FNP_R0057_refuted."
+    },
+    {
+      "id": "FNP-D0045",
+      "title": "A rank-2 dummy over a storage sequence not divisible by its leading extent raises in NumPy (partial trailing column dropped)",
+      "rules": [
+        "FNP-R0057",
+        "FNP-R0059"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "w = 1..5: Fortran x = w(5) = 5; Python: ValueError (cannot reshape array of size 5 into shape (2,newaxis)). Lean: Recast.Rules.FNP_R0057_trunc_refuted, FNP_R0059_reshape_undefined."
+    },
+    {
+      "id": "FNP-D0046",
+      "title": "DIGITS of an integer literal in a constant expression answers the REAL value 53",
+      "rules": [
+        "FNP-R0171"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "Fortran 31; Python 53. Lean: Recast.Rules.FNP_R0171_refuted_digits. Same classifier bug as FNP-D0026 (HUGE)."
+    },
+    {
+      "id": "FNP-D0047",
+      "title": "A dummy whose intent is neither declared nor inferable is passed but never returned: the callee's write is lost",
+      "rules": [
+        "FNP-R0140",
+        "FNP-R0141"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "drive sets s = 'xxxxxxxx' then calls setname: gfortran gives s = 'hello   ', n = 42; the translation gives s = 'xxxxxxxx', n = 42. The INTEGER dummy `n` is inferred OUT and handled correctly; only the CHARACTER dummy is lost."
+    },
+    {
+      "id": "FNP-D0048",
+      "title": "RESHAPE with a source larger than the shape: Fortran truncates, np.reshape raises",
+      "rules": [
+        "FNP-R0102"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "a = [1,2,3,4]: gfortran gives b = 1 2; the translation raises ValueError (cannot reshape array of size 4 into shape (2,)). Lean: Recast.Rules.FNP_R0102_refuted_shrink."
+    },
+    {
+      "id": "FNP-D0049",
+      "title": "Array bounds are re-rendered at every use: redefining a bound variable after ALLOCATE or entry shifts every subscript",
+      "rules": [
+        "FNP-R0040",
+        "FNP-R0043",
+        "FNP-R0049",
+        "FNP-R0046",
+        "FNP-R0047",
+        "FNP-R0048",
+        "FNP-R0113",
+        "FNP-R0114"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "n0 = 2 (`redef`): gfortran x = 0.0, lbound -2, ubound 2; translation x = 10.0 (`a[3]`, the element Fortran calls a(1)), lbound 1, ubound 5 (the inquiries are FNP-D0006). The same for a declared dummy `a(-n:n)` with `intent(inout) :: n` incremented in the body (`dummy`: 0.0 vs 10.0) and for an automatic local `w(-n:n)` (`autoloc`: 0.0 vs 10.0). Lean: Recast.Rules.FNP_R0049_refuted (dims [(-2, 5)] allocated with n = 2, use state n = 3)."
+    },
+    {
+      "id": "FNP-D0050",
+      "title": "ALLOCATE with the upper bound below the lower bound: Fortran allocates a zero-sized array, np.zeros raises",
+      "rules": [
+        "FNP-R0160",
+        "FNP-R0142"
+      ],
+      "lean_kind": "refutation",
+      "counterexample": "n0 = -1 (`basic`): gfortran size 0, lbound 1, ubound 0; translation raises ValueError: negative dimensions are not allowed. Lean: Recast.Rules.FNP_R0160_refuted_empty (`F.execAllocate` clamps the extent to 0; the `np.zeros` model is undefined on the extent -1). The automatic local `real(8) :: w(-n:n)` called with n = -1 (`autoempty`): gfortran lbound 1, ubound 0, size 0; the prologue's `w = np.zeros(((n) - (- n) + 1,), dtype=np.float64)` raises the same ValueError."
+    }
+  ]
+}

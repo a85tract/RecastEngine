@@ -51,3 +51,4 @@ config.local.*
 
 # Optional formal tooling downloads sources and writes build products here.
 formal/.build/
+formal/proofs/.lake/
